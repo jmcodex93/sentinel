@@ -4245,7 +4245,7 @@ class YSPanel(gui.GeDialog):
                     info_msg += f"  {i}. {issue['issue']}\n"
             else:
                 info_msg += "\n\nAll OK."
-            info_msg += f"\n\nTo change standard FPS, edit ys_guardian_settings.json."
+            info_msg += f"\n\nTo change standard FPS, edit sentinel_settings.json."
             c4d.gui.MessageDialog(info_msg)
 
         # ── Auto-fix handlers ──

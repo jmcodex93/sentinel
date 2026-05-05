@@ -203,7 +203,7 @@ Discovered by probing. These control AOV-specific options like Depth mode and MV
 
 ---
 
-## YS Guardian AOV Configuration
+## Sentinel AOV Configuration
 
 ### Global Settings (applied to RS VideoPost)
 | Setting | Constant | Value |

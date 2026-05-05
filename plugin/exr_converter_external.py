@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-External EXR to PNG Converter for YS Guardian
+External EXR to PNG Converter for Sentinel
 Uses system Python with OpenEXR and Pillow
 """
 
