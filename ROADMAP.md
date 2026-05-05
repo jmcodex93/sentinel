@@ -1,4 +1,6 @@
-# YS Guardian — Roadmap
+# Sentinel — Roadmap
+
+> Originally **YS Guardian** (Yambo Studio). Rebranded to Sentinel in v1.5.0 — see CLAUDE.md and README.md for the heritage and attribution.
 
 ## Completed (v1.0.4 → v1.4.0)
 
@@ -64,6 +66,140 @@
 
 ---
 
+### v1.5.0 — Rebrand: YS Guardian → Sentinel ✅
+
+After 5 versions of additions (v1.4.0–v1.4.4), the plugin had outgrown the "YS Guardian" identity. v1.5.0 marks the rebrand to **Sentinel** while keeping the Yambo Studio heritage explicitly credited throughout.
+
+#### Code changes
+- [x] `PLUGIN_NAME` → `"Sentinel v1.5.0"`
+- [x] Plugin file renamed: `ys_guardian_panel.pyp` → `sentinel_panel.pyp`
+- [x] Settings file: `ys_guardian_settings.json` → `sentinel_settings.json` with **silent auto-migration** on first load (no preferences lost)
+- [x] Manifest key: `ys_guardian_manifest` → `sentinel_manifest`
+- [x] Scene Collector manifest filename: `ys_guardian_manifest.json` → `sentinel_manifest.json`
+- [x] GitHub URLs: `jmcodex93/ys-guardian` → `jmcodex93/sentinel`
+
+#### Build / install
+- [x] `sync.sh` updated — copies to `plugins/Sentinel/` (mkdir -p safe)
+- [x] Old `plugins/YS_Guardian/` must be removed manually (sync.sh prints a reminder)
+
+#### Documentation
+- [x] README.md: title, header, all references; new "Rebrand" changelog entry; License section credits Yambo Studio origin; Special Thanks adds Yambo Studio
+- [x] CLAUDE.md: project overview rewritten with rebrand context; version history v1.5.0 entry; settings filename
+- [x] ROADMAP.md: header note about rebrand; this section
+- [x] Plugin file constants and references all updated
+
+#### Why "Sentinel"
+After 5 rounds of community-naming exploration (covering watchdog/guardian synonyms, mograph craft words, Italian/Spanish heritage options, mythology, cinema terms), Sentinel won as the natural evolution of Guardian — same watchdog DNA, more adult/professional brand, single word, easy global pronunciation. The Yambo Studio origin is explicitly credited everywhere, not buried.
+
+---
+
+### v1.4.4 — Browse Recent Versions inline ✅
+
+#### HistoryArea custom-drawn list
+- [x] Pure helpers: `load_versions_for_doc`, `filter_versions_by_status`, `format_version_row` + `FILTER_ALL` sentinel
+- [x] `HistoryArea` GeUserArea with custom drawing — color-coded status badges (WIP grey / TR amber / CR blue / FINAL green / custom purple), version label, comment, QC score, relative time
+- [x] Alternating row backgrounds (zebra) for legibility
+- [x] Empty states: "scene not saved yet" / "no versions yet" / "no versions match filter"
+- [x] Filter ComboBox: All / WIP / TR / CR / FINAL
+- [x] Click row → confirmation dialog with version preview + open via `c4d.documents.LoadFile`
+- [x] Smart unsaved-changes warning, "File not found" handling, same-doc detection
+
+#### Critical fix: user-area click coordinate conversion
+- [x] Discovered C4D 2026 Python `Global2Local(x, y)` does NOT return area-local coordinates — empirical test showed `local_y=610` for a click in a user area only 120px tall
+- [x] Workaround: `Local2Global()` (no args) returns the user area's window origin as `{'x': N, 'y': M}`; subtract from raw `msg[BFM_INPUT_X/Y]` to get reliable local coords
+- [x] Shared helper `_ua_local_coords(user_area, mx, my)` used by both `StatusArea` and `HistoryArea`
+- [x] Fixed StatusArea click handling (was working "by luck" because rows are near top of panel)
+
+**Why**: Smart Save Version writes a rich history JSON, but in v1.4.3 only the latest entry was surfaced (via the "Last version" pillbox). The full list closes the read side of the loop and lets artists actually use the metadata they're capturing — filter by status, click to open a previous review, etc.
+
+---
+
+### v1.4.3 — Status Tags + Continue + Last-version pillbox ✅
+
+#### Review Status Tags (mograph-native)
+- [x] ComboBox in SaveVersionDialog with 4 fixed options: WIP / TR (Team Review) / CR (Client Review) / Final Delivery
+- [x] Custom field for arbitrary tags (`PITCH`, `ALT01`, `REV2`, etc.) — sanitized to uppercase alphanumeric
+- [x] Custom overrides combo when non-empty
+- [x] Live filename preview updates as user changes status
+- [x] Status appears as suffix in filename: `scene_v007_TR.c4d`, `scene_v012_CR.c4d`, `scene_v022_FINAL.c4d`
+- [x] Stored in history JSON as `"status"` field per entry
+- [x] Filename parser/scanner handles status suffix transparently — version bump is independent of status
+- [x] "final" written in comment triggers soft advisory dialog (suggests using FINAL tag, but doesn't block)
+
+**Why**: Research across mograph community (Vinzent Britz, Matthew Creed, GSG forums) showed that the de-facto convention isn't VFX-style `show_seq_shot` but `Client-Project-Description` with review-status suffixes (`-TR`, `-CR`). The status carries the meaning of *what this version is for*, which is more useful than rigid templates for motion design workflows.
+
+#### "Continue from this version" (Gap 1: prevent accidental overwrite)
+- [x] After Save Version with TR / CR / FINAL status, replaces success MessageDialog with a QuestionDialog
+- [x] User can opt to immediately auto-create a new WIP version
+- [x] Continuation comment auto-set: `"Continue from v007_TR"`
+- [x] Skips QC re-run (same scene state)
+- [x] Doc switches to the new WIP file, leaving the review file untouched even on next Cmd+S
+
+**Why**: Without this, an artist saves `_v007_TR.c4d`, shares for review, keeps editing, hits Cmd+S → the file the team is reviewing is no longer what they're reviewing. Auto-continuation surfaces the right next step instead of relying on artist memory.
+
+#### Last-version pillbox (Gap 2: discoverability)
+- [x] Static text caption above Save Version button
+- [x] Reads latest entry from sidecar history JSON
+- [x] Format: `Last version: v007 TR · 2h ago` (or `v007 WIP` if no status)
+- [x] Relative time: "just now", "Xm/h/d ago", or absolute date for >30 days
+- [x] Empty states: "scene not saved yet" / "none yet — click Save Version to start"
+- [x] Updates on Timer refresh + after Save Version + on document switch
+
+**Why**: Artists in flow forget to checkpoint. A passive caption ("you saved 4h ago") nudges them without being intrusive.
+
+---
+
+### v1.4.2 — Smart Save Version + UI polish ✅
+
+#### Smart Save Version
+- [x] Pure helpers: `parse_version_filename`, `build_versioned_filename`, `compute_next_version`
+- [x] Sidecar history JSON (`<base>_history.json`) — load/save/append entries (newest-first)
+- [x] Modal `SaveVersionDialog`: required comment + "Run QC before save" checkbox
+- [x] `smart_save_version(doc, comment, run_qc, artist)` orchestrator with full undo-safe flow
+- [x] First-time save: opens SaveDialog with suggested `scene_v001.c4d`
+- [x] Subsequent saves: scans folder + history, bumps version (3-digit, VFX-aligned)
+- [x] Captures QC score, scene stats (polys/mats/lights), active take, timestamp, artist
+- [x] Updates `doc.SetDocumentPath/Name` + `EventAdd` so title bar + future Cmd+S follow new file
+- [x] Refuses to overwrite existing files (defensive)
+- [x] "Save Version" button in Output section (paired with Collect Scene as primary actions)
+
+**Why**: Native C4D Save Incremental only bumps numbers. Without comments, version history is useless ("scene_v014.c4d... what's in there?"). Sidecar JSON adds context: comment + QC score + scene stats per version, browseable later.
+
+#### UI polish
+- [x] Score header above QC rows: progress bar + "QC X/Y" + PASS/WARN/FAIL + scene stats
+- [x] Click-anywhere-on-row triggers primary action (bigger click target)
+- [x] "..." snapshot dir button → "Browse" (clearer)
+- [x] Output section reorganized: primary checkpoint actions on top (Save Version + Collect Scene)
+
+**Limitations discovered**:
+- Native tooltips (`SetTooltip`) not available in C4D 2026 GeDialog Python — only `CUSTOMGUI_BITMAPBUTTON` has built-in tooltip support
+- Hover effects on `GeUserArea` not feasible — `BFM_GETCURSORINFO` is not routed to embedded user areas in C4D 2026
+- Click-row works via `InputEvent` override; hint added to section title to aid discovery
+
+---
+
+### v1.4.1 — QC Check #11 (FPS / Frame Range) ✅
+
+#### FPS + Frame Range Validation
+- [x] Document FPS check (must equal studio standard)
+- [x] Render data FPS check (RDATA_FRAMERATE — independent from doc FPS)
+- [x] Start frame must be 1001 (VFX/cinema standard) for all animation presets
+- [x] Frame step = 1 (no frame skipping)
+- [x] Frame mode validation (Manual for animation, Current Frame allowed for stills)
+- [x] Timeline (DOCUMENT_MIN/MAXTIME) must match active render range
+- [x] Preview/loop range (DOCUMENT_LOOPMIN/MAXTIME) must match active render range
+- [x] Stills preset has relaxed rules (Current Frame OK, timeline only needs to include 1001)
+- [x] Playhead auto-snap to range start if outside range after fix
+- [x] Auto-fix iterates ALL render presets (not just active)
+- [x] Confirmation dialog before fix with diff preview of all changes
+- [x] Configurable studio FPS via `standard_fps` in `sentinel_settings.json` (default 25)
+- [x] Full undo support (Ctrl+Z reverts entire fix in one step)
+- [x] Included in QC report export
+
+**Why**: Wrong FPS, frame range starting at 0, or timeline misaligned with render are silent errors that waste hours. 1001 is the VFX/cinema convention (4-digit padding, room for handles before frame 1001).
+
+---
+
 ### v1.4.0 Features ✅
 
 #### Take-based QC ✅
@@ -76,7 +212,7 @@
 #### Scene Collector ✅
 - [x] Pre-flight: runs all 10 QC checks, shows summary, offers auto-fix
 - [x] Collect: calls c4d.documents.SaveProject() (native asset collection)
-- [x] Manifest: generates ys_guardian_manifest.json with scene info, assets, missing list
+- [x] Manifest: generates sentinel_manifest.json with scene info, assets, missing list (was ys_guardian_manifest.json before v1.5.0)
 - [x] Complements C4D native — does NOT duplicate it
 
 #### Light Groups AOV ✅
@@ -105,14 +241,10 @@
 
 ### v1.5.0 — Production Workflow (Tier A: High impact, easy)
 
-#### Smart Incremental Save
-One-click version bump with required comment:
-- `scene_v001.c4d` → `scene_v002.c4d` automatically
-- Prompt for comment on save (stored in sidecar JSON)
-- Version history browseable from the panel
-- No external tools needed — pure file convention
-
-**Why**: No versioning exists. Artists overwrite or manually rename. Mistakes are unrecoverable.
+> Note: FPS + Frame Range Validation shipped early as v1.4.1.
+> Note: Smart Incremental Save shipped early as v1.4.2.
+> Note: Status Tags + Continue from review + Last-version pillbox shipped as v1.4.3.
+> Note: Browse Recent Versions inline shipped as v1.4.4.
 
 #### Scene Notes / TODO
 Per-scene notes and checklist visible in the panel:
@@ -131,14 +263,10 @@ Burn metadata into Save Still PNGs:
 
 **Why**: Unnamed PNGs on a server are useless without context. Every image should be self-documenting.
 
-#### FPS + Frame Range Validation (QC check #11)
-New quality check:
-- Verify project FPS matches studio standard (configurable: 24/25/30)
-- Verify frame range is not "Current Frame" (animation renders)
-- Verify frame range makes sense (start < end, reasonable length)
-- Warn if "All Frames" selected (renders entire timeline)
+#### FPS Settings UI (polish for QC #11)
+Add a dropdown or settings dialog to change the studio standard FPS without editing the JSON manually. Group FPS/Range issues by category in Info dialog (FPS / Range / Timeline) for clearer reading.
 
-**Why**: Wrong FPS or frame range are silent errors that waste hours of render time.
+**Why**: Currently only configurable via `sentinel_settings.json`. Most artists won't open it.
 
 ### v1.6.0 — Multi-Format & Asset Health (Tier B: High impact, medium effort)
 

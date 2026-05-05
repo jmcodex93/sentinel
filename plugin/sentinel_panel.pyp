@@ -10,10 +10,10 @@ from collections import defaultdict
 
 # ---------------- Safe Print Function ----------------
 def safe_print(msg):
-    """Print to console with null safety"""
+    """Print to console with null safety. Prefix matches plugin brand."""
     try:
         if msg is not None:
-            print(f"[YS Guardian] {msg}")
+            print(f"[Sentinel] {msg}")
     except (UnicodeEncodeError, AttributeError):
         pass  # Print failed, continue silently
 
@@ -50,7 +50,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 # Plugin ID - change if ID collision
 PLUGIN_ID = 2099069
-PLUGIN_NAME = "YS Guardian v1.4.0"
+PLUGIN_NAME = "Sentinel v1.5.0"
 
 # Preset names - normalized to lowercase with underscores
 # The system accepts both "pre_render" and "pre-render" (case-insensitive)
@@ -67,8 +67,9 @@ MAX_OBJECTS_PER_CHECK = 1000  # Process in chunks
 CACHE_DURATION = 2.0  # Cache results for 2 seconds (optimized for performance)
 CHECK_COOLDOWN = 0.5  # Minimum time between checks
 
-# Global settings file for artist name
-SETTINGS_FILE = "ys_guardian_settings.json"
+# Global settings file for artist name (Sentinel)
+SETTINGS_FILE = "sentinel_settings.json"
+LEGACY_SETTINGS_FILE = "ys_guardian_settings.json"  # pre-rebrand, auto-migrated on first load
 
 # ---------------- Settings Persistence ----------------
 class GlobalSettings:
@@ -80,14 +81,33 @@ class GlobalSettings:
         return os.path.join(prefs_path, SETTINGS_FILE)
 
     @staticmethod
+    def _legacy_path():
+        prefs_path = c4d.storage.GeGetC4DPath(c4d.C4D_PATH_PREFS)
+        return os.path.join(prefs_path, LEGACY_SETTINGS_FILE)
+
+    @staticmethod
     def _load():
         settings_path = GlobalSettings.get_settings_path()
+        # Try new file first
         if os.path.exists(settings_path):
             try:
                 with open(settings_path, 'r') as f:
                     return json.load(f)
             except Exception:
                 pass
+        # One-time migration from legacy YS Guardian settings
+        legacy_path = GlobalSettings._legacy_path()
+        if os.path.exists(legacy_path):
+            try:
+                with open(legacy_path, 'r') as f:
+                    data = json.load(f)
+                # Persist to new path so future loads skip the migration check
+                with open(settings_path, 'w') as f:
+                    json.dump(data, f, indent=2)
+                safe_print(f"Migrated legacy settings: {LEGACY_SETTINGS_FILE} -> {SETTINGS_FILE}")
+                return data
+            except Exception as e:
+                safe_print(f"Could not migrate legacy settings: {e}")
         return {}
 
     @staticmethod
@@ -130,6 +150,15 @@ class GlobalSettings:
     @staticmethod
     def set_snapshot_dir(path):
         return GlobalSettings.set('snapshot_dir', path)
+
+    @staticmethod
+    def get_standard_fps():
+        """Get studio standard FPS (default 25)"""
+        return int(GlobalSettings.get('standard_fps', 25))
+
+    @staticmethod
+    def set_standard_fps(fps):
+        return GlobalSettings.set('standard_fps', int(fps))
 
 # ---------------- Performance Cache ----------------
 class CheckCache:
@@ -1239,6 +1268,284 @@ def check_takes(doc):
     check_cache.set(doc, "takes", issues)
     return issues
 
+def check_fps_range(doc):
+    """Validate FPS, frame range, frame step, and timeline alignment across ALL presets.
+
+    Doc-level FPS is checked once. Each render data is validated independently for
+    FPS, frame step (=1), range start (1001), and mode. Timeline + preview alignment
+    is validated against the ACTIVE preset (since timeline is shared).
+    """
+    cached = check_cache.get(doc, "fps_range")
+    if cached is not None:
+        return cached
+
+    issues = []
+    try:
+        standard_fps = GlobalSettings.get_standard_fps()
+        doc_fps = doc.GetFps()
+
+        # --- Document-level FPS (checked once) ---
+        if doc_fps != standard_fps:
+            issues.append({
+                "issue": f"Document FPS is {doc_fps}, expected {standard_fps}",
+                "type": "doc_fps",
+                "preset": None,
+            })
+
+        active_rd = doc.GetActiveRenderData()
+        if not active_rd:
+            check_cache.set(doc, "fps_range", issues)
+            return issues
+
+        # --- Iterate all render datas ---
+        rd = doc.GetFirstRenderData()
+        while rd:
+            preset_name = rd.GetName()
+            preset_norm = normalize_preset_name(preset_name)
+            is_stills = preset_norm == "stills"
+            is_active = (rd == active_rd)
+            tag = f"[{preset_name}]"
+
+            rd_fps = int(rd[c4d.RDATA_FRAMERATE])
+            if rd_fps != standard_fps:
+                issues.append({
+                    "issue": f"{tag} Render FPS is {rd_fps}, expected {standard_fps}",
+                    "type": "rd_fps",
+                    "preset": preset_name,
+                })
+
+            # Frame step should always be 1 (no skipping)
+            frame_step = int(rd[c4d.RDATA_FRAMESTEP])
+            if frame_step != 1:
+                issues.append({
+                    "issue": f"{tag} Frame step is {frame_step}, expected 1 (frame skipping)",
+                    "type": "frame_step",
+                    "preset": preset_name,
+                })
+
+            frame_start = rd[c4d.RDATA_FRAMEFROM].GetFrame(rd_fps)
+            frame_end = rd[c4d.RDATA_FRAMETO].GetFrame(rd_fps)
+            frame_mode = rd[c4d.RDATA_FRAMESEQUENCE]
+
+            if is_stills:
+                if frame_mode == c4d.RDATA_FRAMESEQUENCE_MANUAL and frame_start != 1001:
+                    issues.append({
+                        "issue": f"{tag} Stills start frame is {frame_start}, expected 1001",
+                        "type": "start_frame",
+                        "preset": preset_name,
+                    })
+                if frame_mode == c4d.RDATA_FRAMESEQUENCE_ALLFRAMES:
+                    issues.append({
+                        "issue": f"{tag} Stills set to 'All Frames' (use Current Frame or 1001)",
+                        "type": "mode",
+                        "preset": preset_name,
+                    })
+            else:
+                if frame_start != 1001:
+                    issues.append({
+                        "issue": f"{tag} Start frame is {frame_start}, expected 1001",
+                        "type": "start_frame",
+                        "preset": preset_name,
+                    })
+                if frame_end <= frame_start:
+                    issues.append({
+                        "issue": f"{tag} Frame range invalid: {frame_start}-{frame_end}",
+                        "type": "range",
+                        "preset": preset_name,
+                    })
+                if frame_mode == c4d.RDATA_FRAMESEQUENCE_CURRENTFRAME:
+                    issues.append({
+                        "issue": f"{tag} Animation set to 'Current Frame' only",
+                        "type": "mode",
+                        "preset": preset_name,
+                    })
+                elif frame_mode == c4d.RDATA_FRAMESEQUENCE_ALLFRAMES:
+                    issues.append({
+                        "issue": f"{tag} Set to 'All Frames' (may render entire timeline)",
+                        "type": "mode",
+                        "preset": preset_name,
+                    })
+                frame_length = frame_end - frame_start + 1
+                if frame_length > 1000 and frame_mode != c4d.RDATA_FRAMESEQUENCE_ALLFRAMES:
+                    issues.append({
+                        "issue": f"{tag} Very long render: {frame_length} frames",
+                        "type": "length",
+                        "preset": preset_name,
+                    })
+
+            # --- Timeline + preview alignment (against ACTIVE preset only) ---
+            if is_active:
+                tl_min = doc[c4d.DOCUMENT_MINTIME].GetFrame(doc_fps)
+                tl_max = doc[c4d.DOCUMENT_MAXTIME].GetFrame(doc_fps)
+                loop_min = doc[c4d.DOCUMENT_LOOPMINTIME].GetFrame(doc_fps)
+                loop_max = doc[c4d.DOCUMENT_LOOPMAXTIME].GetFrame(doc_fps)
+
+                if is_stills:
+                    if not (tl_min <= 1001 <= tl_max):
+                        issues.append({
+                            "issue": f"Timeline ({tl_min}-{tl_max}) doesn't include frame 1001",
+                            "type": "timeline",
+                            "preset": None,
+                        })
+                else:
+                    if frame_end > frame_start:
+                        if tl_min != frame_start or tl_max != frame_end:
+                            issues.append({
+                                "issue": f"Timeline ({tl_min}-{tl_max}) doesn't match active render range ({frame_start}-{frame_end})",
+                                "type": "timeline",
+                                "preset": None,
+                            })
+                        if loop_min != frame_start or loop_max != frame_end:
+                            issues.append({
+                                "issue": f"Preview range ({loop_min}-{loop_max}) doesn't match active render range ({frame_start}-{frame_end})",
+                                "type": "loop",
+                                "preset": None,
+                            })
+
+            rd = rd.GetNext()
+
+    except Exception as e:
+        safe_print(f"Error checking FPS/range: {e}")
+
+    check_cache.set(doc, "fps_range", issues)
+    return issues
+
+def _fix_one_render_data(doc, rd, standard_fps):
+    """Fix a single render data. Returns list of human-readable change strings.
+
+    Caller is responsible for StartUndo/EndUndo and AddUndo. Returns final
+    (start, end) frames after the fix, useful for timeline alignment.
+    """
+    changes = []
+    preset_name = rd.GetName()
+    preset_norm = normalize_preset_name(preset_name)
+    is_stills = preset_norm == "stills"
+    tag = f"[{preset_name}]"
+
+    rd_fps_old = int(rd[c4d.RDATA_FRAMERATE])
+    current_start = rd[c4d.RDATA_FRAMEFROM].GetFrame(rd_fps_old)
+    current_end = rd[c4d.RDATA_FRAMETO].GetFrame(rd_fps_old)
+    frame_mode = rd[c4d.RDATA_FRAMESEQUENCE]
+    frame_step = int(rd[c4d.RDATA_FRAMESTEP])
+
+    # Render FPS
+    if rd_fps_old != standard_fps:
+        rd[c4d.RDATA_FRAMERATE] = float(standard_fps)
+        changes.append(f"{tag} Render FPS {rd_fps_old} -> {standard_fps}")
+
+    # Frame step
+    if frame_step != 1:
+        rd[c4d.RDATA_FRAMESTEP] = 1
+        changes.append(f"{tag} Frame step {frame_step} -> 1")
+
+    final_start = 1001
+    final_end = 1001
+
+    if is_stills:
+        if frame_mode == c4d.RDATA_FRAMESEQUENCE_MANUAL and current_start != 1001:
+            duration = max(0, current_end - current_start)
+            final_end = 1001 + duration
+            rd[c4d.RDATA_FRAMEFROM] = c4d.BaseTime(1001, standard_fps)
+            rd[c4d.RDATA_FRAMETO] = c4d.BaseTime(final_end, standard_fps)
+            changes.append(f"{tag} Frame range {current_start}-{current_end} -> 1001-{final_end}")
+        elif frame_mode == c4d.RDATA_FRAMESEQUENCE_ALLFRAMES:
+            rd[c4d.RDATA_FRAMESEQUENCE] = c4d.RDATA_FRAMESEQUENCE_CURRENTFRAME
+            changes.append(f"{tag} Frame mode 'All Frames' -> 'Current Frame'")
+        elif rd_fps_old != standard_fps:
+            # Re-anchor BaseTime to new fps
+            rd[c4d.RDATA_FRAMEFROM] = c4d.BaseTime(current_start, standard_fps)
+            rd[c4d.RDATA_FRAMETO] = c4d.BaseTime(current_end, standard_fps)
+            final_end = current_end if current_end >= 1001 else 1001
+        else:
+            final_end = current_end if current_end >= 1001 else 1001
+    else:
+        # Animation: range start at 1001, preserve duration
+        duration = max(0, current_end - current_start)
+        final_end = 1001 + duration
+        if current_start != 1001 or rd_fps_old != standard_fps:
+            rd[c4d.RDATA_FRAMEFROM] = c4d.BaseTime(final_start, standard_fps)
+            rd[c4d.RDATA_FRAMETO] = c4d.BaseTime(final_end, standard_fps)
+            if current_start != 1001:
+                changes.append(f"{tag} Frame range {current_start}-{current_end} -> {final_start}-{final_end}")
+        if frame_mode in (c4d.RDATA_FRAMESEQUENCE_CURRENTFRAME, c4d.RDATA_FRAMESEQUENCE_ALLFRAMES):
+            rd[c4d.RDATA_FRAMESEQUENCE] = c4d.RDATA_FRAMESEQUENCE_MANUAL
+            changes.append(f"{tag} Frame mode -> 'Manual'")
+
+    return changes, final_start, final_end
+
+
+def fix_fps_range(doc):
+    """Auto-fix FPS/range across ALL render presets. Aligns timeline to active preset."""
+    fixes = []
+    if not doc.GetFirstRenderData():
+        return fixes
+
+    standard_fps = GlobalSettings.get_standard_fps()
+    active_rd = doc.GetActiveRenderData()
+
+    doc.StartUndo()
+    try:
+        # --- Document-level FPS (once) ---
+        doc_fps = doc.GetFps()
+        if doc_fps != standard_fps:
+            doc.AddUndo(c4d.UNDOTYPE_CHANGE_SMALL, doc)
+            doc.SetFps(standard_fps)
+            fixes.append(f"Document FPS: {doc_fps} -> {standard_fps}")
+
+        # --- Iterate all render datas ---
+        active_final_start = 1001
+        active_final_end = 1001
+
+        rd = doc.GetFirstRenderData()
+        while rd:
+            doc.AddUndo(c4d.UNDOTYPE_CHANGE, rd)
+            changes, final_start, final_end = _fix_one_render_data(doc, rd, standard_fps)
+            fixes.extend(changes)
+            if rd == active_rd:
+                active_final_start = final_start
+                active_final_end = final_end
+            rd = rd.GetNext()
+
+        # --- Align timeline + preview to ACTIVE preset's range ---
+        tl_min = doc[c4d.DOCUMENT_MINTIME].GetFrame(standard_fps)
+        tl_max = doc[c4d.DOCUMENT_MAXTIME].GetFrame(standard_fps)
+        loop_min = doc[c4d.DOCUMENT_LOOPMINTIME].GetFrame(standard_fps)
+        loop_max = doc[c4d.DOCUMENT_LOOPMAXTIME].GetFrame(standard_fps)
+
+        if tl_min != active_final_start or tl_max != active_final_end:
+            # Avoid intermediate min > max state
+            if active_final_start >= tl_max:
+                doc[c4d.DOCUMENT_MAXTIME] = c4d.BaseTime(active_final_end, standard_fps)
+                doc[c4d.DOCUMENT_MINTIME] = c4d.BaseTime(active_final_start, standard_fps)
+            else:
+                doc[c4d.DOCUMENT_MINTIME] = c4d.BaseTime(active_final_start, standard_fps)
+                doc[c4d.DOCUMENT_MAXTIME] = c4d.BaseTime(active_final_end, standard_fps)
+            fixes.append(f"Timeline: {tl_min}-{tl_max} -> {active_final_start}-{active_final_end}")
+
+        if loop_min != active_final_start or loop_max != active_final_end:
+            if active_final_start >= loop_max:
+                doc[c4d.DOCUMENT_LOOPMAXTIME] = c4d.BaseTime(active_final_end, standard_fps)
+                doc[c4d.DOCUMENT_LOOPMINTIME] = c4d.BaseTime(active_final_start, standard_fps)
+            else:
+                doc[c4d.DOCUMENT_LOOPMINTIME] = c4d.BaseTime(active_final_start, standard_fps)
+                doc[c4d.DOCUMENT_LOOPMAXTIME] = c4d.BaseTime(active_final_end, standard_fps)
+            fixes.append(f"Preview range: {loop_min}-{loop_max} -> {active_final_start}-{active_final_end}")
+
+        # --- Snap playhead to range if it fell outside ---
+        playhead = doc.GetTime().GetFrame(standard_fps)
+        if playhead < active_final_start or playhead > active_final_end:
+            doc.SetTime(c4d.BaseTime(active_final_start, standard_fps))
+            fixes.append(f"Playhead: frame {playhead} -> {active_final_start} (out of range)")
+
+    except Exception as e:
+        safe_print(f"Error fixing FPS/range: {e}")
+    finally:
+        doc.EndUndo()
+
+    check_cache.clear()
+    c4d.EventAdd()
+    return fixes
+
 # ---------------- auto-fix functions ----------------
 def fix_lights(doc, lights_bad):
     """Move stray lights into a 'lights' group null"""
@@ -1318,7 +1625,7 @@ def export_qc_report(doc, results, artist_name):
 
     # Build report
     report = {
-        "report": "YS Guardian QC Report",
+        "report": "Sentinel QC Report",
         "version": PLUGIN_NAME,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "scene": doc.GetDocumentName() or "untitled",
@@ -1395,6 +1702,15 @@ def export_qc_report(doc, results, artist_name):
             f"[{t['take']}] {t['issue']}" for t in results["takes_bad"][:20]
         ]
 
+    # FPS / Frame Range check
+    fps_bad = results.get("fps_range_bad", [])
+    report["checks"]["fps_range"] = {
+        "status": "PASS" if not fps_bad else "FAIL",
+        "count": len(fps_bad),
+        "label": "FPS & frame range validation",
+        "items": [issue["issue"] for issue in fps_bad],
+    }
+
     # Summary
     total = len(report["checks"])
     passed = sum(1 for c in report["checks"].values() if c["status"] == "PASS")
@@ -1421,6 +1737,648 @@ def export_qc_report(doc, results, artist_name):
         json.dump(report, f, indent=2, ensure_ascii=False)
 
     return save_path
+
+# ---------------- Smart Incremental Save (versioning + history) ----------------
+# Pure helpers — no UI, no document mutation. Tested via reasoning + step-by-step verification.
+import re as _re
+
+# Version + optional status tag suffix (e.g. _v003, _v003_TR, _v003_CR, _v003_PITCH).
+# Status must be alphanumeric (letters first); we sanitize on write.
+_VERSION_RE = _re.compile(r'_v(\d+)(?:_([A-Za-z][A-Za-z0-9]*))?$', _re.IGNORECASE)
+
+# Mograph-native review status tags. Convention from Matthew Creed / community.
+STATUS_NONE = ""        # WIP — no suffix
+STATUS_TR = "TR"        # Team Review
+STATUS_CR = "CR"        # Client Review
+STATUS_FINAL = "FINAL"  # Final Delivery
+
+# (combo_label, suffix). Order = combobox order.
+STATUS_OPTIONS = [
+    ("Work in Progress (WIP)",   STATUS_NONE),
+    ("Team Review (TR)",         STATUS_TR),
+    ("Client Review (CR)",       STATUS_CR),
+    ("Final Delivery",           STATUS_FINAL),
+]
+
+
+def _sanitize_status(status):
+    """Strip non-alphanumeric chars; uppercase. Returns "" if nothing left."""
+    if not status:
+        return ""
+    cleaned = _re.sub(r'[^A-Za-z0-9]', '', status).upper()
+    return cleaned
+
+
+def parse_version_filename(name_no_ext):
+    """Parse a basename (no extension) into (base, version_int, status_or_None).
+
+    Examples:
+      'scene_v003'        -> ('scene', 3, None)
+      'scene_v003_TR'     -> ('scene', 3, 'TR')
+      'robot_010_v014_CR' -> ('robot_010', 14, 'CR')
+      'scene'             -> ('scene', None, None)
+      'scene_v'           -> ('scene_v', None, None)
+    """
+    if not name_no_ext:
+        return "", None, None
+    m = _VERSION_RE.search(name_no_ext)
+    if m:
+        base = name_no_ext[:m.start()]
+        try:
+            ver = int(m.group(1))
+        except ValueError:
+            return name_no_ext, None, None
+        status = m.group(2)
+        status = status.upper() if status else None
+        if base:
+            return base, ver, status
+    return name_no_ext, None, None
+
+
+def build_versioned_filename(base, version, status=None, extension="c4d"):
+    """('scene', 3) -> 'scene_v003.c4d'
+       ('scene', 3, 'TR') -> 'scene_v003_TR.c4d'
+    """
+    if not base:
+        base = "scene"
+    suffix = ""
+    cleaned = _sanitize_status(status)
+    if cleaned:
+        suffix = f"_{cleaned}"
+    return f"{base}_v{int(version):03d}{suffix}.{extension}"
+
+
+def get_history_path(doc_path):
+    """Return the sidecar history JSON path for a given .c4d file path.
+
+    Strips any '_v###[_status]' suffix so all versions of the same scene share one history.
+    Returns None if doc_path is empty.
+    """
+    if not doc_path:
+        return None
+    folder = os.path.dirname(doc_path)
+    name_no_ext = os.path.splitext(os.path.basename(doc_path))[0]
+    base, _ver, _status = parse_version_filename(name_no_ext)
+    return os.path.join(folder, f"{base}_history.json")
+
+
+def load_history(history_path):
+    """Load history JSON. Always returns a dict with 'versions' list (empty if missing/invalid)."""
+    default = {"scene": None, "versions": []}
+    if not history_path or not os.path.exists(history_path):
+        return default
+    try:
+        with open(history_path, 'r') as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or "versions" not in data or not isinstance(data["versions"], list):
+            safe_print(f"History file malformed, ignoring: {history_path}")
+            return default
+        return data
+    except Exception as e:
+        safe_print(f"Could not load history: {e}")
+        return default
+
+
+def save_history(history_path, history_data):
+    """Write history JSON. Returns True/False."""
+    if not history_path:
+        return False
+    try:
+        with open(history_path, 'w') as f:
+            json.dump(history_data, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        safe_print(f"Could not save history: {e}")
+        return False
+
+
+def compute_next_version(doc_path):
+    """Determine the next version number to use, given the current document path.
+
+    Looks at:
+      - The current filename's version (if it follows _v### pattern)
+      - All sibling files in the folder matching <base>_v###*.c4d (status tag ignored)
+    Returns (base_name, next_version_int).
+
+    If no current path, returns (None, 1) — caller must prompt for base name.
+    """
+    if not doc_path:
+        return None, 1
+
+    folder = os.path.dirname(doc_path)
+    name_no_ext = os.path.splitext(os.path.basename(doc_path))[0]
+    base, _current_v, _current_s = parse_version_filename(name_no_ext)
+
+    # Scan folder for max existing version with this base — status tag ignored
+    max_ver = 0
+    if os.path.isdir(folder):
+        try:
+            for f in os.listdir(folder):
+                if not f.lower().endswith('.c4d'):
+                    continue
+                f_name = os.path.splitext(f)[0]
+                f_base, f_ver, _f_status = parse_version_filename(f_name)
+                if f_base == base and f_ver is not None:
+                    if f_ver > max_ver:
+                        max_ver = f_ver
+        except Exception as e:
+            safe_print(f"Error scanning folder for versions: {e}")
+
+    return base, max_ver + 1
+
+
+def append_history_entry(history_path, entry):
+    """Add a new version entry to the history JSON. Creates file if missing."""
+    history = load_history(history_path)
+    if "versions" not in history:
+        history["versions"] = []
+    # Newest first
+    history["versions"].insert(0, entry)
+    # Keep "scene" name updated for clarity
+    if entry.get("scene"):
+        history["scene"] = entry["scene"]
+    return save_history(history_path, history)
+
+
+def get_latest_version_info(doc):
+    """Read the latest version entry from the doc's history sidecar.
+
+    Returns the dict for the most recent version, or None if no history exists.
+    """
+    if not doc:
+        return None
+    doc_path = doc.GetDocumentPath() or ""
+    doc_name = doc.GetDocumentName() or ""
+    if not doc_path or not doc_name:
+        return None
+    full_path = os.path.join(doc_path, doc_name)
+    history_path = get_history_path(full_path)
+    if not history_path or not os.path.exists(history_path):
+        return None
+    history = load_history(history_path)
+    versions = history.get("versions") or []
+    return versions[0] if versions else None
+
+
+def load_versions_for_doc(doc):
+    """Read the full versions list (newest first) from the doc's sidecar history.
+
+    Returns [] if no doc, no path, or no history file. Always returns a list.
+    """
+    if not doc:
+        return []
+    doc_path = doc.GetDocumentPath() or ""
+    doc_name = doc.GetDocumentName() or ""
+    if not doc_path or not doc_name:
+        return []
+    full_path = os.path.join(doc_path, doc_name)
+    history_path = get_history_path(full_path)
+    if not history_path or not os.path.exists(history_path):
+        return []
+    history = load_history(history_path)
+    versions = history.get("versions") or []
+    return versions if isinstance(versions, list) else []
+
+
+# Filter token for "show all versions" — distinct from STATUS_NONE ("") so the UI
+# can have an "All" choice that's different from "WIP only".
+FILTER_ALL = "__ALL__"
+
+
+def filter_versions_by_status(versions, status_filter):
+    """Filter a versions list by status tag.
+
+    status_filter:
+      FILTER_ALL  -> return all
+      ""          -> only WIP entries (status "" or missing)
+      "TR"|"CR"|"FINAL"|<custom>  -> only entries whose status matches (case-insensitive)
+    """
+    if not versions:
+        return []
+    if status_filter == FILTER_ALL:
+        return list(versions)
+    target = (status_filter or "").upper()
+    out = []
+    for entry in versions:
+        s = (entry.get("status") or "").upper()
+        if s == target:
+            out.append(entry)
+    return out
+
+
+def format_version_row(entry):
+    """Build display strings for one version entry. Returns a dict of pre-formatted parts.
+
+    Keys:
+      version_label  : 'v007'
+      status_label   : 'TR' | 'CR' | 'FINAL' | 'WIP' | <custom>
+      time_label     : '2h ago' | '2026-04-01' (or '')
+      comment        : raw comment string (caller may truncate)
+      qc_label       : '9/11' | '' if no QC was run for this entry
+      qc_pass        : True | False | None
+      filename       : the .c4d filename
+      path           : the full saved path
+    """
+    if entry is None:
+        return None
+    try:
+        ver_int = int(entry.get("version", 0))
+    except Exception:
+        ver_int = 0
+    status = (entry.get("status") or "").upper()
+    return {
+        "version_label": f"v{ver_int:03d}",
+        "version_int":   ver_int,
+        "status_label":  status if status else "WIP",
+        "time_label":    _humanize_time_diff(entry.get("timestamp", "")),
+        "comment":       entry.get("comment", "") or "",
+        "qc_label":      entry.get("qc_score", "") or "",
+        "qc_pass":       entry.get("qc_pass"),
+        "filename":      entry.get("filename", "") or "",
+        "path":          entry.get("path", "") or "",
+        "artist":        entry.get("artist", "") or "",
+    }
+
+
+def _humanize_time_diff(timestamp_str):
+    """Convert '2026-05-05 13:02:29' to a friendly relative string."""
+    from datetime import datetime
+    try:
+        ts = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return ""
+    delta = datetime.now() - ts
+    seconds = int(delta.total_seconds())
+    if seconds < 0:
+        return "just now"
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h ago"
+    days = seconds // 86400
+    if days < 30:
+        return f"{days}d ago"
+    return ts.strftime("%Y-%m-%d")
+
+
+def _build_qc_summary(doc):
+    """Run all 11 QC checks (using cache) and return a compact summary dict."""
+    counts = {
+        "lights":      len(check_lights(doc) or []),
+        "vis":         len(check_visibility_traps(doc) or []),
+        "keys":        len(check_keys(doc) or []),
+        "cam":         len(check_camera_shift(doc) or []),
+        "rdc":         int(check_render_conflicts(doc) or 0),
+        "textures":    len(check_textures_unified(doc) or []),
+        "unused_mats": len(check_unused_materials(doc) or []),
+        "names":       len(check_default_names(doc) or []),
+        "output":      len(check_output_paths(doc) or []),
+        "takes":       len(check_takes(doc) or []),
+        "fps_range":   len(check_fps_range(doc) or []),
+    }
+    total = len(counts)
+    passed = sum(1 for v in counts.values() if v == 0)
+    return {
+        "score": f"{passed}/{total}",
+        "pass": passed == total,
+        "passed": passed,
+        "total": total,
+        "counts": counts,
+    }
+
+
+def preview_next_filename(doc, status=None):
+    """Compute what the next version filename will be, without saving.
+
+    Returns a string like 'scene_v003.c4d' (or 'scene_v003_TR.c4d' with status).
+    Returns None if no doc.
+    """
+    if not doc:
+        return None
+    doc_path = doc.GetDocumentPath() or ""
+    doc_name = doc.GetDocumentName() or ""
+    if not doc_path:
+        suggested_base = os.path.splitext(doc_name)[0] if doc_name else "scene"
+        suggested_base, _v, _s = parse_version_filename(suggested_base)
+        if not suggested_base or suggested_base.lower().startswith("untitled"):
+            suggested_base = "scene"
+        return build_versioned_filename(suggested_base, 1, status=status)
+    full_doc_path = os.path.join(doc_path, doc_name) if doc_name else doc_path
+    base, next_version = compute_next_version(full_doc_path)
+    if not base:
+        base = os.path.splitext(doc_name or "scene")[0] or "scene"
+        # strip any version artifact from doc_name fallback
+        base, _v, _s = parse_version_filename(base)
+        if not base:
+            base = "scene"
+    return build_versioned_filename(base, next_version, status=status)
+
+
+class SaveVersionDialog(gui.GeDialog):
+    """Modal dialog: comment + run-QC + review status tag.
+
+    After Open(c4d.DLG_TYPE_MODAL), check `confirmed`. If True, read
+    `result_comment`, `result_run_qc`, `result_status`.
+    """
+
+    # Widget IDs (local to this dialog)
+    EDT_COMMENT = 1001
+    CHK_RUN_QC = 1002
+    BTN_SAVE = 1003
+    BTN_CANCEL = 1004
+    LBL_INFO = 1005
+    COMBO_STATUS = 1006
+    EDT_CUSTOM = 1007
+
+    def __init__(self, doc=None, run_qc_default=True):
+        super().__init__()
+        self._doc = doc
+        self._run_qc_default = bool(run_qc_default)
+        self.result_comment = ""
+        self.result_run_qc = run_qc_default
+        self.result_status = ""
+        self.confirmed = False
+
+    def _current_status(self):
+        """Compute the effective status from current widget state.
+        Custom field takes priority if non-empty."""
+        custom = (self.GetString(self.EDT_CUSTOM) or "").strip()
+        if custom:
+            return _sanitize_status(custom)
+        try:
+            idx = int(self.GetInt32(self.COMBO_STATUS))
+        except Exception:
+            idx = 0
+        if 0 <= idx < len(STATUS_OPTIONS):
+            return STATUS_OPTIONS[idx][1]
+        return ""
+
+    def _refresh_preview(self):
+        """Update the 'Will save as: ...' label based on current status selection."""
+        status = self._current_status()
+        preview = preview_next_filename(self._doc, status=status) if self._doc else None
+        if preview:
+            self.SetString(self.LBL_INFO, f"Will save as:  {preview}")
+        else:
+            self.SetString(self.LBL_INFO, "Will save as:  scene_v001.c4d")
+
+    def CreateLayout(self):
+        self.SetTitle("Save Version")
+
+        self.GroupBegin(0, c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT, 1, 0)
+        self.GroupBorderSpace(10, 10, 10, 10)
+
+        # Header: filename preview (updates on status change)
+        self.AddStaticText(self.LBL_INFO, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+        self.AddSeparatorH(6)
+
+        # Status row: combo + custom
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 4, 0)
+        self.GroupSpace(8, 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 60, 0, "Status:", 0)
+        self.AddComboBox(self.COMBO_STATUS, c4d.BFH_LEFT, 180, 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 80, 0, "Custom:", 0)
+        self.AddEditText(self.EDT_CUSTOM, c4d.BFH_SCALEFIT, 100, 0)
+        self.GroupEnd()
+
+        self.AddSeparatorH(6)
+
+        # Comment label + multiline input
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Comment (required):", 0)
+        try:
+            multiline_flags = c4d.DR_MULTILINE_WORDWRAP
+        except AttributeError:
+            multiline_flags = 0
+        self.AddMultiLineEditText(
+            self.EDT_COMMENT,
+            c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT,
+            440, 100,
+            multiline_flags,
+        )
+
+        self.AddSeparatorH(6)
+
+        # Run QC checkbox
+        self.AddCheckbox(
+            self.CHK_RUN_QC, c4d.BFH_LEFT, 0, 0,
+            "Run quality checks and record QC score with this version"
+        )
+
+        self.AddSeparatorH(8)
+
+        # Action buttons (right-aligned)
+        self.GroupBegin(0, c4d.BFH_RIGHT, 2, 0)
+        self.GroupSpace(6, 0)
+        self.AddButton(self.BTN_CANCEL, c4d.BFH_RIGHT, 90, 0, "Cancel")
+        self.AddButton(self.BTN_SAVE, c4d.BFH_RIGHT, 110, 0, "Save Version")
+        self.GroupEnd()
+
+        self.GroupEnd()
+        return True
+
+    def InitValues(self):
+        # Populate status combo
+        for i, (label, _suffix) in enumerate(STATUS_OPTIONS):
+            self.AddChild(self.COMBO_STATUS, i, label)
+        self.SetInt32(self.COMBO_STATUS, 0)  # default: WIP
+        self.SetString(self.EDT_CUSTOM, "")
+        self.SetBool(self.CHK_RUN_QC, self._run_qc_default)
+        self.SetString(self.EDT_COMMENT, "")
+        self._refresh_preview()
+        return True
+
+    def Command(self, cid, msg):
+        if cid == self.BTN_CANCEL:
+            self.confirmed = False
+            self.Close()
+            return True
+
+        # Live preview update on status changes
+        if cid in (self.COMBO_STATUS, self.EDT_CUSTOM):
+            self._refresh_preview()
+            return True
+
+        if cid == self.BTN_SAVE:
+            comment = (self.GetString(self.EDT_COMMENT) or "").strip()
+            if not comment:
+                c4d.gui.MessageDialog(
+                    "Please enter a comment describing this version.\n\n"
+                    "A short note like 'rim lights pass' or 'client feedback' is enough."
+                )
+                return True
+
+            # Soft warning if user wrote 'final' in comment — should use status tag
+            if "final" in comment.lower():
+                c4d.gui.MessageDialog(
+                    "Tip: instead of writing 'final' in the comment, use the\n"
+                    "'Final Delivery' status tag — it bakes the marker into the\n"
+                    "filename (e.g. scene_v007_FINAL.c4d) and the history log.\n\n"
+                    "(continuing — your comment will be saved as-is)"
+                )
+                # Don't return — let the save proceed
+
+            self.result_comment = comment
+            self.result_run_qc = self.GetBool(self.CHK_RUN_QC)
+            self.result_status = self._current_status()
+            self.confirmed = True
+            self.Close()
+            return True
+
+        return True
+
+
+def smart_save_version(doc, comment, run_qc=True, artist_name="", status=None):
+    """Save the document as a numbered version + append metadata to sidecar history.
+
+    Args:
+      status: optional review-status tag (e.g. 'TR', 'CR', 'FINAL', or any custom alphanumeric)
+              -> appears as suffix _<STATUS> in filename. None or '' = no suffix (WIP).
+
+    Returns a dict:
+      { 'success': bool,
+        'message': str,
+        'path': str (new file path on success),
+        'version': int (the version number written),
+        'status': str ('' if WIP),
+        'history_path': str,
+        'qc_summary': dict | None,
+      }
+    """
+    from datetime import datetime
+
+    result = {"success": False, "message": "", "path": None, "version": None,
+              "status": "", "history_path": None, "qc_summary": None}
+
+    if not doc:
+        result["message"] = "No active document"
+        return result
+
+    doc_path = doc.GetDocumentPath() or ""
+    doc_name = doc.GetDocumentName() or ""
+
+    # Sanitize status — uppercase alphanumeric only
+    clean_status = _sanitize_status(status) if status else ""
+
+    # ── Resolve target folder + base name ──
+    if not doc_path:
+        # First-time save: ask the user where to put the scene
+        suggested_base = os.path.splitext(doc_name)[0] if doc_name else "scene"
+        suggested_base, _v, _s = parse_version_filename(suggested_base)
+        if not suggested_base or suggested_base.lower().startswith("untitled"):
+            suggested_base = "scene"
+        suggested_filename = build_versioned_filename(suggested_base, 1, status=clean_status)
+
+        save_path = None
+        try:
+            save_path = c4d.storage.SaveDialog(
+                title="Save Versioned Scene (will be saved as scene_vNNN.c4d)",
+                force_suffix="c4d",
+                def_file=suggested_filename,
+            )
+        except TypeError:
+            save_path = c4d.storage.SaveDialog(
+                title="Save Versioned Scene",
+                force_suffix="c4d",
+            )
+
+        if not save_path:
+            result["message"] = "Save cancelled by user"
+            return result
+
+        folder = os.path.dirname(save_path)
+        chosen_name = os.path.splitext(os.path.basename(save_path))[0]
+        base, _user_ver, _user_status = parse_version_filename(chosen_name)
+        if not base:
+            base = "scene"
+        next_version = 1  # always start fresh from v001 when first saving
+    else:
+        folder = doc_path
+        full_doc_path = os.path.join(folder, doc_name) if doc_name else folder
+        base, next_version = compute_next_version(full_doc_path)
+        if not base:
+            base = os.path.splitext(doc_name or "scene")[0] or "scene"
+
+    # ── Build new filename + full path ──
+    new_filename = build_versioned_filename(base, next_version, status=clean_status)
+    new_path = os.path.join(folder, new_filename)
+
+    # Refuse to overwrite an existing file (defensive — should not happen)
+    if os.path.exists(new_path):
+        result["message"] = f"Target already exists: {new_filename} (refusing to overwrite)"
+        return result
+
+    # ── Capture metadata BEFORE saving (so QC reflects pre-save state) ──
+    qc_summary = _build_qc_summary(doc) if run_qc else None
+    stats = get_scene_stats(doc) or {}
+    active_take = ""
+    try:
+        td = doc.GetTakeData()
+        if td:
+            cur = td.GetCurrentTake()
+            if cur:
+                active_take = cur.GetName() or ""
+    except Exception:
+        pass
+
+    # ── Save the document ──
+    try:
+        ok = c4d.documents.SaveDocument(
+            doc,
+            new_path,
+            c4d.SAVEDOCUMENTFLAGS_NONE,
+            c4d.FORMAT_C4DEXPORT,
+        )
+        if not ok:
+            result["message"] = f"SaveDocument returned False (path: {new_path})"
+            return result
+    except Exception as e:
+        result["message"] = f"Save error: {e}"
+        return result
+
+    # ── Update the active document's path/name so C4D's title bar + future
+    # saves reflect the new versioned file (SaveDocument doesn't always
+    # propagate this in C4D 2026). ──
+    try:
+        doc.SetDocumentPath(os.path.dirname(new_path))
+        doc.SetDocumentName(os.path.basename(new_path))
+        c4d.EventAdd()
+    except Exception as e:
+        safe_print(f"Could not update document path metadata: {e}")
+
+    # ── Append history entry ──
+    history_path = get_history_path(new_path)
+    entry = {
+        "version": next_version,
+        "filename": new_filename,
+        "path": new_path,
+        "status": clean_status,           # NEW: review status tag
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "artist": artist_name or "",
+        "comment": (comment or "").strip(),
+        "active_take": active_take,
+        "scene": base,
+        "stats": stats,
+    }
+    if qc_summary:
+        entry["qc_score"] = qc_summary["score"]
+        entry["qc_pass"] = qc_summary["pass"]
+        entry["qc_counts"] = qc_summary["counts"]
+
+    appended = append_history_entry(history_path, entry)
+
+    result.update({
+        "success": True,
+        "message": f"Saved {new_filename}" + (" (history updated)" if appended else " (history write failed)"),
+        "path": new_path,
+        "version": next_version,
+        "status": clean_status,
+        "history_path": history_path,
+        "qc_summary": qc_summary,
+    })
+    return result
+
 
 # ---------------- Scene Collector ----------------
 def collect_scene(doc, artist_name):
@@ -1530,7 +2488,7 @@ def collect_scene(doc, artist_name):
     safe_print("Scene Collector: Generating manifest...")
 
     manifest = {
-        "ys_guardian_manifest": True,
+        "sentinel_manifest": True,
         "version": PLUGIN_NAME,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "scene": doc.GetDocumentName() or "untitled",
@@ -1572,7 +2530,7 @@ def collect_scene(doc, artist_name):
     manifest["total_size_mb"] = round(total_size / (1024 * 1024), 1)
 
     # Save manifest
-    manifest_path = os.path.join(target_dir, "ys_guardian_manifest.json")
+    manifest_path = os.path.join(target_dir, "sentinel_manifest.json")
     try:
         with open(manifest_path, 'w') as f:
             json.dump(manifest, f, indent=2, ensure_ascii=False)
@@ -1587,7 +2545,7 @@ def collect_scene(doc, artist_name):
     if missing_assets:
         msg += f"\nMissing: {len(missing_assets)} (check manifest)"
     msg += f"\nSize: {manifest['total_size_mb']} MB"
-    msg += f"\nManifest: ys_guardian_manifest.json"
+    msg += f"\nManifest: sentinel_manifest.json"
 
     c4d.gui.MessageDialog(msg)
     safe_print("Scene Collector: Complete")
@@ -1604,6 +2562,139 @@ _COL_BG_OK = c4d.Vector(0.15, 0.15, 0.15)
 _COL_BG_WARN = c4d.Vector(0.25, 0.20, 0.10)
 _COL_BG_FAIL = c4d.Vector(0.25, 0.10, 0.10)
 
+
+# Helper: convert msg[BFM_INPUT_X/Y] (window-global in C4D 2026 Python) to
+# user-area-local coordinates. GeUserArea.Local2Global() with NO args returns
+# the user area's window origin as {'x': ..., 'y': ...}. Subtracting that from
+# the raw msg coords gives correct local coords. Verified empirically — the
+# documented Global2Local(x, y) does NOT return area-local in C4D 2026.
+def _ua_local_coords(user_area, mx, my):
+    """Return (local_x, local_y) for a window-global click on the given GeUserArea."""
+    try:
+        origin = user_area.Local2Global()
+    except Exception:
+        return mx, my
+    try:
+        if isinstance(origin, dict):
+            ox = origin.get("x", 0)
+            oy = origin.get("y", 0)
+        else:
+            ox, oy = origin[0], origin[1]
+        return int(mx) - int(ox), int(my) - int(oy)
+    except Exception:
+        return mx, my
+
+# Score header colors (lighter palette for the badge area)
+_COL_SCORE_BG = c4d.Vector(0.10, 0.10, 0.10)
+_COL_SCORE_GREEN = c4d.Vector(0.30, 0.80, 0.40)
+_COL_SCORE_YELLOW = c4d.Vector(0.95, 0.75, 0.25)
+_COL_SCORE_RED = c4d.Vector(0.90, 0.35, 0.35)
+_COL_SCORE_TRACK = c4d.Vector(0.20, 0.20, 0.20)
+_COL_SCORE_TEXT = c4d.Vector(0.95, 0.95, 0.95)
+_COL_SCORE_TEXT_DIM = c4d.Vector(0.60, 0.60, 0.60)
+
+
+class ScoreHeader(gui.GeUserArea):
+    """Visual summary header: progress bar + pass count + scene stats — single line."""
+
+    HEIGHT = 26
+
+    def __init__(self):
+        super().__init__()
+        self.passed = 0
+        self.total = 0
+        self.stats_text = ""
+
+    def GetMinSize(self):
+        return 400, self.HEIGHT
+
+    def set_state(self, passed, total, stats_text):
+        self.passed = max(0, int(passed))
+        self.total = max(1, int(total))
+        self.stats_text = stats_text or ""
+        self.Redraw()
+
+    def _measure(self, text):
+        try:
+            return int(self.DrawGetTextWidth(text))
+        except Exception:
+            return len(text) * 6
+
+    def DrawMsg(self, x1, y1, x2, y2, msg):
+        try:
+            self.OffScreenOn()
+            w = self.GetWidth()
+            h = self.GetHeight()
+
+            # Background
+            self.DrawSetPen(_COL_SCORE_BG)
+            self.DrawRectangle(0, 0, w, h)
+
+            # Status color/label
+            ratio = self.passed / self.total if self.total > 0 else 0.0
+            if ratio >= 0.999:
+                bar_color = _COL_SCORE_GREEN
+                status_label = "PASS"
+            elif ratio >= 0.7:
+                bar_color = _COL_SCORE_YELLOW
+                status_label = "WARN"
+            else:
+                bar_color = _COL_SCORE_RED
+                status_label = "FAIL"
+
+            # Single-line vertical centering
+            text_h = 12
+            text_y = (h - text_h) // 2
+            bar_h = 6
+            bar_y = (h - bar_h) // 2
+
+            margin = 8
+            try:
+                self.DrawSetFont(c4d.FONT_BOLD)
+            except Exception:
+                pass
+
+            # 1. "QC X/Y" label (left)
+            qc_label = f"QC {self.passed}/{self.total}"
+            self.DrawSetTextCol(_COL_SCORE_TEXT, _COL_SCORE_BG)
+            self.DrawText(qc_label, margin, text_y)
+            qc_w = self._measure(qc_label)
+
+            # 2. Status word right after
+            status_x = margin + qc_w + 10
+            self.DrawSetTextCol(bar_color, _COL_SCORE_BG)
+            self.DrawText(status_label, status_x, text_y)
+            status_w = self._measure(status_label)
+
+            try:
+                self.DrawSetFont(c4d.FONT_DEFAULT)
+            except Exception:
+                pass
+
+            # 3. Stats text (right-aligned, dim grey) — measure FIRST to reserve space
+            stats_x_start = w - margin
+            if self.stats_text:
+                tx_w = self._measure(self.stats_text)
+                stats_x_start = w - margin - tx_w
+                self.DrawSetTextCol(_COL_SCORE_TEXT_DIM, _COL_SCORE_BG)
+                self.DrawText(self.stats_text, stats_x_start, text_y)
+
+            # 4. Progress bar fills the middle space between status and stats
+            bar_x_start = status_x + status_w + 12
+            bar_x_end = stats_x_start - 12
+
+            if bar_x_end > bar_x_start + 20:
+                self.DrawSetPen(_COL_SCORE_TRACK)
+                self.DrawRectangle(bar_x_start, bar_y, bar_x_end, bar_y + bar_h)
+                if ratio > 0:
+                    fill_w = max(2, int((bar_x_end - bar_x_start) * ratio))
+                    self.DrawSetPen(bar_color)
+                    self.DrawRectangle(bar_x_start, bar_y, bar_x_start + fill_w, bar_y + bar_h)
+
+        except Exception as e:
+            safe_print(f"Error in ScoreHeader.DrawMsg: {e}")
+
+
 # Check display config: (severity, ok_message, fail_template, name_key_for_first)
 _CHECK_DISPLAY = {
     "lights":      ("FAIL", "All lights properly organized", "{n} lights outside lights group", None),
@@ -1616,9 +2707,14 @@ _CHECK_DISPLAY = {
     "names":       ("WARN", "All objects named", "Default name '{first}'", "names_list"),
     "output":      ("FAIL", "Output paths configured", "{n} output path issue(s)", None),
     "takes":       ("FAIL", "Takes configured", "{n} take issue(s)", None),
+    "fps_range":   ("FAIL", "FPS & frame range OK", "{n} FPS/range issue(s)", None),
 }
 
 class StatusArea(gui.GeUserArea):
+    # Row order matches DrawMsg iteration; index here = clickable row index
+    ROW_KEYS = ["lights", "vis", "keys", "cam", "rdc", "textures",
+                "unused_mats", "names", "output", "takes", "fps_range"]
+
     def __init__(self):
         super().__init__()
         self.data = {}
@@ -1628,6 +2724,9 @@ class StatusArea(gui.GeUserArea):
         self.font = c4d.FONT_MONOSPACED
         self.last_draw_time = 0
         self.min_draw_interval = 0.05
+        # Click interaction (hover not supported: C4D 2026 Python does not route
+        # BFM_GETCURSORINFO to embedded GeUserAreas)
+        self.click_callback = None  # set by parent dialog: callable(row_key)
 
     def GetMinSize(self):
         rows = sum(1 for _, v in self.show.items() if v)
@@ -1642,6 +2741,42 @@ class StatusArea(gui.GeUserArea):
         if now - self.last_draw_time > self.min_draw_interval:
             self.Redraw()
             self.last_draw_time = now
+
+    # ---- mouse interaction ----
+    def _y_to_row(self, y):
+        """Map y coordinate (local) to a visible row index, or -1 if outside."""
+        try:
+            y = int(y) - self.pad
+            if y < 0:
+                return -1
+            row_pixel = self.rowh + self.pad
+            visible_idx = y // row_pixel
+            visible_keys = [k for k in self.ROW_KEYS if self.show.get(k, False)]
+            if 0 <= visible_idx < len(visible_keys):
+                return visible_idx
+        except Exception:
+            pass
+        return -1
+
+    def InputEvent(self, msg):
+        """Handle clicks. Called by C4D on mouse interaction over the GeUserArea."""
+        try:
+            device = msg[c4d.BFM_INPUT_DEVICE]
+            channel = msg[c4d.BFM_INPUT_CHANNEL]
+            if device != c4d.BFM_INPUT_MOUSE or channel != c4d.BFM_INPUT_MOUSELEFT:
+                return False
+            mx = int(msg[c4d.BFM_INPUT_X])
+            my = int(msg[c4d.BFM_INPUT_Y])
+            local_x, local_y = _ua_local_coords(self, mx, my)
+            row = self._y_to_row(int(local_y))
+            if row >= 0 and self.click_callback is not None:
+                visible_keys = [k for k in self.ROW_KEYS if self.show.get(k, False)]
+                if row < len(visible_keys):
+                    self.click_callback(visible_keys[row])
+                    return True
+        except Exception as e:
+            safe_print(f"StatusArea.InputEvent error: {e}")
+        return False
 
     def DrawMsg(self, x1, y1, x2, y2, msg):
         try:
@@ -1663,7 +2798,7 @@ class StatusArea(gui.GeUserArea):
             for label, key in [("Lights","lights"), ("Visibility","vis"), ("Keyframes","keys"),
                                ("Cameras","cam"), ("Presets","rdc"), ("Assets","textures"),
                                ("Materials","unused_mats"), ("Naming","names"), ("Output","output"),
-                               ("Takes","takes")]:
+                               ("Takes","takes"), ("FPS/Range","fps_range")]:
                 if not self.show.get(key, False):
                     continue
 
@@ -1709,6 +2844,219 @@ class StatusArea(gui.GeUserArea):
 
         except Exception as e:
             safe_print(f"Error in DrawMsg: {e}")
+
+
+# ---------------- Browse Versions UserArea ----------------
+# Color palette for status badges (subtle backgrounds, ~70% saturation)
+_COL_BADGE_WIP = c4d.Vector(0.35, 0.35, 0.35)        # neutral grey
+_COL_BADGE_TR = c4d.Vector(0.55, 0.42, 0.18)         # amber
+_COL_BADGE_CR = c4d.Vector(0.20, 0.40, 0.65)         # blue
+_COL_BADGE_FINAL = c4d.Vector(0.25, 0.55, 0.30)      # green
+_COL_BADGE_CUSTOM = c4d.Vector(0.45, 0.30, 0.55)     # purple
+
+_COL_HISTORY_BG = c4d.Vector(0.10, 0.10, 0.10)
+_COL_HISTORY_ROW_BG = c4d.Vector(0.14, 0.14, 0.14)
+_COL_HISTORY_ROW_ALT = c4d.Vector(0.16, 0.16, 0.16)
+_COL_HISTORY_TEXT = c4d.Vector(0.85, 0.85, 0.85)
+_COL_HISTORY_DIM = c4d.Vector(0.55, 0.55, 0.55)
+
+
+def _badge_color_for_status(status):
+    """Pick the badge background color for a status string."""
+    s = (status or "").upper()
+    if s == "" or s == "WIP":
+        return _COL_BADGE_WIP
+    if s == "TR":
+        return _COL_BADGE_TR
+    if s == "CR":
+        return _COL_BADGE_CR
+    if s == "FINAL":
+        return _COL_BADGE_FINAL
+    return _COL_BADGE_CUSTOM
+
+
+class HistoryArea(gui.GeUserArea):
+    """Custom-drawn list of recent versions. One row per entry, status-coded badges.
+
+    set_entries(entries) updates the list. click_callback(entry_dict) fires on row click.
+    """
+
+    ROW_HEIGHT = 22
+    ROW_PAD = 2
+    EMPTY_HEIGHT = 28
+
+    def __init__(self):
+        super().__init__()
+        self.entries = []                # list of formatted dicts (output of format_version_row)
+        self.click_callback = None       # callable(entry_dict)
+        self.empty_msg = "No versions yet"
+        self.font = c4d.FONT_DEFAULT
+
+    def GetMinSize(self):
+        rows = max(1, len(self.entries))
+        h = rows * (self.ROW_HEIGHT + self.ROW_PAD) + self.ROW_PAD + 2
+        if not self.entries:
+            h = self.EMPTY_HEIGHT
+        return 400, h
+
+    def set_entries(self, entries):
+        self.entries = list(entries) if entries else []
+        try:
+            self.LayoutChanged()
+        except Exception:
+            pass
+        self.Redraw()
+
+    # ── click detection ─────────────────────────────
+    def _y_to_index(self, y):
+        try:
+            y = int(y) - self.ROW_PAD
+            if y < 0:
+                return -1
+            row_pixel = self.ROW_HEIGHT + self.ROW_PAD
+            idx = y // row_pixel
+            if 0 <= idx < len(self.entries):
+                return idx
+        except Exception:
+            pass
+        return -1
+
+    def InputEvent(self, msg):
+        try:
+            device = msg[c4d.BFM_INPUT_DEVICE]
+            channel = msg[c4d.BFM_INPUT_CHANNEL]
+            if device != c4d.BFM_INPUT_MOUSE or channel != c4d.BFM_INPUT_MOUSELEFT:
+                return False
+            mx = int(msg[c4d.BFM_INPUT_X])
+            my = int(msg[c4d.BFM_INPUT_Y])
+            local_x, local_y = _ua_local_coords(self, mx, my)
+            idx = self._y_to_index(int(local_y))
+            if idx >= 0 and self.click_callback is not None:
+                self.click_callback(self.entries[idx])
+                return True
+        except Exception as e:
+            safe_print(f"HistoryArea.InputEvent error: {e}")
+        return False
+
+    # ── drawing ─────────────────────────────────────
+    def DrawMsg(self, x1, y1, x2, y2, msg):
+        try:
+            self.OffScreenOn()
+            w = self.GetWidth()
+            h = self.GetHeight()
+
+            self.DrawSetPen(_COL_HISTORY_BG)
+            self.DrawRectangle(0, 0, w, h)
+
+            try:
+                self.DrawSetFont(self.font)
+            except Exception:
+                pass
+
+            if not self.entries:
+                # Empty state
+                self.DrawSetTextCol(_COL_HISTORY_DIM, _COL_HISTORY_BG)
+                self.DrawText(self.empty_msg, 8, (h - 12) // 2)
+                return
+
+            # Layout: [v###] [BADGE] [comment............] [QC] [time]
+            COL_VER_W = 50
+            COL_BADGE_W = 50
+            COL_QC_W = 50
+            COL_TIME_W = 70
+            margin = 6
+
+            x = self.ROW_PAD
+            y = self.ROW_PAD
+
+            for i, entry in enumerate(self.entries):
+                row_top = y
+                row_bot = y + self.ROW_HEIGHT
+                # Alternating row background
+                bg = _COL_HISTORY_ROW_ALT if (i % 2) else _COL_HISTORY_ROW_BG
+                self.DrawSetPen(bg)
+                self.DrawRectangle(int(x), int(row_top), int(w - self.ROW_PAD), int(row_bot))
+
+                text_y = int(row_top + (self.ROW_HEIGHT - 12) // 2)
+                cx = int(x + margin)
+
+                # Version label
+                self.DrawSetTextCol(_COL_HISTORY_TEXT, bg)
+                self.DrawText(entry.get("version_label", "v???"), cx, text_y)
+                cx += COL_VER_W
+
+                # Status badge — colored rect with status text inside
+                status = entry.get("status_label", "WIP")
+                badge_col = _badge_color_for_status(status)
+                badge_x0 = cx
+                badge_x1 = cx + COL_BADGE_W - 6
+                badge_y0 = row_top + 4
+                badge_y1 = row_bot - 4
+                self.DrawSetPen(badge_col)
+                self.DrawRectangle(int(badge_x0), int(badge_y0), int(badge_x1), int(badge_y1))
+                # Center the text inside the badge
+                try:
+                    txt_w = int(self.DrawGetTextWidth(status))
+                except Exception:
+                    txt_w = len(status) * 6
+                badge_text_x = int(badge_x0 + ((badge_x1 - badge_x0) - txt_w) // 2)
+                self.DrawSetTextCol(c4d.Vector(1, 1, 1), badge_col)
+                self.DrawText(status, badge_text_x, text_y)
+                cx += COL_BADGE_W
+
+                # Time (right-aligned)
+                tx_right = w - margin
+                time_label = entry.get("time_label", "")
+                if time_label:
+                    try:
+                        tw = int(self.DrawGetTextWidth(time_label))
+                    except Exception:
+                        tw = len(time_label) * 6
+                    self.DrawSetTextCol(_COL_HISTORY_DIM, bg)
+                    self.DrawText(time_label, int(tx_right - tw), text_y)
+                    tx_right -= (tw + margin * 2)
+
+                # QC label (just left of time, if present)
+                qc_label = entry.get("qc_label", "")
+                if qc_label:
+                    try:
+                        qw = int(self.DrawGetTextWidth(qc_label))
+                    except Exception:
+                        qw = len(qc_label) * 6
+                    qc_color = _COL_HISTORY_DIM
+                    qc_pass = entry.get("qc_pass")
+                    if qc_pass is True:
+                        qc_color = _COL_GREEN
+                    elif qc_pass is False:
+                        qc_color = _COL_YELLOW
+                    self.DrawSetTextCol(qc_color, bg)
+                    self.DrawText(qc_label, int(tx_right - qw), text_y)
+                    tx_right -= (qw + margin * 2)
+
+                # Comment (fills remaining space — may need truncation)
+                comment = entry.get("comment", "")
+                if comment:
+                    avail_w = max(20, tx_right - cx - margin)
+                    # Crude truncation: clip if too long
+                    truncated = comment
+                    try:
+                        full_w = int(self.DrawGetTextWidth(truncated))
+                        if full_w > avail_w:
+                            # binary chop
+                            while truncated and int(self.DrawGetTextWidth(truncated + "...")) > avail_w:
+                                truncated = truncated[:-1]
+                            truncated = truncated + "..." if truncated != comment else truncated
+                    except Exception:
+                        if len(truncated) > 60:
+                            truncated = truncated[:57] + "..."
+                    self.DrawSetTextCol(_COL_HISTORY_TEXT, bg)
+                    self.DrawText(f'"{truncated}"', cx, text_y)
+
+                y += self.ROW_HEIGHT + self.ROW_PAD
+
+        except Exception as e:
+            safe_print(f"Error in HistoryArea.DrawMsg: {e}")
+
 
 # ---------------- Snapshot Handler ----------------
 # ---------------- Snapshot System (cross-platform) ----------------
@@ -1873,6 +3221,7 @@ class G:
     SHOT = 1001
     ARTIST = 1003
     CANVAS = 1008
+    SCORE_CANVAS = 1180  # ScoreHeader UserArea
 
     # Per-check action buttons (1 click to select/info)
     BTN_SEL_LIGHTS = 1130
@@ -1884,11 +3233,13 @@ class G:
     BTN_SEL_UNUSED_MATS = 1136
     BTN_SEL_NAMES = 1137
     BTN_INFO_OUTPUT = 1138
+    BTN_INFO_FPS = 1139
 
     # Auto-fix buttons
     BTN_FIX_LIGHTS = 1140
     BTN_FIX_CAMS = 1141
     BTN_FIX_UNUSED_MATS = 1142
+    BTN_FIX_FPS = 1143
 
     # Export
     BTN_EXPORT_QC = 1150
@@ -1914,6 +3265,10 @@ class G:
     BTN_OPEN_FOLDER = 1010
     BTN_SNAPSHOT = 1009
     BTN_COLLECT_SCENE = 1171
+    BTN_SAVE_VERSION = 1172
+    LABEL_LAST_VERSION = 1173
+    HISTORY_CANVAS = 1181
+    COMBO_HISTORY_FILTER = 1182
     COMP_TARGET = 1154
     CHK_MULTIPART = 1153
     BTN_INFO_TAKES = 1152
@@ -1932,6 +3287,10 @@ class YSPanel(gui.GeDialog):
         self._last_doc = None
         self._last_check_time = 0
         self.ua = None
+        self.score_ua = None  # ScoreHeader instance
+        self.history_ua = None  # HistoryArea instance
+        self._history_filter = FILTER_ALL
+        self._history_max_rows = 5
         self._artist_name = ""
         self._dirty = False  # Set by CoreMessage, consumed by Timer
 
@@ -1945,6 +3304,7 @@ class YSPanel(gui.GeDialog):
         self._names_bad = []
         self._output_bad = []
         self._takes_bad = []
+        self._fps_range_bad = []
         self._scene_stats = {}
 
         # Cycling indices for one-by-one selection
@@ -1957,6 +3317,67 @@ class YSPanel(gui.GeDialog):
         parts = snap_dir.replace("\\", "/").rstrip("/").split("/")
         short = "/".join(parts[-2:]) if len(parts) > 2 else snap_dir
         self.SetString(G.LABEL_SNAPSHOT_DIR, f"Snapshots: .../{short}")
+
+    def _update_last_version_label(self, doc=None):
+        """Refresh the 'Last version' caption above Save Version button."""
+        if doc is None:
+            doc = c4d.documents.GetActiveDocument()
+        if not doc:
+            self.SetString(G.LABEL_LAST_VERSION, "Last version: —")
+            return
+
+        info = get_latest_version_info(doc)
+        if not info:
+            if doc.GetDocumentPath():
+                txt = "Last version: none yet  ·  click Save Version to start"
+            else:
+                txt = "Last version: —  ·  scene not saved yet"
+            self.SetString(G.LABEL_LAST_VERSION, txt)
+            return
+
+        try:
+            ver = int(info.get("version", 0))
+        except Exception:
+            ver = 0
+        status = info.get("status", "") or ""
+        ts = info.get("timestamp", "")
+        rel = _humanize_time_diff(ts)
+        status_str = status if status else "WIP"
+        rel_part = f"  ·  {rel}" if rel else ""
+        self.SetString(G.LABEL_LAST_VERSION, f"Last version: v{ver:03d} {status_str}{rel_part}")
+
+    # Filter combobox value mapping (combobox index -> filter token)
+    _HISTORY_FILTERS = [FILTER_ALL, "", "TR", "CR", "FINAL"]
+    _HISTORY_FILTER_LABELS = ["All", "WIP", "TR", "CR", "FINAL"]
+
+    def _update_history_area(self, doc=None):
+        """Refresh the Recent Versions list (HistoryArea)."""
+        if doc is None:
+            doc = c4d.documents.GetActiveDocument()
+        if self.history_ua is None:
+            return
+        if not doc:
+            self.history_ua.set_entries([])
+            return
+        versions = load_versions_for_doc(doc)
+        # Use explicit None check — '' is the valid WIP filter token, not "no filter".
+        active_filter = self._history_filter if self._history_filter is not None else FILTER_ALL
+        filtered = filter_versions_by_status(versions, active_filter)
+        limited = filtered[: self._history_max_rows]
+        formatted = [format_version_row(e) for e in limited if e]
+        formatted = [f for f in formatted if f]
+        # Set empty message based on context
+        if not versions:
+            if doc.GetDocumentPath():
+                self.history_ua.empty_msg = "No versions yet — click Save Version"
+            else:
+                self.history_ua.empty_msg = "Save the scene first"
+        elif not formatted:
+            label = "WIP" if active_filter == "" else (active_filter if active_filter != FILTER_ALL else "All")
+            self.history_ua.empty_msg = f"No versions match filter ({label})"
+        else:
+            self.history_ua.empty_msg = "No versions yet"
+        self.history_ua.set_entries(formatted)
 
     # ---- read scene -> UI
     def _sync_from_doc(self, doc):
@@ -2092,6 +3513,7 @@ class YSPanel(gui.GeDialog):
             names_bad = check_default_names(doc)
             output_bad = check_output_paths(doc)
             takes_bad = check_takes(doc)
+            fps_range_bad = check_fps_range(doc)
             scene_stats = get_scene_stats(doc)
 
             # Count issues
@@ -2105,6 +3527,7 @@ class YSPanel(gui.GeDialog):
             names_count = len(names_bad) if names_bad else 0
             output_count = len(output_bad) if output_bad else 0
             takes_count = len(takes_bad) if takes_bad else 0
+            fps_range_count = len(fps_range_bad) if fps_range_bad else 0
 
             # Update StatusArea
             self.ua.set_state(
@@ -2122,9 +3545,30 @@ class YSPanel(gui.GeDialog):
                     names_list=[_safe_name(o) for o in (names_bad[:10] if names_bad else [])],
                     output=output_count,
                     takes=takes_count,
+                    fps_range=fps_range_count,
                 ),
                 self.ua.show,
             )
+
+            # Update Score header — pass count + scene stats summary
+            counts = [lights_count, vis_count, keys_count, cam_count, rdc_count,
+                      textures_count, unused_mats_count, names_count,
+                      output_count, takes_count, fps_range_count]
+            total_checks = len(counts)
+            passed = sum(1 for c in counts if c == 0)
+            stats_str = ""
+            if scene_stats:
+                # Compact one-liner: "1.2M polys · 47 mats · 12 lights"
+                polys = scene_stats.get("polygons", 0)
+                if polys >= 1_000_000:
+                    poly_str = f"{polys/1_000_000:.1f}M polys"
+                elif polys >= 1_000:
+                    poly_str = f"{polys/1_000:.0f}K polys"
+                else:
+                    poly_str = f"{polys} polys"
+                stats_str = f"{poly_str}  ·  {scene_stats.get('materials', 0)} mats  ·  {scene_stats.get('lights', 0)} lights"
+            if self.score_ua is not None:
+                self.score_ua.set_state(passed, total_checks, stats_str)
 
             # Store results
             self._lights_bad = lights_bad
@@ -2143,6 +3587,11 @@ class YSPanel(gui.GeDialog):
             self._names_bad = names_bad
             self._output_bad = output_bad
             self._takes_bad = takes_bad
+            self._fps_range_bad = fps_range_bad
+
+            # Refresh "last version" caption + Recent Versions list (both read sidecar JSON)
+            self._update_last_version_label(doc)
+            self._update_history_area(doc)
 
         except Exception as e:
             safe_print(f"Error during refresh: {e}")
@@ -2165,20 +3614,26 @@ class YSPanel(gui.GeDialog):
 
         # ── Quality Checks ──
         self.AddSeparatorH(4)
-        self.GroupBegin(39, c4d.BFH_SCALEFIT, 1, 0, "Quality Checks")
+        self.GroupBegin(39, c4d.BFH_SCALEFIT, 1, 0, "Quality Checks  (click any row to run its primary action)")
         self.GroupBorder(c4d.BORDER_WITH_TITLE_BOLD)
         self.GroupBorderSpace(4, 2, 4, 2)
+
+        # Score header (full width, fixed height, anchored to top)
+        self.AddUserArea(G.SCORE_CANVAS, c4d.BFH_SCALEFIT|c4d.BFV_FIT, 0, ScoreHeader.HEIGHT)
+        self.score_ua = ScoreHeader()
+        self.AttachUserArea(self.score_ua, G.SCORE_CANVAS)
+        self.AddSeparatorH(2)
 
         self.GroupBegin(40, c4d.BFH_SCALEFIT|c4d.BFV_TOP, 2, 0)
         self.GroupSpace(4, 0)
 
         # Left: terminal status display
-        self.AddUserArea(G.CANVAS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 0, 215)
+        self.AddUserArea(G.CANVAS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 0, 260)
         self.ua = StatusArea()
         self.AttachUserArea(self.ua, G.CANVAS)
 
         # Right: per-check Select + Fix buttons (2 columns, matched to StatusArea rows)
-        self.GroupBegin(407, c4d.BFH_RIGHT|c4d.BFV_SCALEFIT, 2, 10)
+        self.GroupBegin(407, c4d.BFH_RIGHT|c4d.BFV_SCALEFIT, 2, 11)
         self.GroupBorderSpace(0, 3, 0, 3)
         self.GroupSpace(2, 3)
         # Row: LIGHTS
@@ -2211,6 +3666,9 @@ class YSPanel(gui.GeDialog):
         # Row: TAKES
         self.AddButton(G.BTN_INFO_TAKES, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Info")
         self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
+        # Row: FPS/RANGE
+        self.AddButton(G.BTN_INFO_FPS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Info")
+        self.AddButton(G.BTN_FIX_FPS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "Fix")
         self.GroupEnd()
 
         self.GroupEnd()
@@ -2272,15 +3730,33 @@ class YSPanel(gui.GeDialog):
         # Snapshot dir
         self.GroupBegin(61, c4d.BFH_SCALEFIT, 2, 0)
         self.AddStaticText(G.LABEL_SNAPSHOT_DIR, c4d.BFH_SCALEFIT, 0, 0, "", 0)
-        self.AddButton(G.BTN_SET_SNAPSHOT_DIR, c4d.BFH_RIGHT, 30, 0, "...")
+        self.AddButton(G.BTN_SET_SNAPSHOT_DIR, c4d.BFH_RIGHT, 60, 0, "Browse")
         self.GroupEnd()
 
-        # Action buttons
-        self.GroupBegin(60, c4d.BFH_SCALEFIT, 4, 0)
+        # Last version info — small caption above the Save Version button
+        self.AddStaticText(G.LABEL_LAST_VERSION, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+
+        # Primary checkpoint actions (versioning + delivery)
+        self.GroupBegin(62, c4d.BFH_SCALEFIT, 2, 0)
+        self.AddButton(G.BTN_SAVE_VERSION, c4d.BFH_SCALEFIT, 0, 0, "Save Version")
+        self.AddButton(G.BTN_COLLECT_SCENE, c4d.BFH_SCALEFIT, 0, 0, "Collect Scene")
+        self.GroupEnd()
+
+        # ── Recent Versions (browse history) ──
+        self.GroupBegin(63, c4d.BFH_SCALEFIT, 2, 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Recent Versions", 0)
+        self.AddComboBox(G.COMBO_HISTORY_FILTER, c4d.BFH_RIGHT, 100, 0)
+        self.GroupEnd()
+        self.AddUserArea(G.HISTORY_CANVAS, c4d.BFH_SCALEFIT | c4d.BFV_FIT, 0, HistoryArea.EMPTY_HEIGHT)
+        self.history_ua = HistoryArea()
+        self.AttachUserArea(self.history_ua, G.HISTORY_CANVAS)
+        self.AddSeparatorH(2)
+
+        # Secondary actions
+        self.GroupBegin(60, c4d.BFH_SCALEFIT, 3, 0)
         self.AddButton(G.BTN_OPEN_FOLDER, c4d.BFH_SCALEFIT, 0, 0, "Open Folder")
         self.AddButton(G.BTN_SNAPSHOT, c4d.BFH_SCALEFIT, 0, 0, "Save Still")
         self.AddButton(G.BTN_EXPORT_QC, c4d.BFH_SCALEFIT, 0, 0, "Export QC")
-        self.AddButton(G.BTN_COLLECT_SCENE, c4d.BFH_SCALEFIT, 0, 0, "Collect Scene")
         self.GroupEnd()
 
         # Footer
@@ -2321,14 +3797,121 @@ class YSPanel(gui.GeDialog):
         saved_multipart = GlobalSettings.get('aov_multipart', 1)
         self.SetBool(G.CHK_MULTIPART, bool(int(saved_multipart)))
 
-        # Show snapshot directory
+        # Show snapshot directory + last version caption
         self._update_snapshot_dir_label()
+        self._update_last_version_label()
+
+        # Populate Recent Versions filter combobox + initial list
+        for i, label in enumerate(self._HISTORY_FILTER_LABELS):
+            self.AddChild(G.COMBO_HISTORY_FILTER, i, label)
+        self.SetInt32(G.COMBO_HISTORY_FILTER, 0)  # default: All
+        self._history_filter = FILTER_ALL
+        self._update_history_area()
+
+        # Wire click-row callback on StatusArea: clicking a row triggers its primary action
+        if self.ua is not None:
+            self.ua.click_callback = self._on_qc_row_click
+
+        # Wire click-row callback on HistoryArea: click a version → open it
+        if self.history_ua is not None:
+            self.history_ua.click_callback = self._on_history_row_click
 
         doc = c4d.documents.GetActiveDocument()
         self._sync_from_doc(doc)
         self._refresh()
         self._last_doc = doc
         return True
+
+    def _on_qc_row_click(self, row_key):
+        """Called by StatusArea when the user clicks a QC row.
+        Routes to the same handler as the primary button (Select or Info)."""
+        primary = {
+            "lights":      G.BTN_SEL_LIGHTS,
+            "vis":         G.BTN_SEL_VIS,
+            "keys":        G.BTN_SEL_KEYS,
+            "cam":         G.BTN_SEL_CAMS,
+            "rdc":         G.BTN_INFO_PRESET,
+            "textures":    G.BTN_INFO_TEXTURES,
+            "unused_mats": G.BTN_SEL_UNUSED_MATS,
+            "names":       G.BTN_SEL_NAMES,
+            "output":      G.BTN_INFO_OUTPUT,
+            "takes":       G.BTN_INFO_TAKES,
+            "fps_range":   G.BTN_INFO_FPS,
+        }
+        btn_id = primary.get(row_key)
+        if btn_id is not None:
+            try:
+                self.Command(btn_id, c4d.BaseContainer())
+            except Exception as e:
+                safe_print(f"Row click dispatch error: {e}")
+
+    def _on_history_row_click(self, entry):
+        """Called by HistoryArea when the user clicks a version row.
+        Confirms with the user, then opens the .c4d file via LoadFile.
+        Warns about unsaved changes in the current document.
+        """
+        if not entry:
+            return
+        path = (entry.get("path") or "").strip()
+        filename = entry.get("filename") or os.path.basename(path) or "(unknown)"
+
+        if not path or not os.path.exists(path):
+            c4d.gui.MessageDialog(
+                f"File not found:\n  {filename}\n\n"
+                f"It may have been moved, renamed, or deleted.\n"
+                f"The history entry remains in the JSON for reference."
+            )
+            return
+
+        # Don't reopen the current doc
+        current = c4d.documents.GetActiveDocument()
+        if current:
+            try:
+                cur_full = os.path.join(current.GetDocumentPath() or "", current.GetDocumentName() or "")
+                if os.path.normcase(os.path.normpath(cur_full)) == os.path.normcase(os.path.normpath(path)):
+                    c4d.gui.MessageDialog(f"Already viewing {filename}.")
+                    return
+            except Exception:
+                pass
+
+        # Build confirmation prompt
+        version_label = entry.get("version_label", "")
+        status_label = entry.get("status_label", "")
+        comment = entry.get("comment", "") or "(no comment)"
+        ts = entry.get("time_label", "")
+
+        prompt_lines = [
+            f"Open {filename}?",
+            "",
+            f"  {version_label}  [{status_label}]  ·  {ts}",
+            f"  \"{comment}\"",
+        ]
+        # Warn about unsaved changes in the current doc
+        try:
+            if current and current.GetChanged():
+                prompt_lines.append("")
+                prompt_lines.append("⚠ Current document has unsaved changes.")
+                prompt_lines.append("The new file will open in a separate Cinema 4D window.")
+        except Exception:
+            pass
+
+        if not c4d.gui.QuestionDialog("\n".join(prompt_lines)):
+            return
+
+        # Open the file
+        try:
+            ok = c4d.documents.LoadFile(path)
+            if ok:
+                safe_print(f"Opened {filename} via Browse Versions")
+                self._dirty = True  # force panel refresh against new doc
+            else:
+                c4d.gui.MessageDialog(
+                    f"Cinema 4D could not open:\n  {filename}\n\n"
+                    f"(LoadFile returned False — file may be locked or corrupted)"
+                )
+        except Exception as e:
+            c4d.gui.MessageDialog(f"Error opening file:\n\n{e}")
+            safe_print(f"Browse Versions LoadFile error: {e}")
 
     def Timer(self, msg):
         doc = c4d.documents.GetActiveDocument()
@@ -2487,13 +4070,13 @@ class YSPanel(gui.GeDialog):
 
         elif cid == G.BTN_GITHUB:
             # Open GitHub repository
-            github_url = "https://github.com/jmcodex93/ys-guardian"
+            github_url = "https://github.com/jmcodex93/sentinel"
             webbrowser.open(github_url)
             safe_print(f"Opening GitHub repository: {github_url}")
 
         elif cid == G.BTN_BUG_REPORT:
             # Open GitHub issues page for bug reports
-            bug_url = "https://github.com/jmcodex93/ys-guardian/issues/new"
+            bug_url = "https://github.com/jmcodex93/sentinel/issues/new"
             webbrowser.open(bug_url)
             safe_print(f"Opening bug report page: {bug_url}")
 
@@ -2616,6 +4199,55 @@ class YSPanel(gui.GeDialog):
                     info_msg = "No takes found (only Main Take)."
             c4d.gui.MessageDialog(info_msg)
 
+        elif cid == G.BTN_INFO_FPS:
+            standard_fps = GlobalSettings.get_standard_fps()
+            doc_fps = doc.GetFps()
+            rd = doc.GetActiveRenderData()
+            info_msg = f"FPS & FRAME RANGE\n\n"
+            info_msg += f"Document FPS: {doc_fps} (standard: {standard_fps})\n"
+            if rd:
+                preset_name = rd.GetName()
+                preset_norm = normalize_preset_name(preset_name)
+                is_stills = preset_norm == "stills"
+                rd_fps = int(rd[c4d.RDATA_FRAMERATE])
+                frame_start = rd[c4d.RDATA_FRAMEFROM].GetFrame(rd_fps)
+                frame_end = rd[c4d.RDATA_FRAMETO].GetFrame(rd_fps)
+                frame_mode = rd[c4d.RDATA_FRAMESEQUENCE]
+                mode_names = {
+                    c4d.RDATA_FRAMESEQUENCE_ALLFRAMES: "All Frames",
+                    c4d.RDATA_FRAMESEQUENCE_CURRENTFRAME: "Current Frame",
+                    c4d.RDATA_FRAMESEQUENCE_MANUAL: "Manual",
+                }
+                mode_str = mode_names.get(frame_mode, f"Unknown ({frame_mode})")
+                info_msg += f"Active preset: {preset_name}"
+                info_msg += " (stills mode)\n" if is_stills else "\n"
+                info_msg += f"Render FPS: {rd_fps}\n"
+                info_msg += f"Render range: {frame_start} - {frame_end} ({frame_end - frame_start + 1} frames)\n"
+                info_msg += f"Frame mode: {mode_str}\n"
+
+                # Timeline + loop range + playhead
+                tl_min = doc[c4d.DOCUMENT_MINTIME].GetFrame(doc_fps)
+                tl_max = doc[c4d.DOCUMENT_MAXTIME].GetFrame(doc_fps)
+                loop_min = doc[c4d.DOCUMENT_LOOPMINTIME].GetFrame(doc_fps)
+                loop_max = doc[c4d.DOCUMENT_LOOPMAXTIME].GetFrame(doc_fps)
+                playhead = doc.GetTime().GetFrame(doc_fps)
+                info_msg += f"Timeline: {tl_min} - {tl_max}\n"
+                info_msg += f"Preview/loop: {loop_min} - {loop_max}\n"
+                info_msg += f"Playhead: frame {playhead}\n"
+
+                if is_stills:
+                    info_msg += f"\nStills: 'Current Frame' is OK; range start expected at 1001."
+                else:
+                    info_msg += f"\nAnimation: timeline + preview must match render range."
+            if self._fps_range_bad:
+                info_msg += f"\n\nISSUES ({len(self._fps_range_bad)}):\n"
+                for i, issue in enumerate(self._fps_range_bad, 1):
+                    info_msg += f"  {i}. {issue['issue']}\n"
+            else:
+                info_msg += "\n\nAll OK."
+            info_msg += f"\n\nTo change standard FPS, edit ys_guardian_settings.json."
+            c4d.gui.MessageDialog(info_msg)
+
         # ── Auto-fix handlers ──
         elif cid == G.BTN_FIX_LIGHTS:
             if self._lights_bad:
@@ -2643,6 +4275,39 @@ class YSPanel(gui.GeDialog):
             else:
                 safe_print("No unused materials to delete")
 
+        elif cid == G.BTN_FIX_FPS:
+            if self._fps_range_bad:
+                standard_fps = GlobalSettings.get_standard_fps()
+                # Build confirmation listing what will change
+                count = len(self._fps_range_bad)
+                preview = f"FIX FPS / FRAME RANGE\n\n"
+                preview += f"Standard: {standard_fps} fps, start frame 1001\n\n"
+                preview += f"Issues to fix ({count}):\n"
+                for issue in self._fps_range_bad[:15]:
+                    preview += f"  - {issue['issue']}\n"
+                if count > 15:
+                    preview += f"  ... and {count - 15} more\n"
+                preview += "\nThis will modify ALL render presets, document FPS, "
+                preview += "timeline, and preview range. Undo available (Ctrl+Z).\n\n"
+                preview += "Continue?"
+
+                if c4d.gui.QuestionDialog(preview):
+                    fixes = fix_fps_range(doc)
+                    if fixes:
+                        fix_msg = f"Applied {len(fixes)} fix(es):\n\n"
+                        for f in fixes[:25]:
+                            fix_msg += f"  - {f}\n"
+                        if len(fixes) > 25:
+                            fix_msg += f"  ... and {len(fixes) - 25} more\n"
+                        c4d.gui.MessageDialog(fix_msg)
+                        self._dirty = True
+                    else:
+                        c4d.gui.MessageDialog("No fixes were applied.")
+                else:
+                    safe_print("FPS/range fix cancelled by user")
+            else:
+                safe_print("No FPS/range issues to fix")
+
         # ── Export QC Report ──
         elif cid == G.BTN_EXPORT_QC:
             results = {
@@ -2656,6 +4321,7 @@ class YSPanel(gui.GeDialog):
                 "names_bad": self._names_bad,
                 "output_bad": self._output_bad,
                 "takes_bad": self._takes_bad,
+                "fps_range_bad": self._fps_range_bad,
                 "output_count": len(self._output_bad) if self._output_bad else 0,
                 "scene_stats": self._scene_stats,
             }
@@ -2667,7 +4333,98 @@ class YSPanel(gui.GeDialog):
         elif cid == G.BTN_COLLECT_SCENE:
             collect_scene(doc, self._artist_name)
 
+        elif cid == G.BTN_SAVE_VERSION:
+            self._handle_save_version(doc)
+
+        elif cid == G.COMBO_HISTORY_FILTER:
+            try:
+                idx = int(self.GetInt32(G.COMBO_HISTORY_FILTER))
+            except Exception:
+                idx = 0
+            if 0 <= idx < len(self._HISTORY_FILTERS):
+                self._history_filter = self._HISTORY_FILTERS[idx]
+            self._update_history_area()
+
         return True
+
+    # ── Smart Save Version handler ──
+    def _handle_save_version(self, doc):
+        """Open the SaveVersion dialog and dispatch to smart_save_version."""
+        if not doc:
+            c4d.gui.MessageDialog("No active document.")
+            return
+
+        dlg = SaveVersionDialog(doc=doc, run_qc_default=True)
+        try:
+            dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=520, defaulth=280)
+        except Exception as e:
+            safe_print(f"SaveVersionDialog open error: {e}")
+            return
+
+        if not dlg.confirmed:
+            safe_print("Save Version cancelled by user")
+            return
+
+        result = smart_save_version(
+            doc,
+            comment=dlg.result_comment,
+            run_qc=dlg.result_run_qc,
+            artist_name=self._artist_name or "",
+            status=dlg.result_status,
+        )
+
+        # Build feedback message
+        if result.get("success"):
+            lines = [result.get("message", "Saved")]
+            if result.get("status"):
+                lines.append(f"Status: {result['status']}")
+            qc = result.get("qc_summary")
+            if qc:
+                status_word = "PASS" if qc.get("pass") else "FAIL"
+                lines.append(f"QC: {qc.get('score','')}  [{status_word}]")
+            hp = result.get("history_path")
+            if hp:
+                lines.append("")
+                lines.append(f"History: {os.path.basename(hp)}")
+
+            saved_status = (result.get("status") or "").upper()
+            review_status = saved_status in ("TR", "CR", "FINAL")
+            base_msg = "\n".join(lines)
+            safe_print(f"Saved version v{result.get('version')} status={saved_status or 'WIP'} -> {result.get('path')}")
+            self._dirty = True
+
+            if review_status:
+                # Gap 1: offer to immediately create a continuation WIP version
+                # so the artist doesn't accidentally overwrite the review snapshot
+                # on the next Cmd+S.
+                prompt = (
+                    base_msg
+                    + "\n\n──────────\n"
+                    + f"This {saved_status} version is locked-in for review.\n"
+                    + "Continue editing in a new WIP version?\n"
+                    + "(keeps the current file untouched)"
+                )
+                if c4d.gui.QuestionDialog(prompt):
+                    cont = smart_save_version(
+                        doc,
+                        comment=f"Continue from v{result.get('version'):03d}_{saved_status}",
+                        run_qc=False,
+                        artist_name=self._artist_name or "",
+                        status="",
+                    )
+                    if cont.get("success"):
+                        safe_print(f"Continued in v{cont.get('version'):03d} WIP")
+                        self._dirty = True
+                    else:
+                        c4d.gui.MessageDialog(
+                            f"Could not create continuation version:\n\n"
+                            f"{cont.get('message','unknown error')}"
+                        )
+            else:
+                c4d.gui.MessageDialog(base_msg)
+        else:
+            c4d.gui.MessageDialog(f"Save Version failed:\n\n{result.get('message','unknown error')}")
+            safe_print(f"Save Version failed: {result.get('message')}")
 
     def _scan_light_groups(self, doc):
         """Scan scene lights and return (groups_dict, ungrouped_list)"""
@@ -3626,35 +5383,43 @@ class YSPanelCmd(plugins.CommandData):
         return self.dlg.Restore(pluginid=PLUGIN_ID, secret=sec_ref)
 
 def Register():
-    # Load plugin icon (PNG format for best Cinema 4D compatibility)
+    # Load plugin icon (PNG format for best Cinema 4D compatibility).
+    # Tries the new Sentinel icon first; falls back to legacy YS Guardian icon
+    # if the new file is missing (defensive — should never happen in practice).
     icon = c4d.bitmaps.BaseBitmap()
-    icon_path = os.path.join(os.path.dirname(__file__), "icons", "ys-logo-alpha-32.png")
+    icons_dir = os.path.join(os.path.dirname(__file__), "icons")
+    candidates = [
+        os.path.join(icons_dir, "Sentinel_IC_v02.png"),
+        os.path.join(icons_dir, "Sentinel_IC_v01.png"),  # previous Sentinel icon
+        os.path.join(icons_dir, "ys-logo-alpha-32.png"),  # legacy YS Guardian fallback
+    ]
 
-    if os.path.exists(icon_path):
+    icon_path = None
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            icon_path = candidate
+            break
+
+    if icon_path:
         result = icon.InitWith(icon_path)
         if result[0] == c4d.IMAGERESULT_OK:
-            # Validate icon properties
             width = icon.GetBw()
             height = icon.GetBh()
             depth = icon.GetBt()
-
-            if width == 32 and height == 32:
-                safe_print(f"Plugin icon loaded: {icon_path} ({width}x{height}, {depth}-bit)")
-            else:
-                safe_print(f"Warning: Icon loaded but dimensions are {width}x{height}, expected 32x32")
+            safe_print(f"Plugin icon loaded: {os.path.basename(icon_path)} ({width}x{height}, {depth}-bit)")
         else:
             safe_print(f"Warning: Failed to load icon from {icon_path}")
-            icon = None  # Use no icon instead of empty bitmap
+            icon = None
     else:
-        safe_print(f"Warning: Icon not found at {icon_path}")
-        icon = None  # Use no icon instead of empty bitmap
+        safe_print(f"Warning: No icon found in {icons_dir}")
+        icon = None
 
     ok = plugins.RegisterCommandPlugin(
         id=PLUGIN_ID,
         str=PLUGIN_NAME,
         info=0,
         icon=icon,
-        help="Open YS Guardian Panel",
+        help="Open Sentinel Panel",
         dat=YSPanelCmd()
     )
     if ok:

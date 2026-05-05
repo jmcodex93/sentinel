@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 *.pyo
+
+# Local backups (not tracked)
+c4d/backup/

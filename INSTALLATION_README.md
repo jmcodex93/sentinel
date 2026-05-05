@@ -1,4 +1,6 @@
-# YS Guardian Installation Guide
+# Sentinel Installation Guide
+
+> Sentinel was originally **YS Guardian** (Yambo Studio). Rebranded in v1.5.0. The Windows installer scripts in this folder still reference the legacy name in their filenames; we'll update those in a future iteration. The instructions below use the new Sentinel paths.
 
 ## Quick Start
 
@@ -22,14 +24,14 @@ If you have issues with Python or EXR conversion:
    - Validates all source files are present
 
 2. **Installs Plugin Files**
-   - Main plugin: `ys_guardian_panel.pyp`
+   - Main plugin: `sentinel_panel.pyp`
    - Snapshot manager
    - EXR to PNG converters
    - Python configuration helper
 
 3. **Sets Up Directories**
-   - Plugin directory: `C:\Program Files\Maxon Cinema 4D 2024\plugins\YS_Guardian\`
-   - Output directory: `C:\YS_Guardian_Output\`
+   - Plugin directory: `C:\Program Files\Maxon Cinema 4D 2024\plugins\Sentinel\`
+   - Output directory: `C:\Sentinel_Output\`
    - Cache directory: `C:\cache\rs snapshots\`
 
 4. **Handles Python Setup**
@@ -83,8 +85,8 @@ For the snapshot feature to work:
 ## File Structure After Installation
 
 ```
-C:\Program Files\Maxon Cinema 4D 2024\plugins\YS_Guardian\
-├── ys_guardian_panel.pyp          (main plugin)
+C:\Program Files\Maxon Cinema 4D 2024\plugins\Sentinel\
+├── sentinel_panel.pyp             (main plugin)
 ├── redshift_snapshot_manager_fixed.py
 ├── exr_to_png_converter_simple.py
 ├── exr_converter_external.py
@@ -94,7 +96,7 @@ C:\Program Files\Maxon Cinema 4D 2024\plugins\YS_Guardian\
 └── icons\
     └── ys-logo-alpha-32.png
 
-C:\YS_Guardian_Output\              (output directory)
+C:\Sentinel_Output\                 (output directory)
 └── snapshot_log.txt
 
 C:\cache\rs snapshots\              (Redshift snapshots)
@@ -104,12 +106,12 @@ C:\cache\rs snapshots\              (Redshift snapshots)
 
 To uninstall the plugin:
 
-1. Delete the folder: `C:\Program Files\Maxon Cinema 4D 2024\plugins\YS_Guardian\`
-2. Optionally delete: `C:\YS_Guardian_Output\`
+1. Delete the folder: `C:\Program Files\Maxon Cinema 4D 2024\plugins\Sentinel\`
+2. Optionally delete: `C:\Sentinel_Output\`
 3. Optionally delete: `C:\cache\rs snapshots\`
 
 ## Support
 
 For issues or questions:
-- Check the log file: `%TEMP%\ys_guardian_install.log`
-- Contact the YS Guardian development team
+- Check the log file: `%TEMP%\sentinel_install.log`
+- Open an issue on the [Sentinel GitHub repo](https://github.com/jmcodex93/sentinel/issues/new)

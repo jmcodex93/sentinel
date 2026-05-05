@@ -1,47 +1,85 @@
-# YS Guardian v1.0.3
+# Sentinel v1.5.0
 
-Quality control and workflow automation plugin for Cinema 4D production environments — built for Yambo Studio & Friends.
+Quality control, render management, and workflow automation plugin for Cinema 4D production environments — keeping the watchdog spirit of YS Guardian.
 
-![YS Guardian Interface](https://github.com/user-attachments/assets/847c6930-f54c-4f7f-86e2-5308f9e0e7bd)
+![Sentinel Interface](https://github.com/user-attachments/assets/847c6930-f54c-4f7f-86e2-5308f9e0e7bd)
+
+> **Sentinel** is the continuation of [YS Guardian](https://github.com/yamb0x/ys-guardian), originally built at Yambo Studio. This fork extends the watchdog spirit with mograph-native workflow tools (Smart Save Versions, Status Tags, Browse Versions, RS AOV Management, FPS/Range validation, and more). Maintained by Javier Melgar.
 
 ## Overview
 
-YS Guardian is a small C4D plugin I built to automate tasks, create shortcuts, and guard our team's workflow inside productions. While parts are specific to our internal setup, a lot of it should be useful for anyone working in C4D.
+Sentinel is a Cinema 4D plugin that **watches your scene in real-time** and helps you ship cleaner renders. It runs continuous quality checks, manages render presets and Redshift AOVs, captures versioned saves with full metadata, and automates the boring parts of mograph delivery.
 
-The plugin monitors your Cinema 4D scenes in real-time, catching common production issues and flags them. Additionally, it has some custom built-in tools for automating your workflow, such as camera rigs (by keyframe wizard Riccardo Bottoni), abc_retime integration (incredible little plugin by Austin Marola & Axis), and other handy C4D tools I built, like Hierarchy→Layers, Solo Layers (like cv-layer-comps but simpler and plays nice with it), Drop to Floor (revived old plugin I liked), and more.
+Sentinel monitors Cinema 4D scenes in real-time with **11 quality checks**, catching production issues before they reach the render farm. It also provides **Redshift AOV management** (Essentials/Production tiers with per-compositor config), **Scene Collector** (pre-flight QC + asset collection + manifest), and a full suite of scene tools: camera rigs (by keyframe wizard Riccardo Bottoni), abc_retime integration (by Austin Marola & Axis), Hierarchy→Layers, Solo Layers, Drop to Floor, and more.
 
-The tool is built for 3D professionals and studios. It combines monitoring with workflow automation tools designed to streamline production pipelines. The tool has some internal parts, but if there's demand, I'm happy to add settings to make it more generalized.
+**IMPORTANT**: The snapshot feature requires Python 3.x with Pillow and NumPy for EXR→PNG conversion with ACES tone mapping.
 
-**IMPORTANT**: The plugin installs Python 3.x with Pillow and NumPy on your Windows environment in order to convert EXR to PNG and apply ACES tone mapping.
-
-**Tested on**: Cinema 4D 2024 and Redshift 2025, but should work with newer versions as well (not tested).
+**Tested on**: Cinema 4D 2024/2026 and Redshift. macOS and Windows.
 
 ## Core Features
 
 ### Pipeline Checks
 
-Six continuous checks to keep your C4D files clean (you can choose which warnings to enable):
+Eleven continuous quality checks to keep your C4D files clean:
 
-- **Lights Organization** – Validates proper light group structure
-- **Visibility Consistency** – Detects viewport/render visibility mismatches
-- **Keyframe Validation** – Flags problematic multi-axis animations
-- **Camera Shift Detection** – Ensures proper camera framing
-- **Render Preset Compliance** – Enforces standardized output settings (Yambo Studio folder structure only currently)
-- **Asset Path Validation** – Detects absolute texture and asset paths that break portability (essential for team collaboration and render farm compatibility)
+- **Lights Organization** – Validates proper light group structure (Select + Fix)
+- **Visibility Consistency** – Detects viewport/render visibility mismatches (Select)
+- **Keyframe Validation** – Flags problematic multi-axis animations (Select)
+- **Camera Shift Detection** – Ensures proper camera framing (Select + Fix)
+- **Render Preset Compliance** – Enforces standardized output settings (Info)
+- **Assets / Textures** – Missing textures, absolute paths, RS Node material paths via maxon API (Info)
+- **Unused Materials** – Materials not applied to any object (Select + Fix)
+- **Default Names** – Objects still using C4D default names (Select)
+- **Output Paths** – Missing tokens, empty render output paths (Info)
+- **Take Validation** – Camera assigned per take, $take token in output paths (Info)
+- **FPS / Frame Range** – FPS, start frame = 1001 (VFX standard), frame step, timeline + preview alignment, all presets (Info + Fix)
 
-Status display with color coding provides instant visual feedback. One-click selection of problematic objects helps save clicks on corrections.
+Status display with color coding provides instant visual feedback. Per-check Select/Info/Fix buttons for one-click correction. Auto-fix available for lights, cameras, and unused materials.
 
-### Render Preset Manager
+### Render Management
 
-Standardized presets with automatic output path organization:
+#### Presets
+Standardized presets with resolution display, one-click switching:
 
 - **Previz** – 1280×720 @ 25fps
 - **Pre-Render** – 1920×1080 @ 25fps
 - **Render** – 1920×1080 @ 25fps
 - **Stills** – 3840×2160 @ 25fps
 
-**Force Settings** button applies standard resolutions across all presets.
-**Force Vertical** converts to 9:16 aspect ratio for social media delivery with one-click AR switch.
+**Reset All** resets all presets from a template file. **Force 9:16 / 16:9** toggles aspect ratio for social media delivery.
+
+#### Redshift AOV Management
+Two-tier AOV system configured per compositor target:
+
+- **Essentials** (11 AOVs) – Core passes including Beauty for rebuild verification
+- **Production** (17+ AOVs) – Full pass set for compositing
+- **Light Groups** – Independent button, diagnoses groups + toggles on Beauty AOV
+- **Compositor target**: Nuke vs After Effects (changes Depth and Motion Vector formats)
+- **Multi-Part EXR**: Global checkbox with 32-bit Float + DWAB 45 compression
+- Conditional AOVs: Caustics (auto-detect RS setting), Volumes (auto-detect scene objects)
+
+#### Scene Collector
+Pre-flight workflow for scene delivery:
+1. Runs all 10 QC checks with summary
+2. Offers auto-fix for fixable issues
+3. Calls `c4d.documents.SaveProject()` for native asset collection
+4. Generates `sentinel_manifest.json` with scene info, assets, and missing file list
+
+#### Smart Save Version
+Versioned saves with full context, beyond C4D's stock Save Incremental:
+
+- Bumps file to `<scene>_v###.c4d` (3-digit, VFX-standard naming)
+- **Review status tags** baked into filename: `_TR` (Team Review) / `_CR` (Client Review) / `_FINAL` / Custom (e.g. `_PITCH`, `_ALT01`)
+- Required comment per version (forces meaningful checkpoints)
+- Sidecar `<scene>_history.json` log: timestamp, artist, comment, **status**, QC score, scene stats, active take, file path
+- Optional QC pre-flight: records pass/fail snapshot at save time
+- First-time save opens SaveDialog with suggested `scene_v001.c4d`
+- After saving a TR/CR/FINAL version: prompts to **auto-create a continuation WIP** so the review snapshot stays untouched
+- Live "Last version" caption above the button: `v007 TR · 2h ago`
+- **Browse Recent Versions** inline list: last 5 versions with color-coded status badges, filter dropdown (All/WIP/TR/CR/FINAL), click any row to open that version
+
+#### QC Report Export
+One-click JSON export with quality score, scene complexity stats, and detailed results for all 10 checks.
 
 ### Workflow Automation
 
@@ -66,7 +104,7 @@ Quick access to the excellent Alembic retime tool by **Austin Marola** (@zonedog
 ### Quick Tools
 
 **Create Hierarchy**
-Merges a pre-configured null hierarchy template into the scene. Sets up a clean organizational structure for production scenes in one click.
+Merges a pre-configured null hierarchy template into the scene for quick project setup.
 
 ### Grab Stills
 
@@ -74,7 +112,7 @@ Automatic snapshot workflow with color-accurate conversion using bundled global 
 
 - Captures Redshift RenderView snapshots as EXR
 - Converts to PNG with ACES RRT/ODT tone mapping
-- Organizes output: `Output/[Artist]/YYMMDD/scene_HHMMSS.png` (Yambo Studio folder structure)
+- Organizes output: `Output/[Artist]/YYMMDD/scene_HHMMSS.png` (studio folder structure inherited from YS Guardian)
 - Displays in Picture Viewer with metadata
 
 This system maintains color accuracy by matching your scene's ACES tone mapping, providing convenient PNG output for client review and archival. **Please report if color seems off!**
@@ -84,10 +122,11 @@ This system maintains color accuracy by matching your scene's ACES tone mapping,
 ### Requirements
 
 - Cinema 4D 2024 or later
-- Redshift 3D (for snapshot features)
-- Windows OS (installer handles Python setup automatically)
+- Redshift 3D (for AOV management and snapshot features)
+- macOS or Windows
+- Python 3.x with Pillow + NumPy (for snapshot EXR→PNG conversion)
 
-### Quick Install
+### Quick Install (Windows)
 
 ```bash
 # Run as Administrator
@@ -100,7 +139,11 @@ The installer handles:
 - Directory structure creation (`C:\cache\rs snapshots\`)
 - ABC Retime plugin integration
 
-**Restart Cinema 4D after installation.**
+### Manual Install (macOS / Windows)
+
+1. Copy the `plugin/` folder contents to your Cinema 4D plugins directory
+2. For snapshot features: install Python dependencies (`pip3 install Pillow numpy OpenEXR`)
+3. Restart Cinema 4D
 
 ### Redshift Configuration
 
@@ -117,30 +160,36 @@ The installer creates the cache directory automatically. This configuration is r
 
 ### Initial Setup
 
-1. Extensions → YS Guardian
+1. Extensions → Sentinel
 2. Enter artist name (saved per computer)
 3. Configure monitoring update rate (default: 800ms)
 4. Verify Redshift snapshot format is set to EXR
 
 ### Quality Workflow
 
-Status display shows real-time results:
+Status display shows real-time results for all 11 checks:
 
 ```
-[FAIL] LIGHTS        : 3 lights outside lights group
-[WARN] VISIBILITY    : Visibility mismatch on 'RS Spot Light.1'
-[ OK ] KEYFRAMES     : Keyframes properly configured
-[ OK ] CAMERAS       : Camera shifts at 0%
-[ OK ] RENDER_PRESETS: Render presets compliant
+[FAIL] LIGHTS        : 3 lights outside lights group     [Select] [Fix]
+[WARN] VISIBILITY    : Visibility mismatch on 2 objects  [Select]
+[ OK ] KEYFRAMES     : Keyframes properly configured      [Select]
+[ OK ] CAMERAS       : Camera shifts at 0%                [Select] [Fix]
+[ OK ] PRESETS       : Render presets compliant            [Info]
+[ OK ] ASSETS        : All textures found                 [Info]
+[FAIL] UNUSED MATS   : 5 unused materials                [Select] [Fix]
+[WARN] NAMES         : 12 default names                  [Select]
+[ OK ] OUTPUT        : Output paths valid                 [Info]
+[ OK ] TAKES         : All takes configured               [Info]
+[FAIL] FPS/RANGE     : 4 FPS/range issue(s)              [Info]   [Fix]
 ```
 
-Click **Select** buttons to isolate problematic objects for quick correction.
+**Select** buttons cycle through problematic objects. **Fix** buttons auto-resolve issues. **Info** buttons show detailed diagnostics.
 
 ### Stills Workflow
 
 1. Render preview in Redshift RenderView
 2. Take snapshot in RenderView (Redshift saves to cache as EXR)
-3. Click **Save Still** in YS Guardian panel
+3. Click **Save Still** in Sentinel panel
 4. PNG appears in organized artist/date folder structure
 5. Opens automatically in Picture Viewer
 
@@ -159,28 +208,28 @@ Click **Select** buttons to isolate problematic objects for quick correction.
 
 ### Quick Actions
 
-- **Create Hierarchy**: Merges null hierarchy template into scene
-- **Vibrate Null**: Merges vibration null into scene
-- **Drop to Floor**: Snaps selected objects to Y=0
+- **Hierarchy**: Merges null hierarchy template into scene
+- **H → Layers**: Converts scene hierarchy into layer structure with auto color coding
+- **Solo Layers**: Isolate selected layers (toggle)
+- **Drop to Floor**: Snaps selected objects to Y=0 (handles rotation + hierarchy)
+- **Vibrate Null**: Merges vibration null with expression
 - **ABC Retime**: Applies Alembic Retime tag to selected cache objects
-- **Cam Rigs**: Merge Simple/Shakel/Path camera setups
+- **Cam Simple / Cam Shakel**: Merge production-ready camera rigs
 
 ## Technical Details
 
 ### Performance
 
-- Smart caching reduces scene traversal overhead
+- CoreMessage dirty-flag pattern — checks only run when scene actually changes
+- CHECK_COOLDOWN 0.5s prevents redundant scans
 - Chunked processing for large scenes (1000+ objects/cycle)
-- Automatic pause during active renders
-- Configurable update intervals (100-5000ms)
-- Low memory footprint (~50MB)
+- Low memory footprint
 
 ### Data Persistence
 
-- **Artist Name**: Saved per computer in Cinema 4D preferences
+- **Artist Name, Compositor Target, Multi-Part, Snapshot Dir**: Saved per computer in Cinema 4D preferences (`sentinel_settings.json`; legacy `ys_guardian_settings.json` is auto-migrated on first run)
 - **Shot ID**: Synced with Take system (Main Take name)
 - **Window Layout**: Preserved by Cinema 4D workspace
-- **Monitor Settings**: Reset each session
 
 ### EXR Conversion
 
@@ -204,25 +253,31 @@ The snapshot system uses external Python with Pillow for color-accurate conversi
 ## Troubleshooting
 
 **Quality checks not updating**
-- Enable **Live Monitoring** checkbox
-- Verify update rate ≥100ms
-- Check individual watcher toggles (lights, visibility, etc.)
+- Checks run on scene change via CoreMessage — make sure the scene has actually changed
+- Try closing and reopening the panel if checks appear stuck
 
 **Snapshot conversion fails**
 - Verify Redshift saves EXR format (not .rssnap2)
-- Check Python dependencies: `pip install Pillow numpy OpenEXR`
-- Confirm cache directory exists: `C:\cache\rs snapshots\`
-- Check logs: `C:\YS_Guardian_Output\snapshot_log.txt`
+- Check Python dependencies: `pip3 install Pillow numpy OpenEXR`
+- Confirm snapshot directory is set (click "..." button in Output section)
+- macOS: uses `/usr/bin/python3` by default
+
+**AOVs not applying**
+- Ensure Redshift is the active render engine
+- Check the Comp target dropdown matches your pipeline (Nuke vs AE)
+- Use **Show AOVs** to verify current state
 
 **Layer sync errors**
 - Organize objects in top-level null groups (no orphan objects)
 - Ensure unique null names
-- Remove duplicate layers manually
 
 **Preset switching issues**
-- Confirm preset names match: previz, pre_render, render, stills
-- Check for duplicate presets in Render Settings
-- Use **Force Settings** to create missing presets
+- Preset names are case-insensitive: "pre_render", "pre-render", "Pre Render" all work
+- Use **Reset All** to recreate presets from template
+
+**Scene Collector issues**
+- Runs SaveProject() — requires a saved .c4d file first
+- Missing assets are listed in the manifest but not blocked
 
 **ABC Retime not working**
 - Verify selected object is a supported cache type
@@ -231,65 +286,206 @@ The snapshot system uses external Python with Pillow for color-accurate conversi
 
 ## Changelog
 
+### v1.5.0 | 05.05.2026
+
+**Rebrand: YS Guardian → Sentinel**
+- Renamed the plugin to **Sentinel** to mark its evolution beyond the original Yambo Studio scope (which had grown to 11 QC checks, RS AOV management, Smart Save Versions with status tags, Browse Versions inline, FPS/Range validation, and full mograph workflow tooling)
+- Plugin file: `ys_guardian_panel.pyp` → `sentinel_panel.pyp`
+- Settings: `ys_guardian_settings.json` → `sentinel_settings.json` (auto-migrated from legacy file on first run — no preferences lost)
+- Manifest: `ys_guardian_manifest.json` → `sentinel_manifest.json`
+- C4D plugin folder: `YS_Guardian/` → `Sentinel/` (old folder must be removed manually)
+- All references updated; YS Guardian heritage explicitly credited in README, CLAUDE.md, and the License section
+
+**Why**: After 5 versions of additions (v1.4.0–v1.4.4) the plugin had outgrown the "YS Guardian" identity. Sentinel inherits the watchdog DNA but communicates the broader scope and signals that this is now a personal continuation by Javier Melgar — not the studio plugin it started as. The atribution to Yambo Studio remains explicit throughout the docs.
+
+### v1.4.4 | 05.05.2026
+
+**New: Browse Recent Versions inline**
+- New custom-drawn list in the Output section showing the last 5 versions of the active scene
+- Color-coded status badges: WIP (grey) / TR (amber) / CR (blue) / FINAL (green) / Custom (purple)
+- Each row: version label, badge, comment, QC score (if recorded), relative time
+- Filter dropdown: All / WIP / TR / CR / FINAL
+- Click any row → confirmation dialog with version preview + opens the file via `c4d.documents.LoadFile`
+- Edge cases handled: file deleted ("File not found"), already-active doc ("Already viewing"), unsaved changes warning
+
+**Fix: user-area click coordinate conversion in C4D 2026**
+- Discovered the documented `GeUserArea.Global2Local(x, y)` does not return area-local coordinates correctly in C4D 2026 Python
+- Workaround: use `Local2Global()` (no args) to get the area's window origin, then subtract from raw `msg[BFM_INPUT_X/Y]`
+- Shared helper `_ua_local_coords()` used by both `StatusArea` and `HistoryArea`
+- Fixes click-row precision in the QC section (was working approximately, now exact)
+
+**Why**: Smart Save Version (v1.4.2-v1.4.3) writes a rich history JSON, but until now only the latest entry was surfaced (via the pillbox). v1.4.4 closes the read side of the loop — artists can finally see and act on the version metadata they're capturing.
+
+### v1.4.3 | 05.05.2026
+
+**Smart Save UX (mograph-native workflow)**:
+- Review status tags integrated into Save Version: WIP / TR (Team Review) / CR (Client Review) / FINAL / Custom (alphanumeric)
+- Status appears as suffix in filename: `scene_v007_TR.c4d`, `scene_v012_CR.c4d`, `scene_v022_FINAL.c4d`
+- Custom field overrides the dropdown when filled (sanitized to uppercase alphanumeric)
+- Live filename preview updates as user changes status
+- "final" written in comment triggers a soft advisory (suggests using the FINAL tag instead — non-blocking)
+
+**"Continue from this version" — protect review snapshots**:
+- After saving a TR/CR/FINAL version, prompts to auto-create a new WIP version
+- Continuation has comment `"Continue from v007_TR"` and skips QC re-run (same scene state)
+- The review snapshot stays untouched even if the artist Cmd+S afterwards
+- Why: prevents the classic "the file the team is reviewing isn't what they were sent" bug
+
+**"Last version" pillbox**:
+- Live caption above Save Version button: `Last version: v007 TR · 2h ago`
+- Reads latest entry from sidecar history JSON
+- Relative time formatting (just now / Xm ago / Xh ago / Xd ago / absolute date for >30 days)
+- Empty states handled: "scene not saved yet" / "none yet — click Save Version"
+
+**Why these changes**: Research across the mograph community (Vinzent Britz, Matthew Creed, GSG forum) showed the de-facto convention isn't VFX-style `show_seq_shot` but `Client-Project-Description` with review-status suffixes. v1.4.3 brought the plugin in line with how mograph artists actually mark their checkpoints.
+
+### v1.4.2 | 04.05.2026
+
+**New: Smart Save Version**:
+- Versioned saves with required comment, QC score, scene stats per version
+- Naming convention enforced: `<scene>_v###.c4d` (3-digit, VFX-aligned with frame 1001 standard)
+- Sidecar `<scene>_history.json` log with all versions (newest first)
+- First-time save: opens SaveDialog with suggested `scene_v001.c4d`
+- Subsequent saves: scans folder + history, bumps version automatically
+- Captures: timestamp, artist, comment, QC score, polys/mats/lights, active take
+- Updates document path so C4D title bar + Cmd+S follow the new version
+- Refuses to overwrite existing files (defensive)
+
+**Why over C4D's native Save Incremental**: native bumps numbers but stores no context. With 14 numbered files and no comments, version history is useless. Smart Save adds the layer of metadata that makes versioning actually useful for production review and rollback.
+
+**UI polish**:
+- New Score header above QC rows: progress bar + "QC X/Y" + PASS/WARN/FAIL + scene stats inline
+- Click anywhere on a QC row to trigger its primary action (bigger click target)
+- Output section reorganized: Save Version + Collect Scene as primary checkpoint actions
+- "..." snapshot dir button → "Browse" (clearer)
+
+### v1.4.1 | 23.04.2026
+
+**New QC Check #11: FPS / Frame Range**:
+- Validates document FPS, render data FPS (independent), frame range, frame step, timeline, and preview/loop alignment
+- Enforces VFX/cinema standard: start frame = **1001** (with handles before, room for pre-roll)
+- Per-preset behavior: animation presets require Manual range; **stills** preset accepts Current Frame mode
+- Auto-fix iterates ALL presets in the document, not just the active one
+- Fix preserves frame duration, aligns timeline + preview/loop, and snaps playhead to range if it fell outside
+- Confirmation dialog before applying fix, with preview of all changes
+- Configurable studio FPS via `standard_fps` key in `sentinel_settings.json` (default 25)
+- Frame step validation (warns if != 1, catches accidental frame skipping)
+- Full undo support (Ctrl+Z reverts entire fix in one step)
+- Included in QC report export
+
+**Why 1001?**: De facto VFX/cinema standard. Frame 1001 is the first frame of editorial action; frames 993-1000 are head handles (pre-roll). 4-digit padding ensures correct file sorting. Used by ILM, Weta, Framestore, MPC, DNEG, ShotGrid defaults.
+
+### v1.4.0 | 08.04.2026
+
+**Major Features**:
+- **Take-based QC** (check #10) - Validates camera assigned per take and $take token in output paths
+- **Scene Collector** - Pre-flight QC + `SaveProject()` + manifest JSON for scene delivery
+- **Light Groups AOV** - Independent button: diagnose light group assignments + toggle on Beauty AOV
+- **UI reorganized by workflow**: Scene Info → Quality Checks → Scene Tools → Render → Output
+
+**Render Section**:
+- Unified presets + AOVs in single Render section
+- Resolution display next to preset dropdown
+- Reset All from template (with confirmation dialog)
+- Force 9:16 ↔ 16:9 toggle (reversible)
+
+**Code Quality**:
+- Replaced 40+ bare `except:` with `except Exception:`
+- Removed ~400 lines of dead code
+- CoreMessage dirty-flag pattern (efficient scene change detection)
+- Safe name access for dead C4D objects (`_safe_name` helper)
+
+### v1.3.0 | March 2026
+
+**RS AOV Management**:
+- 2-tier system: Essentials (11 AOVs) / Production (17+ AOVs)
+- Per-compositor config: Nuke vs After Effects (Depth + Motion Vector formats)
+- Multi-Part EXR with 32-bit Float + DWAB 45 compression
+- Conditional AOVs: Caustics (auto-detect setting), Volumes (auto-detect objects)
+- All param IDs documented in RS_AOV_PARAM_IDS.md
+
+**Render Presets**:
+- Reset All from template file
+- Force 9:16 toggle for social media delivery
+
+### v1.2.0 | March 2026
+
+**New QC Checks** (#6-#9):
+- Unused materials detection (Select + Fix: delete cycling one-by-one)
+- Default naming conventions (Select: cycling through offenders)
+- Output path validation (missing tokens, empty paths)
+- Missing textures (files not found on disk, RS Node materials via maxon API)
+- Unified 3 texture checks into single "Assets" check
+
+**Power Features**:
+- Auto-fix: lights → group, camera shift → reset, unused mats → delete
+- QC Report export (JSON with score, scene stats, all check details)
+- Scene complexity stats (objects, polygons, materials, lights)
+
+### v1.1.0 | March 2026
+
+**Foundation & UI**:
+- Fixed safe_print used before definition
+- Fixed duplicate widget IDs
+- Cross-platform support: replaced `os.startfile` with platform-aware opener
+- Added CoreMessage() for instant scene change reaction
+- Section headers with BORDER_WITH_TITLE_BOLD
+- Per-check Select/Info/Fix buttons
+- Data-driven StatusArea renderer
+
+**Snapshot System Rewrite**:
+- Cross-platform EXR→PNG via external Python + OpenEXR
+- Full ACES pipeline: ACEScg → sRGB matrix → ACES tonemap → sRGB OETF
+- Configurable RS snapshot directory (UI button + persisted settings)
+- Auto-discover system Python on macOS + Windows
+
 ### v1.0.3 | 16.02.2026
 
-**Changes**:
-- **Added Create Hierarchy button** - One-click merge of pre-configured null hierarchy template into scene for quick project setup
-- **Removed absolute path popup warning** - The periodic warning dialog that interrupted workflow has been removed. Absolute path status is still shown passively in the panel's ASSET_PATHS row
-- **Removed Cam3 (Path) button** - Replaced by Create Hierarchy
+- Added Create Hierarchy button (one-click null hierarchy template)
+- Removed absolute path popup warning (status shown passively)
+- Removed Cam3 (Path) button — replaced by Create Hierarchy
 
 ### v1.0.2 | 09.11.2025
 
-**Major Fix**:
-- **Fixed absolute path detection for node materials** - Previously only detected absolute paths in Redshift materials (type 1036224). Now detects absolute paths in ALL material types including standard Cinema 4D node materials, which use the Maxon node system (`net.maxon`). This was causing the plugin to miss texture paths stored in standard materials.
-
-**Technical Details**:
-- Replaced complex node graph traversal (which required Cinema 4D API methods that don't exist) with direct BaseContainer parameter scanning
-- Now scans all material parameters for file paths, catching textures regardless of material type or node space configuration
-- Detects both forward slash (`D:/path`) and backslash (`D:\path`) absolute path formats
-- Added new asset types: `material_texture` and `material_param` for better tracking
-
-**Impact**: The 6th quality check (ASSET_PATHS) now properly detects absolute texture paths in standard Cinema 4D materials, not just Alembic files and Redshift materials. This prevents production issues caused by non-portable asset references.
+- Fixed absolute path detection for node materials (was missing standard C4D node materials)
+- Now scans all material parameter containers for file paths
+- Detects both `/` and `\` absolute path formats
 
 ### v1.0.1 | 11.10.2025
 
-**Bug Fixes**:
-- Fixed null print spam in console (removed unnecessary return values from Timer method)
-- Corrected stills tone mapping to proper ACES RRT/ODT (was incorrectly labeled as "Filmic")
-
-**Additions**:
-- Added abc_retime plugin integration by @zonedog + @axisfx (one-click tag application)
-- Updated documentation to reflect accurate ACES tone mapping
-
-**Credits**: Thanks @thodos for the tips ❤️
+- Fixed null print spam in console
+- Corrected stills tone mapping to proper ACES RRT/ODT
+- Added abc_retime plugin integration by @zonedog + @axisfx
+- Thanks @thodos for the tips ❤️
 
 ### v1.0.0 | 10.10.2025
 
-Initial release with:
+Initial release:
 - Five pipeline quality checks
 - Render preset management
 - Hierarchy→Layers and Solo Layers
 - Vibrate Null, Camera Rigs, Drop to Floor
 - Redshift snapshot conversion with ACES tone mapping
-- Quick tools (GPT, 3Dsky search)
+- Quick tools
 
 ## License
 
-Proprietary software developed by Yambo Studio for professional production use.
 Free for personal and commercial use. Redistribution not permitted without permission.
+Originally developed as YS Guardian at Yambo Studio. Sentinel is the continued maintenance and extension of that work by Javier Melgar.
 
 ## Support
 
 **Found a bug or have a feature request?**
-Use the **Report Bug** button in the plugin or visit the [Issues page](https://github.com/yamb0x/ys-guardian/issues/new).
+Use the **Report Bug** button in the plugin or visit the [Issues page](https://github.com/jmcodex93/sentinel/issues/new).
 
 **When reporting bugs**, please include:
 - Cinema 4D version and Redshift version
 - Error description and steps to reproduce
-- Logs from: `C:\YS_Guardian_Output\snapshot_log.txt`
+- Logs from: `C:\Sentinel_Output\snapshot_log.txt`
 
 ## Special Thanks
 
+- **Yambo Studio** — for building YS Guardian, the foundation Sentinel grew from.
 - **Riccardo Bottoni** (@riccardobottoni) – Camera rigs (Simple, Shakel, Path). The keyframe wizard himself.
 - **Austin Marola** (@zonedog) and **@axisfx** – [ABC Retime plugin](https://github.com/axisfx2/abc_retime). Incredible little tool for alembic retiming.
 - **Drop to Floor** original creators – Took the concept and rewrote it for modern C4D.
@@ -297,8 +493,8 @@ Use the **Report Bug** button in the plugin or visit the [Issues page](https://g
 
 ## Links
 
-[GitHub Repository](https://github.com/yamb0x/ys-guardian) · [Report Bug](https://github.com/yamb0x/ys-guardian/issues/new) · [Development Guide](CLAUDE.md)
+[GitHub Repository](https://github.com/jmcodex93/sentinel) · [Report Bug](https://github.com/jmcodex93/sentinel/issues/new) · [Development Guide](CLAUDE.md) · [Original YS Guardian](https://github.com/yamb0x/ys-guardian)
 
 ---
 
-**Made with ❤️ at Yambo Studio**
+**Sentinel** — continuing the watchdog tradition. Maintained with ❤️ by Javier Melgar.
