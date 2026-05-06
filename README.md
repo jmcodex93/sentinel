@@ -1,4 +1,4 @@
-# Sentinel v1.5.0
+# Sentinel v1.5.1
 
 Quality control, render management, and workflow automation plugin for Cinema 4D production environments — keeping the watchdog spirit of YS Guardian.
 
@@ -77,6 +77,23 @@ Versioned saves with full context, beyond C4D's stock Save Incremental:
 - After saving a TR/CR/FINAL version: prompts to **auto-create a continuation WIP** so the review snapshot stays untouched
 - Live "Last version" caption above the button: `v007 TR · 2h ago`
 - **Browse Recent Versions** inline list: last 5 versions with color-coded status badges, filter dropdown (All/WIP/TR/CR/FINAL), click any row to open that version
+
+#### Scene Notes & TODOs
+Per-scene notepad with persistent storage that survives Cmd+S, Save Versions, and reopening C4D:
+
+- **Free-form notes** + **TODO checklist** in a sidecar `<base>_notes.json` (parallel to history JSON)
+- Modal editor: textarea for notes + clickable TODO list with checkbox toggle and × delete
+- Live caption in the panel: `⚠ Notes: text + 3 TODOs (2 pending)` (warning prefix when there are pending TODOs)
+- Notes are **shared across all versions** of the same scene base — they describe the project, not the file. Version-specific commentary goes in the Save Version comment field.
+- Notes included in **QC report** export and **Scene Collector** manifest
+- Sidecar copied to delivery folder by Scene Collector
+
+#### Clean delivery naming (Collect Scene)
+C4D's `SaveProject` saves the project using the delivery folder's name. Sentinel automatically renames the collected `.c4d` back to the **original scene base** (stripped of `_v###[_status]` suffix), so deliveries have a clean, predictable identity:
+
+- Original: `robot_010_v022_FINAL.c4d` collected to `/delivery/round3/`
+- Result: `/delivery/round3/robot_010.c4d` (not `round3.c4d`)
+- Manifest preserves traceability: `original_filename`, `original_version`, `original_status`
 
 #### QC Report Export
 One-click JSON export with quality score, scene complexity stats, and detailed results for all 10 checks.
@@ -285,6 +302,32 @@ The snapshot system uses external Python with Pillow for color-accurate conversi
 - Ensure abc_retime plugin is installed in Cinema 4D plugins folder
 
 ## Changelog
+
+### v1.5.1 | 06.05.2026
+
+**New: Scene Notes & TODOs**
+- Per-scene sidecar `<base>_notes.json` (mirrors the history JSON pattern)
+- Modal editor with multiline notes + clickable TODO list (toggle done, delete, add)
+- Panel caption with warning prefix when there are pending TODOs
+- Notes shared across all versions of the same scene base (project-level scope)
+- Dialog explicitly explains the shared-scope to avoid confusion: "These notes apply to ALL versions of this scene"
+- Cancel discards changes (deepcopy semantics); Save persists atomically
+
+**New: Clean delivery naming (Collect Scene)**
+- After `SaveProject`, the collected `.c4d` is automatically renamed to the original scene base (stripped of `_v###[_status]`)
+- Example: `test_v006.c4d` collected to `/Desktop/collected/` → produces `test.c4d` (not `collected.c4d`)
+- Manifest preserves traceability via new fields: `original_filename`, `original_version`, `original_status`
+- Doc path/name updated so C4D's title bar reflects the renamed file
+- Defensive: refuses to overwrite an existing file at the desired path
+
+**Notes integration**
+- Scene Collector manifest includes `notes` section (summary, text, todos, pending_count, updated)
+- Notes sidecar copied to delivery folder alongside the .c4d (matching base name)
+- QC report export includes the same `notes` section (always present, with empty defaults if no sidecar)
+- Collect Scene success dialog warns when there are pending TODOs
+
+**Bugfix**
+- Notes path was being read AFTER `SaveProject`, but SaveProject changes the doc's path/name to the delivery folder. Fixed by capturing notes path + data BEFORE SaveProject.
 
 ### v1.5.0 | 05.05.2026
 

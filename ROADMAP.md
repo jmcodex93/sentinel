@@ -66,6 +66,42 @@
 
 ---
 
+### v1.5.1 — Scene Notes & TODOs + Clean Delivery Naming ✅
+
+#### Scene Notes & TODOs (per-scene sidecar)
+- [x] Pure helpers: `get_notes_path`, `load_notes`, `save_notes`, `add_todo`, `toggle_todo`, `delete_todo`, `summarize_notes`, `has_pending_todos` — all unit-tested
+- [x] Sidecar JSON `<base>_notes.json` (parallel to `<base>_history.json`) — shared across all versions of the same scene base
+- [x] `NotesDialog` modal: free-form notes textarea + TodoArea custom user area with checkbox toggle + delete (×) + add new TODO
+- [x] `TodoArea` GeUserArea: alternating row backgrounds, custom drawn checkboxes (green when done), text dimming for completed items, click zones (left=toggle, middle=toggle, right=delete)
+- [x] Panel caption: `⚠ Notes: text + 3 TODOs (2 pending)` with warning prefix when there are pending TODOs
+- [x] Cancel discards changes (deepcopy on dialog open); Save persists via `save_notes`
+- [x] Dialog header explicitly explains "Notes apply to ALL versions of this scene. For version-specific commentary, use the Save Version comment field."
+
+**Why**: Mograph artists return to projects weeks later and lose context (client feedback, pending fixes, decisions). Save Version comment captures version-specific changes; Scene Notes captures project-level state that spans the whole scene's lifetime.
+
+#### Clean delivery naming (Collect Scene)
+- [x] Capture original scene base BEFORE `SaveProject` (which moves the doc to the delivery folder and changes its name)
+- [x] After SaveProject, rename C4D's auto-generated `<folder>.c4d` → original clean base `.c4d` (e.g., `collected.c4d` → `test.c4d` from `test_v006.c4d`)
+- [x] Update `doc.SetDocumentPath/Name` + `EventAdd` so the C4D title bar and panel reflect the rename
+- [x] Refuse to overwrite an existing file at the desired path (defensive)
+- [x] Manifest now includes `original_filename`, `original_version`, `original_status` for traceability — the receiver knows which version this delivery came from
+
+**Why**: C4D's `SaveProject` uses the delivery folder's basename as the .c4d filename, which loses the scene's identity (`test_v006.c4d` collected to `/Desktop/collected/` becomes `collected.c4d`). For a delivery, the receiver wants `test.c4d` with all the version metadata in the manifest, not the folder name. This matches how ShotGrid/Prism/Maya pipelines treat published files.
+
+#### Notes integration (manifest + QC report)
+- [x] Scene Collector manifest includes `notes` section: summary, text, todos array, pending_count, updated timestamp
+- [x] Sidecar `<base>_notes.json` copied to delivery folder (so it travels with the .c4d)
+- [x] Naming match preserved: clean delivery name + matching sidecar (`test.c4d` ↔ `test_notes.json`)
+- [x] QC report export includes the same `notes` section (always present, with empty defaults if no sidecar)
+- [x] Collect Scene success dialog warns when there are pending TODOs: `⚠ 2 pending TODO(s) in scene notes`
+
+**Why**: Notes and TODOs are useful only if they reach the receiver and get included in QC reports. Otherwise they live only on the artist's machine.
+
+#### Bugfix: pre-capture notes for Collect Scene
+- [x] Originally, notes were read AFTER `SaveProject` — but SaveProject changes the doc's path/name, breaking `get_notes_path()`. Fixed by capturing notes path + data BEFORE SaveProject and using the cached values for manifest/copy.
+
+---
+
 ### v1.5.0 — Rebrand: YS Guardian → Sentinel ✅
 
 After 5 versions of additions (v1.4.0–v1.4.4), the plugin had outgrown the "YS Guardian" identity. v1.5.0 marks the rebrand to **Sentinel** while keeping the Yambo Studio heritage explicitly credited throughout.
@@ -245,15 +281,7 @@ After 5 rounds of community-naming exploration (covering watchdog/guardian synon
 > Note: Smart Incremental Save shipped early as v1.4.2.
 > Note: Status Tags + Continue from review + Last-version pillbox shipped as v1.4.3.
 > Note: Browse Recent Versions inline shipped as v1.4.4.
-
-#### Scene Notes / TODO
-Per-scene notes and checklist visible in the panel:
-- Comment field stored in document UserData or sidecar JSON
-- TODO checklist (e.g., "Fix lighting on s020", "Client feedback: warmer tones")
-- Persists between sessions
-- Included in QC export and Scene Collector manifest
-
-**Why**: Context gets lost between sessions and between artists. Notes in Slack/email get buried.
+> Note: Scene Notes / TODO + clean delivery naming shipped as v1.5.1.
 
 #### Review Slate on Snapshots
 Burn metadata into Save Still PNGs:

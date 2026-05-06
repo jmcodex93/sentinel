@@ -50,7 +50,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 # Plugin ID - change if ID collision
 PLUGIN_ID = 2099069
-PLUGIN_NAME = "Sentinel v1.5.0"
+PLUGIN_NAME = "Sentinel v1.5.1"
 
 # Preset names - normalized to lowercase with underscores
 # The system accepts both "pre_render" and "pre-render" (case-insensitive)
@@ -1721,6 +1721,30 @@ def export_qc_report(doc, results, artist_name):
         "score": f"{passed}/{total}"
     }
 
+    # Always include scene notes section in the report (empty defaults if no
+    # sidecar exists yet — keeps the JSON shape consistent for tooling)
+    notes_path = get_notes_path(doc)
+    notes_section = {
+        "summary": "Notes: empty",
+        "text": "",
+        "todos": [],
+        "pending_count": 0,
+        "updated": "",
+    }
+    if notes_path and os.path.exists(notes_path):
+        try:
+            notes_data = load_notes(notes_path)
+            notes_section = {
+                "summary": summarize_notes(notes_data),
+                "text": notes_data.get("notes", "") or "",
+                "todos": notes_data.get("todos", []) or [],
+                "pending_count": sum(1 for t in (notes_data.get("todos") or []) if not t.get("done")),
+                "updated": notes_data.get("updated", ""),
+            }
+        except Exception as e:
+            safe_print(f"Could not include notes in QC report: {e}")
+    report["notes"] = notes_section
+
     # Ask user where to save
     save_path = c4d.storage.SaveDialog(
         title="Save QC Report",
@@ -2380,6 +2404,507 @@ def smart_save_version(doc, comment, run_qc=True, artist_name="", status=None):
     return result
 
 
+# ---------------- Scene Notes / TODO ----------------
+# Pure helpers for managing per-scene notes + TODOs in a sidecar JSON
+# (`<base>_notes.json`) — mirrors the Smart Save history pattern.
+
+def get_notes_path(doc):
+    """Return the path to the notes sidecar for the given doc, or None.
+
+    Strips any `_v###[_status]` suffix so all versions of the same scene
+    share one notes file (consistent with how history.json works).
+    """
+    if not doc:
+        return None
+    doc_path = doc.GetDocumentPath() or ""
+    doc_name = doc.GetDocumentName() or ""
+    if not doc_path or not doc_name:
+        return None
+    folder = doc_path
+    name_no_ext = os.path.splitext(doc_name)[0]
+    base, _ver, _status = parse_version_filename(name_no_ext)
+    if not base:
+        base = name_no_ext or "scene"
+    return os.path.join(folder, f"{base}_notes.json")
+
+
+def _empty_notes():
+    """Return a fresh, valid notes dict with empty notes + empty todos list."""
+    return {
+        "scene": "",
+        "updated": "",
+        "notes": "",
+        "todos": [],
+    }
+
+
+def load_notes(notes_path):
+    """Load notes JSON. Always returns a valid dict (defaults if missing/malformed)."""
+    default = _empty_notes()
+    if not notes_path or not os.path.exists(notes_path):
+        return default
+    try:
+        with open(notes_path, 'r') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return default
+        # Ensure required fields exist
+        if "notes" not in data or not isinstance(data.get("notes"), str):
+            data["notes"] = ""
+        if "todos" not in data or not isinstance(data.get("todos"), list):
+            data["todos"] = []
+        if "scene" not in data:
+            data["scene"] = ""
+        if "updated" not in data:
+            data["updated"] = ""
+        return data
+    except Exception as e:
+        safe_print(f"Could not load notes: {e}")
+        return default
+
+
+def save_notes(notes_path, data):
+    """Atomically write notes JSON. Stamps `updated` timestamp on save."""
+    if not notes_path or data is None:
+        return False
+    from datetime import datetime
+    try:
+        if not isinstance(data, dict):
+            return False
+        # Normalize required fields
+        data.setdefault("scene", "")
+        data.setdefault("notes", "")
+        data.setdefault("todos", [])
+        data["updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(notes_path, 'w') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        safe_print(f"Could not save notes: {e}")
+        return False
+
+
+def _next_todo_id(notes):
+    """Compute the next TODO id (max existing + 1, starting at 1)."""
+    todos = notes.get("todos") or []
+    max_id = 0
+    for t in todos:
+        try:
+            tid = int(t.get("id", 0))
+            if tid > max_id:
+                max_id = tid
+        except Exception:
+            pass
+    return max_id + 1
+
+
+def add_todo(notes, text):
+    """Add a new TODO. Mutates and returns the notes dict for chaining.
+
+    Returns the notes unchanged if text is empty/whitespace.
+    """
+    from datetime import datetime
+    if not text or not text.strip():
+        return notes
+    if not isinstance(notes, dict):
+        return notes
+    notes.setdefault("todos", [])
+    todo = {
+        "id": _next_todo_id(notes),
+        "text": text.strip(),
+        "done": False,
+        "added": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    notes["todos"].append(todo)
+    return notes
+
+
+def toggle_todo(notes, todo_id):
+    """Flip the done state of a TODO by id. Returns True if changed, False if not found."""
+    from datetime import datetime
+    if not isinstance(notes, dict):
+        return False
+    for t in notes.get("todos", []):
+        try:
+            if int(t.get("id", 0)) == int(todo_id):
+                new_state = not bool(t.get("done", False))
+                t["done"] = new_state
+                if new_state:
+                    t["completed"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    t.pop("completed", None)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def delete_todo(notes, todo_id):
+    """Remove a TODO by id. Returns True if removed, False if not found."""
+    if not isinstance(notes, dict):
+        return False
+    todos = notes.get("todos") or []
+    before = len(todos)
+    notes["todos"] = [t for t in todos
+                       if not (str(t.get("id", "")) == str(todo_id))]
+    return len(notes["todos"]) < before
+
+
+def summarize_notes(notes):
+    """Return a one-line caption for the panel.
+
+    Examples:
+      "Notes: empty"
+      "Notes: 3 TODOs (1 pending)"
+      "Notes: text + 5 TODOs (all done)"
+      "Notes: free-form notes"
+    """
+    if not isinstance(notes, dict):
+        return "Notes: empty"
+    has_text = bool((notes.get("notes") or "").strip())
+    todos = notes.get("todos") or []
+    n = len(todos)
+    pending = sum(1 for t in todos if not t.get("done"))
+
+    if not has_text and n == 0:
+        return "Notes: empty"
+    if has_text and n == 0:
+        return "Notes: free-form notes"
+
+    todo_part = f"{n} TODO" if n == 1 else f"{n} TODOs"
+    if pending == 0:
+        status = "all done"
+    elif pending == n:
+        status = f"{pending} pending"
+    else:
+        status = f"{pending} pending"
+    pieces = []
+    if has_text:
+        pieces.append("text")
+    pieces.append(f"{todo_part} ({status})")
+    return "Notes: " + " + ".join(pieces)
+
+
+def has_pending_todos(notes):
+    """Return True if the notes contain any unfinished TODOs (used for color hint)."""
+    if not isinstance(notes, dict):
+        return False
+    return any(not t.get("done") for t in (notes.get("todos") or []))
+
+
+# ---------------- TodoArea (GeUserArea for the TODO list) ----------------
+# Renders TODOs with checkbox + text + delete affordance. Two click zones per
+# row: left (CHECKBOX_W px) toggles done; right (DELETE_W px) deletes.
+
+_COL_TODO_BG = c4d.Vector(0.10, 0.10, 0.10)
+_COL_TODO_ROW = c4d.Vector(0.14, 0.14, 0.14)
+_COL_TODO_ROW_ALT = c4d.Vector(0.16, 0.16, 0.16)
+_COL_TODO_TEXT = c4d.Vector(0.85, 0.85, 0.85)
+_COL_TODO_TEXT_DONE = c4d.Vector(0.40, 0.40, 0.40)
+_COL_TODO_CHECK = c4d.Vector(0.60, 0.60, 0.60)
+_COL_TODO_CHECK_ON = c4d.Vector(0.30, 0.75, 0.35)
+_COL_TODO_DELETE = c4d.Vector(0.55, 0.30, 0.30)
+
+
+class TodoArea(gui.GeUserArea):
+    """Custom-drawn TODO list with click zones for toggle and delete."""
+
+    ROW_HEIGHT = 22
+    ROW_PAD = 2
+    CHECKBOX_W = 26          # left click zone width
+    DELETE_W = 26            # right click zone width
+    EMPTY_HEIGHT = 30
+
+    def __init__(self):
+        super().__init__()
+        self.todos = []
+        self.toggle_callback = None  # callable(todo_id)
+        self.delete_callback = None  # callable(todo_id)
+        self.font = c4d.FONT_DEFAULT
+
+    def GetMinSize(self):
+        n = len(self.todos)
+        if n == 0:
+            return 400, self.EMPTY_HEIGHT
+        h = n * (self.ROW_HEIGHT + self.ROW_PAD) + self.ROW_PAD + 2
+        return 400, h
+
+    def set_todos(self, todos):
+        self.todos = list(todos) if todos else []
+        try:
+            self.LayoutChanged()
+        except Exception:
+            pass
+        self.Redraw()
+
+    def _y_to_index(self, y):
+        try:
+            y = int(y) - self.ROW_PAD
+            if y < 0:
+                return -1
+            row_pixel = self.ROW_HEIGHT + self.ROW_PAD
+            idx = y // row_pixel
+            if 0 <= idx < len(self.todos):
+                return idx
+        except Exception:
+            pass
+        return -1
+
+    def InputEvent(self, msg):
+        try:
+            device = msg[c4d.BFM_INPUT_DEVICE]
+            channel = msg[c4d.BFM_INPUT_CHANNEL]
+            if device != c4d.BFM_INPUT_MOUSE or channel != c4d.BFM_INPUT_MOUSELEFT:
+                return False
+            mx = int(msg[c4d.BFM_INPUT_X])
+            my = int(msg[c4d.BFM_INPUT_Y])
+            local_x, local_y = _ua_local_coords(self, mx, my)
+            idx = self._y_to_index(int(local_y))
+            if idx < 0:
+                return False
+            todo = self.todos[idx]
+            todo_id = todo.get("id")
+            w = self.GetWidth()
+            # Left zone → toggle
+            if int(local_x) <= self.CHECKBOX_W and self.toggle_callback is not None:
+                self.toggle_callback(todo_id)
+                return True
+            # Right zone → delete
+            if int(local_x) >= w - self.DELETE_W and self.delete_callback is not None:
+                self.delete_callback(todo_id)
+                return True
+            # Middle: also toggle (forgiving UX)
+            if self.toggle_callback is not None:
+                self.toggle_callback(todo_id)
+                return True
+        except Exception as e:
+            safe_print(f"TodoArea.InputEvent error: {e}")
+        return False
+
+    def DrawMsg(self, x1, y1, x2, y2, msg):
+        try:
+            self.OffScreenOn()
+            w = self.GetWidth()
+            h = self.GetHeight()
+
+            self.DrawSetPen(_COL_TODO_BG)
+            self.DrawRectangle(0, 0, w, h)
+
+            try:
+                self.DrawSetFont(self.font)
+            except Exception:
+                pass
+
+            if not self.todos:
+                self.DrawSetTextCol(_COL_TODO_TEXT_DONE, _COL_TODO_BG)
+                self.DrawText("No TODOs yet — add one below", 8, (h - 12) // 2)
+                return
+
+            x = self.ROW_PAD
+            y = self.ROW_PAD
+            for i, todo in enumerate(self.todos):
+                row_top = y
+                row_bot = y + self.ROW_HEIGHT
+                bg = _COL_TODO_ROW_ALT if (i % 2) else _COL_TODO_ROW
+                self.DrawSetPen(bg)
+                self.DrawRectangle(int(x), int(row_top), int(w - self.ROW_PAD), int(row_bot))
+
+                done = bool(todo.get("done"))
+                text = todo.get("text", "") or ""
+                text_y = int(row_top + (self.ROW_HEIGHT - 12) // 2)
+
+                # Checkbox
+                cb_x = int(x + 6)
+                cb_y = int(row_top + (self.ROW_HEIGHT - 12) // 2)
+                cb_size = 12
+                # Outer box (frame)
+                self.DrawSetPen(_COL_TODO_CHECK)
+                self.DrawRectangle(cb_x, cb_y, cb_x + cb_size, cb_y + cb_size)
+                # Inner fill (bg or checked)
+                if done:
+                    self.DrawSetPen(_COL_TODO_CHECK_ON)
+                else:
+                    self.DrawSetPen(bg)
+                self.DrawRectangle(cb_x + 1, cb_y + 1, cb_x + cb_size - 1, cb_y + cb_size - 1)
+
+                # Text
+                text_x = int(x + self.CHECKBOX_W + 4)
+                avail_w = w - self.CHECKBOX_W - self.DELETE_W - 12
+                truncated = text
+                try:
+                    if int(self.DrawGetTextWidth(truncated)) > avail_w:
+                        while truncated and int(self.DrawGetTextWidth(truncated + "...")) > avail_w:
+                            truncated = truncated[:-1]
+                        truncated = truncated + "..." if truncated != text else truncated
+                except Exception:
+                    if len(truncated) > 50:
+                        truncated = truncated[:47] + "..."
+                text_color = _COL_TODO_TEXT_DONE if done else _COL_TODO_TEXT
+                self.DrawSetTextCol(text_color, bg)
+                self.DrawText(truncated, text_x, text_y)
+
+                # Delete affordance: × on the right
+                del_x = int(w - self.DELETE_W + 8)
+                self.DrawSetTextCol(_COL_TODO_DELETE, bg)
+                self.DrawText("×", del_x, text_y)
+
+                y += self.ROW_HEIGHT + self.ROW_PAD
+
+        except Exception as e:
+            safe_print(f"TodoArea.DrawMsg error: {e}")
+
+
+# ---------------- NotesDialog (modal: free-form notes + TODO list) ----------------
+class NotesDialog(gui.GeDialog):
+    """Modal dialog for editing per-scene notes and TODOs.
+
+    After Open(c4d.DLG_TYPE_MODAL), check `confirmed`. If True, read
+    `result_notes` (a dict matching the load_notes shape).
+    """
+
+    EDT_NOTES = 1001
+    AREA_TODOS = 1002
+    EDT_NEW_TODO = 1003
+    BTN_ADD_TODO = 1004
+    BTN_CANCEL = 1005
+    BTN_SAVE = 1006
+    LBL_SUMMARY = 1007
+    LBL_HINT = 1008
+
+    def __init__(self, notes_data):
+        super().__init__()
+        # Work on a deep copy so Cancel discards changes
+        import copy
+        self._working = copy.deepcopy(notes_data) if notes_data else _empty_notes()
+        self._working.setdefault("notes", "")
+        self._working.setdefault("todos", [])
+        self.todo_ua = TodoArea()
+        self.confirmed = False
+        self.result_notes = None
+
+    def CreateLayout(self):
+        scene_label = self._working.get("scene") or "scene"
+        self.SetTitle(f"Scene Notes — {scene_label}  (shared across all versions)")
+
+        self.GroupBegin(0, c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT, 1, 0)
+        self.GroupBorderSpace(10, 10, 10, 10)
+        self.GroupSpace(0, 6)
+
+        # Summary line
+        self.AddStaticText(self.LBL_SUMMARY, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+
+        # Hint: explains the model so users don't get confused about scope
+        self.AddStaticText(
+            self.LBL_HINT, c4d.BFH_SCALEFIT, 0, 0,
+            "These notes apply to ALL versions of this scene. "
+            "For version-specific commentary, use the Save Version comment field.",
+            0
+        )
+
+        self.AddSeparatorH(4)
+
+        # Notes section
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Notes (free-form):", 0)
+        try:
+            multiline_flags = c4d.DR_MULTILINE_WORDWRAP
+        except AttributeError:
+            multiline_flags = 0
+        self.AddMultiLineEditText(
+            self.EDT_NOTES,
+            c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT,
+            500, 130,
+            multiline_flags,
+        )
+
+        self.AddSeparatorH(4)
+
+        # TODOs list
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "TODOs (click to toggle, × to delete):", 0)
+        self.AddUserArea(self.AREA_TODOS, c4d.BFH_SCALEFIT | c4d.BFV_FIT, 0, TodoArea.EMPTY_HEIGHT)
+        self.AttachUserArea(self.todo_ua, self.AREA_TODOS)
+
+        # Add new TODO row
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
+        self.GroupSpace(6, 0)
+        self.AddEditText(self.EDT_NEW_TODO, c4d.BFH_SCALEFIT, 0, 0)
+        self.AddButton(self.BTN_ADD_TODO, c4d.BFH_RIGHT, 80, 0, "+ Add")
+        self.GroupEnd()
+
+        self.AddSeparatorH(8)
+
+        # Action buttons (right-aligned)
+        self.GroupBegin(0, c4d.BFH_RIGHT, 2, 0)
+        self.GroupSpace(6, 0)
+        self.AddButton(self.BTN_CANCEL, c4d.BFH_RIGHT, 90, 0, "Cancel")
+        self.AddButton(self.BTN_SAVE, c4d.BFH_RIGHT, 90, 0, "Save")
+        self.GroupEnd()
+
+        self.GroupEnd()
+        return True
+
+    def InitValues(self):
+        self.SetString(self.EDT_NOTES, self._working.get("notes", "") or "")
+        self.SetString(self.EDT_NEW_TODO, "")
+        # Wire TodoArea callbacks (after Attach)
+        self.todo_ua.toggle_callback = self._on_toggle_todo
+        self.todo_ua.delete_callback = self._on_delete_todo
+        self._refresh_todos()
+        self._update_summary()
+        return True
+
+    def _refresh_todos(self):
+        self.todo_ua.set_todos(self._working.get("todos", []))
+
+    def _update_summary(self):
+        # Pull live notes text from the edit field so summary reflects what user typed
+        live = dict(self._working)
+        live["notes"] = self.GetString(self.EDT_NOTES) or ""
+        self.SetString(self.LBL_SUMMARY, summarize_notes(live))
+
+    def _on_toggle_todo(self, todo_id):
+        if toggle_todo(self._working, todo_id):
+            self._refresh_todos()
+            self._update_summary()
+
+    def _on_delete_todo(self, todo_id):
+        if delete_todo(self._working, todo_id):
+            self._refresh_todos()
+            self._update_summary()
+
+    def Command(self, cid, msg):
+        if cid == self.BTN_CANCEL:
+            self.confirmed = False
+            self.Close()
+            return True
+
+        if cid == self.BTN_ADD_TODO:
+            text = (self.GetString(self.EDT_NEW_TODO) or "").strip()
+            if text:
+                add_todo(self._working, text)
+                self.SetString(self.EDT_NEW_TODO, "")
+                self._refresh_todos()
+                self._update_summary()
+            return True
+
+        if cid == self.EDT_NOTES:
+            # Live summary update as user types (cheap)
+            self._update_summary()
+            return True
+
+        if cid == self.EDT_NEW_TODO:
+            return True  # no-op; pressing Enter doesn't auto-add (avoid surprise)
+
+        if cid == self.BTN_SAVE:
+            # Pull notes text + return the working copy
+            self._working["notes"] = (self.GetString(self.EDT_NOTES) or "").strip()
+            self.result_notes = self._working
+            self.confirmed = True
+            self.Close()
+            return True
+
+        return True
+
+
 # ---------------- Scene Collector ----------------
 def collect_scene(doc, artist_name):
     """Pre-flight QC + Save Project with Assets + Verify + Manifest"""
@@ -2393,6 +2918,25 @@ def collect_scene(doc, artist_name):
     if not doc_path:
         c4d.gui.MessageDialog("Please save the scene first before collecting.")
         return
+
+    # Capture original metadata BEFORE SaveProject runs — SaveProject changes
+    # the doc's path/name to the delivery folder, losing the original identity.
+    original_doc_name = doc.GetDocumentName() or "scene.c4d"
+    original_name_no_ext = os.path.splitext(original_doc_name)[0]
+    original_base, original_version_int, original_status = parse_version_filename(original_name_no_ext)
+    if not original_base:
+        original_base = original_name_no_ext
+    # The "clean" delivery name strips _v###[_status] — pure scene identity.
+    delivery_filename = f"{original_base}.c4d"
+
+    # Capture the notes sidecar path/data BEFORE SaveProject so we don't lose them.
+    original_notes_path = get_notes_path(doc)
+    original_notes_data = None
+    if original_notes_path and os.path.exists(original_notes_path):
+        try:
+            original_notes_data = load_notes(original_notes_path)
+        except Exception as e:
+            safe_print(f"Scene Collector: Could not pre-load notes: {e}")
 
     # ── Phase 1: Pre-flight QC ──
     safe_print("Scene Collector: Running pre-flight checks...")
@@ -2484,6 +3028,36 @@ def collect_scene(doc, artist_name):
     if missing_assets:
         safe_print(f"Scene Collector: {len(missing_assets)} missing assets!")
 
+    # ── Phase 2.5: Rename the saved file to the clean delivery name ──
+    # C4D's SaveProject saves to <target_dir>/<folder_basename>.c4d. We rename
+    # it to the clean original scene base (stripped of _v### suffix) so the
+    # delivery has a clean identity matching the notes sidecar naming.
+    saved_folder_basename = os.path.basename(target_dir.rstrip(os.sep)) + ".c4d"
+    saved_at = os.path.join(target_dir, saved_folder_basename)
+    desired_at = os.path.join(target_dir, delivery_filename)
+
+    if saved_at != desired_at:
+        if os.path.exists(saved_at):
+            try:
+                if os.path.exists(desired_at):
+                    # Defensive: refuse to overwrite an existing file
+                    safe_print(f"Scene Collector: refused to overwrite existing {delivery_filename}")
+                else:
+                    os.rename(saved_at, desired_at)
+                    safe_print(f"Scene Collector: Renamed {saved_folder_basename} -> {delivery_filename}")
+                    # Update the active doc's identity so the panel + future Cmd+S
+                    # reflect the renamed file
+                    try:
+                        doc.SetDocumentPath(target_dir)
+                        doc.SetDocumentName(delivery_filename)
+                        c4d.EventAdd()
+                    except Exception as e:
+                        safe_print(f"Scene Collector: Could not update doc metadata: {e}")
+            except Exception as e:
+                safe_print(f"Scene Collector: Could not rename to delivery name: {e}")
+        else:
+            safe_print(f"Scene Collector: expected file {saved_folder_basename} not found after SaveProject")
+
     # ── Phase 3: Generate manifest ──
     safe_print("Scene Collector: Generating manifest...")
 
@@ -2491,7 +3065,12 @@ def collect_scene(doc, artist_name):
         "sentinel_manifest": True,
         "version": PLUGIN_NAME,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "scene": doc.GetDocumentName() or "untitled",
+        # Delivery identity (clean name, what the receiver sees)
+        "scene": delivery_filename,
+        # Original version metadata (traceability — where this came from)
+        "original_filename": original_doc_name,
+        "original_version": original_version_int,
+        "original_status": (original_status or ""),
         "artist": artist_name or "",
         "shot_id": "",
         "collected_to": target_dir,
@@ -2529,6 +3108,27 @@ def collect_scene(doc, artist_name):
             pass
     manifest["total_size_mb"] = round(total_size / (1024 * 1024), 1)
 
+    # ── Include scene notes + TODOs in manifest (and copy sidecar to delivery) ──
+    # Uses original_notes_path/data captured before SaveProject moved the doc.
+    if original_notes_data is not None:
+        manifest["notes"] = {
+            "summary": summarize_notes(original_notes_data),
+            "text": original_notes_data.get("notes", "") or "",
+            "todos": original_notes_data.get("todos", []) or [],
+            "pending_count": sum(1 for t in (original_notes_data.get("todos") or []) if not t.get("done")),
+            "updated": original_notes_data.get("updated", ""),
+        }
+        # Also copy the sidecar file alongside the .c4d so it travels with delivery
+        if original_notes_path:
+            try:
+                import shutil
+                shutil.copy2(original_notes_path, target_dir)
+                safe_print(f"Scene Collector: Notes sidecar copied to delivery: {os.path.basename(original_notes_path)}")
+            except Exception as e:
+                safe_print(f"Scene Collector: Could not copy notes sidecar: {e}")
+    else:
+        manifest["notes"] = {"summary": "Notes: empty", "text": "", "todos": [], "pending_count": 0}
+
     # Save manifest
     manifest_path = os.path.join(target_dir, "sentinel_manifest.json")
     try:
@@ -2546,6 +3146,9 @@ def collect_scene(doc, artist_name):
         msg += f"\nMissing: {len(missing_assets)} (check manifest)"
     msg += f"\nSize: {manifest['total_size_mb']} MB"
     msg += f"\nManifest: sentinel_manifest.json"
+    notes_pending = manifest.get("notes", {}).get("pending_count", 0)
+    if notes_pending:
+        msg += f"\n⚠ {notes_pending} pending TODO(s) in scene notes"
 
     c4d.gui.MessageDialog(msg)
     safe_print("Scene Collector: Complete")
@@ -3269,6 +3872,8 @@ class G:
     LABEL_LAST_VERSION = 1173
     HISTORY_CANVAS = 1181
     COMBO_HISTORY_FILTER = 1182
+    LABEL_NOTES_SUMMARY = 1190
+    BTN_EDIT_NOTES = 1191
     COMP_TARGET = 1154
     CHK_MULTIPART = 1153
     BTN_INFO_TAKES = 1152
@@ -3345,6 +3950,24 @@ class YSPanel(gui.GeDialog):
         status_str = status if status else "WIP"
         rel_part = f"  ·  {rel}" if rel else ""
         self.SetString(G.LABEL_LAST_VERSION, f"Last version: v{ver:03d} {status_str}{rel_part}")
+
+    def _update_notes_summary(self, doc=None):
+        """Refresh the Notes summary caption above the Edit Notes button."""
+        if doc is None:
+            doc = c4d.documents.GetActiveDocument()
+        if not doc:
+            self.SetString(G.LABEL_NOTES_SUMMARY, "Notes: —")
+            return
+        notes_path = get_notes_path(doc)
+        if not notes_path:
+            self.SetString(G.LABEL_NOTES_SUMMARY, "Notes: —  ·  scene not saved yet")
+            return
+        notes = load_notes(notes_path)
+        summary = summarize_notes(notes)
+        if has_pending_todos(notes):
+            # Lightweight visual cue that there's something pending
+            summary = f"⚠ {summary}"
+        self.SetString(G.LABEL_NOTES_SUMMARY, summary)
 
     # Filter combobox value mapping (combobox index -> filter token)
     _HISTORY_FILTERS = [FILTER_ALL, "", "TR", "CR", "FINAL"]
@@ -3589,9 +4212,11 @@ class YSPanel(gui.GeDialog):
             self._takes_bad = takes_bad
             self._fps_range_bad = fps_range_bad
 
-            # Refresh "last version" caption + Recent Versions list (both read sidecar JSON)
+            # Refresh "last version" caption + Recent Versions list + Notes summary
+            # (all read sidecar JSON files)
             self._update_last_version_label(doc)
             self._update_history_area(doc)
+            self._update_notes_summary(doc)
 
         except Exception as e:
             safe_print(f"Error during refresh: {e}")
@@ -3736,6 +4361,13 @@ class YSPanel(gui.GeDialog):
         # Last version info — small caption above the Save Version button
         self.AddStaticText(G.LABEL_LAST_VERSION, c4d.BFH_SCALEFIT, 0, 0, "", 0)
 
+        # Scene Notes summary + edit button
+        self.GroupBegin(64, c4d.BFH_SCALEFIT, 2, 0)
+        self.GroupSpace(6, 0)
+        self.AddStaticText(G.LABEL_NOTES_SUMMARY, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+        self.AddButton(G.BTN_EDIT_NOTES, c4d.BFH_RIGHT, 110, 0, "Edit Notes...")
+        self.GroupEnd()
+
         # Primary checkpoint actions (versioning + delivery)
         self.GroupBegin(62, c4d.BFH_SCALEFIT, 2, 0)
         self.AddButton(G.BTN_SAVE_VERSION, c4d.BFH_SCALEFIT, 0, 0, "Save Version")
@@ -3797,9 +4429,10 @@ class YSPanel(gui.GeDialog):
         saved_multipart = GlobalSettings.get('aov_multipart', 1)
         self.SetBool(G.CHK_MULTIPART, bool(int(saved_multipart)))
 
-        # Show snapshot directory + last version caption
+        # Show snapshot directory + last version + notes summary
         self._update_snapshot_dir_label()
         self._update_last_version_label()
+        self._update_notes_summary()
 
         # Populate Recent Versions filter combobox + initial list
         for i, label in enumerate(self._HISTORY_FILTER_LABELS):
@@ -4336,6 +4969,9 @@ class YSPanel(gui.GeDialog):
         elif cid == G.BTN_SAVE_VERSION:
             self._handle_save_version(doc)
 
+        elif cid == G.BTN_EDIT_NOTES:
+            self._handle_edit_notes(doc)
+
         elif cid == G.COMBO_HISTORY_FILTER:
             try:
                 idx = int(self.GetInt32(G.COMBO_HISTORY_FILTER))
@@ -4346,6 +4982,40 @@ class YSPanel(gui.GeDialog):
             self._update_history_area()
 
         return True
+
+    # ── Scene Notes handler ──
+    def _handle_edit_notes(self, doc):
+        """Open the Notes dialog. On Save, persist to sidecar JSON."""
+        if not doc:
+            c4d.gui.MessageDialog("No active document.")
+            return
+        notes_path = get_notes_path(doc)
+        if not notes_path:
+            c4d.gui.MessageDialog(
+                "Save the scene first to a folder before adding notes."
+            )
+            return
+
+        notes = load_notes(notes_path)
+        # Stamp scene name from filename (used in dialog title) if not yet set
+        if not notes.get("scene"):
+            doc_name = doc.GetDocumentName() or ""
+            name_no_ext = os.path.splitext(doc_name)[0]
+            base, _ver, _status = parse_version_filename(name_no_ext)
+            notes["scene"] = base or name_no_ext or "scene"
+
+        dlg = NotesDialog(notes)
+        dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=560, defaulth=520)
+
+        if dlg.confirmed and dlg.result_notes is not None:
+            ok = save_notes(notes_path, dlg.result_notes)
+            if ok:
+                safe_print(f"Notes saved: {os.path.basename(notes_path)}")
+                self._dirty = True
+            else:
+                c4d.gui.MessageDialog("Failed to save notes file.")
+        else:
+            safe_print("Notes edit cancelled by user")
 
     # ── Smart Save Version handler ──
     def _handle_save_version(self, doc):
