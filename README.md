@@ -1,4 +1,4 @@
-# Sentinel v1.5.1
+# Sentinel v1.5.2
 
 Quality control, render management, and workflow automation plugin for Cinema 4D production environments — keeping the watchdog spirit of YS Guardian.
 
@@ -302,6 +302,30 @@ The snapshot system uses external Python with Pillow for color-accurate conversi
 - Ensure abc_retime plugin is installed in Cinema 4D plugins folder
 
 ## Changelog
+
+### v1.5.2 | 07.05.2026
+
+**UI/UX redesign — Scene Header + Tabs**
+- The panel now has a **Scene Header** always visible at the top: filename caption (`▸ Scene: name.c4d`) + Shot ID/Artist + QC progress bar with scene stats. This way the most critical info is glanceable regardless of which tab is active.
+- Content is split into 4 tabs (`CUSTOMGUI_QUICKTAB`):
+  - **QC**: 11 quality checks + Export QC Report
+  - **Render**: Preset, Redshift AOVs, Snapshot system
+  - **Versions**: Notes, Save Version, Collect Scene, Recent Versions browser
+  - **Tools**: Layout & Hierarchy / Object & Animation / Camera Rigs
+- A persistent **Footer** holds the GitHub + Report Bug links.
+
+**Why a redesign?** After 5 versions of additions, the panel had ~70 visible elements stacked vertically with no clear hierarchy. The tabbed structure reduces visible density to ~20 elements at a time, while the always-visible header keeps the most critical info one glance away. Same approach used by professional C4D plugins (X-Particles, Greyscalegorilla ecosystem).
+
+**Technical: dynamic tab rebuild**
+- C4D 2026's `HideElement` returns success but does NOT collapse layout space for hidden groups (verified empirically). The fix: a single `TAB_CONTAINER` is flushed (`LayoutFlushGroup`) and rebuilt with the active tab's content on every switch.
+- `StatusArea` and `HistoryArea` instances persist on `self` and are re-attached after rebuild.
+- Combo boxes are repopulated and combo selections restored from settings on each tab build.
+
+**Documented C4D limitation**: The docked panel **does not auto-shrink** when content gets smaller. Confirmed by Maxon SDK docs and Plugin Cafe staff: no `SetSize`/`ResizeWindow`/`FitToContent` API exists for docked panels. Maxon's own panels (Take Manager, AOV Manager) have this same behavior. The `BFV_SCALEFIT` spacers absorb gaps within the layout, but the window frame stays at its tallest seen size until manual user resize.
+
+**Other fixes**
+- Empty `GroupBegin/End` with `BFV_SCALEFIT` does NOT absorb space in C4D 2026 — must use `AddStaticText(..., BFV_SCALEFIT, ..., "", ...)` instead.
+- Multiple internal cleanups: removed obsolete debug logging, consolidated combo population logic into per-tab builders.
 
 ### v1.5.1 | 06.05.2026
 

@@ -66,6 +66,47 @@
 
 ---
 
+### v1.5.2 — UI/UX Redesign: Scene Header + Tabs ✅
+
+After 5 versions of additions (v1.4.0–v1.5.1), the panel had grown to ~70 visible elements stacked vertically with no clear hierarchy. This release introduces a tabbed structure with a always-visible Scene Header.
+
+#### Scene Header (always visible, top of panel)
+- [x] Filename caption (read-only, centered) showing the active document — uses `▸` BMP triangle (📁 emoji renders as fallback glyph in C4D static text on macOS)
+- [x] Shot ID + Artist editable fields
+- [x] `ScoreHeader` UserArea moved here from inside QC group — provides project-wide health summary regardless of active tab
+
+#### Tabs (4 tabs via `CUSTOMGUI_QUICKTAB`)
+- [x] **QC** — 11 quality check rows + Select/Fix/Info buttons + Export QC Report
+- [x] **Render** — Preset row, Redshift AOVs (Comp + Multi-Part + tier buttons), Snapshots (dir + Save Still + Open Folder)
+- [x] **Versions** — Notes summary + Edit, Last version pillbox, Save Version + Collect Scene, Recent Versions list with filter
+- [x] **Tools** — Layout & Hierarchy / Object & Animation / Camera Rigs sub-sections
+- [x] Tab labels declared via `_quicktab.AppendString(idx, label, selected)`
+- [x] Tab switch handled via `Command(G.TAB_BAR)` → check `IsSelected(i)` for each tab
+
+#### Dynamic rebuild on tab switch
+- [x] `HideElement` reports True but does **NOT** collapse layout space in C4D 2026 (verified empirically with debug logging)
+- [x] Solution: single `TAB_CONTAINER` group; `LayoutFlushGroup` on switch + rebuild via `_build_tab_*()` methods + `LayoutChanged`
+- [x] StatusArea / HistoryArea instances persist on `self`; re-attached after rebuild
+- [x] Combo boxes (preset, comp target, history filter) repopulated via `AddChild` in each rebuild
+- [x] Click callbacks (StatusArea, HistoryArea) re-wired after `AttachUserArea`
+- [x] Per-tab labels (snapshot dir, last version, notes summary, history list) refreshed immediately after rebuild
+
+#### Footer (always visible, bottom of panel)
+- [x] GitHub + Report Bug buttons — the only two persistent secondary actions
+
+#### Documented C4D limitation: panel does not auto-shrink
+- [x] When tab content gets smaller, the panel window does NOT shrink. Confirmed by Maxon SDK docs and Plugin Cafe staff: there is no `SetSize`, `ResizeWindow`, or `FitToContent` API for docked panels. Even Maxon's own panels (Take Manager, AOV Manager) have this behavior.
+- [x] `BFV_SCALEFIT` spacer at the end of each tab absorbs the gap WITHIN the layout (no orphan widgets visible), but the window frame stays at its tallest seen size until manual resize.
+- [x] Documented in CLAUDE.md "Known Limitations" so future contributors don't waste time looking for an API that doesn't exist.
+
+#### Key bugfix during the redesign
+- [x] Empty `GroupBegin/End` with `BFV_SCALEFIT` does NOT absorb space in C4D 2026 — must use `AddStaticText(..., BFV_SCALEFIT, ..., "", ...)` instead. Empty groups have zero min-size and BFV_SCALEFIT does not "wake them up".
+- [x] `Global2Local(x, y)` does NOT return user-area-local coords in C4D 2026. The fix (already in v1.4.4): `Local2Global()` with no args returns `{'x': N, 'y': M}` — the user-area's window origin; subtract from raw `msg[BFM_INPUT_X/Y]`.
+
+**Why**: Mograph artists scan the panel hundreds of times per session. ~70 visible elements with no hierarchy = high cognitive load. Tabbed layout reduces visible elements to ~20 at a time, while the Scene Header keeps the most critical info (filename, QC score, scene metadata) always glanceable regardless of active tab. Mirrors how professional plugins (X-Particles, GSG ecosystem) organize density.
+
+---
+
 ### v1.5.1 — Scene Notes & TODOs + Clean Delivery Naming ✅
 
 #### Scene Notes & TODOs (per-scene sidecar)

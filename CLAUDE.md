@@ -85,6 +85,7 @@ For multi-step work, write the plan as `step → verify` pairs. Weak criteria ("
 - **Browse Recent Versions**: Inline list of last 5 versions in the panel with status badges (color-coded), filter dropdown (All/WIP/TR/CR/FINAL), click row to open
 - **Scene Notes & TODOs**: Per-scene sidecar JSON (`<base>_notes.json`) with free-form notes + checklist of TODOs. Modal editor with checkbox toggle + delete. Live caption in panel ("⚠ Notes: text + 3 TODOs (2 pending)"). Notes shared across all versions of the same scene base. Included in QC report export and Scene Collector manifest. Sidecar copied to delivery folder.
 - **Scene Collector — clean delivery naming**: Renames the collected `.c4d` to the original scene base (stripping `_v###[_status]`) so deliveries have clean identity (e.g., `robot_010_v022_FINAL.c4d` → `robot_010.c4d`). Manifest preserves traceability via `original_filename`, `original_version`, `original_status`
+- **Tabbed UI** (v1.5.2): Scene Header (filename + Shot/Artist + QC bar) always visible above 4 tabs (QC / Render / Versions / Tools); footer (GitHub / Report Bug) always visible below. Tab content is dynamically rebuilt via `LayoutFlushGroup` — only the active tab lives in the layout (HideElement does not collapse layout space in C4D 2026)
 - **QC Report Export**: JSON with score, scene stats, all check details
 - **RS AOV Management**: Essentials (11) / Production (17+) tiers, per-compositor config (Nuke vs AE)
 - **Light Groups AOV**: Diagnose + toggle on Beauty AOV
@@ -100,6 +101,8 @@ For multi-step work, write the plan as `step → verify` pairs. Weak criteria ("
 - **Forcing Redshift Snapshot Directory**: Can't override Redshift's save location at runtime
 - **Programmatic Snapshot Triggering**: No API access to trigger snapshots from code
 - **Redshift must be configured manually**: RenderView → Preferences → Snapshots → EXR format
+- **C4D docked panel does not auto-shrink**: When tab content gets smaller (e.g., switching from QC → Versions), the panel window stays at its taller size. This is a confirmed C4D 2026 framework limitation (no `SetSize`/`ResizeWindow`/`FitToContent` API for docked panels — Maxon staff confirmed). Even Maxon's own panels (Take Manager, AOV Manager) have this behavior. The user must drag-resize manually if they want compact mode. Our `BFV_SCALEFIT` spacers absorb the gap correctly within the layout, but the window frame itself stays put.
+- **No native tooltips on widgets**: `BFM_GETCURSORINFO` is not routed to embedded `GeUserArea` in C4D 2026 Python. Section titles include hints (e.g., "click any row...") instead of hover tooltips.
 
 ## Active Tasks
 See `ROADMAP.md` for the full feature roadmap and pending phases (v1.5.0, v1.6.0, backlog).
@@ -184,6 +187,7 @@ cd "../11 C4D DEV/renderEngine" && git pull
 - **v1.4.4** (May 2026): Browse Recent Versions inline (custom GeUserArea with status badges + filter dropdown + click-to-open); fixed user-area click coord conversion in C4D 2026 (Local2Global() + msg subtraction) — affects both StatusArea and HistoryArea
 - **v1.5.0** (May 2026): **Rebrand YS Guardian → Sentinel** — plugin file renamed (`sentinel_panel.pyp`), settings file renamed (`sentinel_settings.json` with auto-migration from legacy), C4D plugin folder `Sentinel/`, GitHub URLs updated, attribution to Yambo Studio explicit in README/CLAUDE.md/License
 - **v1.5.1** (May 2026): Scene Notes & TODOs (sidecar JSON, modal editor, panel caption); Collect Scene clean delivery naming (strips `_v###[_status]` from filename, preserves traceability in manifest); notes integrated in QC report export and Scene Collector manifest + sidecar copied to delivery
+- **v1.5.2** (May 2026): UI/UX redesign — Scene Header always visible (filename caption + Shot/Artist + QC progress bar) + 4 tabs (QC / Render / Versions / Tools) using QuickTab CustomGUI + dynamic rebuild via `LayoutFlushGroup` (HideElement does not collapse layout space in C4D 2026, hence rebuild on tab switch). Footer (GitHub / Report Bug) always visible. Documented C4D auto-shrink limitation in known limitations.
 
 ## Testing Checklist
 - [ ] Main plugin file loads without errors
@@ -228,41 +232,32 @@ cd "../11 C4D DEV/renderEngine" && git pull
 - [ ] Shot ID syncs with Take system
 - [ ] Cross-platform: macOS and Windows
 
-### Current UI Layout (v1.4.x):
+### Current UI Layout (v1.5.2):
 ```
-┌─────────────────────────────────────────┐
-│ Shot ID: [____]       Artist: [_______] │
-├─ Quality Checks ────────────────────────┤
-│ LIGHTS      ■ 0  [OK]    [Select] [Fix]│
-│ VISIBILITY  ■ 0  [OK]    [Select]      │
-│ KEYFRAMES   ■ 0  [OK]    [Select]      │
-│ CAMERAS     ■ 0  [OK]    [Select] [Fix]│
-│ PRESETS     ■ 0  [OK]    [Info]        │
-│ ASSETS      ■ 0  [OK]    [Info]        │
-│ UNUSED MATS ■ 0  [OK]    [Select] [Fix]│
-│ NAMES       ■ 0  [OK]    [Select]      │
-│ OUTPUT      ■ 0  [OK]    [Info]        │
-│ TAKES       ■ 0  [OK]    [Info]        │
-│ FPS/RANGE   ■ 0  [OK]    [Info]   [Fix]│
-├─ Scene Tools ───────────────────────────┤
-│ [Hierarchy] [H→Layers] [Solo] [Drop]   │
-│ [Vibrate]   [ABC Retime] [Cam S] [Cam K]│
-├─ Render ────────────────────────────────┤
-│ [Preset ▼] 1920×1080  [Reset All] [9:16]│
-│ Comp [Nuke ▼] ☑ Multi-Part [Show AOVs] │
-│ [Essentials] [Production] [Light Groups]│
-├─ Output ────────────────────────────────┤
-│ Snapshots: ...                  [Browse]│
-│ Last version: v007 TR · 2h ago          │  ← live pillbox
-│ ⚠ Notes: text + 3 TODOs (1 pending) [Edit Notes...] │ ← scene notes summary
-│ [ Save Version ]   [ Collect Scene ]    │  ← primary checkpoint actions
-│ Recent Versions          [ All ▾ ]      │
-│ ┌─────────────────────────────────────┐ │
-│ │ v008 [WIP] "rim lights"     12m ago │ │  ← click row to open
-│ │ v007 [CR ] "round 2"  9/11   2h ago │ │  ← color-coded badges
-│ │ v005 [TR ] "team rev" 10/11  1d ago │ │
-│ └─────────────────────────────────────┘ │
-│ [Open Folder] [Save Still] [Export QC]  │
-│ [GitHub]                   [Report Bug] │
-└─────────────────────────────────────────┘
+┌─ Sentinel v1.5.2 ──────────────────────────────┐
+│  Scene Header (always visible) ─────────────   │
+│  ▸ Scene:  test_v007_TR.c4d                    │  ← filename caption
+│  Shot ID: [Main]   Artist: [Motioneer]         │  ← editable
+│  QC 8/11  ⚠  ████░░░░  ·  1.2M polys           │  ← score line
+│ ─────────────────────────────────────────────  │
+│  ┌───┬────────┬──────────┬───────┐             │
+│  │QC●│ Render │ Versions │ Tools │ ← QuickTab  │
+│  └───┴────────┴──────────┴───────┘             │
+│ ─────────────────────────────────────────────  │
+│  (active tab content — dynamically rebuilt     │
+│   via LayoutFlushGroup on switch; only one     │
+│   tab is in the layout at a time because       │
+│   HideElement does not collapse layout space   │
+│   in C4D 2026)                                 │
+│                                                │
+│  Tabs:                                         │
+│    QC: 11 quality check rows + Export QC       │
+│    Render: Preset + AOVs + Snapshots           │
+│    Versions: Notes + Save Version + Recent     │
+│    Tools: Layout / Object / Camera Rigs        │
+│                                                │
+│ ─────────────────────────────────────────────  │
+│  Footer (always visible)                       │
+│  [GitHub]                  [Report Bug]        │
+└────────────────────────────────────────────────┘
 ```

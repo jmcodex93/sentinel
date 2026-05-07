@@ -50,7 +50,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 # Plugin ID - change if ID collision
 PLUGIN_ID = 2099069
-PLUGIN_NAME = "Sentinel v1.5.1"
+PLUGIN_NAME = "Sentinel v1.5.2"
 
 # Preset names - normalized to lowercase with underscores
 # The system accepts both "pre_render" and "pre-render" (case-insensitive)
@@ -3825,6 +3825,15 @@ class G:
     ARTIST = 1003
     CANVAS = 1008
     SCORE_CANVAS = 1180  # ScoreHeader UserArea
+    LABEL_FILENAME = 1192  # Scene identity caption (filename of active doc)
+
+    # Tabbed layout (Phase 2 of UI redesign)
+    TAB_BAR = 1200            # CUSTOMGUI_QUICKTAB widget
+    TAB_CONTAINER = 1209      # Single container — only active tab content lives inside
+    TAB_GROUP_QC = 1210       # Inner group ID for QC content
+    TAB_GROUP_RENDER = 1211   # Inner group ID for Render content
+    TAB_GROUP_VERSIONS = 1212 # Inner group ID for Versions content
+    TAB_GROUP_TOOLS = 1213    # Inner group ID for Tools content
 
     # Per-check action buttons (1 click to select/info)
     BTN_SEL_LIGHTS = 1130
@@ -3897,6 +3906,8 @@ class YSPanel(gui.GeDialog):
         self._history_filter = FILTER_ALL
         self._history_max_rows = 5
         self._artist_name = ""
+        self._quicktab = None  # QuickTab CustomGUI for tabs
+        self._active_tab = 0   # 0=QC, 1=Render, 2=Versions, 3=Tools
         self._dirty = False  # Set by CoreMessage, consumed by Timer
 
         # Store selection results
@@ -3915,6 +3926,258 @@ class YSPanel(gui.GeDialog):
         # Cycling indices for one-by-one selection
         self._unused_mats_idx = 0
         self._names_idx = 0
+
+    # ── Tab switching: dynamic rebuild via LayoutFlushGroup ─────────────────
+    # C4D 2026's HideElement returns True but does NOT collapse layout space
+    # for hidden groups (verified empirically). The robust solution is to
+    # keep only the active tab's content in the layout: flush the container
+    # and rebuild on every switch.
+
+    def _set_active_tab(self, idx):
+        """Switch to tab `idx` by flushing the container and rebuilding."""
+        if not 0 <= idx <= 3:
+            return
+        self._active_tab = idx
+        try:
+            self.LayoutFlushGroup(G.TAB_CONTAINER)
+        except Exception as e:
+            safe_print(f"LayoutFlushGroup error: {e}")
+            return
+        try:
+            self._build_active_tab_content()
+        except Exception as e:
+            safe_print(f"_build_active_tab_content error: {e}")
+        try:
+            self.LayoutChanged(G.TAB_CONTAINER)
+        except Exception as e:
+            safe_print(f"LayoutChanged error: {e}")
+        # Repopulate per-tab labels with current data (widgets just got created).
+        try:
+            doc = c4d.documents.GetActiveDocument()
+            if idx == 1:  # Render
+                self._update_snapshot_dir_label()
+            elif idx == 2:  # Versions
+                self._update_last_version_label(doc)
+                self._update_notes_summary(doc)
+                self._update_history_area(doc)
+        except Exception as e:
+            safe_print(f"Per-tab label refresh error: {e}")
+        # Mark dirty so the QC StatusArea redraws on the next Timer tick.
+        self._dirty = True
+
+    def _build_active_tab_content(self):
+        """Dispatch to the appropriate tab builder based on self._active_tab."""
+        if self._active_tab == 0:
+            self._build_tab_qc()
+        elif self._active_tab == 1:
+            self._build_tab_render()
+        elif self._active_tab == 2:
+            self._build_tab_versions()
+        elif self._active_tab == 3:
+            self._build_tab_tools()
+
+    # ── Tab content builders ─────────────────────────────────────────────────
+
+    def _build_tab_qc(self):
+        """Build QC tab content (no outer group; lives inside TAB_CONTAINER)."""
+        self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0,
+                           "Click any row to run its primary action.", 0)
+
+        self.GroupBegin(40, c4d.BFH_SCALEFIT|c4d.BFV_TOP, 2, 0)
+        self.GroupSpace(4, 0)
+
+        # Left: terminal status display (StatusArea instance persists across rebuilds)
+        self.AddUserArea(G.CANVAS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 0, 260)
+        if self.ua is None:
+            self.ua = StatusArea()
+        self.AttachUserArea(self.ua, G.CANVAS)
+        self.ua.click_callback = self._on_qc_row_click
+
+        # Right: per-check Select + Fix buttons (2 columns × 11 rows)
+        self.GroupBegin(407, c4d.BFH_RIGHT|c4d.BFV_SCALEFIT, 2, 11)
+        self.GroupBorderSpace(0, 3, 0, 3)
+        self.GroupSpace(2, 3)
+        self.AddButton(G.BTN_SEL_LIGHTS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
+        self.AddButton(G.BTN_FIX_LIGHTS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "Fix")
+        self.AddButton(G.BTN_SEL_VIS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
+        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
+        self.AddButton(G.BTN_SEL_KEYS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
+        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
+        self.AddButton(G.BTN_SEL_CAMS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
+        self.AddButton(G.BTN_FIX_CAMS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "Fix")
+        self.AddButton(G.BTN_INFO_PRESET, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Info")
+        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
+        self.AddButton(G.BTN_INFO_TEXTURES, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Info")
+        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
+        self.AddButton(G.BTN_SEL_UNUSED_MATS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
+        self.AddButton(G.BTN_FIX_UNUSED_MATS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "Fix")
+        self.AddButton(G.BTN_SEL_NAMES, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
+        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
+        self.AddButton(G.BTN_INFO_OUTPUT, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Info")
+        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
+        self.AddButton(G.BTN_INFO_TAKES, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Info")
+        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
+        self.AddButton(G.BTN_INFO_FPS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Info")
+        self.AddButton(G.BTN_FIX_FPS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "Fix")
+        self.GroupEnd()
+
+        self.GroupEnd()  # status row
+
+        self.AddSeparatorH(4)
+        self.AddButton(G.BTN_EXPORT_QC, c4d.BFH_SCALEFIT, 0, 0, "Export QC Report")
+
+        # Spacer absorbs remaining vertical space
+        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 0, 0, "", 0)
+
+    def _build_tab_render(self):
+        """Build Render tab content."""
+        # Preset row
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Render Preset", 0)
+        self.GroupBegin(20, c4d.BFH_SCALEFIT, 4, 0)
+        self.AddComboBox(G.PRESET_DROPDOWN, c4d.BFH_SCALEFIT, 100, 0)
+        self.AddStaticText(G.LABEL_RESOLUTION, c4d.BFH_LEFT, 100, 0, "", 0)
+        self.AddButton(G.BTN_RESET_ALL, c4d.BFH_SCALEFIT, 0, 0, "Reset All")
+        self.AddButton(G.BTN_FORCE_VERTICAL, c4d.BFH_SCALEFIT, 0, 0, "Force 9:16")
+        self.GroupEnd()
+        # Repopulate preset combo (must happen after AddComboBox each rebuild)
+        self.AddChild(G.PRESET_DROPDOWN, 0, "Previz")
+        self.AddChild(G.PRESET_DROPDOWN, 1, "Pre-Render")
+        self.AddChild(G.PRESET_DROPDOWN, 2, "Render")
+        self.AddChild(G.PRESET_DROPDOWN, 3, "Stills")
+
+        self.AddSeparatorH(4)
+
+        # AOVs
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Redshift AOVs", 0)
+        self.GroupBegin(81, c4d.BFH_SCALEFIT, 4, 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Comp", 0)
+        self.AddComboBox(G.COMP_TARGET, c4d.BFH_LEFT, 100, 0)
+        self.AddCheckbox(G.CHK_MULTIPART, c4d.BFH_LEFT, 0, 0, "Multi-Part")
+        self.AddButton(G.BTN_INFO_AOVS, c4d.BFH_SCALEFIT, 0, 0, "Show AOVs")
+        self.GroupEnd()
+        # Repopulate comp combo + restore state
+        self.AddChild(G.COMP_TARGET, 0, "Nuke")
+        self.AddChild(G.COMP_TARGET, 1, "After Effects")
+        self.SetInt32(G.COMP_TARGET, int(GlobalSettings.get('comp_target', 0)))
+        self.SetBool(G.CHK_MULTIPART, bool(int(GlobalSettings.get('aov_multipart', 1))))
+
+        self.GroupBegin(80, c4d.BFH_SCALEFIT, 3, 0)
+        self.AddButton(G.BTN_FORCE_ESSENTIALS, c4d.BFH_SCALEFIT, 0, 0, "Essentials")
+        self.AddButton(G.BTN_FORCE_PRODUCTION, c4d.BFH_SCALEFIT, 0, 0, "Production")
+        self.AddButton(G.BTN_LIGHT_GROUPS, c4d.BFH_SCALEFIT, 0, 0, "Light Groups")
+        self.GroupEnd()
+
+        self.AddSeparatorH(4)
+
+        # Snapshots
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Snapshots", 0)
+        self.GroupBegin(61, c4d.BFH_SCALEFIT, 2, 0)
+        self.AddStaticText(G.LABEL_SNAPSHOT_DIR, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+        self.AddButton(G.BTN_SET_SNAPSHOT_DIR, c4d.BFH_RIGHT, 60, 0, "Browse")
+        self.GroupEnd()
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
+        self.AddButton(G.BTN_SNAPSHOT, c4d.BFH_SCALEFIT, 0, 0, "Save Still")
+        self.AddButton(G.BTN_OPEN_FOLDER, c4d.BFH_SCALEFIT, 0, 0, "Open Folder")
+        self.GroupEnd()
+
+        # Spacer
+        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 0, 0, "", 0)
+
+    def _build_tab_versions(self):
+        """Build Versions tab content."""
+        # Notes
+        self.GroupBegin(64, c4d.BFH_SCALEFIT, 2, 0)
+        self.GroupSpace(6, 0)
+        self.AddStaticText(G.LABEL_NOTES_SUMMARY, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+        self.AddButton(G.BTN_EDIT_NOTES, c4d.BFH_RIGHT, 110, 0, "Edit Notes...")
+        self.GroupEnd()
+
+        self.AddSeparatorH(4)
+
+        # Last version + primary actions
+        self.AddStaticText(G.LABEL_LAST_VERSION, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+        self.GroupBegin(62, c4d.BFH_SCALEFIT, 2, 0)
+        self.AddButton(G.BTN_SAVE_VERSION, c4d.BFH_SCALEFIT, 0, 0, "Save Version")
+        self.AddButton(G.BTN_COLLECT_SCENE, c4d.BFH_SCALEFIT, 0, 0, "Collect Scene")
+        self.GroupEnd()
+
+        self.AddSeparatorH(4)
+
+        # Recent versions list
+        self.GroupBegin(63, c4d.BFH_SCALEFIT, 2, 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Recent Versions", 0)
+        self.AddComboBox(G.COMBO_HISTORY_FILTER, c4d.BFH_RIGHT, 100, 0)
+        self.GroupEnd()
+        # Repopulate history filter combo
+        for i, label in enumerate(self._HISTORY_FILTER_LABELS):
+            self.AddChild(G.COMBO_HISTORY_FILTER, i, label)
+        # Restore selection
+        try:
+            current_filter = self._history_filter
+            for i, f in enumerate(self._HISTORY_FILTERS):
+                if f == current_filter:
+                    self.SetInt32(G.COMBO_HISTORY_FILTER, i)
+                    break
+        except Exception:
+            self.SetInt32(G.COMBO_HISTORY_FILTER, 0)
+
+        self.AddUserArea(G.HISTORY_CANVAS, c4d.BFH_SCALEFIT|c4d.BFV_FIT, 0, HistoryArea.EMPTY_HEIGHT)
+        if self.history_ua is None:
+            self.history_ua = HistoryArea()
+        self.AttachUserArea(self.history_ua, G.HISTORY_CANVAS)
+        self.history_ua.click_callback = self._on_history_row_click
+
+        # Spacer
+        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 0, 0, "", 0)
+
+    def _build_tab_tools(self):
+        """Build Tools tab content."""
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Layout & Hierarchy", 0)
+        self.GroupBegin(50, c4d.BFH_SCALEFIT, 4, 0)
+        self.AddButton(G.BTN_CREATE_HIERARCHY, c4d.BFH_SCALEFIT, 0, 0, "Hierarchy")
+        self.AddButton(G.BTN_HIERARCHY_TO_LAYERS, c4d.BFH_SCALEFIT, 0, 0, "H -> Layers")
+        self.AddButton(G.BTN_SOLO, c4d.BFH_SCALEFIT, 0, 0, "Solo Layers")
+        self.AddButton(G.BTN_DROP_TO_FLOOR, c4d.BFH_SCALEFIT, 0, 0, "Drop to Floor")
+        self.GroupEnd()
+
+        self.AddSeparatorH(4)
+
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Object & Animation", 0)
+        self.GroupBegin(51, c4d.BFH_SCALEFIT, 2, 0)
+        self.AddButton(G.BTN_VIBRATE_NULL, c4d.BFH_SCALEFIT, 0, 0, "Vibrate Null")
+        self.AddButton(G.BTN_ABC_RETIME, c4d.BFH_SCALEFIT, 0, 0, "ABC Retime")
+        self.GroupEnd()
+
+        self.AddSeparatorH(4)
+
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Camera Rigs", 0)
+        self.GroupBegin(52, c4d.BFH_SCALEFIT, 2, 0)
+        self.AddButton(G.BTN_CAM_SIMPLE, c4d.BFH_SCALEFIT, 0, 0, "Cam Simple")
+        self.AddButton(G.BTN_CAM_SHAKEL, c4d.BFH_SCALEFIT, 0, 0, "Cam Shakel")
+        self.GroupEnd()
+
+        # Spacer
+        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 0, 0, "", 0)
+
+    def _update_filename_label(self, doc=None):
+        """Refresh the scene identity caption in the panel header.
+
+        Uses '▸' (BMP) instead of the folder emoji because C4D's AddStaticText
+        on macOS renders supplementary-plane characters (📁 etc.) as fallback
+        glyphs. ▸ is a basic-multilingual-plane char that renders cleanly.
+        """
+        if doc is None:
+            doc = c4d.documents.GetActiveDocument()
+        if not doc:
+            self.SetString(G.LABEL_FILENAME, "▸ Scene:  (no document)")
+            return
+        name = doc.GetDocumentName() or ""
+        if not name:
+            self.SetString(G.LABEL_FILENAME, "▸ Scene:  Untitled  ·  not saved yet")
+            return
+        # Show the full filename including version + status — the user is
+        # working ON this exact file; transparency over abstraction.
+        self.SetString(G.LABEL_FILENAME, f"▸ Scene:  {name}")
 
     def _update_snapshot_dir_label(self):
         snap_dir = GlobalSettings.get_snapshot_dir()
@@ -4212,8 +4475,8 @@ class YSPanel(gui.GeDialog):
             self._takes_bad = takes_bad
             self._fps_range_bad = fps_range_bad
 
-            # Refresh "last version" caption + Recent Versions list + Notes summary
-            # (all read sidecar JSON files)
+            # Refresh header captions + Recent Versions list (all cheap reads)
+            self._update_filename_label(doc)
             self._update_last_version_label(doc)
             self._update_history_area(doc)
             self._update_notes_summary(doc)
@@ -4229,7 +4492,16 @@ class YSPanel(gui.GeDialog):
         self.GroupBegin(1, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 1, 0)
         self.GroupBorderSpace(4, 4, 4, 4)
 
-        # ── Scene Info ──
+        # ── Scene Header (always visible — scene identity + project meta + QC bar) ──
+        self.GroupBegin(9, c4d.BFH_SCALEFIT, 1, 0)
+        self.GroupBorder(c4d.BORDER_THIN_IN)
+        self.GroupBorderSpace(6, 4, 6, 4)
+        self.GroupSpace(0, 4)
+
+        # Filename caption — read-only, prominent, centered
+        self.AddStaticText(G.LABEL_FILENAME, c4d.BFH_CENTER, 0, 0, "", 0)
+
+        # Editable project metadata: Shot ID + Artist
         self.GroupBegin(10, c4d.BFH_SCALEFIT, 4, 0)
         self.AddStaticText(0, c4d.BFH_LEFT, 60, 0, "Shot ID", 0)
         self.AddEditText(G.SHOT, c4d.BFH_SCALEFIT, 80, 0)
@@ -4237,166 +4509,41 @@ class YSPanel(gui.GeDialog):
         self.AddEditText(G.ARTIST, c4d.BFH_SCALEFIT, 100, 0)
         self.GroupEnd()
 
-        # ── Quality Checks ──
-        self.AddSeparatorH(4)
-        self.GroupBegin(39, c4d.BFH_SCALEFIT, 1, 0, "Quality Checks  (click any row to run its primary action)")
-        self.GroupBorder(c4d.BORDER_WITH_TITLE_BOLD)
-        self.GroupBorderSpace(4, 2, 4, 2)
-
-        # Score header (full width, fixed height, anchored to top)
+        # Score line (was inside QC group; now in the always-visible header)
         self.AddUserArea(G.SCORE_CANVAS, c4d.BFH_SCALEFIT|c4d.BFV_FIT, 0, ScoreHeader.HEIGHT)
         self.score_ua = ScoreHeader()
         self.AttachUserArea(self.score_ua, G.SCORE_CANVAS)
-        self.AddSeparatorH(2)
 
-        self.GroupBegin(40, c4d.BFH_SCALEFIT|c4d.BFV_TOP, 2, 0)
-        self.GroupSpace(4, 0)
+        self.GroupEnd()  # end Scene Header
 
-        # Left: terminal status display
-        self.AddUserArea(G.CANVAS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 0, 260)
-        self.ua = StatusArea()
-        self.AttachUserArea(self.ua, G.CANVAS)
+        # ── Tab bar ──
+        self.AddSeparatorH(4)
+        tab_bc = c4d.BaseContainer()
+        tab_bc.SetBool(c4d.QUICKTAB_BAR, False)         # tab style (not bar)
+        tab_bc.SetBool(c4d.QUICKTAB_SHOWSINGLE, True)
+        tab_bc.SetBool(c4d.QUICKTAB_NOMULTISELECT, True)
+        self._quicktab = self.AddCustomGui(
+            G.TAB_BAR, c4d.CUSTOMGUI_QUICKTAB, "",
+            c4d.BFH_SCALEFIT, 0, 0, tab_bc
+        )
+        if self._quicktab is not None:
+            self._quicktab.AppendString(0, "QC", True)
+            self._quicktab.AppendString(1, "Render", False)
+            self._quicktab.AppendString(2, "Versions", False)
+            self._quicktab.AppendString(3, "Tools", False)
 
-        # Right: per-check Select + Fix buttons (2 columns, matched to StatusArea rows)
-        self.GroupBegin(407, c4d.BFH_RIGHT|c4d.BFV_SCALEFIT, 2, 11)
-        self.GroupBorderSpace(0, 3, 0, 3)
-        self.GroupSpace(2, 3)
-        # Row: LIGHTS
-        self.AddButton(G.BTN_SEL_LIGHTS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
-        self.AddButton(G.BTN_FIX_LIGHTS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "Fix")
-        # Row: VISIBILITY
-        self.AddButton(G.BTN_SEL_VIS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
-        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
-        # Row: KEYFRAMES
-        self.AddButton(G.BTN_SEL_KEYS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
-        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
-        # Row: CAMERAS
-        self.AddButton(G.BTN_SEL_CAMS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
-        self.AddButton(G.BTN_FIX_CAMS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "Fix")
-        # Row: PRESETS
-        self.AddButton(G.BTN_INFO_PRESET, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Info")
-        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
-        # Row: TEXTURES (unified)
-        self.AddButton(G.BTN_INFO_TEXTURES, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Info")
-        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
-        # Row: UNUSED MATS
-        self.AddButton(G.BTN_SEL_UNUSED_MATS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
-        self.AddButton(G.BTN_FIX_UNUSED_MATS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "Fix")
-        # Row: NAMES
-        self.AddButton(G.BTN_SEL_NAMES, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
-        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
-        # Row: OUTPUT
-        self.AddButton(G.BTN_INFO_OUTPUT, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Info")
-        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
-        # Row: TAKES
-        self.AddButton(G.BTN_INFO_TAKES, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Info")
-        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
-        # Row: FPS/RANGE
-        self.AddButton(G.BTN_INFO_FPS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Info")
-        self.AddButton(G.BTN_FIX_FPS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "Fix")
+        # ── Tab content container — only the active tab's content lives inside.
+        # Switching tabs flushes this group and rebuilds with the new content
+        # (HideElement does not collapse layout space in C4D 2026).
+        self.GroupBegin(G.TAB_CONTAINER, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 1, 0)
+        self._build_active_tab_content()
         self.GroupEnd()
 
-        self.GroupEnd()
-        self.GroupEnd()
-
-        # ── Scene Tools ──
-        self.GroupBegin(49, c4d.BFH_SCALEFIT, 1, 0, "Scene Tools")
-        self.GroupBorder(c4d.BORDER_WITH_TITLE_BOLD)
-        self.GroupBorderSpace(4, 2, 4, 2)
-        self.GroupBegin(50, c4d.BFH_SCALEFIT, 4, 0)
-        self.AddButton(G.BTN_CREATE_HIERARCHY, c4d.BFH_SCALEFIT, 0, 0, "Hierarchy")
-        self.AddButton(G.BTN_HIERARCHY_TO_LAYERS, c4d.BFH_SCALEFIT, 0, 0, "H -> Layers")
-        self.AddButton(G.BTN_SOLO, c4d.BFH_SCALEFIT, 0, 0, "Solo Layers")
-        self.AddButton(G.BTN_DROP_TO_FLOOR, c4d.BFH_SCALEFIT, 0, 0, "Drop to Floor")
-        self.GroupEnd()
-        self.GroupBegin(51, c4d.BFH_SCALEFIT, 4, 0)
-        self.AddButton(G.BTN_VIBRATE_NULL, c4d.BFH_SCALEFIT, 0, 0, "Vibrate Null")
-        self.AddButton(G.BTN_ABC_RETIME, c4d.BFH_SCALEFIT, 0, 0, "ABC Retime")
-        self.AddButton(G.BTN_CAM_SIMPLE, c4d.BFH_SCALEFIT, 0, 0, "Cam Simple")
-        self.AddButton(G.BTN_CAM_SHAKEL, c4d.BFH_SCALEFIT, 0, 0, "Cam Shakel")
-        self.GroupEnd()
-        self.GroupEnd()
-
-        # ── Render ──
-        self.GroupBegin(19, c4d.BFH_SCALEFIT, 1, 0, "Render")
-        self.GroupBorder(c4d.BORDER_WITH_TITLE_BOLD)
-        self.GroupBorderSpace(4, 2, 4, 2)
-
-        # Preset row
-        self.GroupBegin(20, c4d.BFH_SCALEFIT, 4, 0)
-        self.AddComboBox(G.PRESET_DROPDOWN, c4d.BFH_SCALEFIT, 100, 0)
-        self.AddStaticText(G.LABEL_RESOLUTION, c4d.BFH_LEFT, 100, 0, "", 0)
-        self.AddButton(G.BTN_RESET_ALL, c4d.BFH_SCALEFIT, 0, 0, "Reset All")
-        self.AddButton(G.BTN_FORCE_VERTICAL, c4d.BFH_SCALEFIT, 0, 0, "Force 9:16")
-        self.GroupEnd()
-
-        # AOVs config row
-        self.GroupBegin(81, c4d.BFH_SCALEFIT, 4, 0)
-        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Comp", 0)
-        self.AddComboBox(G.COMP_TARGET, c4d.BFH_LEFT, 100, 0)
-        self.AddCheckbox(G.CHK_MULTIPART, c4d.BFH_LEFT, 0, 0, "Multi-Part")
-        self.AddButton(G.BTN_INFO_AOVS, c4d.BFH_SCALEFIT, 0, 0, "Show AOVs")
-        self.GroupEnd()
-
-        # AOVs tier buttons
-        self.GroupBegin(80, c4d.BFH_SCALEFIT, 3, 0)
-        self.AddButton(G.BTN_FORCE_ESSENTIALS, c4d.BFH_SCALEFIT, 0, 0, "Essentials")
-        self.AddButton(G.BTN_FORCE_PRODUCTION, c4d.BFH_SCALEFIT, 0, 0, "Production")
-        self.AddButton(G.BTN_LIGHT_GROUPS, c4d.BFH_SCALEFIT, 0, 0, "Light Groups")
-        self.GroupEnd()
-
-        self.GroupEnd()
-
-        # ── Output ──
-        self.GroupBegin(59, c4d.BFH_SCALEFIT, 1, 0, "Output")
-        self.GroupBorder(c4d.BORDER_WITH_TITLE_BOLD)
-        self.GroupBorderSpace(4, 2, 4, 2)
-
-        # Snapshot dir
-        self.GroupBegin(61, c4d.BFH_SCALEFIT, 2, 0)
-        self.AddStaticText(G.LABEL_SNAPSHOT_DIR, c4d.BFH_SCALEFIT, 0, 0, "", 0)
-        self.AddButton(G.BTN_SET_SNAPSHOT_DIR, c4d.BFH_RIGHT, 60, 0, "Browse")
-        self.GroupEnd()
-
-        # Last version info — small caption above the Save Version button
-        self.AddStaticText(G.LABEL_LAST_VERSION, c4d.BFH_SCALEFIT, 0, 0, "", 0)
-
-        # Scene Notes summary + edit button
-        self.GroupBegin(64, c4d.BFH_SCALEFIT, 2, 0)
-        self.GroupSpace(6, 0)
-        self.AddStaticText(G.LABEL_NOTES_SUMMARY, c4d.BFH_SCALEFIT, 0, 0, "", 0)
-        self.AddButton(G.BTN_EDIT_NOTES, c4d.BFH_RIGHT, 110, 0, "Edit Notes...")
-        self.GroupEnd()
-
-        # Primary checkpoint actions (versioning + delivery)
-        self.GroupBegin(62, c4d.BFH_SCALEFIT, 2, 0)
-        self.AddButton(G.BTN_SAVE_VERSION, c4d.BFH_SCALEFIT, 0, 0, "Save Version")
-        self.AddButton(G.BTN_COLLECT_SCENE, c4d.BFH_SCALEFIT, 0, 0, "Collect Scene")
-        self.GroupEnd()
-
-        # ── Recent Versions (browse history) ──
-        self.GroupBegin(63, c4d.BFH_SCALEFIT, 2, 0)
-        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Recent Versions", 0)
-        self.AddComboBox(G.COMBO_HISTORY_FILTER, c4d.BFH_RIGHT, 100, 0)
-        self.GroupEnd()
-        self.AddUserArea(G.HISTORY_CANVAS, c4d.BFH_SCALEFIT | c4d.BFV_FIT, 0, HistoryArea.EMPTY_HEIGHT)
-        self.history_ua = HistoryArea()
-        self.AttachUserArea(self.history_ua, G.HISTORY_CANVAS)
-        self.AddSeparatorH(2)
-
-        # Secondary actions
-        self.GroupBegin(60, c4d.BFH_SCALEFIT, 3, 0)
-        self.AddButton(G.BTN_OPEN_FOLDER, c4d.BFH_SCALEFIT, 0, 0, "Open Folder")
-        self.AddButton(G.BTN_SNAPSHOT, c4d.BFH_SCALEFIT, 0, 0, "Save Still")
-        self.AddButton(G.BTN_EXPORT_QC, c4d.BFH_SCALEFIT, 0, 0, "Export QC")
-        self.GroupEnd()
-
-        # Footer
+        # ───────── Footer (always visible) ─────────
+        self.AddSeparatorH(4)
         self.GroupBegin(70, c4d.BFH_SCALEFIT, 2, 0)
         self.AddButton(G.BTN_GITHUB, c4d.BFH_SCALEFIT, 0, 0, "GitHub")
         self.AddButton(G.BTN_BUG_REPORT, c4d.BFH_SCALEFIT, 0, 0, "Report Bug")
-        self.GroupEnd()
-
         self.GroupEnd()
 
         self.GroupEnd()  # Main container
@@ -4405,14 +4552,6 @@ class YSPanel(gui.GeDialog):
         return True
 
     def InitValues(self):
-        # Initialize watcher states (all active by default - always enabled now)
-
-        # Populate render preset dropdown
-        self.AddChild(G.PRESET_DROPDOWN, 0, "Previz")
-        self.AddChild(G.PRESET_DROPDOWN, 1, "Pre-Render")
-        self.AddChild(G.PRESET_DROPDOWN, 2, "Render")
-        self.AddChild(G.PRESET_DROPDOWN, 3, "Stills")
-
         # Load artist name from computer-level settings
         self._artist_name = GlobalSettings.load_artist_name()
         if self._artist_name:
@@ -4420,34 +4559,18 @@ class YSPanel(gui.GeDialog):
 
         # Initialize active preset
         self._active_preset = "previz"
+        self._history_filter = FILTER_ALL
 
-        # Compositor target dropdown
-        self.AddChild(G.COMP_TARGET, 0, "Nuke")
-        self.AddChild(G.COMP_TARGET, 1, "After Effects")
-        saved_target = GlobalSettings.get('comp_target', 0)
-        self.SetInt32(G.COMP_TARGET, int(saved_target))
-        saved_multipart = GlobalSettings.get('aov_multipart', 1)
-        self.SetBool(G.CHK_MULTIPART, bool(int(saved_multipart)))
+        # Header captions (always visible — outside tabs)
+        self._update_filename_label()
 
-        # Show snapshot directory + last version + notes summary
+        # The QC tab was built in CreateLayout — refresh its caption-driven
+        # widgets and the cross-tab labels (snapshot dir, last version, notes).
+        # Other tabs' widgets are populated when the user switches to them.
         self._update_snapshot_dir_label()
         self._update_last_version_label()
         self._update_notes_summary()
-
-        # Populate Recent Versions filter combobox + initial list
-        for i, label in enumerate(self._HISTORY_FILTER_LABELS):
-            self.AddChild(G.COMBO_HISTORY_FILTER, i, label)
-        self.SetInt32(G.COMBO_HISTORY_FILTER, 0)  # default: All
-        self._history_filter = FILTER_ALL
         self._update_history_area()
-
-        # Wire click-row callback on StatusArea: clicking a row triggers its primary action
-        if self.ua is not None:
-            self.ua.click_callback = self._on_qc_row_click
-
-        # Wire click-row callback on HistoryArea: click a version → open it
-        if self.history_ua is not None:
-            self.history_ua.click_callback = self._on_history_row_click
 
         doc = c4d.documents.GetActiveDocument()
         self._sync_from_doc(doc)
@@ -4971,6 +5094,17 @@ class YSPanel(gui.GeDialog):
 
         elif cid == G.BTN_EDIT_NOTES:
             self._handle_edit_notes(doc)
+
+        elif cid == G.TAB_BAR:
+            # Tab clicked — find which one is selected and switch
+            if self._quicktab is not None:
+                for i in range(4):
+                    try:
+                        if self._quicktab.IsSelected(i):
+                            self._set_active_tab(i)
+                            break
+                    except Exception:
+                        pass
 
         elif cid == G.COMBO_HISTORY_FILTER:
             try:
