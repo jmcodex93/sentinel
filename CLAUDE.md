@@ -1,7 +1,7 @@
 # Sentinel Plugin - Development Rules
 
 ## Project Overview
-Sentinel (v1.5.0) is a Cinema 4D quality control and workflow automation plugin designed for professional 3D production workflows. **Originally built as YS Guardian at Yambo Studio**, now maintained and extended by Javier Melgar as Sentinel — keeping the watchdog spirit while expanding into versioning, status tracking, and modern mograph workflow tools. It acts as a real-time watchdog that continuously monitors scenes for production issues, plus provides render management and scene tools.
+Sentinel (v1.5.4) is a Cinema 4D quality control and workflow automation plugin designed for professional 3D production workflows. **Originally built as YS Guardian at Yambo Studio**, now maintained and extended by Javier Melgar as Sentinel — keeping the watchdog spirit while expanding into versioning, status tracking, and modern mograph workflow tools. It acts as a real-time watchdog that continuously monitors scenes for production issues, plus provides render management and scene tools.
 
 The plugin performs **11 quality checks** in real-time:
 1. **Lights Organization** - Ensures all lights are properly organized in a "lights" group (Select + Fix)
@@ -73,7 +73,7 @@ For multi-step work, write the plan as `step → verify` pairs. Weak criteria ("
 - **QC check results**: Cached with 0.5s cooldown, dirty-flag invalidation via CoreMessage
 - **Scene stats**: Object count, polygon count, materials, lights
 
-## Current Status (v1.4.0)
+## Current Status (v1.5.4)
 
 ### What Works ✅
 - **All 11 Quality Checks**: Lights, visibility, keyframes, camera shift, presets, assets/textures, unused materials, default names, output paths, take validation, FPS/frame range
@@ -92,6 +92,7 @@ For multi-step work, write the plan as `step → verify` pairs. Weak criteria ("
 - **Scene Collector**: Pre-flight QC + SaveProject() + manifest JSON
 - **Take Validation**: Camera per take, $take token in output paths
 - **Render Presets**: Dropdown with resolution display, Reset All from template, Force 9:16 toggle
+- **Multi-Format Render Setup** (v1.5.4): One-click child-Take generator for the 5 standard delivery aspects (16:9, 9:16, 1:1, 4:5, 21:9). Each Take gets a cloned Render Data with format-specific resolution + output path. Optional camera FOV auto-adjust keeps **vertical FOV constant** across formats (Social Frame pattern — subjects stay framed across crops). Idempotent (re-runs update existing same-name Takes via `FindOrAddOverrideParam`); full undo wrapping (single Cmd+Z reverts the whole batch); summary dialog after generation
 - **Snapshot System**: Cross-platform EXR→PNG with full ACES pipeline (ACEScg→sRGB)
 - **Scene Tools**: Hierarchy, H→Layers, Solo Layers, Drop to Floor, Vibrate Null, ABC Retime, Camera Rigs
 - **CoreMessage dirty-flag**: Instant scene change detection, no polling waste
@@ -188,6 +189,7 @@ cd "../11 C4D DEV/renderEngine" && git pull
 - **v1.5.0** (May 2026): **Rebrand YS Guardian → Sentinel** — plugin file renamed (`sentinel_panel.pyp`), settings file renamed (`sentinel_settings.json` with auto-migration from legacy), C4D plugin folder `Sentinel/`, GitHub URLs updated, attribution to Yambo Studio explicit in README/CLAUDE.md/License
 - **v1.5.1** (May 2026): Scene Notes & TODOs (sidecar JSON, modal editor, panel caption); Collect Scene clean delivery naming (strips `_v###[_status]` from filename, preserves traceability in manifest); notes integrated in QC report export and Scene Collector manifest + sidecar copied to delivery
 - **v1.5.2** (May 2026): UI/UX redesign — Scene Header always visible (filename caption + Shot/Artist + QC progress bar) + 4 tabs (QC / Render / Versions / Tools) using QuickTab CustomGUI + dynamic rebuild via `LayoutFlushGroup` (HideElement does not collapse layout space in C4D 2026, hence rebuild on tab switch). Footer (GitHub / Report Bug) always visible. Documented C4D auto-shrink limitation in known limitations.
+- **v1.5.4** (May 2026): **Multi-Format Render Setup** — Render tab → "Generate Format Takes..." opens a modal that creates child Takes for the 5 standard delivery aspects (16:9 / 9:16 / 1:1 / 4:5 / 21:9). Each Take gets a cloned Render Data with format-specific resolution + output path (subfolder or suffix mode). Optional auto-FOV keeps vertical FOV constant across formats via `take.FindOrAddOverrideParam(td, cam, fov_id, target_fov)` (idempotent, updates on re-run). Full undo wrapping. Summary dialog with created/updated/skipped/errors counts. Backed by orchestrator `generate_multiformat_takes(doc, options)` and `MultiFormatDialog` (modal). Math: `target_h_fov = 2*atan((target_aspect/source_aspect)*tan(source_h_fov/2))`.
 
 ## Testing Checklist
 - [ ] Main plugin file loads without errors
@@ -225,6 +227,13 @@ cd "../11 C4D DEV/renderEngine" && git pull
 - [ ] Take QC: validates camera and output tokens
 - [ ] QC Report export produces valid JSON
 - [ ] Render Presets: dropdown, resolution label, Reset All, Force 9:16
+- [ ] Multi-Format: "Generate Format Takes..." opens modal seeded from current take/resolution
+- [ ] Multi-Format: 5 child takes created under source take (16x9, 9x16, 1x1, 4x5, 21x9)
+- [ ] Multi-Format: each take's render data has correct resolution + output path (subfolder or suffix)
+- [ ] Multi-Format: Auto-FOV ON keeps vertical FOV constant (subject framing preserved across crops)
+- [ ] Multi-Format: re-run with "Update existing" ON → existing takes get updated (FOV refreshed)
+- [ ] Multi-Format: re-run with "Update existing" OFF → existing takes go to Skipped list
+- [ ] Multi-Format: single Cmd+Z reverts the entire batch (StartUndo/EndUndo wrap)
 - [ ] Scene Tools: all 8 buttons functional (Hierarchy, H→Layers, Solo, Drop, Vibrate, ABC Retime, Cam Simple, Cam Shakel)
 - [ ] Output: Open Folder, Save Still, Export QC, Collect Scene
 - [ ] Snapshot dir picker ("...") persists between sessions
@@ -232,9 +241,9 @@ cd "../11 C4D DEV/renderEngine" && git pull
 - [ ] Shot ID syncs with Take system
 - [ ] Cross-platform: macOS and Windows
 
-### Current UI Layout (v1.5.2):
+### Current UI Layout (v1.5.4):
 ```
-┌─ Sentinel v1.5.2 ──────────────────────────────┐
+┌─ Sentinel v1.5.4 ──────────────────────────────┐
 │  Scene Header (always visible) ─────────────   │
 │  ▸ Scene:  test_v007_TR.c4d                    │  ← filename caption
 │  Shot ID: [Main]   Artist: [Motioneer]         │  ← editable
@@ -252,7 +261,7 @@ cd "../11 C4D DEV/renderEngine" && git pull
 │                                                │
 │  Tabs:                                         │
 │    QC: 11 quality check rows + Export QC       │
-│    Render: Preset + AOVs + Snapshots           │
+│    Render: Preset + Multi-Format + AOVs + Snap │
 │    Versions: Notes + Save Version + Recent     │
 │    Tools: Layout / Object / Camera Rigs        │
 │                                                │

@@ -50,7 +50,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 # Plugin ID - change if ID collision
 PLUGIN_ID = 2099069
-PLUGIN_NAME = "Sentinel v1.5.2"
+PLUGIN_NAME = "Sentinel v1.5.4"
 
 # Preset names - normalized to lowercase with underscores
 # The system accepts both "pre_render" and "pre-render" (case-insensitive)
@@ -2905,6 +2905,734 @@ class NotesDialog(gui.GeDialog):
         return True
 
 
+# ---------------- Sentinel Settings Dialog ----------------
+class SentinelSettingsDialog(gui.GeDialog):
+    """Modal dialog for editing Sentinel's per-computer preferences.
+
+    All values persist to `sentinel_settings.json`. After save, the caller
+    should rebuild the active tab so combos/checkboxes reflect new values.
+    """
+
+    # Widget IDs (local to this dialog)
+    COMBO_FPS = 1001
+    COMBO_COMP = 1002
+    CHK_MULTIPART = 1003
+    EDT_SNAP_DIR = 1004
+    BTN_BROWSE_DIR = 1005
+    COMBO_HISTORY_MAX = 1006
+    BTN_CANCEL = 1007
+    BTN_SAVE = 1008
+
+    # FPS choices in the combo
+    FPS_OPTIONS = [24, 25, 30, 60]
+    HISTORY_OPTIONS = [5, 10, 20]
+    COMP_OPTIONS = ["Nuke", "After Effects"]
+
+    def __init__(self):
+        super().__init__()
+        self.confirmed = False
+
+    def CreateLayout(self):
+        self.SetTitle("Sentinel Settings")
+
+        self.GroupBegin(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 1, 0)
+        self.GroupBorderSpace(12, 10, 12, 10)
+        self.GroupSpace(0, 6)
+
+        # ── Studio Defaults ──
+        self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0, "▸ Studio Defaults", 0)
+
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
+        self.GroupSpace(8, 4)
+        self.AddStaticText(0, c4d.BFH_LEFT, 180, 0, "Standard FPS:", 0)
+        self.AddComboBox(self.COMBO_FPS, c4d.BFH_LEFT, 100, 0)
+
+        self.AddStaticText(0, c4d.BFH_LEFT, 180, 0, "Default Compositor:", 0)
+        self.AddComboBox(self.COMBO_COMP, c4d.BFH_LEFT, 140, 0)
+
+        self.AddStaticText(0, c4d.BFH_LEFT, 180, 0, "", 0)
+        self.AddCheckbox(self.CHK_MULTIPART, c4d.BFH_LEFT, 0, 0,
+                         "Multi-Part EXR (default for new scenes)")
+        self.GroupEnd()
+
+        self.AddSeparatorH(8)
+
+        # ── Paths ──
+        self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0, "▸ Paths", 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "RS Snapshot directory:", 0)
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
+        self.AddEditText(self.EDT_SNAP_DIR, c4d.BFH_SCALEFIT, 0, 0)
+        self.AddButton(self.BTN_BROWSE_DIR, c4d.BFH_RIGHT, 80, 0, "Browse...")
+        self.GroupEnd()
+
+        self.AddSeparatorH(8)
+
+        # ── History ──
+        self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0, "▸ History", 0)
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
+        self.GroupSpace(8, 4)
+        self.AddStaticText(0, c4d.BFH_LEFT, 200, 0, "Recent versions to show:", 0)
+        self.AddComboBox(self.COMBO_HISTORY_MAX, c4d.BFH_LEFT, 80, 0)
+        self.GroupEnd()
+
+        self.AddSeparatorH(12)
+
+        # ── Action buttons (right-aligned) ──
+        self.GroupBegin(0, c4d.BFH_RIGHT, 2, 0)
+        self.GroupSpace(8, 0)
+        self.AddButton(self.BTN_CANCEL, c4d.BFH_RIGHT, 100, 0, "Cancel")
+        self.AddButton(self.BTN_SAVE, c4d.BFH_RIGHT, 100, 0, "Save")
+        self.GroupEnd()
+
+        self.GroupEnd()
+        return True
+
+    def InitValues(self):
+        # Populate FPS combo + select current value
+        for i, fps in enumerate(self.FPS_OPTIONS):
+            self.AddChild(self.COMBO_FPS, i, f"{fps} fps")
+        try:
+            current_fps = GlobalSettings.get_standard_fps()
+        except Exception:
+            current_fps = 25
+        try:
+            idx = self.FPS_OPTIONS.index(int(current_fps))
+        except ValueError:
+            idx = self.FPS_OPTIONS.index(25) if 25 in self.FPS_OPTIONS else 0
+        self.SetInt32(self.COMBO_FPS, idx)
+
+        # Compositor combo
+        for i, comp in enumerate(self.COMP_OPTIONS):
+            self.AddChild(self.COMBO_COMP, i, comp)
+        self.SetInt32(self.COMBO_COMP, int(GlobalSettings.get('comp_target', 0)))
+
+        # Multi-Part checkbox
+        self.SetBool(self.CHK_MULTIPART, bool(int(GlobalSettings.get('aov_multipart', 1))))
+
+        # Snapshot dir
+        self.SetString(self.EDT_SNAP_DIR, GlobalSettings.get_snapshot_dir())
+
+        # Recent versions max
+        for i, n in enumerate(self.HISTORY_OPTIONS):
+            self.AddChild(self.COMBO_HISTORY_MAX, i, str(n))
+        try:
+            current_max = int(GlobalSettings.get('history_max_rows', 5))
+        except Exception:
+            current_max = 5
+        try:
+            h_idx = self.HISTORY_OPTIONS.index(current_max)
+        except ValueError:
+            h_idx = 0
+        self.SetInt32(self.COMBO_HISTORY_MAX, h_idx)
+
+        return True
+
+    def Command(self, cid, msg):
+        if cid == self.BTN_CANCEL:
+            self.confirmed = False
+            self.Close()
+            return True
+
+        if cid == self.BTN_BROWSE_DIR:
+            try:
+                chosen = c4d.storage.LoadDialog(
+                    title="Select RS Snapshot directory",
+                    flags=c4d.FILESELECT_DIRECTORY,
+                )
+                if chosen:
+                    self.SetString(self.EDT_SNAP_DIR, chosen)
+            except Exception as e:
+                safe_print(f"Browse dialog error: {e}")
+            return True
+
+        if cid == self.BTN_SAVE:
+            try:
+                # Standard FPS
+                fps_idx = int(self.GetInt32(self.COMBO_FPS))
+                if 0 <= fps_idx < len(self.FPS_OPTIONS):
+                    GlobalSettings.set_standard_fps(self.FPS_OPTIONS[fps_idx])
+
+                # Compositor
+                comp_idx = int(self.GetInt32(self.COMBO_COMP))
+                GlobalSettings.set('comp_target', comp_idx)
+
+                # Multi-Part
+                GlobalSettings.set('aov_multipart', 1 if self.GetBool(self.CHK_MULTIPART) else 0)
+
+                # Snapshot dir
+                snap_dir = (self.GetString(self.EDT_SNAP_DIR) or "").strip()
+                if snap_dir:
+                    GlobalSettings.set_snapshot_dir(snap_dir)
+
+                # History max rows
+                h_idx = int(self.GetInt32(self.COMBO_HISTORY_MAX))
+                if 0 <= h_idx < len(self.HISTORY_OPTIONS):
+                    GlobalSettings.set('history_max_rows', self.HISTORY_OPTIONS[h_idx])
+            except Exception as e:
+                safe_print(f"Settings save error: {e}")
+                c4d.gui.MessageDialog(f"Could not save settings:\n\n{e}")
+                return True
+            self.confirmed = True
+            self.Close()
+            return True
+
+        return True
+
+
+# ---------------- Multi-Format Render Setup ----------------
+# Generates C4D Takes for each delivery aspect ratio (16:9, 9:16, 1:1, 4:5,
+# 21:9). Each Take overrides the render data resolution + output path, and
+# optionally adjusts the camera FOV to maintain the vertical visible extent
+# (so the subject stays consistent across formats — the "Social Frame" pattern).
+
+import math as _math
+
+# Standard mograph delivery formats. Order matters: this is the order shown
+# in the Multi-Format dialog and applied left-to-right when generating Takes.
+MULTIFORMAT_DEFS = [
+    {
+        "id": "16x9",
+        "label": "16:9 Landscape",
+        "description": "YouTube, TV, default",
+        "width": 1920,
+        "height": 1080,
+    },
+    {
+        "id": "9x16",
+        "label": "9:16 Vertical",
+        "description": "Reels, Stories, TikTok",
+        "width": 1080,
+        "height": 1920,
+    },
+    {
+        "id": "1x1",
+        "label": "1:1 Square",
+        "description": "IG Square, Twitter",
+        "width": 1080,
+        "height": 1080,
+    },
+    {
+        "id": "4x5",
+        "label": "4:5 Portrait",
+        "description": "IG Feed",
+        "width": 1080,
+        "height": 1350,
+    },
+    {
+        "id": "21x9",
+        "label": "21:9 Cinema",
+        "description": "Wide banner, cinema",
+        "width": 2560,
+        "height": 1080,
+    },
+]
+
+
+def get_multiformat_def(fmt_id):
+    """Return the format definition dict for a given id, or None."""
+    for f in MULTIFORMAT_DEFS:
+        if f["id"] == fmt_id:
+            return f
+    return None
+
+
+def format_aspect(fmt_def):
+    """Aspect ratio (width / height) for a format definition."""
+    if not fmt_def:
+        return 1.0
+    h = fmt_def.get("height", 1) or 1
+    return float(fmt_def.get("width", 1)) / float(h)
+
+
+def compute_target_horizontal_fov(source_h_fov_rad, source_aspect, target_aspect):
+    """Compute horizontal FOV that maintains vertical FOV constant across aspect change.
+
+    This is the "Social Frame" approach: the subject's vertical extent stays
+    visible across all formats; horizontal extent adjusts (more visible in
+    wider formats, less in taller ones).
+
+    Math:
+        vertical_fov is constant; horizontal_fov = 2 * atan(aspect * tan(vertical_fov / 2))
+        Substituting and simplifying:
+        target_h_fov = 2 * atan((target_aspect / source_aspect) * tan(source_h_fov / 2))
+
+    Args:
+        source_h_fov_rad: source camera's horizontal FOV in radians.
+        source_aspect: source aspect ratio (width / height).
+        target_aspect: target aspect ratio (width / height).
+
+    Returns:
+        Target horizontal FOV in radians.
+    """
+    if source_aspect <= 0 or target_aspect <= 0:
+        return source_h_fov_rad
+    return 2.0 * _math.atan(
+        (target_aspect / source_aspect) * _math.tan(source_h_fov_rad / 2.0)
+    )
+
+
+def compute_format_output_path(source_path, fmt_id, mode="subfolder"):
+    """Generate output path for a format variant.
+
+    Args:
+        source_path: original render output path. May contain C4D tokens
+            ($prj, $take, $frame, $camera). Empty string allowed.
+        fmt_id: format identifier (e.g., "16x9", "9x16").
+        mode: "subfolder" (insert /<fmt>/ before filename) or
+              "suffix" (append _<fmt> to filename).
+
+    Returns:
+        Modified output path. Forward-slash style on all platforms (C4D's
+        token system handles slash conversion at render time).
+
+    Examples:
+        ("output/$prj_$frame", "16x9", "subfolder") -> "output/16x9/$prj_$frame"
+        ("output/$prj_$frame", "16x9", "suffix")    -> "output/$prj_$frame_16x9"
+        ("$prj_$frame", "9x16", "subfolder")        -> "9x16/$prj_$frame"
+        ("", "1x1", "subfolder")                    -> "1x1/$prj_$frame"
+    """
+    if not fmt_id:
+        return source_path or ""
+    if not source_path:
+        # Reasonable default for an unset path
+        return f"{fmt_id}/$prj_$frame" if mode == "subfolder" else f"$prj_{fmt_id}_$frame"
+
+    # Use posix-style splitting to keep token-friendly forward slashes
+    # (C4D handles platform-specific separators internally at render time).
+    norm = source_path.replace("\\", "/")
+    if "/" in norm:
+        head, tail = norm.rsplit("/", 1)
+    else:
+        head, tail = "", norm
+
+    if mode == "suffix":
+        # Append _<fmt> to filename portion
+        new_tail = f"{tail}_{fmt_id}" if tail else f"_{fmt_id}"
+        return f"{head}/{new_tail}" if head else new_tail
+
+    # default: subfolder mode — insert /<fmt>/ between head and tail
+    if head and tail:
+        return f"{head}/{fmt_id}/{tail}"
+    if head and not tail:
+        return f"{head}/{fmt_id}"
+    if tail and not head:
+        return f"{fmt_id}/{tail}"
+    return fmt_id
+
+
+def take_name_for_format(fmt_def, source_take_name=""):
+    """Compose the Take name for a format variant.
+
+    For most cases, the format id is enough ("16x9", "9x16"). If the source
+    take is something other than Main, prefix with it ("shot_010_16x9") so
+    multi-shot scenes stay organized.
+    """
+    if not fmt_def:
+        return ""
+    fid = fmt_def.get("id", "")
+    base = (source_take_name or "").strip()
+    if base and base.lower() not in ("main", ""):
+        return f"{base}_{fid}"
+    return fid
+
+
+def _find_take_by_name(takeData, name):
+    """Walk all takes (depth-first) and return the first with matching name."""
+    if not takeData or not name:
+        return None
+    main = takeData.GetMainTake()
+    if not main:
+        return None
+
+    def _walk(node):
+        while node:
+            try:
+                if node.GetName() == name:
+                    return node
+            except Exception:
+                pass
+            child = node.GetDown()
+            if child:
+                found = _walk(child)
+                if found:
+                    return found
+            node = node.GetNext()
+        return None
+
+    return _walk(main.GetDown())
+
+
+def _resolve_source_render_data(source_take, takeData, doc):
+    """Get the effective render data for the source take.
+
+    `BaseTake.GetEffectiveRenderData` may return a tuple (rdata, fromTake) on
+    some C4D versions, or just the RenderData. We normalize.
+    """
+    rd = None
+    if source_take is not None:
+        try:
+            res = source_take.GetEffectiveRenderData(takeData)
+            if isinstance(res, tuple) and res:
+                rd = res[0]
+            else:
+                rd = res
+        except Exception:
+            rd = None
+    if rd is None:
+        rd = doc.GetActiveRenderData()
+    return rd
+
+
+def _resolve_source_camera(source_take, takeData, doc):
+    """Best-effort lookup of the camera that the source take uses."""
+    cam = None
+    if source_take is not None:
+        try:
+            cam = source_take.GetCamera(takeData)
+        except Exception:
+            cam = None
+    if cam is None:
+        try:
+            bd = doc.GetActiveBaseDraw()
+            if bd:
+                cam = bd.GetSceneCamera(doc)
+        except Exception:
+            cam = None
+    return cam
+
+
+def generate_multiformat_takes(doc, options):
+    """Generate child Takes for the selected delivery formats.
+
+    Each Take gets its own cloned RenderData with format-specific resolution
+    and output path. If `auto_fov` is True, the camera's horizontal FOV is
+    overridden per Take to maintain the vertical FOV constant (subject stays
+    consistently framed across formats — Social Frame pattern).
+
+    Args:
+        doc: active BaseDocument.
+        options: dict with keys:
+            - formats: list of fmt_id strings (e.g., ['16x9', '9x16'])
+            - output_mode: 'subfolder' or 'suffix'
+            - auto_fov: bool — override camera FOV per format
+            - update_existing: bool — reuse takes with same name if present
+            - source_take: BaseTake (optional, defaults to current take)
+
+    Returns:
+        dict report:
+            success: bool
+            created: list[str] — take names that were freshly created
+            updated: list[str] — take names that were updated in place
+            skipped: list[str] — takes that existed and update_existing was False
+            errors: list[str] — non-fatal issues encountered
+            source_take_name, source_resolution
+    """
+    report = {
+        "success": False,
+        "created": [],
+        "updated": [],
+        "skipped": [],
+        "errors": [],
+        "source_take_name": "",
+        "source_resolution": None,
+    }
+
+    if not doc:
+        report["errors"].append("No active document")
+        return report
+
+    td = doc.GetTakeData()
+    if not td:
+        report["errors"].append("Document has no take data")
+        return report
+
+    source_take = options.get("source_take") or td.GetCurrentTake() or td.GetMainTake()
+    if not source_take:
+        report["errors"].append("Could not resolve source take")
+        return report
+
+    report["source_take_name"] = source_take.GetName() or "Main"
+
+    source_rd = _resolve_source_render_data(source_take, td, doc)
+    if not source_rd:
+        report["errors"].append("No render data found for source take")
+        return report
+
+    src_w = int(source_rd[c4d.RDATA_XRES] or 1920)
+    src_h = int(source_rd[c4d.RDATA_YRES] or 1080)
+    src_path = source_rd[c4d.RDATA_PATH] or ""
+    src_aspect = float(src_w) / float(src_h) if src_h > 0 else 1.0
+    report["source_resolution"] = (src_w, src_h)
+
+    source_cam = _resolve_source_camera(source_take, td, doc)
+    src_fov_h = None
+    if source_cam:
+        try:
+            src_fov_h = float(source_cam[c4d.CAMERAOBJECT_FOV])  # radians
+        except Exception:
+            src_fov_h = None
+
+    auto_fov = bool(options.get("auto_fov", True))
+    update_existing = bool(options.get("update_existing", True))
+    output_mode = options.get("output_mode", "subfolder")
+    formats = options.get("formats") or []
+
+    doc.StartUndo()
+    try:
+        for fmt_id in formats:
+            fmt_def = get_multiformat_def(fmt_id)
+            if not fmt_def:
+                report["errors"].append(f"Unknown format: {fmt_id}")
+                continue
+
+            take_name = take_name_for_format(fmt_def, report["source_take_name"])
+
+            existing = _find_take_by_name(td, take_name)
+            if existing and not update_existing:
+                report["skipped"].append(take_name)
+                continue
+
+            # Create or reuse take
+            if existing:
+                take = existing
+                is_update = True
+            else:
+                try:
+                    take = td.AddTake(take_name, source_take, None)
+                except Exception as e:
+                    report["errors"].append(f"AddTake({take_name}) failed: {e}")
+                    continue
+                if not take:
+                    report["errors"].append(f"AddTake({take_name}) returned None")
+                    continue
+                try:
+                    doc.AddUndo(c4d.UNDOTYPE_NEW, take)
+                except Exception:
+                    pass
+                is_update = False
+
+            # Resolve / create render data for this take
+            new_rd = None
+            if is_update:
+                try:
+                    existing_rd = take.GetRenderData(td)
+                    if existing_rd:
+                        new_rd = existing_rd
+                        try:
+                            doc.AddUndo(c4d.UNDOTYPE_CHANGE, new_rd)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            if new_rd is None:
+                try:
+                    new_rd = source_rd.GetClone(c4d.COPYFLAGS_0)
+                    new_rd.SetName(f"{source_rd.GetName()}_{fmt_id}")
+                    doc.InsertRenderDataLast(new_rd)
+                    take.SetRenderData(td, new_rd)
+                    try:
+                        doc.AddUndo(c4d.UNDOTYPE_NEW, new_rd)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    report["errors"].append(f"Render data clone failed for {take_name}: {e}")
+                    continue
+
+            # Apply format-specific overrides on render data
+            try:
+                new_rd[c4d.RDATA_XRES] = float(fmt_def["width"])
+                new_rd[c4d.RDATA_YRES] = float(fmt_def["height"])
+                new_path = compute_format_output_path(src_path, fmt_id, output_mode)
+                new_rd[c4d.RDATA_PATH] = new_path
+            except Exception as e:
+                report["errors"].append(f"Render data setup failed for {take_name}: {e}")
+                continue
+
+            # Camera FOV override (idempotent — FindOrAddOverrideParam updates if exists)
+            if auto_fov and source_cam and src_fov_h is not None:
+                target_aspect = format_aspect(fmt_def)
+                target_fov = compute_target_horizontal_fov(src_fov_h, src_aspect, target_aspect)
+                try:
+                    fov_id = c4d.DescID(c4d.DescLevel(c4d.CAMERAOBJECT_FOV, c4d.DTYPE_REAL, 0))
+                    ovr = take.FindOrAddOverrideParam(td, source_cam, fov_id, target_fov)
+                    if ovr:
+                        ovr.UpdateSceneNode(td, fov_id)
+                except Exception as e:
+                    report["errors"].append(f"FOV override failed for {take_name}: {e}")
+
+            if is_update:
+                report["updated"].append(take_name)
+            else:
+                report["created"].append(take_name)
+
+        report["success"] = True
+    except Exception as e:
+        report["errors"].append(f"Orchestrator error: {e}")
+    finally:
+        doc.EndUndo()
+        c4d.EventAdd()
+
+    return report
+
+
+class MultiFormatDialog(gui.GeDialog):
+    """Modal dialog: which formats to generate + output mode + camera options.
+
+    After Open(c4d.DLG_TYPE_MODAL), check `confirmed`. If True, read:
+        result_formats     -> list[str] of fmt_id values
+        result_output_mode -> 'subfolder' | 'suffix'
+        result_auto_fov    -> bool
+        result_update_existing -> bool
+    """
+
+    # Widget IDs (local to this dialog)
+    LBL_HINT = 1001
+    LBL_SOURCE = 1002
+    CHK_FORMAT_BASE = 1100  # one checkbox per format: 1100, 1101, ...
+    COMBO_OUTPUT_MODE = 1010
+    CHK_AUTO_FOV = 1011
+    CHK_UPDATE_EXISTING = 1012
+    BTN_CANCEL = 1020
+    BTN_GENERATE = 1021
+
+    OUTPUT_MODES = ["subfolder", "suffix"]
+    OUTPUT_MODE_LABELS = [
+        "Per-format subfolder (output/16x9/, output/9x16/, ...)",
+        "Format suffix in filename (file_16x9, file_9x16, ...)",
+    ]
+
+    def __init__(self, source_take_name="Main", source_resolution=None):
+        super().__init__()
+        self.source_take_name = source_take_name or "Main"
+        self.source_resolution = source_resolution  # tuple (w, h) or None
+        # Results filled on Generate
+        self.confirmed = False
+        self.result_formats = []
+        self.result_output_mode = "subfolder"
+        self.result_auto_fov = True
+        self.result_update_existing = True
+
+    def CreateLayout(self):
+        self.SetTitle("Multi-Format Render Setup")
+
+        self.GroupBegin(0, c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT, 1, 0)
+        self.GroupBorderSpace(12, 10, 12, 10)
+        self.GroupSpace(0, 6)
+
+        # Workflow hint — explains the two compose-and-derive schools
+        hint = ("Tip: compose in 1:1 or 4:5 (master frame) to crop cleanly into all\n"
+                "formats, OR compose in your primary format and enable Auto-adjust\n"
+                "FOV below to keep the subject framed across crops.")
+        self.AddStaticText(self.LBL_HINT, c4d.BFH_SCALEFIT, 0, 0, hint, 0)
+
+        self.AddSeparatorH(8)
+
+        # Source info
+        self.AddStaticText(self.LBL_SOURCE, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+
+        self.AddSeparatorH(8)
+
+        # Format checkboxes (3-column grid: checkbox + resolution + description)
+        self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0, "Generate Takes for:", 0)
+
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 3, 0)
+        self.GroupSpace(10, 4)
+        for i, fmt in enumerate(MULTIFORMAT_DEFS):
+            wid = self.CHK_FORMAT_BASE + i
+            self.AddCheckbox(wid, c4d.BFH_LEFT, 0, 0, fmt["label"])
+            self.AddStaticText(0, c4d.BFH_LEFT, 110, 0,
+                               f"{fmt['width']}×{fmt['height']}", 0)
+            self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, fmt["description"], 0)
+        self.GroupEnd()
+
+        self.AddSeparatorH(8)
+
+        # Output structure
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Output structure:", 0)
+        self.AddComboBox(self.COMBO_OUTPUT_MODE, c4d.BFH_SCALEFIT, 0, 0)
+
+        self.AddSeparatorH(8)
+
+        # Options
+        self.AddCheckbox(self.CHK_AUTO_FOV, c4d.BFH_LEFT, 0, 0,
+                         "Auto-adjust camera FOV per ratio (maintains vertical FOV)")
+        self.AddCheckbox(self.CHK_UPDATE_EXISTING, c4d.BFH_LEFT, 0, 0,
+                         "Update existing Takes with same name (skip otherwise)")
+
+        self.AddSeparatorH(12)
+
+        # Action buttons (right-aligned)
+        self.GroupBegin(0, c4d.BFH_RIGHT, 2, 0)
+        self.GroupSpace(8, 0)
+        self.AddButton(self.BTN_CANCEL, c4d.BFH_RIGHT, 100, 0, "Cancel")
+        self.AddButton(self.BTN_GENERATE, c4d.BFH_RIGHT, 120, 0, "Generate")
+        self.GroupEnd()
+
+        self.GroupEnd()
+        return True
+
+    def InitValues(self):
+        # All formats checked by default (per Yambo workflow request)
+        for i in range(len(MULTIFORMAT_DEFS)):
+            self.SetBool(self.CHK_FORMAT_BASE + i, True)
+
+        # Output mode combo
+        for i, label in enumerate(self.OUTPUT_MODE_LABELS):
+            self.AddChild(self.COMBO_OUTPUT_MODE, i, label)
+        self.SetInt32(self.COMBO_OUTPUT_MODE, 0)  # subfolder default
+
+        # Toggles default to ON
+        self.SetBool(self.CHK_AUTO_FOV, True)
+        self.SetBool(self.CHK_UPDATE_EXISTING, True)
+
+        # Source info caption
+        if self.source_resolution:
+            w, h = self.source_resolution
+            src_txt = f"Source: Take '{self.source_take_name}'  ·  {int(w)}×{int(h)}"
+        else:
+            src_txt = f"Source: Take '{self.source_take_name}'"
+        self.SetString(self.LBL_SOURCE, src_txt)
+
+        return True
+
+    def Command(self, cid, msg):
+        if cid == self.BTN_CANCEL:
+            self.confirmed = False
+            self.Close()
+            return True
+
+        if cid == self.BTN_GENERATE:
+            # Collect selected format ids
+            selected = []
+            for i, fmt in enumerate(MULTIFORMAT_DEFS):
+                if self.GetBool(self.CHK_FORMAT_BASE + i):
+                    selected.append(fmt["id"])
+
+            if not selected:
+                c4d.gui.MessageDialog(
+                    "Select at least one format to generate."
+                )
+                return True
+
+            self.result_formats = selected
+
+            # Output mode
+            mode_idx = int(self.GetInt32(self.COMBO_OUTPUT_MODE))
+            if 0 <= mode_idx < len(self.OUTPUT_MODES):
+                self.result_output_mode = self.OUTPUT_MODES[mode_idx]
+
+            # Toggles
+            self.result_auto_fov = self.GetBool(self.CHK_AUTO_FOV)
+            self.result_update_existing = self.GetBool(self.CHK_UPDATE_EXISTING)
+
+            self.confirmed = True
+            self.Close()
+            return True
+
+        return True
+
+
 # ---------------- Scene Collector ----------------
 def collect_scene(doc, artist_name):
     """Pre-flight QC + Save Project with Assets + Verify + Manifest"""
@@ -3861,6 +4589,7 @@ class G:
     LABEL_RESOLUTION = 1170
     BTN_FORCE_VERTICAL = 1204  # Force 9:16
     BTN_RESET_ALL = 1206      # Reset all presets from template
+    BTN_MULTIFORMAT = 1207    # Multi-Format Render Setup (generate Takes for 16:9, 9:16, 1:1, 4:5, 21:9)
 
     # Quick Actions
     BTN_CREATE_HIERARCHY = 1126
@@ -3894,6 +4623,8 @@ class G:
     LABEL_SNAPSHOT_DIR = 1161
     BTN_GITHUB = 1306
     BTN_BUG_REPORT = 1307
+    BTN_SETTINGS = 1308
+    LABEL_AOV_INFO = 1309   # read-only summary of comp + multi-part in Render tab
 
 class YSPanel(gui.GeDialog):
     def __init__(self):
@@ -3904,10 +4635,20 @@ class YSPanel(gui.GeDialog):
         self.score_ua = None  # ScoreHeader instance
         self.history_ua = None  # HistoryArea instance
         self._history_filter = FILTER_ALL
-        self._history_max_rows = 5
+        try:
+            self._history_max_rows = int(GlobalSettings.get('history_max_rows', 5))
+        except Exception:
+            self._history_max_rows = 5
         self._artist_name = ""
         self._quicktab = None  # QuickTab CustomGUI for tabs
-        self._active_tab = 0   # 0=QC, 1=Render, 2=Versions, 3=Tools
+        # Restore last-used tab from settings (0..3); fall back to QC if invalid
+        try:
+            saved_tab = int(GlobalSettings.get('active_tab', 0))
+        except Exception:
+            saved_tab = 0
+        if not 0 <= saved_tab <= 3:
+            saved_tab = 0
+        self._active_tab = saved_tab
         self._dirty = False  # Set by CoreMessage, consumed by Timer
 
         # Store selection results
@@ -3937,6 +4678,7 @@ class YSPanel(gui.GeDialog):
         """Switch to tab `idx` by flushing the container and rebuilding."""
         if not 0 <= idx <= 3:
             return
+        previous_tab = self._active_tab
         self._active_tab = idx
         try:
             self.LayoutFlushGroup(G.TAB_CONTAINER)
@@ -3962,11 +4704,29 @@ class YSPanel(gui.GeDialog):
                 self._update_history_area(doc)
         except Exception as e:
             safe_print(f"Per-tab label refresh error: {e}")
-        # Mark dirty so the QC StatusArea redraws on the next Timer tick.
-        self._dirty = True
+        # Force immediate refresh (bypass Timer cooldown) so the new tab's
+        # widgets show current data without waiting up to 3 seconds.
+        try:
+            self._last_check_time = 0
+            self._dirty = True
+            self._refresh()
+        except Exception as e:
+            safe_print(f"Immediate refresh error: {e}")
+        # Persist the choice so reopening the plugin lands on the same tab.
+        if previous_tab != idx:
+            try:
+                GlobalSettings.set('active_tab', idx)
+            except Exception:
+                pass
 
     def _build_active_tab_content(self):
         """Dispatch to the appropriate tab builder based on self._active_tab."""
+        # Consistent spacing inside the tab container (applies to all tabs)
+        try:
+            self.GroupBorderSpace(4, 6, 4, 4)
+            self.GroupSpace(0, 4)
+        except Exception:
+            pass
         if self._active_tab == 0:
             self._build_tab_qc()
         elif self._active_tab == 1:
@@ -3976,12 +4736,21 @@ class YSPanel(gui.GeDialog):
         elif self._active_tab == 3:
             self._build_tab_tools()
 
+    def _add_section_label(self, title, first=False):
+        """Sub-section visual divider: separator (unless first) + ▸ Title.
+
+        Used inside tab builders for consistent visual hierarchy.
+        """
+        if not first:
+            self.AddSeparatorH(6)
+        self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0, f"▸ {title}", 0)
+
     # ── Tab content builders ─────────────────────────────────────────────────
 
     def _build_tab_qc(self):
         """Build QC tab content (no outer group; lives inside TAB_CONTAINER)."""
-        self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0,
-                           "Click any row to run its primary action.", 0)
+        # No instructional hint — the [Select]/[Fix]/[Info] buttons + the row
+        # affordances make the click-to-act behavior discoverable.
 
         self.GroupBegin(40, c4d.BFH_SCALEFIT|c4d.BFV_TOP, 2, 0)
         self.GroupSpace(4, 0)
@@ -4031,35 +4800,39 @@ class YSPanel(gui.GeDialog):
 
     def _build_tab_render(self):
         """Build Render tab content."""
-        # Preset row
-        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Render Preset", 0)
+        # ── Render Preset ──
+        self._add_section_label("Render Preset", first=True)
         self.GroupBegin(20, c4d.BFH_SCALEFIT, 4, 0)
         self.AddComboBox(G.PRESET_DROPDOWN, c4d.BFH_SCALEFIT, 100, 0)
         self.AddStaticText(G.LABEL_RESOLUTION, c4d.BFH_LEFT, 100, 0, "", 0)
         self.AddButton(G.BTN_RESET_ALL, c4d.BFH_SCALEFIT, 0, 0, "Reset All")
         self.AddButton(G.BTN_FORCE_VERTICAL, c4d.BFH_SCALEFIT, 0, 0, "Force 9:16")
         self.GroupEnd()
-        # Repopulate preset combo (must happen after AddComboBox each rebuild)
         self.AddChild(G.PRESET_DROPDOWN, 0, "Previz")
         self.AddChild(G.PRESET_DROPDOWN, 1, "Pre-Render")
         self.AddChild(G.PRESET_DROPDOWN, 2, "Render")
         self.AddChild(G.PRESET_DROPDOWN, 3, "Stills")
 
-        self.AddSeparatorH(4)
+        # ── Multi-Format Setup ──
+        # Generates a Take per delivery aspect (16:9, 9:16, 1:1, 4:5, 21:9) with
+        # cloned RenderData (resolution + output path overrides) and optional
+        # camera FOV adjustment to keep vertical FOV constant across formats.
+        self._add_section_label("Multi-Format Setup")
+        self.GroupBegin(81, c4d.BFH_SCALEFIT, 1, 0)
+        self.AddButton(G.BTN_MULTIFORMAT, c4d.BFH_SCALEFIT, 0, 0,
+                       "Generate Format Takes...")
+        self.GroupEnd()
 
-        # AOVs
-        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Redshift AOVs", 0)
-        self.GroupBegin(81, c4d.BFH_SCALEFIT, 4, 0)
-        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Comp", 0)
-        self.AddComboBox(G.COMP_TARGET, c4d.BFH_LEFT, 100, 0)
-        self.AddCheckbox(G.CHK_MULTIPART, c4d.BFH_LEFT, 0, 0, "Multi-Part")
+        # ── Redshift AOVs ──
+        # Compositor + Multi-Part are studio-level defaults edited in Settings
+        # (single source of truth). Render tab shows them as info only — to
+        # change them, the user goes to the footer ⚙ Settings button.
+        self._add_section_label("Redshift AOVs")
+        self.AddStaticText(G.LABEL_AOV_INFO, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+
+        self.GroupBegin(82, c4d.BFH_SCALEFIT, 1, 0)
         self.AddButton(G.BTN_INFO_AOVS, c4d.BFH_SCALEFIT, 0, 0, "Show AOVs")
         self.GroupEnd()
-        # Repopulate comp combo + restore state
-        self.AddChild(G.COMP_TARGET, 0, "Nuke")
-        self.AddChild(G.COMP_TARGET, 1, "After Effects")
-        self.SetInt32(G.COMP_TARGET, int(GlobalSettings.get('comp_target', 0)))
-        self.SetBool(G.CHK_MULTIPART, bool(int(GlobalSettings.get('aov_multipart', 1))))
 
         self.GroupBegin(80, c4d.BFH_SCALEFIT, 3, 0)
         self.AddButton(G.BTN_FORCE_ESSENTIALS, c4d.BFH_SCALEFIT, 0, 0, "Essentials")
@@ -4067,10 +4840,11 @@ class YSPanel(gui.GeDialog):
         self.AddButton(G.BTN_LIGHT_GROUPS, c4d.BFH_SCALEFIT, 0, 0, "Light Groups")
         self.GroupEnd()
 
-        self.AddSeparatorH(4)
+        # Populate the AOV info caption with current settings
+        self._update_aov_info_label()
 
-        # Snapshots
-        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Snapshots", 0)
+        # ── Snapshots ──
+        self._add_section_label("Snapshots")
         self.GroupBegin(61, c4d.BFH_SCALEFIT, 2, 0)
         self.AddStaticText(G.LABEL_SNAPSHOT_DIR, c4d.BFH_SCALEFIT, 0, 0, "", 0)
         self.AddButton(G.BTN_SET_SNAPSHOT_DIR, c4d.BFH_RIGHT, 60, 0, "Browse")
@@ -4080,38 +4854,35 @@ class YSPanel(gui.GeDialog):
         self.AddButton(G.BTN_OPEN_FOLDER, c4d.BFH_SCALEFIT, 0, 0, "Open Folder")
         self.GroupEnd()
 
-        # Spacer
+        # Spacer absorbs remaining vertical space
         self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 0, 0, "", 0)
 
     def _build_tab_versions(self):
         """Build Versions tab content."""
-        # Notes
+        # ── Scene Notes ──
+        self._add_section_label("Scene Notes", first=True)
         self.GroupBegin(64, c4d.BFH_SCALEFIT, 2, 0)
         self.GroupSpace(6, 0)
         self.AddStaticText(G.LABEL_NOTES_SUMMARY, c4d.BFH_SCALEFIT, 0, 0, "", 0)
         self.AddButton(G.BTN_EDIT_NOTES, c4d.BFH_RIGHT, 110, 0, "Edit Notes...")
         self.GroupEnd()
 
-        self.AddSeparatorH(4)
-
-        # Last version + primary actions
+        # ── Save & Deliver ──
+        self._add_section_label("Save & Deliver")
         self.AddStaticText(G.LABEL_LAST_VERSION, c4d.BFH_SCALEFIT, 0, 0, "", 0)
         self.GroupBegin(62, c4d.BFH_SCALEFIT, 2, 0)
         self.AddButton(G.BTN_SAVE_VERSION, c4d.BFH_SCALEFIT, 0, 0, "Save Version")
         self.AddButton(G.BTN_COLLECT_SCENE, c4d.BFH_SCALEFIT, 0, 0, "Collect Scene")
         self.GroupEnd()
 
-        self.AddSeparatorH(4)
-
-        # Recent versions list
+        # ── Recent Versions ──
+        self._add_section_label("Recent Versions")
         self.GroupBegin(63, c4d.BFH_SCALEFIT, 2, 0)
-        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Recent Versions", 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Filter", 0)
         self.AddComboBox(G.COMBO_HISTORY_FILTER, c4d.BFH_RIGHT, 100, 0)
         self.GroupEnd()
-        # Repopulate history filter combo
         for i, label in enumerate(self._HISTORY_FILTER_LABELS):
             self.AddChild(G.COMBO_HISTORY_FILTER, i, label)
-        # Restore selection
         try:
             current_filter = self._history_filter
             for i, f in enumerate(self._HISTORY_FILTERS):
@@ -4132,7 +4903,8 @@ class YSPanel(gui.GeDialog):
 
     def _build_tab_tools(self):
         """Build Tools tab content."""
-        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Layout & Hierarchy", 0)
+        # ── Layout & Hierarchy ──
+        self._add_section_label("Layout & Hierarchy", first=True)
         self.GroupBegin(50, c4d.BFH_SCALEFIT, 4, 0)
         self.AddButton(G.BTN_CREATE_HIERARCHY, c4d.BFH_SCALEFIT, 0, 0, "Hierarchy")
         self.AddButton(G.BTN_HIERARCHY_TO_LAYERS, c4d.BFH_SCALEFIT, 0, 0, "H -> Layers")
@@ -4140,24 +4912,33 @@ class YSPanel(gui.GeDialog):
         self.AddButton(G.BTN_DROP_TO_FLOOR, c4d.BFH_SCALEFIT, 0, 0, "Drop to Floor")
         self.GroupEnd()
 
-        self.AddSeparatorH(4)
-
-        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Object & Animation", 0)
-        self.GroupBegin(51, c4d.BFH_SCALEFIT, 2, 0)
+        # ── Animation Helpers ── (combined Object + Camera Rigs into one row of 4)
+        self._add_section_label("Animation Helpers")
+        self.GroupBegin(51, c4d.BFH_SCALEFIT, 4, 0)
         self.AddButton(G.BTN_VIBRATE_NULL, c4d.BFH_SCALEFIT, 0, 0, "Vibrate Null")
         self.AddButton(G.BTN_ABC_RETIME, c4d.BFH_SCALEFIT, 0, 0, "ABC Retime")
-        self.GroupEnd()
-
-        self.AddSeparatorH(4)
-
-        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Camera Rigs", 0)
-        self.GroupBegin(52, c4d.BFH_SCALEFIT, 2, 0)
         self.AddButton(G.BTN_CAM_SIMPLE, c4d.BFH_SCALEFIT, 0, 0, "Cam Simple")
         self.AddButton(G.BTN_CAM_SHAKEL, c4d.BFH_SCALEFIT, 0, 0, "Cam Shakel")
         self.GroupEnd()
 
         # Spacer
         self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 0, 0, "", 0)
+
+    def _update_aov_info_label(self):
+        """Render tab: refresh the read-only Comp + Multi-Part summary.
+
+        The values live in Settings (single source of truth). The Render tab
+        shows what the AOV tier buttons will apply.
+        """
+        try:
+            comp_idx = int(GlobalSettings.get('comp_target', 0))
+            comp_name = "Nuke" if comp_idx == 0 else "After Effects"
+            multipart = bool(int(GlobalSettings.get('aov_multipart', 1)))
+            mp_str = "ON" if multipart else "OFF"
+            self.SetString(G.LABEL_AOV_INFO,
+                           f"Compositor: {comp_name}    ·    Multi-Part EXR: {mp_str}")
+        except Exception as e:
+            safe_print(f"AOV info label update error: {e}")
 
     def _update_filename_label(self, doc=None):
         """Refresh the scene identity caption in the panel header.
@@ -4527,10 +5308,11 @@ class YSPanel(gui.GeDialog):
             c4d.BFH_SCALEFIT, 0, 0, tab_bc
         )
         if self._quicktab is not None:
-            self._quicktab.AppendString(0, "QC", True)
-            self._quicktab.AppendString(1, "Render", False)
-            self._quicktab.AppendString(2, "Versions", False)
-            self._quicktab.AppendString(3, "Tools", False)
+            # Mark the persisted-active tab as selected on startup
+            self._quicktab.AppendString(0, "QC", self._active_tab == 0)
+            self._quicktab.AppendString(1, "Render", self._active_tab == 1)
+            self._quicktab.AppendString(2, "Versions", self._active_tab == 2)
+            self._quicktab.AppendString(3, "Tools", self._active_tab == 3)
 
         # ── Tab content container — only the active tab's content lives inside.
         # Switching tabs flushes this group and rebuilds with the new content
@@ -4539,9 +5321,10 @@ class YSPanel(gui.GeDialog):
         self._build_active_tab_content()
         self.GroupEnd()
 
-        # ───────── Footer (always visible) ─────────
+        # ───────── Footer (always visible) — secondary actions ─────────
         self.AddSeparatorH(4)
-        self.GroupBegin(70, c4d.BFH_SCALEFIT, 2, 0)
+        self.GroupBegin(70, c4d.BFH_SCALEFIT, 3, 0)
+        self.AddButton(G.BTN_SETTINGS, c4d.BFH_SCALEFIT, 0, 0, "⚙ Settings")
         self.AddButton(G.BTN_GITHUB, c4d.BFH_SCALEFIT, 0, 0, "GitHub")
         self.AddButton(G.BTN_BUG_REPORT, c4d.BFH_SCALEFIT, 0, 0, "Report Bug")
         self.GroupEnd()
@@ -4721,6 +5504,9 @@ class YSPanel(gui.GeDialog):
         elif cid == G.BTN_RESET_ALL:
             self._force_render_settings(doc)
 
+        elif cid == G.BTN_MULTIFORMAT:
+            self._open_multiformat_dialog(doc)
+
         elif cid == G.ARTIST:
             # Artist name changed - save to global settings
             new_artist_name = self.GetString(G.ARTIST).strip()
@@ -4731,11 +5517,9 @@ class YSPanel(gui.GeDialog):
         elif cid == G.BTN_SNAPSHOT:
             self._take_renderview_snapshot()
 
-        elif cid == G.COMP_TARGET:
-            GlobalSettings.set('comp_target', self.GetInt32(G.COMP_TARGET))
-
-        elif cid == G.CHK_MULTIPART:
-            GlobalSettings.set('aov_multipart', 1 if self.GetBool(G.CHK_MULTIPART) else 0)
+        # Note: G.COMP_TARGET and G.CHK_MULTIPART used to live in the Render tab
+        # as editable widgets. They were moved to Settings (single source of
+        # truth) — the Render tab now shows them as info via LABEL_AOV_INFO.
 
         elif cid == G.BTN_LIGHT_GROUPS:
             self._toggle_light_groups(doc)
@@ -4835,6 +5619,25 @@ class YSPanel(gui.GeDialog):
             bug_url = "https://github.com/jmcodex93/sentinel/issues/new"
             webbrowser.open(bug_url)
             safe_print(f"Opening bug report page: {bug_url}")
+
+        elif cid == G.BTN_SETTINGS:
+            # Open the Sentinel Settings modal dialog
+            dlg = SentinelSettingsDialog()
+            dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=480, defaulth=380)
+            if dlg.confirmed:
+                safe_print("Settings saved")
+                # Sync runtime values that aren't read on-demand
+                try:
+                    self._history_max_rows = int(GlobalSettings.get('history_max_rows', 5))
+                except Exception:
+                    self._history_max_rows = 5
+                # Update labels that may have changed
+                self._update_snapshot_dir_label()
+                # Rebuild active tab so combos/info reflect new settings AND force
+                # a full QC refresh (FPS standard may have changed → check #11)
+                self._set_active_tab(self._active_tab)
+            else:
+                safe_print("Settings edit cancelled")
 
         # Per-check Select buttons (1 click to select problematic objects)
         elif cid == G.BTN_SEL_LIGHTS:
@@ -5538,6 +6341,119 @@ class YSPanel(gui.GeDialog):
 
         except Exception as e:
             safe_print(f"Error toggling aspect: {e}")
+
+    def _open_multiformat_dialog(self, doc):
+        """Open Multi-Format Render Setup dialog and dispatch to orchestrator.
+
+        Resolves the source take + resolution from the current document, opens
+        the modal MultiFormatDialog, and on confirm calls
+        `generate_multiformat_takes(doc, options)`. Reports created/updated/
+        skipped/errors via a summary MessageDialog.
+        """
+        if not doc:
+            c4d.gui.MessageDialog("No active document.")
+            return
+
+        # Resolve source take + resolution to seed the dialog
+        source_take_name = "Main"
+        source_resolution = None
+        source_take = None
+        try:
+            td = doc.GetTakeData()
+            if td:
+                source_take = td.GetCurrentTake() or td.GetMainTake()
+                if source_take:
+                    source_take_name = source_take.GetName() or "Main"
+                rd = _resolve_source_render_data(source_take, td, doc) if source_take else None
+                if rd:
+                    try:
+                        source_resolution = (int(rd[c4d.RDATA_XRES]),
+                                             int(rd[c4d.RDATA_YRES]))
+                    except Exception:
+                        source_resolution = None
+        except Exception as e:
+            safe_print(f"Multi-Format: could not resolve source state: {e}")
+
+        # Open modal
+        try:
+            dlg = MultiFormatDialog(source_take_name=source_take_name,
+                                    source_resolution=source_resolution)
+            dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=520, defaulth=380)
+        except Exception as e:
+            safe_print(f"Multi-Format dialog failed to open: {e}")
+            c4d.gui.MessageDialog(f"Could not open dialog: {e}")
+            return
+
+        if not getattr(dlg, "confirmed", False):
+            return  # User cancelled
+
+        options = {
+            "formats": dlg.result_formats,
+            "output_mode": dlg.result_output_mode,
+            "auto_fov": dlg.result_auto_fov,
+            "update_existing": dlg.result_update_existing,
+            "source_take": source_take,
+        }
+
+        # Run orchestrator
+        try:
+            report = generate_multiformat_takes(doc, options)
+        except Exception as e:
+            safe_print(f"Multi-Format orchestrator crashed: {e}")
+            c4d.gui.MessageDialog(f"Generation failed: {e}")
+            return
+
+        # Build summary
+        lines = []
+        if report.get("source_take_name"):
+            src_w, src_h = (report.get("source_resolution") or (0, 0))
+            if src_w and src_h:
+                lines.append(f"Source: '{report['source_take_name']}' "
+                             f"({src_w}×{src_h})")
+            else:
+                lines.append(f"Source: '{report['source_take_name']}'")
+            lines.append("")
+
+        created = report.get("created") or []
+        updated = report.get("updated") or []
+        skipped = report.get("skipped") or []
+        errors = report.get("errors") or []
+
+        if created:
+            lines.append(f"Created ({len(created)}):")
+            for n in created:
+                lines.append(f"  + {n}")
+            lines.append("")
+        if updated:
+            lines.append(f"Updated ({len(updated)}):")
+            for n in updated:
+                lines.append(f"  ~ {n}")
+            lines.append("")
+        if skipped:
+            lines.append(f"Skipped (already exist) ({len(skipped)}):")
+            for n in skipped:
+                lines.append(f"  · {n}")
+            lines.append("")
+        if errors:
+            lines.append(f"Errors ({len(errors)}):")
+            for e in errors:
+                lines.append(f"  ! {e}")
+            lines.append("")
+
+        if not (created or updated or skipped or errors):
+            lines.append("No changes were made.")
+
+        if report.get("success") and (created or updated):
+            lines.append("Open the Take Manager to review the new Takes.")
+
+        c4d.gui.MessageDialog("\n".join(lines).strip() or "Done.")
+
+        # Refresh panel state (FOV overrides may have updated the active take)
+        try:
+            check_cache.clear()
+        except Exception:
+            pass
+        c4d.EventAdd()
 
     def _update_aspect_button(self):
         """Update the aspect button label based on current render data"""

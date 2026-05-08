@@ -66,6 +66,51 @@
 
 ---
 
+### v1.5.4 — Multi-Format Render Setup ✅
+
+One-click generator: creates child Takes for the standard delivery aspect ratios, each with its own cloned Render Data and optional camera FOV adjustment. Eliminates manual duplication when shipping the same animation to social formats.
+
+#### Format definitions
+- [x] 16:9 Landscape (1920×1080) — YouTube, TV, default
+- [x] 9:16 Vertical (1080×1920) — Reels, Stories, TikTok
+- [x] 1:1 Square (1080×1080) — IG Square, Twitter
+- [x] 4:5 Portrait (1080×1350) — IG Feed
+- [x] 21:9 Cinema (2560×1080) — Wide banner, cinema
+- [x] All 5 formats pre-checked by default in dialog
+
+#### Orchestrator (`generate_multiformat_takes`)
+- [x] Resolves source Take, source Render Data, source camera (handles `GetEffectiveRenderData` returning a tuple in some C4D versions)
+- [x] Creates child Take per format under the current/source Take via `td.AddTake(name, parent, None)`
+- [x] Clones source Render Data with `GetClone(COPYFLAGS_0)` + `InsertRenderDataLast` + `take.SetRenderData(td, rd)`
+- [x] Overrides per-Take resolution (`RDATA_XRES/YRES`) + output path (`RDATA_PATH`)
+- [x] Auto-FOV: `take.FindOrAddOverrideParam(td, source_cam, fov_id, target_fov)` keeps Vertical FOV constant by computing `target_h_fov = 2*atan((target_aspect/source_aspect)*tan(source_h_fov/2))`
+- [x] Idempotent: re-running reuses existing Takes by name, updates RD + FOV in place; "Update existing OFF" → skip and report
+- [x] Full `StartUndo`/`EndUndo` wrapping → single Cmd+Z reverts the whole batch
+- [x] Returns `report` dict with `created` / `updated` / `skipped` / `errors` lists for the UI
+
+#### Modal dialog (`MultiFormatDialog`)
+- [x] 5 format checkboxes with resolution + description columns
+- [x] Output structure combo: per-format subfolder (default) or filename suffix
+- [x] Auto-adjust FOV checkbox (default ON)
+- [x] Update-existing-Takes checkbox (default ON)
+- [x] Tip text surfacing the two compose-and-derive schools (master 1:1 crop vs primary format + FOV)
+- [x] Source caption seeded from active document: `"Source: Take 'Main' · 1920×1080"`
+
+#### Panel integration
+- [x] New section in Render tab between Render Preset and Redshift AOVs
+- [x] Single button "Generate Format Takes..." opens the modal
+- [x] On confirm → orchestrator → summary `MessageDialog` with per-Take counts
+- [x] `check_cache.clear()` + `EventAdd` after generation so panel re-syncs
+
+**Why**: Studios deliver the same animation in 3–5 formats. Manual duplication (clone render data, change res, change path, fix camera FOV per format) is repetitive and error-prone. Multi-Format Setup turns ~10 minutes of clicking per scene into one dialog. Maintaining vertical FOV across formats is the **Social Frame** pattern used widely in the mograph community for keeping subject framing consistent across crops.
+
+**Future work** (not blocking v1.5.4):
+- Cross-aspect safe-area QC (warn if keyframed objects exit the safe area intersection of active formats) — slated for v1.5.5
+- Deeper token integration (`$take`, `$prj`) in the output path field
+- Configurable format presets per studio
+
+---
+
 ### v1.5.2 — UI/UX Redesign: Scene Header + Tabs ✅
 
 After 5 versions of additions (v1.4.0–v1.5.1), the panel had grown to ~70 visible elements stacked vertically with no clear hierarchy. This release introduces a tabbed structure with a always-visible Scene Header.
@@ -337,16 +382,12 @@ Add a dropdown or settings dialog to change the studio standard FPS without edit
 
 **Why**: Currently only configurable via `sentinel_settings.json`. Most artists won't open it.
 
-### v1.6.0 — Multi-Format & Asset Health (Tier B: High impact, medium effort)
+### v1.6.0 — Asset Health & Validation (Tier B: High impact, medium effort)
 
-#### Multi-Format Render Setup
-One-click duplicate render settings for multiple aspect ratios:
-- 16:9 (landscape), 9:16 (Reels/Stories), 1:1 (Instagram), 4:5 (Feed)
-- Each format gets correct resolution + output path with format token
-- Camera framing guide per format (if possible)
-- Essential for social media motion graphics delivery
+> Note: Multi-Format Render Setup shipped early as v1.5.4.
 
-**Why**: Studios deliver the same animation in 3-5 formats. Manual duplication is error-prone and slow.
+#### Cross-Aspect Safe-Area QC (planned v1.5.5)
+QC check #12: warn when keyframed objects (or their bounding box) exit the safe-area intersection of the active multi-format Takes. Closes the loop with the Multi-Format Render Setup so artists know when their composition won't survive a 9:16 crop.
 
 #### Texture Repathing Tool
 Bulk find-and-replace for texture paths:

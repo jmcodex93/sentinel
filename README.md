@@ -1,4 +1,4 @@
-# Sentinel v1.5.2
+# Sentinel v1.5.4
 
 Quality control, render management, and workflow automation plugin for Cinema 4D production environments — keeping the watchdog spirit of YS Guardian.
 
@@ -302,6 +302,28 @@ The snapshot system uses external Python with Pillow for color-accurate conversi
 - Ensure abc_retime plugin is installed in Cinema 4D plugins folder
 
 ## Changelog
+
+### v1.5.4 | 08.05.2026
+
+**New: Multi-Format Render Setup**
+
+One-click generator that creates Cinema 4D Takes for the standard delivery aspect ratios — each Take ships with its own cloned Render Data (resolution + output path overrides) and an optional camera FOV adjustment, so the same animation can be rendered to multiple formats without manual duplication.
+
+- **Five formats** checked by default: 16:9 Landscape (1920×1080), 9:16 Vertical (1080×1920), 1:1 Square (1080×1080), 4:5 Portrait (1080×1350), 21:9 Cinema (2560×1080).
+- **Auto-adjust FOV per ratio** (Social Frame pattern): the camera's horizontal FOV is overridden per Take so the **vertical FOV stays constant** across formats. Subjects framed in the master crop stay framed in all crops — no zoom-in surprise on the 9:16 Reel.
+- **Output structure** options: per-format subfolder (`output/16x9/$prj`, `output/9x16/$prj`, ...) or filename suffix (`$prj_16x9`, `$prj_9x16`, ...). Subfolder is the default — easier to deliver per-aspect.
+- **Idempotent**: re-running the command updates existing same-name Takes in place (or skips them if "Update existing" is off). Uses C4D's `FindOrAddOverrideParam` so FOV overrides update cleanly without duplicating.
+- **Take hierarchy**: new Takes are created as children of the current/source Take (typically Main), so they inherit any animation/material overrides above them.
+- **Full undo**: the entire batch operation lives inside `StartUndo`/`EndUndo` — Cmd+Z reverts all generated Takes in one step.
+- **Summary dialog** after generation: created / updated / skipped / errors counts per Take name.
+
+**Why this design?** Studio research (across mograph and broadcast pipelines) showed two compose-and-derive schools: (a) compose in 1:1 or 4:5 master and crop into all formats — works only if subjects stay near the safe area intersection — and (b) compose in your primary format and adjust FOV per ratio. The Multi-Format Setup supports both: artists can leave Auto-FOV off for school A or on for school B. The dialog hint surfaces this trade-off explicitly.
+
+**Where**: Render tab → **Generate Format Takes...** button. The dialog seeds Source Take + resolution from the active document, all 5 formats are pre-checked, Auto-FOV is on, "Update existing" is on.
+
+**Tokens**: this version uses literal path manipulation. A future iteration will adopt the `$take` and `$prj` token system more deeply (currently only `$take` is added in QC #10's output validation).
+
+---
 
 ### v1.5.2 | 07.05.2026
 
