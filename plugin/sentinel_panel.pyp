@@ -3147,28 +3147,67 @@ def format_aspect(fmt_def):
 def compute_target_horizontal_fov(source_h_fov_rad, source_aspect, target_aspect):
     """Compute horizontal FOV that maintains vertical FOV constant across aspect change.
 
-    This is the "Social Frame" approach: the subject's vertical extent stays
-    visible across all formats; horizontal extent adjusts (more visible in
-    wider formats, less in taller ones).
+    NOTE (v1.5.5): kept for reference / potential future use. Sentinel's
+    Multi-Format Setup no longer uses "vertical FOV constant" by default —
+    user research showed this behavior is rarely the desired one (it
+    forces a heavy lens-character change per format). The default
+    Composition Mode is now "None" (camera unchanged), with optional
+    "Resize Canvas" mode that changes sensor size proportionally to the
+    width ratio (matches the AR_ResizeCanvas community script convention).
 
     Math:
         vertical_fov is constant; horizontal_fov = 2 * atan(aspect * tan(vertical_fov / 2))
-        Substituting and simplifying:
         target_h_fov = 2 * atan((target_aspect / source_aspect) * tan(source_h_fov / 2))
-
-    Args:
-        source_h_fov_rad: source camera's horizontal FOV in radians.
-        source_aspect: source aspect ratio (width / height).
-        target_aspect: target aspect ratio (width / height).
-
-    Returns:
-        Target horizontal FOV in radians.
     """
     if source_aspect <= 0 or target_aspect <= 0:
         return source_h_fov_rad
     return 2.0 * _math.atan(
         (target_aspect / source_aspect) * _math.tan(source_h_fov_rad / 2.0)
     )
+
+
+# ---- Composition modes for Multi-Format Setup ----
+# How the orchestrator handles the camera when generating per-format Takes.
+COMPOSITION_MODE_NONE = "none"
+# "none" — Camera UNCHANGED across formats. Each Take only overrides
+#   resolution + output path. Default C4D behavior: vertical formats see
+#   MORE vertical content (camera frustum extends), wider formats see less.
+#   Matches Greyscalegorilla "Social Frame" plugin behavior — the artist is
+#   expected to compose for the intersection of all delivery formats.
+
+COMPOSITION_MODE_RESIZE_CANVAS = "resize_canvas"
+# "resize_canvas" — Mimics Arttu Rautio's AR_ResizeCanvas community script:
+#   change SENSOR SIZE proportionally to width ratio so the camera "rotates"
+#   its angular field as if you'd physically swapped to a different sensor.
+#   We use sensor (CAMERAOBJECT_APERTURE) instead of focal length because:
+#     - Focal-length animations / zoom keyframes stay intact (user's habitual
+#       workflow with AR script also picks the sensor method for this reason)
+#     - Renderer DOF calculations keyed on focal length stay stable
+#     - C4D physical/RS cameras don't clamp aperture overrides (FOV is the
+#       derived value), so this works in both directions (wider AND narrower)
+
+
+def compute_target_aperture(source_aperture, source_width, target_width):
+    """AR_ResizeCanvas formula for sensor-size resize.
+
+    Returns the aperture (sensor width in mm) that — combined with the
+    camera's current focal length — produces the same world-space view at
+    the new render width that the original aperture produced at the old
+    render width. Effectively rotates the angular field across aspects.
+
+    Math (from AR_ResizeCanvas, Arttu Rautio):
+        new_aperture = source_aperture * (target_width / source_width)
+
+    Note that this does NOT preserve any specific FOV axis — instead it
+    makes `(world_units_visible) / (rendered_pixels)` constant at the new
+    aspect. For 16:9 (1920) → 9:16 (1080):
+        new_aperture = 36 * 1080/1920 = 20.25mm
+        new_h_fov = 2*atan(20.25/2 / focal) — narrower than source
+        new_v_fov (derived from aspect) = matches old h_fov approximately
+    """
+    if source_width <= 0 or source_aperture <= 0:
+        return source_aperture
+    return float(source_aperture) * (float(target_width) / float(source_width))
 
 
 def compute_format_output_path(source_path, fmt_id, mode="subfolder"):
@@ -3301,20 +3340,79 @@ def _resolve_source_camera(source_take, takeData, doc):
     return cam
 
 
+def _reset_camera_dimensions_to_native(take, takeData, cam):
+    """Reset any FOV / focal-length / aperture overrides on `cam` within
+    `take` to the camera's NATIVE (unaltered) values.
+
+    Used by Mode "none" so re-running Multi-Format on takes that previously
+    had Auto-FOV / focal-length overrides (early v1.5.5 dev iterations)
+    produces a clean state — the camera renders identically across all
+    generated takes. Defensive: silent on any per-parameter failure.
+
+    Why "set to native" instead of "remove the override":
+        `BaseOverride.RemoveOverrideParam` isn't reliably exposed in
+        the C4D 2026 Python API across versions. Setting the override to
+        the native value achieves the same visual effect (no-op render)
+        and is portable.
+    """
+    if take is None or takeData is None or cam is None:
+        return
+    try:
+        ovr = take.FindOverride(takeData, cam)
+    except Exception:
+        return
+    if ovr is None:
+        return
+
+    # Parameters Sentinel may have touched in any prior version
+    targets = [
+        (c4d.CAMERAOBJECT_FOV, c4d.CAMERAOBJECT_FOV),
+        (c4d.CAMERA_FOCUS, c4d.CAMERA_FOCUS),
+        (c4d.CAMERAOBJECT_APERTURE, c4d.CAMERAOBJECT_APERTURE),
+    ]
+    for param_id, native_attr in targets:
+        try:
+            descid = c4d.DescID(c4d.DescLevel(param_id, c4d.DTYPE_REAL, 0))
+            if not ovr.IsOverriddenParam(descid):
+                continue
+            try:
+                native = float(cam[native_attr])
+            except Exception:
+                continue
+            ovr.SetParameter(descid, native, c4d.DESCFLAGS_SET_0)
+            ovr.UpdateSceneNode(takeData, descid)
+        except Exception:
+            continue
+
+
 def generate_multiformat_takes(doc, options):
     """Generate child Takes for the selected delivery formats.
 
-    Each Take gets its own cloned RenderData with format-specific resolution
-    and output path. If `auto_fov` is True, the camera's horizontal FOV is
-    overridden per Take to maintain the vertical FOV constant (subject stays
-    consistently framed across formats — Social Frame pattern).
+    Each Take always gets:
+      - cloned Render Data with format-specific resolution + output path
+      - explicit camera assignment (`take.SetCamera`) so it doesn't fall
+        back to the scene's active camera
+
+    Camera dimension overrides depend on `composition_mode`:
+      - "none" (default): camera is UNCHANGED. Each Take just renders the
+        source camera at the new aspect — vertical formats see more
+        vertical content, wider formats see less. Matches Greyscalegorilla
+        Social Frame plugin behavior. The artist composes for the
+        intersection of delivery formats. Any stale dimension overrides
+        from prior runs are reset to the camera's native values.
+      - "resize_canvas": overrides CAMERAOBJECT_APERTURE per format using
+        AR_ResizeCanvas's formula (`new_aperture = src_aperture *
+        target_width / src_width`). Effectively rotates the angular field
+        between formats — narrower aspect = narrower horizontal angular
+        coverage but wider vertical. Sensor-based (not focal) so existing
+        focal-length animations / DOF setups stay intact.
 
     Args:
         doc: active BaseDocument.
         options: dict with keys:
             - formats: list of fmt_id strings (e.g., ['16x9', '9x16'])
             - output_mode: 'subfolder' or 'suffix'
-            - auto_fov: bool — override camera FOV per format
+            - composition_mode: 'none' | 'resize_canvas' (default: 'none')
             - update_existing: bool — reuse takes with same name if present
             - source_take: BaseTake (optional, defaults to current take)
 
@@ -3325,7 +3423,7 @@ def generate_multiformat_takes(doc, options):
             updated: list[str] — take names that were updated in place
             skipped: list[str] — takes that existed and update_existing was False
             errors: list[str] — non-fatal issues encountered
-            source_take_name, source_resolution
+            source_take_name, source_resolution, composition_mode
     """
     report = {
         "success": False,
@@ -3365,17 +3463,22 @@ def generate_multiformat_takes(doc, options):
     report["source_resolution"] = (src_w, src_h)
 
     source_cam = _resolve_source_camera(source_take, td, doc)
-    src_fov_h = None
+    # Source aperture (sensor width in mm) — used by Resize Canvas mode.
+    # Standard 35mm-equivalent default = 36mm.
+    src_aperture = 36.0
     if source_cam:
         try:
-            src_fov_h = float(source_cam[c4d.CAMERAOBJECT_FOV])  # radians
+            ap = float(source_cam[c4d.CAMERAOBJECT_APERTURE])
+            if ap > 0:
+                src_aperture = ap
         except Exception:
-            src_fov_h = None
+            pass
 
-    auto_fov = bool(options.get("auto_fov", True))
+    composition_mode = options.get("composition_mode", COMPOSITION_MODE_NONE)
     update_existing = bool(options.get("update_existing", True))
     output_mode = options.get("output_mode", "subfolder")
     formats = options.get("formats") or []
+    report["composition_mode"] = composition_mode
 
     doc.StartUndo()
     try:
@@ -3439,6 +3542,19 @@ def generate_multiformat_takes(doc, options):
                     report["errors"].append(f"Render data clone failed for {take_name}: {e}")
                     continue
 
+            # Bug fix (v1.5.5): explicitly assign the camera to the Take so
+            # `take.GetCamera(td)` returns it. Without this, even though the
+            # FOV override targets `source_cam`, the Take has no camera
+            # assignment and renders fall back to scene defaults — and our
+            # QC #12 cross-aspect check has no camera to project from.
+            # `BaseTake.SetCamera` is the official Maxon SDK pattern
+            # (see takesystem_cameras_r17.py).
+            if source_cam is not None:
+                try:
+                    take.SetCamera(td, source_cam)
+                except Exception as e:
+                    report["errors"].append(f"SetCamera failed for {take_name}: {e}")
+
             # Apply format-specific overrides on render data
             try:
                 new_rd[c4d.RDATA_XRES] = float(fmt_def["width"])
@@ -3449,17 +3565,47 @@ def generate_multiformat_takes(doc, options):
                 report["errors"].append(f"Render data setup failed for {take_name}: {e}")
                 continue
 
-            # Camera FOV override (idempotent — FindOrAddOverrideParam updates if exists)
-            if auto_fov and source_cam and src_fov_h is not None:
-                target_aspect = format_aspect(fmt_def)
-                target_fov = compute_target_horizontal_fov(src_fov_h, src_aspect, target_aspect)
+            # Camera dimension overrides — depends on composition_mode.
+            #
+            # Mode "none": no camera changes; clear any stale FOV/focal/
+            #   aperture overrides from prior runs (early v1.5.5 dev iterations
+            #   wrote focal-length overrides as "Auto-FOV" — those produce
+            #   weird per-format framing under the new default). We "clear"
+            #   defensively by setting overrides back to the camera's native
+            #   values, since RemoveOverrideParam isn't reliably exposed in
+            #   Python across C4D versions.
+            #
+            # Mode "resize_canvas": override CAMERAOBJECT_APERTURE per format
+            #   using AR_ResizeCanvas math: `new_aperture = src_aperture *
+            #   target_width / src_width`. We use the SENSOR (aperture)
+            #   instead of focal length because:
+            #     - Doesn't break focal-length animations (zooms / lens pulls)
+            #     - Doesn't disturb DOF calculations (DOF reads focal+f-stop)
+            #     - Aperture overrides aren't clamped by C4D physical
+            #       cameras (FOV is the derived value, aperture and focal
+            #       are the masters)
+            if source_cam:
                 try:
-                    fov_id = c4d.DescID(c4d.DescLevel(c4d.CAMERAOBJECT_FOV, c4d.DTYPE_REAL, 0))
-                    ovr = take.FindOrAddOverrideParam(td, source_cam, fov_id, target_fov)
-                    if ovr:
-                        ovr.UpdateSceneNode(td, fov_id)
+                    if composition_mode == COMPOSITION_MODE_NONE:
+                        _reset_camera_dimensions_to_native(take, td, source_cam)
+                    elif composition_mode == COMPOSITION_MODE_RESIZE_CANVAS:
+                        target_w = int(fmt_def["width"])
+                        new_aperture = compute_target_aperture(
+                            src_aperture, src_w, target_w)
+                        ap_id = c4d.DescID(c4d.DescLevel(
+                            c4d.CAMERAOBJECT_APERTURE, c4d.DTYPE_REAL, 0))
+                        ovr = take.FindOrAddOverrideParam(td, source_cam,
+                                                         ap_id, new_aperture)
+                        if ovr:
+                            # Force the value (FindOrAddOverrideParam is
+                            # find-OR-add, not find-and-update — explicit
+                            # SetParameter ensures the value is written).
+                            ovr.SetParameter(ap_id, new_aperture,
+                                             c4d.DESCFLAGS_SET_0)
+                            ovr.UpdateSceneNode(td, ap_id)
                 except Exception as e:
-                    report["errors"].append(f"FOV override failed for {take_name}: {e}")
+                    report["errors"].append(
+                        f"Camera dimension setup failed for {take_name}: {e}")
 
             if is_update:
                 report["updated"].append(take_name)
@@ -3476,14 +3622,546 @@ def generate_multiformat_takes(doc, options):
     return report
 
 
+# ============================================================
+# Cross-Aspect Safe-Area QC (#12) — Pure helpers
+# ============================================================
+# Per-format safe-area insets: fraction of frame "consumed" by
+# platform UI overlays (caption text, social icons, headers).
+# Top/bottom/left/right are expressed as fractions [0..1) of the
+# FULL frame extent in that axis.
+#
+# Defaults derived from real platform specs (Meta creator guide
+# for Reels, IG Stories UI, TikTok layout, broadcast standards):
+#  - 16x9: broadcast 5% all around (legacy CRT overscan)
+#  - 9x16: 8/15/5/10 — IG Reels caption + icon stack on right
+#  - 1x1:  feed shows captions BELOW the media, minimal overlay
+#  - 4x5:  feed portrait, slight bottom UI
+#  - 21x9: cinema, no social overlays
+SAFE_AREA_INSETS = {
+    "16x9": {"top": 0.05, "bottom": 0.05, "left": 0.05, "right": 0.05},
+    "9x16": {"top": 0.08, "bottom": 0.15, "left": 0.05, "right": 0.10},
+    "1x1":  {"top": 0.05, "bottom": 0.08, "left": 0.05, "right": 0.05},
+    "4x5":  {"top": 0.05, "bottom": 0.10, "left": 0.05, "right": 0.05},
+    "21x9": {"top": 0.05, "bottom": 0.05, "left": 0.05, "right": 0.05},
+}
+
+
+def safe_area_ndc_box(fmt_id):
+    """Return safe-area rectangle in NDC space (Normalized Device Coords).
+
+    NDC convention used by Sentinel:
+      x in [-1, +1] left→right
+      y in [-1, +1] bottom→top  (C4D camera +Y is up)
+
+    A point (ndc_x, ndc_y) is inside the safe area iff:
+        left <= ndc_x <= right  AND  bottom <= ndc_y <= top
+
+    Unknown format ids return the full NDC range (no insets) so
+    the check degrades gracefully instead of false-positive flooding.
+    """
+    insets = SAFE_AREA_INSETS.get(fmt_id)
+    if not insets:
+        return {"left": -1.0, "right": 1.0, "bottom": -1.0, "top": 1.0}
+    return {
+        "left":   -1.0 + 2.0 * insets["left"],
+        "right":   1.0 - 2.0 * insets["right"],
+        "bottom": -1.0 + 2.0 * insets["bottom"],
+        "top":     1.0 - 2.0 * insets["top"],
+    }
+
+
+def project_world_to_ndc(camera_mg_inv, world_point, h_fov_rad, aspect):
+    """Project a world-space point to normalized device coords.
+
+    Args:
+        camera_mg_inv: inverse of camera global matrix (world→camera).
+                       Caller should compute `~camera.GetMg()` once and
+                       reuse for many points (matrix inversion is the
+                       expensive part).
+        world_point:   c4d.Vector in world space.
+        h_fov_rad:     camera horizontal FOV in radians (CAMERAOBJECT_FOV).
+        aspect:        target frame aspect = width / height.
+
+    Returns:
+        tuple (ndc_x, ndc_y, in_front).
+        in_front = False when the point is at or behind the camera plane
+        (z >= 0 in camera-local space) — ndc values then are not meaningful.
+
+    Math (perspective projection, C4D right-handed -Z forward):
+        p_cam = camera_mg_inv * p_world
+        ndc_x = (p_cam.x / tan(h_fov/2)) / -p_cam.z
+        ndc_y = (p_cam.y / tan(v_fov/2)) / -p_cam.z
+        v_fov derived from h_fov + aspect: tan(v/2) = tan(h/2) / aspect
+    """
+    p_cam = camera_mg_inv * world_point
+    if p_cam.z >= 0:
+        return (0.0, 0.0, False)
+    half_h = h_fov_rad * 0.5
+    tan_h = _math.tan(half_h)
+    if tan_h <= 0:
+        return (0.0, 0.0, False)
+    tan_v = tan_h / aspect if aspect > 0 else tan_h
+    ndc_x = (p_cam.x / tan_h) / -p_cam.z
+    ndc_y = (p_cam.y / tan_v) / -p_cam.z
+    return (ndc_x, ndc_y, True)
+
+
+def world_bbox_corners(obj):
+    """Compute the 8 world-space corners of an object's axis-aligned
+    bounding box, falling back to cache geometry for generators
+    (cloners, MoText, splines) where `GetRad()` is stale or zero.
+
+    Returns:
+        list[c4d.Vector] — typically 8 corners. Single-element list
+        [origin] if no extent could be determined (degenerate case).
+    """
+    if obj is None:
+        return []
+    mp = obj.GetMp()
+    rad = obj.GetRad()
+    mg = obj.GetMg()
+    has_extent = (abs(rad.x) > 1e-6 or
+                  abs(rad.y) > 1e-6 or
+                  abs(rad.z) > 1e-6)
+    if not has_extent:
+        cached = _walk_cache_for_extent(obj)
+        if cached is not None:
+            mp, rad = cached
+            has_extent = True
+    if not has_extent:
+        return [mg.off]
+    corners = []
+    for sx in (-1.0, 1.0):
+        for sy in (-1.0, 1.0):
+            for sz in (-1.0, 1.0):
+                local = c4d.Vector(mp.x + sx * rad.x,
+                                   mp.y + sy * rad.y,
+                                   mp.z + sz * rad.z)
+                corners.append(mg * local)
+    return corners
+
+
+def _walk_cache_for_extent(obj):
+    """Recursively walk `obj.GetDeformCache()` / `obj.GetCache()` to find
+    real geometry, accumulating an AABB across all leaves.
+
+    Returns:
+        tuple (mp, rad) in obj's LOCAL space (cache shares obj's frame),
+        or None if no extent was found anywhere in the cache tree.
+    """
+    if obj is None:
+        return None
+    cache = obj.GetDeformCache() or obj.GetCache()
+    if cache is None:
+        return None
+    state = {"min": None, "max": None}
+
+    def _accumulate(node):
+        if node is None:
+            return
+        m, r = node.GetMp(), node.GetRad()
+        if abs(r.x) > 1e-6 or abs(r.y) > 1e-6 or abs(r.z) > 1e-6:
+            mn = c4d.Vector(m.x - r.x, m.y - r.y, m.z - r.z)
+            mx = c4d.Vector(m.x + r.x, m.y + r.y, m.z + r.z)
+            if state["min"] is None:
+                state["min"] = mn
+                state["max"] = mx
+            else:
+                state["min"] = c4d.Vector(min(state["min"].x, mn.x),
+                                          min(state["min"].y, mn.y),
+                                          min(state["min"].z, mn.z))
+                state["max"] = c4d.Vector(max(state["max"].x, mx.x),
+                                          max(state["max"].y, mx.y),
+                                          max(state["max"].z, mx.z))
+        sub = node.GetDeformCache() or node.GetCache()
+        if sub is not None:
+            _accumulate(sub)
+        child = node.GetDown()
+        while child is not None:
+            _accumulate(child)
+            child = child.GetNext()
+
+    _accumulate(cache)
+    if state["min"] is None:
+        return None
+    mn, mx = state["min"], state["max"]
+    mp = c4d.Vector((mn.x + mx.x) * 0.5,
+                    (mn.y + mx.y) * 0.5,
+                    (mn.z + mx.z) * 0.5)
+    rad = c4d.Vector((mx.x - mn.x) * 0.5,
+                     (mx.y - mn.y) * 0.5,
+                     (mx.z - mn.z) * 0.5)
+    return (mp, rad)
+
+
+def corners_violation_sides(corners_ndc, safe_box):
+    """Identify which sides of `safe_box` are exceeded by any of the
+    projected corners.
+
+    Args:
+        corners_ndc: list of (ndc_x, ndc_y) tuples — corners that
+                     project IN FRONT of the camera. Caller should
+                     filter out behind-camera corners (in_front=False).
+        safe_box:    dict {left, right, bottom, top} from
+                     `safe_area_ndc_box(fmt_id)`.
+
+    Returns:
+        set[str] — subset of {"left", "right", "bottom", "top"}.
+        Empty set means the bbox is fully inside the safe area
+        (or corners_ndc is empty — caller decides what to do with
+        the "all-behind-camera" case).
+    """
+    sides = set()
+    if not corners_ndc:
+        return sides
+    for ndc_x, ndc_y in corners_ndc:
+        if ndc_x < safe_box["left"]:
+            sides.add("left")
+        if ndc_x > safe_box["right"]:
+            sides.add("right")
+        if ndc_y < safe_box["bottom"]:
+            sides.add("bottom")
+        if ndc_y > safe_box["top"]:
+            sides.add("top")
+    return sides
+
+
+# ============================================================
+# Cross-Aspect Safe-Area QC (#12) — UserData marker
+# ============================================================
+# Artists mark "important compositional elements" (logo, title,
+# character) by attaching a magic UserData boolean to the object.
+# We use UserData (not a custom TagData plugin) because:
+#   - Zero new resource files / plugin IDs to register
+#   - Persists natively in the .c4d save (no sidecar needed)
+#   - Trivial to add/remove/query from Python
+#
+# Collision avoidance: the DESC_NAME is prefixed with "[Sentinel]"
+# so it can't be confused with another plugin's UserData.
+
+SAFE_AREA_USERDATA_NAME = "[Sentinel] Safe Area Subject"
+
+
+def _find_safe_area_userdata_id(obj):
+    """Walk obj's UserData container looking for the Safe Area marker.
+
+    Returns:
+        c4d.DescID of the UserData entry, or None if the object is
+        not marked.
+    """
+    if obj is None:
+        return None
+    try:
+        ud_container = obj.GetUserDataContainer()
+    except Exception:
+        return None
+    if not ud_container:
+        return None
+    for descid, bc in ud_container:
+        try:
+            if bc[c4d.DESC_NAME] == SAFE_AREA_USERDATA_NAME:
+                return descid
+        except Exception:
+            continue
+    return None
+
+
+def is_object_marked_safe_area(obj):
+    """Return True iff `obj` carries the Safe Area marker AND it's set
+    to True. (A marker entry set to False counts as 'unmarked' so
+    the artist can toggle without removing the UD entry.)
+    """
+    descid = _find_safe_area_userdata_id(obj)
+    if descid is None:
+        return False
+    try:
+        return bool(obj[descid])
+    except Exception:
+        return False
+
+
+def mark_object_safe_area(obj, enable=True, doc=None):
+    """Mark or unmark `obj` as a Safe Area subject.
+
+    Idempotent: calling repeatedly with the same `enable` value is a
+    no-op (after the first call adds the UD entry). Calling with the
+    opposite value flips the boolean without removing the entry.
+
+    If `doc` is provided, wraps the modification in `AddUndo` so the
+    artist's Cmd+Z reverts the marking action.
+
+    Returns:
+        bool — True if the operation succeeded, False on failure.
+    """
+    if obj is None:
+        return False
+    descid = _find_safe_area_userdata_id(obj)
+    if descid is None:
+        # First-time marking: add the UD entry
+        try:
+            bc = c4d.GetCustomDatatypeDefault(c4d.DTYPE_BOOL)
+            bc[c4d.DESC_NAME] = SAFE_AREA_USERDATA_NAME
+            bc[c4d.DESC_SHORT_NAME] = SAFE_AREA_USERDATA_NAME
+            bc[c4d.DESC_DEFAULT] = bool(enable)
+            bc[c4d.DESC_ANIMATE] = c4d.DESC_ANIMATE_OFF
+            if doc:
+                doc.AddUndo(c4d.UNDOTYPE_CHANGE, obj)
+            descid = obj.AddUserData(bc)
+            if descid is None:
+                return False
+            obj[descid] = bool(enable)
+        except Exception as e:
+            safe_print(f"mark_object_safe_area: AddUserData failed for "
+                       f"{_safe_name(obj)}: {e}")
+            return False
+    else:
+        # Already marked: just flip the boolean
+        try:
+            if doc:
+                doc.AddUndo(c4d.UNDOTYPE_CHANGE, obj)
+            obj[descid] = bool(enable)
+        except Exception as e:
+            safe_print(f"mark_object_safe_area: SetParameter failed for "
+                       f"{_safe_name(obj)}: {e}")
+            return False
+    return True
+
+
+def unmark_object_safe_area(obj, doc=None):
+    """Remove the Safe Area UserData entry from `obj` entirely.
+
+    Use this when the artist wants to clean up — `mark_object_safe_area
+    (obj, False)` only sets the bool to False but leaves the UD entry.
+    `unmark_object_safe_area` removes the entry, restoring the object
+    to a "never been marked" state.
+    """
+    if obj is None:
+        return False
+    descid = _find_safe_area_userdata_id(obj)
+    if descid is None:
+        return True  # Already unmarked
+    try:
+        if doc:
+            doc.AddUndo(c4d.UNDOTYPE_CHANGE, obj)
+        return bool(obj.RemoveUserData(descid))
+    except Exception as e:
+        safe_print(f"unmark_object_safe_area: RemoveUserData failed for "
+                   f"{_safe_name(obj)}: {e}")
+        return False
+
+
+def find_marked_safe_area_objects(doc):
+    """Return a list of all objects in `doc` that are marked as Safe
+    Area subjects (active marker = True).
+
+    Walks the full document hierarchy depth-first via GetDown/GetNext.
+    """
+    if doc is None:
+        return []
+    result = []
+
+    def _walk(op):
+        while op is not None:
+            if is_object_marked_safe_area(op):
+                result.append(op)
+            child = op.GetDown()
+            if child is not None:
+                _walk(child)
+            op = op.GetNext()
+
+    _walk(doc.GetFirstObject())
+    return result
+
+
+# ============================================================
+# Cross-Aspect Safe-Area QC (#12) — Take resolution helpers
+# ============================================================
+# Resolve which camera, FOV, and frame aspect apply to each
+# multi-format Take so the safe-area check can project bbox
+# corners using the right perspective per Take.
+
+def find_active_multiformat_takes(doc):
+    """Find Takes whose name matches a known fmt_id from MULTIFORMAT_DEFS.
+
+    Multi-Format Setup (v1.5.4) creates child Takes named with the
+    bare fmt_id ("16x9", "9x16", ...) when the source is the Main
+    take, or with a "<source>_<fmt_id>" suffix otherwise. Both
+    conventions are recognized.
+
+    Returns:
+        list[(fmt_id, BaseTake)] — empty if no multi-format Takes
+        are present in the document.
+    """
+    if not doc:
+        return []
+    td = doc.GetTakeData()
+    if td is None:
+        return []
+    main = td.GetMainTake()
+    if main is None:
+        return []
+
+    known_ids = {fmt["id"] for fmt in MULTIFORMAT_DEFS}
+    result = []
+
+    def _walk(take):
+        while take is not None:
+            name = (take.GetName() or "").strip()
+            matched_id = None
+            if name in known_ids:
+                matched_id = name
+            else:
+                for kid in known_ids:
+                    if name.endswith("_" + kid):
+                        matched_id = kid
+                        break
+            if matched_id:
+                result.append((matched_id, take))
+            child = take.GetDown()
+            if child is not None:
+                _walk(child)
+            take = take.GetNext()
+
+    _walk(main.GetDown())
+    return result
+
+
+def get_take_camera_h_fov_rad(take, cam, td):
+    """Return the camera's effective horizontal FOV (radians) in `take`.
+
+    Resolution order:
+      1. Focal-length override (CAMERA_FOCUS) — preferred since v1.5.5;
+         converted back to FOV via `2·atan(aperture / (2·focal))`. This is
+         what the Multi-Format Setup orchestrator writes for physical / RS
+         cameras where FOV overrides get clamped to the focal-derived
+         native value at render time.
+      2. FOV override (CAMERAOBJECT_FOV) — legacy fallback for takes
+         generated before the v1.5.5 fix, OR for non-physical cameras where
+         FOV is the master.
+      3. Camera's native CAMERAOBJECT_FOV.
+
+    Override-reading pattern follows the official Maxon SDK example
+    `takesystem_sphere_override_r17.py`:
+        baseOverride = take.FindOverride(td, cam)
+        if baseOverride.IsOverriddenParam(descid):
+            value = baseOverride.GetParameter(descid, DESCFLAGS_GET_0)
+
+    Returns:
+        float (radians) or None on failure / missing camera.
+    """
+    if cam is None:
+        return None
+    focus_id = c4d.DescID(c4d.DescLevel(c4d.CAMERA_FOCUS, c4d.DTYPE_REAL, 0))
+    fov_id = c4d.DescID(c4d.DescLevel(c4d.CAMERAOBJECT_FOV,
+                                     c4d.DTYPE_REAL, 0))
+    if take is not None and td is not None:
+        try:
+            base_override = take.FindOverride(td, cam)
+            if base_override is not None:
+                # Prefer focal-length override (v1.5.5+ convention)
+                if base_override.IsOverriddenParam(focus_id):
+                    focal = base_override.GetParameter(focus_id,
+                                                      c4d.DESCFLAGS_GET_0)
+                    if focal is not None and float(focal) > 0:
+                        aperture = 36.0
+                        try:
+                            ap = float(cam[c4d.CAMERAOBJECT_APERTURE])
+                            if ap > 0:
+                                aperture = ap
+                        except Exception:
+                            pass
+                        return 2.0 * _math.atan(aperture / (2.0 * float(focal)))
+                # Legacy FOV override fallback
+                if base_override.IsOverriddenParam(fov_id):
+                    value = base_override.GetParameter(fov_id,
+                                                       c4d.DESCFLAGS_GET_0)
+                    if value is not None:
+                        return float(value)
+        except Exception:
+            pass
+    # Final fallback: camera's native FOV
+    try:
+        return float(cam[c4d.CAMERAOBJECT_FOV])
+    except Exception:
+        return None
+
+
+def get_take_resolution(take, td, doc):
+    """Return (width, height) ints from the render data effective in `take`.
+
+    Multi-Format Setup overrides RDATA_XRES/YRES on the cloned render
+    data per Take, so this returns the format-specific resolution.
+
+    Returns (None, None) on failure.
+    """
+    if take is None or td is None or doc is None:
+        return (None, None)
+    rd = _resolve_source_render_data(take, td, doc)
+    if rd is None:
+        return (None, None)
+    try:
+        w = int(rd[c4d.RDATA_XRES])
+        h = int(rd[c4d.RDATA_YRES])
+        return (w, h)
+    except Exception:
+        return (None, None)
+
+
+def get_take_aspect(take, td, doc):
+    """Return frame aspect (width / height) for `take`.
+
+    Returns None when resolution cannot be resolved.
+    """
+    w, h = get_take_resolution(take, td, doc)
+    if w is None or h is None or h <= 0:
+        return None
+    return float(w) / float(h)
+
+
+def resolve_take_projection_params(take, td, doc):
+    """Resolve everything needed to project world points into a Take's frame.
+
+    One-stop helper used by the QC #12 orchestrator: given a Take,
+    returns the camera object, its inverse global matrix (for re-use
+    across many points), the effective horizontal FOV (radians), and
+    the frame aspect.
+
+    Returns:
+        dict with keys: camera, camera_mg_inv, h_fov_rad, aspect,
+                       resolution (tuple w,h).
+        Any value may be None if it couldn't be resolved — the caller
+        is responsible for skipping the Take in that case.
+    """
+    out = {
+        "camera": None,
+        "camera_mg_inv": None,
+        "h_fov_rad": None,
+        "aspect": None,
+        "resolution": (None, None),
+    }
+    if take is None or td is None or doc is None:
+        return out
+    cam = _resolve_source_camera(take, td, doc)
+    out["camera"] = cam
+    if cam is not None:
+        try:
+            out["camera_mg_inv"] = ~cam.GetMg()
+        except Exception:
+            out["camera_mg_inv"] = None
+    out["h_fov_rad"] = get_take_camera_h_fov_rad(take, cam, td)
+    out["resolution"] = get_take_resolution(take, td, doc)
+    out["aspect"] = get_take_aspect(take, td, doc)
+    return out
+
+
 class MultiFormatDialog(gui.GeDialog):
-    """Modal dialog: which formats to generate + output mode + camera options.
+    """Modal dialog: which formats to generate + output mode + composition mode.
 
     After Open(c4d.DLG_TYPE_MODAL), check `confirmed`. If True, read:
-        result_formats     -> list[str] of fmt_id values
-        result_output_mode -> 'subfolder' | 'suffix'
-        result_auto_fov    -> bool
-        result_update_existing -> bool
+        result_formats          -> list[str] of fmt_id values
+        result_output_mode      -> 'subfolder' | 'suffix'
+        result_composition_mode -> 'none' | 'resize_canvas'
+        result_update_existing  -> bool
     """
 
     # Widget IDs (local to this dialog)
@@ -3491,7 +4169,7 @@ class MultiFormatDialog(gui.GeDialog):
     LBL_SOURCE = 1002
     CHK_FORMAT_BASE = 1100  # one checkbox per format: 1100, 1101, ...
     COMBO_OUTPUT_MODE = 1010
-    CHK_AUTO_FOV = 1011
+    COMBO_COMPOSITION_MODE = 1011
     CHK_UPDATE_EXISTING = 1012
     BTN_CANCEL = 1020
     BTN_GENERATE = 1021
@@ -3502,6 +4180,13 @@ class MultiFormatDialog(gui.GeDialog):
         "Format suffix in filename (file_16x9, file_9x16, ...)",
     ]
 
+    # Composition Mode (camera dimension behavior across formats)
+    COMPOSITION_MODES = [COMPOSITION_MODE_NONE, COMPOSITION_MODE_RESIZE_CANVAS]
+    COMPOSITION_MODE_LABELS = [
+        "None — camera unchanged, just resolution (compose for intersection)",
+        "Resize Canvas — sensor-size override (rotates angular field, AR-style)",
+    ]
+
     def __init__(self, source_take_name="Main", source_resolution=None):
         super().__init__()
         self.source_take_name = source_take_name or "Main"
@@ -3510,7 +4195,7 @@ class MultiFormatDialog(gui.GeDialog):
         self.confirmed = False
         self.result_formats = []
         self.result_output_mode = "subfolder"
-        self.result_auto_fov = True
+        self.result_composition_mode = COMPOSITION_MODE_NONE
         self.result_update_existing = True
 
     def CreateLayout(self):
@@ -3520,10 +4205,10 @@ class MultiFormatDialog(gui.GeDialog):
         self.GroupBorderSpace(12, 10, 12, 10)
         self.GroupSpace(0, 6)
 
-        # Workflow hint — explains the two compose-and-derive schools
-        hint = ("Tip: compose in 1:1 or 4:5 (master frame) to crop cleanly into all\n"
-                "formats, OR compose in your primary format and enable Auto-adjust\n"
-                "FOV below to keep the subject framed across crops.")
+        # Workflow hint — neutral, points to the Composition Mode below
+        hint = ("Generates a child Take per delivery format with cloned Render Data\n"
+                "(resolution + output path). Camera behavior between formats is\n"
+                "controlled by Composition Mode below.")
         self.AddStaticText(self.LBL_HINT, c4d.BFH_SCALEFIT, 0, 0, hint, 0)
 
         self.AddSeparatorH(8)
@@ -3554,9 +4239,13 @@ class MultiFormatDialog(gui.GeDialog):
 
         self.AddSeparatorH(8)
 
-        # Options
-        self.AddCheckbox(self.CHK_AUTO_FOV, c4d.BFH_LEFT, 0, 0,
-                         "Auto-adjust camera FOV per ratio (maintains vertical FOV)")
+        # Composition mode
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Composition mode:", 0)
+        self.AddComboBox(self.COMBO_COMPOSITION_MODE, c4d.BFH_SCALEFIT, 0, 0)
+
+        self.AddSeparatorH(8)
+
+        # Update-existing toggle
         self.AddCheckbox(self.CHK_UPDATE_EXISTING, c4d.BFH_LEFT, 0, 0,
                          "Update existing Takes with same name (skip otherwise)")
 
@@ -3573,7 +4262,7 @@ class MultiFormatDialog(gui.GeDialog):
         return True
 
     def InitValues(self):
-        # All formats checked by default (per Yambo workflow request)
+        # All formats checked by default
         for i in range(len(MULTIFORMAT_DEFS)):
             self.SetBool(self.CHK_FORMAT_BASE + i, True)
 
@@ -3582,8 +4271,12 @@ class MultiFormatDialog(gui.GeDialog):
             self.AddChild(self.COMBO_OUTPUT_MODE, i, label)
         self.SetInt32(self.COMBO_OUTPUT_MODE, 0)  # subfolder default
 
-        # Toggles default to ON
-        self.SetBool(self.CHK_AUTO_FOV, True)
+        # Composition mode combo
+        for i, label in enumerate(self.COMPOSITION_MODE_LABELS):
+            self.AddChild(self.COMBO_COMPOSITION_MODE, i, label)
+        self.SetInt32(self.COMBO_COMPOSITION_MODE, 0)  # "none" default
+
+        # Update existing default ON
         self.SetBool(self.CHK_UPDATE_EXISTING, True)
 
         # Source info caption
@@ -3618,12 +4311,15 @@ class MultiFormatDialog(gui.GeDialog):
             self.result_formats = selected
 
             # Output mode
-            mode_idx = int(self.GetInt32(self.COMBO_OUTPUT_MODE))
-            if 0 <= mode_idx < len(self.OUTPUT_MODES):
-                self.result_output_mode = self.OUTPUT_MODES[mode_idx]
+            out_idx = int(self.GetInt32(self.COMBO_OUTPUT_MODE))
+            if 0 <= out_idx < len(self.OUTPUT_MODES):
+                self.result_output_mode = self.OUTPUT_MODES[out_idx]
 
-            # Toggles
-            self.result_auto_fov = self.GetBool(self.CHK_AUTO_FOV)
+            # Composition mode
+            comp_idx = int(self.GetInt32(self.COMBO_COMPOSITION_MODE))
+            if 0 <= comp_idx < len(self.COMPOSITION_MODES):
+                self.result_composition_mode = self.COMPOSITION_MODES[comp_idx]
+
             self.result_update_existing = self.GetBool(self.CHK_UPDATE_EXISTING)
 
             self.confirmed = True
@@ -5196,26 +5892,30 @@ class YSPanel(gui.GeDialog):
             takes_count = len(takes_bad) if takes_bad else 0
             fps_range_count = len(fps_range_bad) if fps_range_bad else 0
 
-            # Update StatusArea
-            self.ua.set_state(
-                dict(
-                    lights=lights_count,
-                    vis=vis_count,
-                    vis_names=[_safe_name(o) for o in (vis_bad[:10] if vis_bad else [])],
-                    keys=keys_count,
-                    keys_names=[_safe_name(o) for o in (keys_bad[:10] if keys_bad else [])],
-                    cam=cam_count,
-                    rdc=rdc_count,
-                    textures=textures_count,
-                    unused_mats=unused_mats_count,
-                    names=names_count,
-                    names_list=[_safe_name(o) for o in (names_bad[:10] if names_bad else [])],
-                    output=output_count,
-                    takes=takes_count,
-                    fps_range=fps_range_count,
-                ),
-                self.ua.show,
-            )
+            # Update StatusArea (only if QC tab has been built — when the
+            # panel reopens on a non-QC tab, self.ua stays None until the
+            # user clicks QC. Score header still updates regardless because
+            # it lives in the always-visible Scene Header.)
+            if self.ua is not None:
+                self.ua.set_state(
+                    dict(
+                        lights=lights_count,
+                        vis=vis_count,
+                        vis_names=[_safe_name(o) for o in (vis_bad[:10] if vis_bad else [])],
+                        keys=keys_count,
+                        keys_names=[_safe_name(o) for o in (keys_bad[:10] if keys_bad else [])],
+                        cam=cam_count,
+                        rdc=rdc_count,
+                        textures=textures_count,
+                        unused_mats=unused_mats_count,
+                        names=names_count,
+                        names_list=[_safe_name(o) for o in (names_bad[:10] if names_bad else [])],
+                        output=output_count,
+                        takes=takes_count,
+                        fps_range=fps_range_count,
+                    ),
+                    self.ua.show,
+                )
 
             # Update Score header — pass count + scene stats summary
             counts = [lights_count, vis_count, keys_count, cam_count, rdc_count,
@@ -6390,7 +7090,7 @@ class YSPanel(gui.GeDialog):
         options = {
             "formats": dlg.result_formats,
             "output_mode": dlg.result_output_mode,
-            "auto_fov": dlg.result_auto_fov,
+            "composition_mode": dlg.result_composition_mode,
             "update_existing": dlg.result_update_existing,
             "source_take": source_take,
         }
@@ -6412,6 +7112,12 @@ class YSPanel(gui.GeDialog):
                              f"({src_w}×{src_h})")
             else:
                 lines.append(f"Source: '{report['source_take_name']}'")
+            comp_mode = report.get("composition_mode", COMPOSITION_MODE_NONE)
+            mode_label = {
+                COMPOSITION_MODE_NONE: "Camera unchanged (resolution only)",
+                COMPOSITION_MODE_RESIZE_CANVAS: "Resize Canvas (sensor override per format)",
+            }.get(comp_mode, comp_mode)
+            lines.append(f"Composition mode: {mode_label}")
             lines.append("")
 
         created = report.get("created") or []
@@ -6448,7 +7154,7 @@ class YSPanel(gui.GeDialog):
 
         c4d.gui.MessageDialog("\n".join(lines).strip() or "Done.")
 
-        # Refresh panel state (FOV overrides may have updated the active take)
+        # Refresh panel state (Take system may have updated the active take)
         try:
             check_cache.clear()
         except Exception:
