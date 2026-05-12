@@ -66,6 +66,84 @@
 
 ---
 
+### v1.5.5 — Cross-Aspect Safe-Area QC + Multi-Format refactor ✅
+
+After v1.5.4 shipped Multi-Format Setup, user testing showed two things: the "Auto-FOV" option (vertical-FOV-constant) didn't match the artist's mental model, and there was no automated way to verify subject framing across the generated delivery formats. v1.5.5 addresses both.
+
+#### QC Check #12 — Cross-Aspect Safe Area
+
+The check answers "if I deliver this scene as 16:9, 9:16, 1:1, 4:5, and 21:9, will my key compositional elements stay inside each format's safe area?". Opt-in marking via UserData; runs against all active Multi-Format Takes; reports per-(object × format × frames) violations with offending edges.
+
+##### Pure helpers (Step 1)
+- [x] `SAFE_AREA_INSETS` per-format dict with platform-grounded defaults (16x9: 5% symmetric; 9x16: 8/15/5/10 for IG Reels; 1x1, 4x5, 21x9 calibrated per platform UI)
+- [x] `safe_area_ndc_box(fmt_id)` — convert insets to format-local NDC bounds
+- [x] `format_safe_area_in_master_ndc(fmt_id, master_aspect)` — **crop interpretation** of the safe area in master NDC space
+- [x] `project_world_to_ndc(camera_mg_inv, world_point, h_fov_rad, aspect)` — manual perspective projection (C4D left-handed +Z forward)
+- [x] `world_bbox_corners(obj)` — 8 AABB corners with recursive `GetCache()` fallback for generators (cloners, MoText)
+- [x] `corners_violation_sides(corners_ndc, safe_box)` — set of `{left, right, bottom, top}` violated edges
+- [x] Math verified standalone with 10 sanity tests (NDC convention, edge cases, asymmetric insets, behind-camera handling)
+
+##### UserData marker (Step 2)
+- [x] `[Sentinel] Safe Area Subject` UserData boolean (prefix avoids cross-plugin collisions)
+- [x] `mark_object_safe_area` / `unmark_object_safe_area` / `is_object_marked_safe_area` / `find_marked_safe_area_objects`
+- [x] Persists natively in `.c4d` save (no sidecar JSON needed)
+- [x] Idempotent mark; full removal of UD entry on unmark (no fossil False entries)
+
+##### Take projection resolvers (Step 3)
+- [x] `find_active_multiformat_takes(doc)` — match by name against `MULTIFORMAT_DEFS` ids (bare or `_suffix` patterns)
+- [x] `get_take_camera_h_fov_rad(take, cam, td)` — effective horizontal FOV reading focal-length override (v1.5.5+ convention) → FOV override (legacy) → camera native
+- [x] `get_take_resolution` / `get_take_aspect` / `resolve_take_projection_params` — one-stop helper for the orchestrator
+
+##### Orchestrator (Step 4) — `check_cross_aspect_safe_area`
+- [x] Crop-interpretation model: project bbox once into the master Take's NDC, then check each format as a centered crop region with per-side insets
+- [x] Sample strategies: `current_frame` (cheap, auto-refresh) and `keyframes` (full sweep, click Info)
+- [x] `_gather_keyframe_sample_frames` — union of PSR-track keyframes + midpoints between consecutive keys; cap of 50 samples
+- [x] `_evaluate_object_at_frame` — `SetTime` + `ExecutePasses` per sample frame; original time restored via try/finally
+- [x] Returns flat list of violation dicts (one per object × fmt_id) — matches the pattern of other QC checks
+- [x] Handles all-corners-behind-camera (skips the object for that take)
+
+##### UI integration (Steps 5–6)
+- [x] Row #12 in QC tab with Select + Info buttons (`BTN_SEL_CROSS_ASPECT`, `BTN_INFO_CROSS_ASPECT`)
+- [x] Score header reads `X/12` (was `X/11`)
+- [x] StatusArea + click-row mapping updated to include `cross_aspect`
+- [x] Info dialog shows per-object breakdown: `✗ 9x16: out by left, right, bottom @ frames 1010–1030`
+- [x] Select button selects all objects with at least one violation (deduplicated, ignores fmt_id)
+- [x] Tools tab → **QC Marking** sub-section with "Mark / Unmark Safe Area Subject" smart-toggle button (`BTN_MARK_SAFE_AREA`)
+- [x] Smart toggle: all marked → unmark; any unmarked → mark all (align toward "marked")
+- [x] Empty selection → friendly hint dialog
+- [x] Full undo wrap; `check_cache.clear()` + `self._refresh()` after operation for immediate panel update
+
+##### Step 7 — Viewport overlay (deferred to v1.5.6)
+- [ ] `c4d.plugins.SceneHookData` and `RegisterSceneHookPlugin` were removed/migrated in C4D 2026
+- [ ] Local SDK clone (Maxon 2026 examples) confirms zero references to SceneHookData registration
+- [ ] Prototype code removed cleanly from v1.5.5; QC #12 ships without live overlay
+- [ ] Probable replacement paths for v1.5.6: TagData on active camera (Draw fires per redraw, API confirmed in 2026); MessageData with EVMSG_DOCUMENTRECALCULATED
+
+#### Multi-Format Setup — composition mode refactor
+
+The v1.5.4 "Auto-FOV" toggle is replaced by a clearer **Composition Mode** dropdown:
+
+- [x] **None** (default) — only resolution + output path overrides; camera intact. Matches GSG Social Frame plugin behavior.
+- [x] **Resize Canvas** — `CAMERAOBJECT_APERTURE` (sensor) override using AR_ResizeCanvas math: `new_aperture = source × target_width / source_width`. Sensor-based avoids breaking focal-length animations + DOF.
+- [x] Helper `compute_target_aperture(src_aperture, src_w, target_w)` (replaces the now-unused vertical-FOV-constant math)
+- [x] Mode "None" defensively clears any stale FOV/focal/aperture overrides on re-run (clean state for users with v1.5.4-generated Takes)
+- [x] Helper `_reset_camera_dimensions_to_native(take, td, cam)` — sets overrides to native values when full removal isn't reliably available across C4D versions
+
+#### Multi-Format bug fixes (v1.5.4 carry-over)
+
+- [x] `take.SetCamera(td, source_cam)` now called on every generated Take (was missing → fell back to scene active camera)
+- [x] `FindOrAddOverrideParam` is find-OR-add, not find-and-update — explicit `SetParameter` call afterwards ensures the value is written
+- [x] C4D physical / Redshift cameras clamp `CAMERAOBJECT_FOV` overrides to focal-derived native; the new Resize Canvas mode uses sensor (`CAMERAOBJECT_APERTURE`) which isn't clamped
+
+#### Other bug fixes shipped in v1.5.5
+
+- [x] Panel `_refresh()` crash when reopening on a non-QC tab: `self.ua` was `None` because `_build_tab_qc` hadn't run yet — added `if self.ua is not None` guard matching the existing `score_ua` guard
+- [x] NDC projection sign convention: corrected from `-Z forward` (OpenGL) to `+Z forward` (C4D left-handed). First iteration of QC #12 reported every visible corner as "behind camera"
+
+**Why this version**: closes the multi-format delivery loop. v1.5.4 generated the Takes; v1.5.5 verifies the subjects stay framed across them. The artist marks what matters, Sentinel watches the boundaries.
+
+---
+
 ### v1.5.4 — Multi-Format Render Setup ✅
 
 One-click generator: creates child Takes for the standard delivery aspect ratios, each with its own cloned Render Data and optional camera FOV adjustment. Eliminates manual duplication when shipping the same animation to social formats.
@@ -385,9 +463,10 @@ Add a dropdown or settings dialog to change the studio standard FPS without edit
 ### v1.6.0 — Asset Health & Validation (Tier B: High impact, medium effort)
 
 > Note: Multi-Format Render Setup shipped early as v1.5.4.
+> Note: Cross-Aspect Safe-Area QC (#12) shipped as v1.5.5.
 
-#### Cross-Aspect Safe-Area QC (planned v1.5.5)
-QC check #12: warn when keyframed objects (or their bounding box) exit the safe-area intersection of the active multi-format Takes. Closes the loop with the Multi-Format Render Setup so artists know when their composition won't survive a 9:16 crop.
+#### Safe-Area Viewport Overlay (carried over from v1.5.5)
+Live colored rectangles in the active camera viewport showing each multi-format Take's crop region + per-format safe-area insets. Prototyped in v1.5.5 but deferred because `c4d.plugins.SceneHookData` was removed in C4D 2026. Need to evaluate TagData (attached to active camera) or MessageData as the new mechanism.
 
 #### Texture Repathing Tool
 Bulk find-and-replace for texture paths:

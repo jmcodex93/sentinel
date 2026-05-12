@@ -1,9 +1,9 @@
 # Sentinel Plugin - Development Rules
 
 ## Project Overview
-Sentinel (v1.5.4) is a Cinema 4D quality control and workflow automation plugin designed for professional 3D production workflows. **Originally built as YS Guardian at Yambo Studio**, now maintained and extended by Javier Melgar as Sentinel — keeping the watchdog spirit while expanding into versioning, status tracking, and modern mograph workflow tools. It acts as a real-time watchdog that continuously monitors scenes for production issues, plus provides render management and scene tools.
+Sentinel (v1.5.5) is a Cinema 4D quality control and workflow automation plugin designed for professional 3D production workflows. **Originally built as YS Guardian at Yambo Studio**, now maintained and extended by Javier Melgar as Sentinel — keeping the watchdog spirit while expanding into versioning, status tracking, and modern mograph workflow tools. It acts as a real-time watchdog that continuously monitors scenes for production issues, plus provides render management and scene tools.
 
-The plugin performs **11 quality checks** in real-time:
+The plugin performs **12 quality checks** in real-time:
 1. **Lights Organization** - Ensures all lights are properly organized in a "lights" group (Select + Fix)
 2. **Visibility Consistency** - Detects objects with mismatched viewport/render visibility (Select)
 3. **Keyframe Sanity** - Warns about multi-axis keyframes that can cause animation issues (Select)
@@ -15,6 +15,7 @@ The plugin performs **11 quality checks** in real-time:
 9. **Output Paths** - Missing tokens, empty paths in render settings (Info)
 10. **Take Validation** - Camera assigned per take, output paths with $take token (Info)
 11. **FPS / Frame Range** - Validates FPS, start frame = 1001 (VFX standard), frame step, timeline + preview alignment, all presets (Info + Fix)
+12. **Cross-Aspect Safe Area** - Verifies opt-in marked subjects (UserData) stay inside per-format safe-area regions when delivering across multiple aspect ratios via Multi-Format Setup. Auto-refresh uses current frame; Info button runs full keyframe sweep (Select + Info)
 
 Additional features: RS AOV management (Essentials/Production/Light Groups), Scene Collector, QC Report export, Render Presets with aspect ratio toggle, and a full suite of scene tools.
 
@@ -73,10 +74,10 @@ For multi-step work, write the plan as `step → verify` pairs. Weak criteria ("
 - **QC check results**: Cached with 0.5s cooldown, dirty-flag invalidation via CoreMessage
 - **Scene stats**: Object count, polygon count, materials, lights
 
-## Current Status (v1.5.4)
+## Current Status (v1.5.5)
 
 ### What Works ✅
-- **All 11 Quality Checks**: Lights, visibility, keyframes, camera shift, presets, assets/textures, unused materials, default names, output paths, take validation, FPS/frame range
+- **All 12 Quality Checks**: Lights, visibility, keyframes, camera shift, presets, assets/textures, unused materials, default names, output paths, take validation, FPS/frame range, cross-aspect safe area
 - **Auto-fix**: Lights→group, camera shift→reset, unused mats→delete, FPS/range→studio standard (all presets at once with confirmation)
 - **Smart Save Version**: Versioned saves (`scene_v###.c4d`) with required comment, QC score, scene stats, sidecar `<scene>_history.json` log
 - **Review Status Tags**: WIP / TR (Team Review) / CR (Client Review) / FINAL / Custom → suffix in filename (`scene_v007_TR.c4d`)
@@ -92,7 +93,8 @@ For multi-step work, write the plan as `step → verify` pairs. Weak criteria ("
 - **Scene Collector**: Pre-flight QC + SaveProject() + manifest JSON
 - **Take Validation**: Camera per take, $take token in output paths
 - **Render Presets**: Dropdown with resolution display, Reset All from template, Force 9:16 toggle
-- **Multi-Format Render Setup** (v1.5.4): One-click child-Take generator for the 5 standard delivery aspects (16:9, 9:16, 1:1, 4:5, 21:9). Each Take gets a cloned Render Data with format-specific resolution + output path. Optional camera FOV auto-adjust keeps **vertical FOV constant** across formats (Social Frame pattern — subjects stay framed across crops). Idempotent (re-runs update existing same-name Takes via `FindOrAddOverrideParam`); full undo wrapping (single Cmd+Z reverts the whole batch); summary dialog after generation
+- **Multi-Format Render Setup** (v1.5.4, refactored v1.5.5): One-click child-Take generator for the 5 standard delivery aspects (16:9, 9:16, 1:1, 4:5, 21:9). Each Take gets a cloned Render Data with format-specific resolution + output path. **Composition Mode** dropdown chooses between (a) "None" — camera unchanged, only resolution/output overrides (default, matches GSG Social Frame plugin); or (b) "Resize Canvas" — sensor-size override per format using AR_ResizeCanvas math (`new_aperture = src × target_w / src_w`), safer than focal-length override (doesn't break zoom animations or DOF). Idempotent; explicit `take.SetCamera` + `SetParameter` after `FindOrAddOverrideParam` (defends against find-OR-add silent skip); cleans up stale FOV/focal/aperture overrides on re-run. Full undo wrapping; summary dialog with composition mode
+- **Cross-Aspect Safe Area** (v1.5.5): QC #12 verifies opt-in marked subjects stay inside per-format safe-area regions across all active Multi-Format delivery Takes. **Crop interpretation** model: bbox projects once into the master Take's NDC, then each format's safe area is computed as a centered crop region with per-side insets (e.g. 9:16 inset 8/15/5/10 for IG Reels caption + icon stack). Auto-refresh uses current frame (cheap); Info button runs full keyframe sweep (PSR keyframes + midpoints, original timeline position restored via try/finally). Tools tab → "Mark / Unmark Safe Area Subject" smart-toggle button drives the UserData marker. Sample frame violations reported per (object × format × frames + edges)
 - **Snapshot System**: Cross-platform EXR→PNG with full ACES pipeline (ACEScg→sRGB)
 - **Scene Tools**: Hierarchy, H→Layers, Solo Layers, Drop to Floor, Vibrate Null, ABC Retime, Camera Rigs
 - **CoreMessage dirty-flag**: Instant scene change detection, no polling waste
@@ -104,6 +106,7 @@ For multi-step work, write the plan as `step → verify` pairs. Weak criteria ("
 - **Redshift must be configured manually**: RenderView → Preferences → Snapshots → EXR format
 - **C4D docked panel does not auto-shrink**: When tab content gets smaller (e.g., switching from QC → Versions), the panel window stays at its taller size. This is a confirmed C4D 2026 framework limitation (no `SetSize`/`ResizeWindow`/`FitToContent` API for docked panels — Maxon staff confirmed). Even Maxon's own panels (Take Manager, AOV Manager) have this behavior. The user must drag-resize manually if they want compact mode. Our `BFV_SCALEFIT` spacers absorb the gap correctly within the layout, but the window frame itself stays put.
 - **No native tooltips on widgets**: `BFM_GETCURSORINFO` is not routed to embedded `GeUserArea` in C4D 2026 Python. Section titles include hints (e.g., "click any row...") instead of hover tooltips.
+- **No live viewport overlay for QC #12 safe areas**: `c4d.plugins.SceneHookData` and `RegisterSceneHookPlugin` were removed/migrated in C4D 2026 (verified empirically — local 2026 SDK clone has zero references). Prototype removed cleanly; the QC check itself works fully via the Info dialog. Replacement strategies (TagData on active camera, MessageData hook) deferred to v1.5.6 pending proper investigation.
 
 ## Active Tasks
 See `ROADMAP.md` for the full feature roadmap and pending phases (v1.5.0, v1.6.0, backlog).
@@ -190,6 +193,7 @@ cd "../11 C4D DEV/renderEngine" && git pull
 - **v1.5.1** (May 2026): Scene Notes & TODOs (sidecar JSON, modal editor, panel caption); Collect Scene clean delivery naming (strips `_v###[_status]` from filename, preserves traceability in manifest); notes integrated in QC report export and Scene Collector manifest + sidecar copied to delivery
 - **v1.5.2** (May 2026): UI/UX redesign — Scene Header always visible (filename caption + Shot/Artist + QC progress bar) + 4 tabs (QC / Render / Versions / Tools) using QuickTab CustomGUI + dynamic rebuild via `LayoutFlushGroup` (HideElement does not collapse layout space in C4D 2026, hence rebuild on tab switch). Footer (GitHub / Report Bug) always visible. Documented C4D auto-shrink limitation in known limitations.
 - **v1.5.4** (May 2026): **Multi-Format Render Setup** — Render tab → "Generate Format Takes..." opens a modal that creates child Takes for the 5 standard delivery aspects (16:9 / 9:16 / 1:1 / 4:5 / 21:9). Each Take gets a cloned Render Data with format-specific resolution + output path (subfolder or suffix mode). Optional auto-FOV keeps vertical FOV constant across formats via `take.FindOrAddOverrideParam(td, cam, fov_id, target_fov)` (idempotent, updates on re-run). Full undo wrapping. Summary dialog with created/updated/skipped/errors counts. Backed by orchestrator `generate_multiformat_takes(doc, options)` and `MultiFormatDialog` (modal). Math: `target_h_fov = 2*atan((target_aspect/source_aspect)*tan(source_h_fov/2))`.
+- **v1.5.5** (May 2026): **Cross-Aspect Safe-Area QC (#12) + Multi-Format refactor**. New QC check verifies opt-in marked subjects (UserData boolean `[Sentinel] Safe Area Subject`) stay inside per-format safe areas across all active Multi-Format delivery Takes. Uses crop-interpretation math: bbox projects ONCE into master NDC, each format's safe area lives there as a centered crop region with per-side insets. Sample strategies "current_frame" (auto-refresh, cheap) and "keyframes" (Info button, full sweep with `SetTime`+`ExecutePasses` per sample). Tools tab → smart-toggle "Mark / Unmark Safe Area Subject" button. Score header now `X/12`. Multi-Format refactor: replaced Auto-FOV checkbox with Composition Mode dropdown (None / Resize Canvas). Resize Canvas uses sensor-size override (`new_aperture = src × target_w / src_w`) matching AR_ResizeCanvas community script. v1.5.4 carry-over fixes: `take.SetCamera` now assigned; `SetParameter` explicit after `FindOrAddOverrideParam` (defends against find-OR-add silent skip); C4D physical/RS cameras clamp FOV overrides — switched to sensor (aperture) override which isn't clamped. Other fixes: panel `_refresh` crash on non-QC tab reopen; NDC projection corrected from `-Z forward` to `+Z forward` (C4D left-handed convention). **Deferred to v1.5.6**: live viewport overlay (`c4d.plugins.SceneHookData` removed in C4D 2026 — pending TagData / MessageData investigation).
 
 ## Testing Checklist
 - [ ] Main plugin file loads without errors
@@ -230,10 +234,24 @@ cd "../11 C4D DEV/renderEngine" && git pull
 - [ ] Multi-Format: "Generate Format Takes..." opens modal seeded from current take/resolution
 - [ ] Multi-Format: 5 child takes created under source take (16x9, 9x16, 1x1, 4x5, 21x9)
 - [ ] Multi-Format: each take's render data has correct resolution + output path (subfolder or suffix)
-- [ ] Multi-Format: Auto-FOV ON keeps vertical FOV constant (subject framing preserved across crops)
-- [ ] Multi-Format: re-run with "Update existing" ON → existing takes get updated (FOV refreshed)
+- [ ] Multi-Format: Composition Mode "None" → camera intact across formats; vertical extent of master subject changes per format aspect (default C4D behavior)
+- [ ] Multi-Format: Composition Mode "Resize Canvas" → CAMERAOBJECT_APERTURE overridden per format via `new_aperture = src × target_w / src_w`; angular field "rotates" between formats
+- [ ] Multi-Format: re-run with "Update existing" ON → existing takes updated; stale FOV/focal overrides from prior runs reset to native
 - [ ] Multi-Format: re-run with "Update existing" OFF → existing takes go to Skipped list
 - [ ] Multi-Format: single Cmd+Z reverts the entire batch (StartUndo/EndUndo wrap)
+- [ ] Multi-Format: every generated Take has source camera assigned via `take.SetCamera(td, cam)`
+- [ ] QC #12: row appears in QC tab with Select + Info buttons; score header reads X/12
+- [ ] QC #12: with no marked objects → row always reads `[ OK ]`
+- [ ] QC #12: with no Multi-Format Takes → row always reads `[ OK ]`
+- [ ] QC #12: cube marked + filling master → row reports violations (auto-refresh = current frame)
+- [ ] QC #12: Info button → full keyframe sweep dialog with per-object, per-format, per-frames + edges breakdown
+- [ ] QC #12: Select button → selects all marked objects with at least one violation (deduplicated)
+- [ ] QC #12: after Info sweep, current timeline frame is restored (no scrub leakage)
+- [ ] QC #12: keyframed object samples include union of PSR-track keyframes + midpoints
+- [ ] QC #12: crop interpretation — same cube might fit in 16:9 master but violate 9:16 horizontal crop (and vice versa for 21:9 vertical)
+- [ ] QC #12: asymmetric insets respected (9:16 violates bottom 15% before top 8%)
+- [ ] Tools: "Mark / Unmark Safe Area Subject" button smart-toggles selection (all marked → unmark; any unmarked → mark all; empty → hint dialog)
+- [ ] Tools: Mark operation is single-undoable via Cmd+Z
 - [ ] Scene Tools: all 8 buttons functional (Hierarchy, H→Layers, Solo, Drop, Vibrate, ABC Retime, Cam Simple, Cam Shakel)
 - [ ] Output: Open Folder, Save Still, Export QC, Collect Scene
 - [ ] Snapshot dir picker ("...") persists between sessions
@@ -241,13 +259,13 @@ cd "../11 C4D DEV/renderEngine" && git pull
 - [ ] Shot ID syncs with Take system
 - [ ] Cross-platform: macOS and Windows
 
-### Current UI Layout (v1.5.4):
+### Current UI Layout (v1.5.5):
 ```
-┌─ Sentinel v1.5.4 ──────────────────────────────┐
+┌─ Sentinel v1.5.5 ──────────────────────────────┐
 │  Scene Header (always visible) ─────────────   │
 │  ▸ Scene:  test_v007_TR.c4d                    │  ← filename caption
 │  Shot ID: [Main]   Artist: [Motioneer]         │  ← editable
-│  QC 8/11  ⚠  ████░░░░  ·  1.2M polys           │  ← score line
+│  QC 9/12  ⚠  ████░░░░  ·  1.2M polys           │  ← score line
 │ ─────────────────────────────────────────────  │
 │  ┌───┬────────┬──────────┬───────┐             │
 │  │QC●│ Render │ Versions │ Tools │ ← QuickTab  │
@@ -260,10 +278,11 @@ cd "../11 C4D DEV/renderEngine" && git pull
 │   in C4D 2026)                                 │
 │                                                │
 │  Tabs:                                         │
-│    QC: 11 quality check rows + Export QC       │
+│    QC: 12 quality check rows + Export QC       │
+│        (#12 = Cross-Aspect Safe Area)          │
 │    Render: Preset + Multi-Format + AOVs + Snap │
 │    Versions: Notes + Save Version + Recent     │
-│    Tools: Layout / Object / Camera Rigs        │
+│    Tools: Layout / Animation / QC Marking      │
 │                                                │
 │ ─────────────────────────────────────────────  │
 │  Footer (always visible)                       │

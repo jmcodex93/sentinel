@@ -50,7 +50,13 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 # Plugin ID - change if ID collision
 PLUGIN_ID = 2099069
-PLUGIN_NAME = "Sentinel v1.5.4"
+PLUGIN_NAME = "Sentinel v1.5.5"
+
+# Note: a SceneHookData-based viewport overlay for the cross-aspect
+# safe areas was investigated for v1.5.5 but deferred to v1.5.6 —
+# `c4d.plugins.SceneHookData` was removed/migrated in C4D 2026 and the
+# alternative API needs proper investigation (likely TagData on the
+# active camera, or a MessageData hook).
 
 # Preset names - normalized to lowercase with underscores
 # The system accepts both "pre_render" and "pre-render" (case-insensitive)
@@ -3670,6 +3676,60 @@ def safe_area_ndc_box(fmt_id):
     }
 
 
+def format_safe_area_in_master_ndc(fmt_id, master_aspect):
+    """Return the format's safe-area rectangle expressed in MASTER NDC.
+
+    This is the "crop interpretation" of cross-aspect safe area —
+    it answers: "if I were to crop the master view (e.g. 16:9) into
+    this delivery format, where would the safe area land in master
+    coordinates?" — which is what the artist composes against in the
+    GSG Social Frame workflow.
+
+    Math:
+      Let M_a = master_aspect, F_a = format_aspect.
+      The format's centered crop region in master NDC:
+        - F_a <= M_a (taller-or-equal than master): vertical fills
+          the master, horizontal is narrowed to ±(F_a / M_a).
+        - F_a >  M_a (wider than master): horizontal fills the master,
+          vertical is narrowed to ±(M_a / F_a).
+      Within that crop region, per-side insets shrink the safe rect.
+
+    Args:
+        fmt_id: format id ('16x9', '9x16', '1x1', '4x5', '21x9')
+        master_aspect: master frame aspect (W / H), e.g. 1.778 for 16:9
+
+    Returns:
+        dict {left, right, bottom, top} — bounds expressed in master
+        NDC ([-1, +1] in both axes). Caller projects bbox corners to
+        master NDC once, then checks against this rect for each format.
+    """
+    fmt_def = get_multiformat_def(fmt_id)
+    if not fmt_def or master_aspect is None or master_aspect <= 0:
+        return {"left": -1.0, "right": 1.0, "bottom": -1.0, "top": 1.0}
+
+    f_aspect = format_aspect(fmt_def)
+    insets = SAFE_AREA_INSETS.get(fmt_id, {
+        "top": 0.05, "bottom": 0.05, "left": 0.05, "right": 0.05,
+    })
+
+    if f_aspect <= master_aspect:
+        # Format is taller than master (or equal): vertical fills master.
+        crop_x = f_aspect / master_aspect  # half-width in master NDC
+        crop_y = 1.0
+    else:
+        # Format is wider than master: horizontal fills master.
+        crop_x = 1.0
+        crop_y = master_aspect / f_aspect  # half-height in master NDC
+
+    # Apply per-side insets within the crop region.
+    return {
+        "left":   -crop_x + (2.0 * crop_x) * insets["left"],
+        "right":   crop_x - (2.0 * crop_x) * insets["right"],
+        "bottom": -crop_y + (2.0 * crop_y) * insets["bottom"],
+        "top":     crop_y - (2.0 * crop_y) * insets["top"],
+    }
+
+
 def project_world_to_ndc(camera_mg_inv, world_point, h_fov_rad, aspect):
     """Project a world-space point to normalized device coords.
 
@@ -3685,24 +3745,30 @@ def project_world_to_ndc(camera_mg_inv, world_point, h_fov_rad, aspect):
     Returns:
         tuple (ndc_x, ndc_y, in_front).
         in_front = False when the point is at or behind the camera plane
-        (z >= 0 in camera-local space) — ndc values then are not meaningful.
+        (z <= 0 in camera-local space) — ndc values then are not meaningful.
 
-    Math (perspective projection, C4D right-handed -Z forward):
-        p_cam = camera_mg_inv * p_world
-        ndc_x = (p_cam.x / tan(h_fov/2)) / -p_cam.z
-        ndc_y = (p_cam.y / tan(v_fov/2)) / -p_cam.z
-        v_fov derived from h_fov + aspect: tan(v/2) = tan(h/2) / aspect
+    Math (perspective projection, C4D left-handed +Z forward):
+        Cinema 4D uses a left-handed coordinate system; the camera's local
+        +Z axis points INTO the scene (the direction the camera looks).
+        Points in front of the camera therefore have p_cam.z > 0 (verified
+        empirically — early v1.5.5 dev iterations assumed -Z forward and
+        wrongly tagged every visible point as "behind camera").
+
+            p_cam = camera_mg_inv * p_world
+            ndc_x = (p_cam.x / tan(h_fov/2)) / p_cam.z
+            ndc_y = (p_cam.y / tan(v_fov/2)) / p_cam.z
+            v_fov derived from h_fov + aspect: tan(v/2) = tan(h/2) / aspect
     """
     p_cam = camera_mg_inv * world_point
-    if p_cam.z >= 0:
+    if p_cam.z <= 0:
         return (0.0, 0.0, False)
     half_h = h_fov_rad * 0.5
     tan_h = _math.tan(half_h)
     if tan_h <= 0:
         return (0.0, 0.0, False)
     tan_v = tan_h / aspect if aspect > 0 else tan_h
-    ndc_x = (p_cam.x / tan_h) / -p_cam.z
-    ndc_y = (p_cam.y / tan_v) / -p_cam.z
+    ndc_x = (p_cam.x / tan_h) / p_cam.z
+    ndc_y = (p_cam.y / tan_v) / p_cam.z
     return (ndc_x, ndc_y, True)
 
 
@@ -4152,6 +4218,276 @@ def resolve_take_projection_params(take, td, doc):
     out["resolution"] = get_take_resolution(take, td, doc)
     out["aspect"] = get_take_aspect(take, td, doc)
     return out
+
+
+# ============================================================
+# Cross-Aspect Safe-Area QC (#12) — Orchestrator
+# ============================================================
+
+def _gather_keyframe_sample_frames(obj, fps, max_samples=50):
+    """Collect frame numbers worth checking for `obj`'s animation.
+
+    Strategy: union of keyframes on PSR tracks + midpoints between
+    consecutive keyframes (catches arc/ease-out swings that exit the
+    safe area between two "safe" keyframes).
+
+    Returns:
+        list of int frame numbers, sorted, deduplicated. Capped at
+        `max_samples` to prevent runaway sampling on heavily-keyed
+        objects (we'd return early-frame samples, the user can scrub
+        the timeline for full coverage if needed).
+    """
+    if obj is None or fps is None or fps <= 0:
+        return []
+    keyframes = set()
+    try:
+        tracks = obj.GetCTracks() or []
+    except Exception:
+        return []
+    for track in tracks:
+        try:
+            curve = track.GetCurve()
+            if curve is None:
+                continue
+            for i in range(curve.GetKeyCount()):
+                key = curve.GetKey(i)
+                if key is None:
+                    continue
+                t = key.GetTime()
+                if t is None:
+                    continue
+                try:
+                    f = t.GetFrame(fps)
+                    keyframes.add(int(f))
+                except Exception:
+                    continue
+        except Exception:
+            continue
+
+    if not keyframes:
+        return []
+
+    sorted_keys = sorted(keyframes)
+    samples = set(sorted_keys)
+    # Add midpoints
+    for a, b in zip(sorted_keys, sorted_keys[1:]):
+        if b - a > 1:
+            samples.add((a + b) // 2)
+
+    result = sorted(samples)
+    if len(result) > max_samples:
+        # Subsample evenly across the range
+        step = max(1, len(result) // max_samples)
+        result = result[::step][:max_samples]
+    return result
+
+
+def _evaluate_object_at_frame(doc, frame, fps):
+    """Set the doc's current time to `frame` and force a scene
+    re-evaluation so subsequent reads of `obj.GetMg()` reflect the
+    object's pose at that frame.
+
+    The caller is responsible for restoring the original time
+    afterwards (scope it with try/finally for safety).
+    """
+    if doc is None or fps is None or fps <= 0:
+        return
+    try:
+        doc.SetTime(c4d.BaseTime(int(frame), int(fps)))
+        # Build flag 0 = full evaluation including animations + caches
+        doc.ExecutePasses(None, True, True, True, c4d.BUILDFLAGS_0)
+    except Exception:
+        pass
+
+
+def check_cross_aspect_safe_area(doc, sample_strategy="keyframes"):
+    """QC #12 — verify Safe Area subjects stay within per-format safe
+    areas across all active Multi-Format delivery Takes.
+
+    Uses **CROP interpretation**: matches the artist's mental model
+    of "compose once in the master frame, deliver multiple aspect
+    crops" (the GSG Social Frame workflow). Every marked object's
+    AABB is projected ONCE into the master take's NDC space, then
+    each format's safe-area rectangle is computed in master NDC via
+    `format_safe_area_in_master_ndc`, and we check whether the
+    projected bbox fits.
+
+    Why crop instead of per-take render projection:
+      Under Composition Mode = None (the default), each delivery
+      Take renders with the source camera UNCHANGED — it doesn't
+      crop, it extends/shrinks the frustum to fit the new aspect.
+      A render-mode check would say "9x16 sees MORE world vertically,
+      so subject is fine" — but the artist composed in 16:9 and
+      will deliver as a 9:16 CROP, expecting only the central
+      vertical strip to remain. The crop interpretation catches
+      this mismatch correctly.
+
+      For Composition Mode = Resize Canvas (sensor overrides per
+      Take), the crop interpretation isn't strictly accurate but
+      remains a useful heuristic — the user gets advisory warnings
+      based on master framing.
+
+    Args:
+        doc: active BaseDocument.
+        sample_strategy: when to evaluate object pose:
+          - "current_frame" — only at doc.GetTime() (cheap, but misses
+            in-betweens).
+          - "keyframes" (default) — sample at every PSR keyframe on
+            each marked object PLUS midpoints between consecutive keys
+            (catches arc swings). Falls back to "current_frame" for
+            objects with no keyframes.
+
+    Returns:
+        list of violation dicts. Each:
+            {
+              "object":     BaseObject (live ref for select),
+              "object_name": str,
+              "fmt_id":     str (e.g. "9x16"),
+              "sides":      set of {"left","right","bottom","top"},
+              "frames":     list of int frames where the violation
+                            occurred,
+            }
+        Empty list = pass.
+    """
+    if doc is None:
+        return []
+
+    marked = find_marked_safe_area_objects(doc)
+    if not marked:
+        return []
+
+    mf_takes = find_active_multiformat_takes(doc)
+    if not mf_takes:
+        return []
+
+    td = doc.GetTakeData()
+    if td is None:
+        return []
+
+    # Resolve the MASTER projection (the frame we project into and against
+    # which we measure crop regions). We use Main take — that's the source
+    # the artist composed in before generating multi-format children.
+    main_take = td.GetMainTake()
+    if main_take is None:
+        return []
+
+    master_params = resolve_take_projection_params(main_take, td, doc)
+    master_cam = master_params.get("camera")
+    master_mg_inv = master_params.get("camera_mg_inv")
+    master_h_fov = master_params.get("h_fov_rad")
+    master_aspect = master_params.get("aspect")
+
+    if (master_cam is None or master_mg_inv is None or
+            master_h_fov is None or master_aspect is None):
+        return []
+
+    # Pre-compute each format's safe rectangle in MASTER NDC space.
+    # This is the crop region (centered, fitted to format aspect) with
+    # the format's per-side insets applied within it.
+    format_safe_boxes = {}
+    for fmt_id, _take in mf_takes:
+        format_safe_boxes[fmt_id] = format_safe_area_in_master_ndc(
+            fmt_id, master_aspect)
+
+    fps = doc.GetFps()
+    original_time = doc.GetTime()
+    violations = []
+
+    try:
+        for obj in marked:
+            if obj is None:
+                continue
+            obj_name = _safe_name(obj)
+
+            # Determine sample frames for this object
+            if sample_strategy == "keyframes":
+                sample_frames = _gather_keyframe_sample_frames(obj, fps)
+                if not sample_frames:
+                    sample_frames = [original_time.GetFrame(fps)]
+                needs_time_travel = True
+            else:
+                sample_frames = [original_time.GetFrame(fps)]
+                needs_time_travel = False
+
+            # Per-format violation accumulators
+            per_fmt = {}
+
+            for frame in sample_frames:
+                if needs_time_travel:
+                    _evaluate_object_at_frame(doc, frame, fps)
+                world_corners = world_bbox_corners(obj)
+                if not world_corners:
+                    continue
+
+                # Project bbox corners to MASTER NDC ONCE per frame.
+                corners_ndc = []
+                for wp in world_corners:
+                    nx, ny, in_front = project_world_to_ndc(
+                        master_mg_inv, wp, master_h_fov, master_aspect)
+                    if in_front:
+                        corners_ndc.append((nx, ny))
+                # If all corners behind master camera, the object is
+                # outside the shot entirely — skip.
+                if not corners_ndc:
+                    continue
+
+                # Check the same projected bbox against each format's
+                # safe rectangle (all in master NDC space).
+                for fmt_id, safe_box in format_safe_boxes.items():
+                    sides = corners_violation_sides(corners_ndc, safe_box)
+                    if not sides:
+                        continue
+                    rec = per_fmt.setdefault(fmt_id, {
+                        "sides": set(),
+                        "frames": [],
+                    })
+                    rec["sides"].update(sides)
+                    rec["frames"].append(int(frame))
+
+            # Emit one violation per (object, fmt_id) pair
+            for fmt_id, rec in per_fmt.items():
+                violations.append({
+                    "object": obj,
+                    "object_name": obj_name,
+                    "fmt_id": fmt_id,
+                    "sides": rec["sides"],
+                    "frames": sorted(set(rec["frames"])),
+                })
+
+    finally:
+        # Always restore the original time + re-evaluate so the user
+        # doesn't end up on a different frame after the check.
+        try:
+            doc.SetTime(original_time)
+            doc.ExecutePasses(None, True, True, True, c4d.BUILDFLAGS_0)
+        except Exception:
+            pass
+        c4d.EventAdd()
+
+    return violations
+
+
+# ============================================================
+# Cross-Aspect Safe-Area QC (#12) — Viewport overlay
+# ============================================================
+# A SceneHookData-based viewport overlay was prototyped for v1.5.5
+# but couldn't ship: `c4d.plugins.SceneHookData` and the matching
+# `RegisterSceneHookPlugin` were removed/migrated in C4D 2026 and
+# the official replacement isn't documented in the local SDK clone.
+#
+# Deferred to v1.5.6 — see ROADMAP.md. Probable replacement
+# strategies to evaluate:
+#   1. TagData plugin attached to the active camera (Draw fires per
+#      viewport redraw). Pro: API confirmed present in 2026. Con:
+#      pollutes the scene with a tag.
+#   2. MessageData with EVMSG_DOCUMENTRECALCULATED + a custom
+#      ObjectData "marker" with Draw. More invasive.
+#   3. Wait for Maxon docs / SDK updates to clarify the migration
+#      path. The Plugin Cafe community usually surfaces these in
+#      a few months.
+#
+# Until then, QC #12 still works fully — it just reports violations
+# through the panel's Info dialog without a live viewport overlay.
 
 
 class MultiFormatDialog(gui.GeDialog):
@@ -4724,23 +5060,25 @@ class ScoreHeader(gui.GeUserArea):
 
 # Check display config: (severity, ok_message, fail_template, name_key_for_first)
 _CHECK_DISPLAY = {
-    "lights":      ("FAIL", "All lights properly organized", "{n} lights outside lights group", None),
-    "vis":         ("WARN", "Visibility settings consistent", "Visibility mismatch on '{first}'", "vis_names"),
-    "keys":        ("WARN", "Keyframes properly configured", "Multi-axis keys on '{first}'", "keys_names"),
-    "cam":         ("FAIL", "Camera shifts at 0%", "{n} camera(s) with non-zero shift", None),
-    "rdc":         ("FAIL", "Render presets compliant", "{n} non-standard render preset(s)", None),
-    "textures":    ("FAIL", "All assets OK", "{n} asset issue(s)", None),
-    "unused_mats": ("WARN", "All materials assigned", "{n} unused material(s)", None),
-    "names":       ("WARN", "All objects named", "Default name '{first}'", "names_list"),
-    "output":      ("FAIL", "Output paths configured", "{n} output path issue(s)", None),
-    "takes":       ("FAIL", "Takes configured", "{n} take issue(s)", None),
-    "fps_range":   ("FAIL", "FPS & frame range OK", "{n} FPS/range issue(s)", None),
+    "lights":       ("FAIL", "All lights properly organized", "{n} lights outside lights group", None),
+    "vis":          ("WARN", "Visibility settings consistent", "Visibility mismatch on '{first}'", "vis_names"),
+    "keys":         ("WARN", "Keyframes properly configured", "Multi-axis keys on '{first}'", "keys_names"),
+    "cam":          ("FAIL", "Camera shifts at 0%", "{n} camera(s) with non-zero shift", None),
+    "rdc":          ("FAIL", "Render presets compliant", "{n} non-standard render preset(s)", None),
+    "textures":     ("FAIL", "All assets OK", "{n} asset issue(s)", None),
+    "unused_mats":  ("WARN", "All materials assigned", "{n} unused material(s)", None),
+    "names":        ("WARN", "All objects named", "Default name '{first}'", "names_list"),
+    "output":       ("FAIL", "Output paths configured", "{n} output path issue(s)", None),
+    "takes":        ("FAIL", "Takes configured", "{n} take issue(s)", None),
+    "fps_range":    ("FAIL", "FPS & frame range OK", "{n} FPS/range issue(s)", None),
+    "cross_aspect": ("WARN", "Subjects fit safe areas", "{n} cross-aspect violation(s)", None),
 }
 
 class StatusArea(gui.GeUserArea):
     # Row order matches DrawMsg iteration; index here = clickable row index
     ROW_KEYS = ["lights", "vis", "keys", "cam", "rdc", "textures",
-                "unused_mats", "names", "output", "takes", "fps_range"]
+                "unused_mats", "names", "output", "takes", "fps_range",
+                "cross_aspect"]
 
     def __init__(self):
         super().__init__()
@@ -4825,7 +5163,8 @@ class StatusArea(gui.GeUserArea):
             for label, key in [("Lights","lights"), ("Visibility","vis"), ("Keyframes","keys"),
                                ("Cameras","cam"), ("Presets","rdc"), ("Assets","textures"),
                                ("Materials","unused_mats"), ("Naming","names"), ("Output","output"),
-                               ("Takes","takes"), ("FPS/Range","fps_range")]:
+                               ("Takes","takes"), ("FPS/Range","fps_range"),
+                               ("Safe Area","cross_aspect")]:
                 if not self.show.get(key, False):
                     continue
 
@@ -5270,6 +5609,8 @@ class G:
     BTN_SEL_NAMES = 1137
     BTN_INFO_OUTPUT = 1138
     BTN_INFO_FPS = 1139
+    BTN_SEL_CROSS_ASPECT = 1144  # Select objects with cross-aspect violations
+    BTN_INFO_CROSS_ASPECT = 1145  # Detailed cross-aspect safe-area report
 
     # Auto-fix buttons
     BTN_FIX_LIGHTS = 1140
@@ -5293,6 +5634,7 @@ class G:
     BTN_SOLO = 1103
     BTN_DROP_TO_FLOOR = 1122
     BTN_VIBRATE_NULL = 1120
+    BTN_MARK_SAFE_AREA = 1127  # Mark/Unmark selection as Safe Area Subjects (QC #12)
     BTN_ABC_RETIME = 1020
     BTN_CAM_SIMPLE = 1123
     BTN_CAM_SHAKEL = 1124
@@ -5358,6 +5700,7 @@ class YSPanel(gui.GeDialog):
         self._output_bad = []
         self._takes_bad = []
         self._fps_range_bad = []
+        self._cross_aspect_bad = []
         self._scene_stats = {}
 
         # Cycling indices for one-by-one selection
@@ -5458,8 +5801,8 @@ class YSPanel(gui.GeDialog):
         self.AttachUserArea(self.ua, G.CANVAS)
         self.ua.click_callback = self._on_qc_row_click
 
-        # Right: per-check Select + Fix buttons (2 columns × 11 rows)
-        self.GroupBegin(407, c4d.BFH_RIGHT|c4d.BFV_SCALEFIT, 2, 11)
+        # Right: per-check Select + Fix/Info buttons (2 columns × 12 rows)
+        self.GroupBegin(407, c4d.BFH_RIGHT|c4d.BFV_SCALEFIT, 2, 12)
         self.GroupBorderSpace(0, 3, 0, 3)
         self.GroupSpace(2, 3)
         self.AddButton(G.BTN_SEL_LIGHTS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
@@ -5484,6 +5827,8 @@ class YSPanel(gui.GeDialog):
         self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
         self.AddButton(G.BTN_INFO_FPS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Info")
         self.AddButton(G.BTN_FIX_FPS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "Fix")
+        self.AddButton(G.BTN_SEL_CROSS_ASPECT, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
+        self.AddButton(G.BTN_INFO_CROSS_ASPECT, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "Info")
         self.GroupEnd()
 
         self.GroupEnd()  # status row
@@ -5512,7 +5857,7 @@ class YSPanel(gui.GeDialog):
         # ── Multi-Format Setup ──
         # Generates a Take per delivery aspect (16:9, 9:16, 1:1, 4:5, 21:9) with
         # cloned RenderData (resolution + output path overrides) and optional
-        # camera FOV adjustment to keep vertical FOV constant across formats.
+        # camera composition adjustments.
         self._add_section_label("Multi-Format Setup")
         self.GroupBegin(81, c4d.BFH_SCALEFIT, 1, 0)
         self.AddButton(G.BTN_MULTIFORMAT, c4d.BFH_SCALEFIT, 0, 0,
@@ -5615,6 +5960,13 @@ class YSPanel(gui.GeDialog):
         self.AddButton(G.BTN_ABC_RETIME, c4d.BFH_SCALEFIT, 0, 0, "ABC Retime")
         self.AddButton(G.BTN_CAM_SIMPLE, c4d.BFH_SCALEFIT, 0, 0, "Cam Simple")
         self.AddButton(G.BTN_CAM_SHAKEL, c4d.BFH_SCALEFIT, 0, 0, "Cam Shakel")
+        self.GroupEnd()
+
+        # ── QC Marking ── (drives QC #12 Cross-Aspect Safe-Area check)
+        self._add_section_label("QC Marking")
+        self.GroupBegin(52, c4d.BFH_SCALEFIT, 1, 0)
+        self.AddButton(G.BTN_MARK_SAFE_AREA, c4d.BFH_SCALEFIT, 0, 0,
+                       "Mark / Unmark Safe Area Subject")
         self.GroupEnd()
 
         # Spacer
@@ -5877,6 +6229,11 @@ class YSPanel(gui.GeDialog):
             output_bad = check_output_paths(doc)
             takes_bad = check_takes(doc)
             fps_range_bad = check_fps_range(doc)
+            # QC #12 — uses "current_frame" strategy in auto-refresh (cheap:
+            # no SetTime / ExecutePasses). Click "Info" upgrades to full
+            # keyframe sampling for a complete timeline analysis.
+            cross_aspect_bad = check_cross_aspect_safe_area(
+                doc, sample_strategy="current_frame")
             scene_stats = get_scene_stats(doc)
 
             # Count issues
@@ -5891,6 +6248,7 @@ class YSPanel(gui.GeDialog):
             output_count = len(output_bad) if output_bad else 0
             takes_count = len(takes_bad) if takes_bad else 0
             fps_range_count = len(fps_range_bad) if fps_range_bad else 0
+            cross_aspect_count = len(cross_aspect_bad) if cross_aspect_bad else 0
 
             # Update StatusArea (only if QC tab has been built — when the
             # panel reopens on a non-QC tab, self.ua stays None until the
@@ -5913,6 +6271,7 @@ class YSPanel(gui.GeDialog):
                         output=output_count,
                         takes=takes_count,
                         fps_range=fps_range_count,
+                        cross_aspect=cross_aspect_count,
                     ),
                     self.ua.show,
                 )
@@ -5920,7 +6279,8 @@ class YSPanel(gui.GeDialog):
             # Update Score header — pass count + scene stats summary
             counts = [lights_count, vis_count, keys_count, cam_count, rdc_count,
                       textures_count, unused_mats_count, names_count,
-                      output_count, takes_count, fps_range_count]
+                      output_count, takes_count, fps_range_count,
+                      cross_aspect_count]
             total_checks = len(counts)
             passed = sum(1 for c in counts if c == 0)
             stats_str = ""
@@ -5955,6 +6315,7 @@ class YSPanel(gui.GeDialog):
             self._output_bad = output_bad
             self._takes_bad = takes_bad
             self._fps_range_bad = fps_range_bad
+            self._cross_aspect_bad = cross_aspect_bad
 
             # Refresh header captions + Recent Versions list (all cheap reads)
             self._update_filename_label(doc)
@@ -6073,9 +6434,10 @@ class YSPanel(gui.GeDialog):
             "textures":    G.BTN_INFO_TEXTURES,
             "unused_mats": G.BTN_SEL_UNUSED_MATS,
             "names":       G.BTN_SEL_NAMES,
-            "output":      G.BTN_INFO_OUTPUT,
-            "takes":       G.BTN_INFO_TAKES,
-            "fps_range":   G.BTN_INFO_FPS,
+            "output":       G.BTN_INFO_OUTPUT,
+            "takes":        G.BTN_INFO_TAKES,
+            "fps_range":    G.BTN_INFO_FPS,
+            "cross_aspect": G.BTN_INFO_CROSS_ASPECT,
         }
         btn_id = primary.get(row_key)
         if btn_id is not None:
@@ -6307,6 +6669,9 @@ class YSPanel(gui.GeDialog):
 
         elif cid == G.BTN_SOLO:
             self._solo_layers(doc)
+
+        elif cid == G.BTN_MARK_SAFE_AREA:
+            self._toggle_safe_area_mark(doc)
 
         elif cid == G.BTN_GITHUB:
             # Open GitHub repository
@@ -6566,6 +6931,112 @@ class YSPanel(gui.GeDialog):
                     safe_print("FPS/range fix cancelled by user")
             else:
                 safe_print("No FPS/range issues to fix")
+
+        # ── QC #12: Cross-Aspect Safe Area ──
+        elif cid == G.BTN_SEL_CROSS_ASPECT:
+            # Select the unique objects that have at least one violation
+            # (across any format). Useful for jumping to "what needs to be
+            # fixed" — once selected, the artist can scrub the timeline +
+            # check the Info dialog to see which formats / frames violate.
+            objs = []
+            seen = set()
+            for v in (self._cross_aspect_bad or []):
+                obj = v.get("object")
+                if obj is None:
+                    continue
+                key = id(obj)
+                if key in seen:
+                    continue
+                seen.add(key)
+                objs.append(obj)
+            if not objs:
+                c4d.gui.MessageDialog(
+                    "No cross-aspect safe-area violations.\n\n"
+                    "Either no objects are marked as Safe Area subjects, "
+                    "no Multi-Format Takes exist, or all marked subjects "
+                    "stay inside their per-format safe areas at the current "
+                    "frame.\n\nTip: click 'Info' to run a full keyframe sweep."
+                )
+            else:
+                doc.SetActiveObject(None, c4d.SELECTION_NEW)
+                for obj in objs:
+                    try:
+                        doc.SetActiveObject(obj, c4d.SELECTION_ADD)
+                    except Exception:
+                        pass
+                c4d.EventAdd()
+                safe_print(f"Selected {len(objs)} cross-aspect violator(s)")
+
+        elif cid == G.BTN_INFO_CROSS_ASPECT:
+            # Run a FULL keyframe-sample analysis (more expensive than the
+            # current-frame sweep used by the auto-refresh). This gives the
+            # artist a per-(object × format × frames) breakdown.
+            marked_count = len(find_marked_safe_area_objects(doc) or [])
+            mf_count = len(find_active_multiformat_takes(doc) or [])
+
+            if marked_count == 0:
+                c4d.gui.MessageDialog(
+                    "No objects marked as Safe Area subjects.\n\n"
+                    "Mark important compositional elements (logo, title, "
+                    "character) via Tools tab → 'Mark as Safe Area Subject' "
+                    "with the objects selected. Marks persist with the "
+                    "scene file (stored as UserData on each object)."
+                )
+            elif mf_count == 0:
+                c4d.gui.MessageDialog(
+                    "No Multi-Format delivery Takes detected.\n\n"
+                    "Generate them first via Render tab → 'Generate Format "
+                    "Takes...'. The check looks at each Take's safe area "
+                    "(per-format insets covering platform UI overlays) and "
+                    "verifies your marked subjects stay inside."
+                )
+            else:
+                # Run with full sampling. May take a moment on heavy scenes.
+                violations = check_cross_aspect_safe_area(
+                    doc, sample_strategy="keyframes")
+                # Update the cached state so subsequent Select uses the
+                # full-sweep results (more accurate than current_frame).
+                self._cross_aspect_bad = violations
+
+                lines = [f"Cross-Aspect Safe-Area Check (full keyframe sweep)",
+                         "",
+                         f"Marked subjects:    {marked_count}",
+                         f"Multi-Format Takes: {mf_count}",
+                         ""]
+
+                if not violations:
+                    lines.append(
+                        "✓ All subjects fit within every active format's safe area."
+                    )
+                else:
+                    # Group violations by object for readability
+                    by_obj = {}
+                    for v in violations:
+                        by_obj.setdefault(v["object_name"], []).append(v)
+
+                    lines.append(f"⚠ {len(violations)} violation(s) "
+                                 f"across {len(by_obj)} subject(s):")
+                    lines.append("")
+                    for obj_name in sorted(by_obj.keys()):
+                        lines.append(f"  • {obj_name}")
+                        for v in by_obj[obj_name]:
+                            sides = ", ".join(sorted(v["sides"]))
+                            frames = v["frames"]
+                            if len(frames) == 1:
+                                fr_str = f"frame {frames[0]}"
+                            elif len(frames) <= 6:
+                                fr_str = f"frames {','.join(str(f) for f in frames)}"
+                            else:
+                                fr_str = (f"frames {frames[0]}–{frames[-1]} "
+                                          f"({len(frames)} samples)")
+                            lines.append(f"      ✗ {v['fmt_id']}: "
+                                         f"out by {sides} @ {fr_str}")
+
+                    lines.append("")
+                    lines.append("Tip: 'Select' button highlights all violating "
+                                 "subjects so you can scrub the timeline.")
+
+                c4d.gui.MessageDialog("\n".join(lines))
 
         # ── Export QC Report ──
         elif cid == G.BTN_EXPORT_QC:
@@ -6889,6 +7360,78 @@ class YSPanel(gui.GeDialog):
     def _create_vibrate_null(self, doc):
         self._merge_c4d_file(doc, "VibrateNull.c4d")
 
+    def _toggle_safe_area_mark(self, doc):
+        """Mark / unmark the current selection as Safe Area Subjects.
+
+        Drives the QC #12 Cross-Aspect Safe-Area check. Smart toggle:
+          - All selected objects ALREADY marked  → unmark them all
+          - Any selected object NOT marked       → mark them all
+                                                   (aligns toward "marked")
+          - Empty selection                      → friendly hint dialog
+
+        Marks persist as UserData boolean on each object — they survive
+        save/reload and Cmd+Z reverts the operation as a single undo step.
+        """
+        if not doc:
+            c4d.gui.MessageDialog("No active document.")
+            return
+
+        sel = doc.GetActiveObjects(c4d.GETACTIVEOBJECTFLAGS_CHILDREN) or []
+        if not sel:
+            c4d.gui.MessageDialog(
+                "Select one or more objects first, then click again.\n\n"
+                "Tip: mark important compositional elements (logo, title, "
+                "character) so QC #12 can verify they stay inside the safe "
+                "area of every multi-format delivery Take."
+            )
+            return
+
+        # Detect current state
+        all_marked = all(is_object_marked_safe_area(o) for o in sel)
+        target_state = not all_marked  # toggle: marked→unmark, otherwise mark
+
+        marked_count = 0
+        unmarked_count = 0
+        failed_count = 0
+
+        doc.StartUndo()
+        try:
+            for obj in sel:
+                if target_state:
+                    # Marking pass
+                    ok = mark_object_safe_area(obj, True, doc)
+                    if ok:
+                        marked_count += 1
+                    else:
+                        failed_count += 1
+                else:
+                    # Unmarking pass — fully remove the UserData entry so the
+                    # object returns to a "never been marked" state. Avoids
+                    # leaving fossil UD checkboxes on objects.
+                    ok = unmark_object_safe_area(obj, doc)
+                    if ok:
+                        unmarked_count += 1
+                    else:
+                        failed_count += 1
+        finally:
+            doc.EndUndo()
+            c4d.EventAdd()
+
+        # Refresh the QC row immediately so the user sees the count update
+        try:
+            check_cache.clear()
+            self._refresh()
+        except Exception:
+            pass
+
+        # Brief feedback
+        verb = "Marked" if target_state else "Unmarked"
+        count = marked_count if target_state else unmarked_count
+        msg = f"{verb} {count} object(s) as Safe Area Subject(s)"
+        if failed_count:
+            msg += f"\n({failed_count} failed — see Console for details)"
+        safe_print(msg)
+
     def _create_hierarchy(self, doc):
         self._merge_c4d_file(doc, "nulls.c4d")
 
@@ -7159,6 +7702,7 @@ class YSPanel(gui.GeDialog):
             check_cache.clear()
         except Exception:
             pass
+
         c4d.EventAdd()
 
     def _update_aspect_button(self):

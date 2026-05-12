@@ -1,4 +1,4 @@
-# Sentinel v1.5.4
+# Sentinel v1.5.5
 
 Quality control, render management, and workflow automation plugin for Cinema 4D production environments — keeping the watchdog spirit of YS Guardian.
 
@@ -302,6 +302,51 @@ The snapshot system uses external Python with Pillow for color-accurate conversi
 - Ensure abc_retime plugin is installed in Cinema 4D plugins folder
 
 ## Changelog
+
+### v1.5.5 | 11.05.2026
+
+**New: QC Check #12 — Cross-Aspect Safe Area**
+
+Validates that key compositional elements stay inside the per-format safe-area regions when the same scene is delivered across multiple aspect ratios. Closes the loop with the Multi-Format Setup feature from v1.5.4 — generate the format Takes, mark the subjects that must stay framed, then let Sentinel flag any subject that would get cropped in any delivery aspect.
+
+- **Opt-in via UserData marker.** Artists mark important subjects (logo, title, character) with a `[Sentinel] Safe Area Subject` UserData boolean — clean, persistent across save/reload, zero new tag plugins, no scene clutter. A new **"Mark / Unmark Safe Area Subject"** button in the Tools tab smart-toggles the marker on the current selection (mark-all / unmark-all / mark-mixed-to-marked).
+- **Per-format safe-area insets** derived from real platform specs:
+  - 16:9 — 5% all around (broadcast standard)
+  - 9:16 — 8% top / **15% bottom** / 5% left / **10% right** (IG Reels caption + icon stack)
+  - 1:1 — 5% top / 8% bottom (IG Square)
+  - 4:5 — 5% top / 10% bottom (IG Feed portrait)
+  - 21:9 — 5% all around (cinema)
+- **Crop interpretation, not render interpretation.** The check matches the artist's mental model: "compose once in the master view, deliver as aspect-ratio crops". Bbox corners project ONCE into the master Take's NDC, then each format's safe area lives in master NDC as a centered crop region with the per-side insets applied. Subjects that fit the master might still violate the narrower vertical crops (9:16 / 1:1 / 4:5) — that's exactly the warning artists need before delivery.
+- **Sample strategies.** Auto-refresh in the QC panel uses the current frame (cheap — no scene time-travel). Click **Info** to trigger a full keyframe sweep that samples each marked object's PSR keyframes + midpoints (catches arc swings that cross safe areas between keyframes). Original timeline position is always restored.
+- **UI integration.** New row #12 in the QC tab with Select / Info buttons. Score header now reads `X/12`. The check is fully integrated with the existing dirty-flag refresh model.
+- **Asymmetric safe areas modeled correctly.** A logo near the bottom of a 16:9 master may violate 9:16's bottom inset (15%) without violating 16:9's bottom (5%) — Sentinel reports the offending edge per format.
+
+**Refactored: Multi-Format Setup — composition mode**
+
+After user testing, replaced the v1.5.4 "Auto-FOV" toggle (vertical-FOV-constant focal override) with a **Composition Mode** dropdown that better matches real workflows:
+
+- **None** (default) — camera unchanged; only resolution + output path overrides per Take. Matches Greyscalegorilla *Social Frame* behavior — the artist composes for the intersection of delivery formats, and each Take just changes the render aspect. Any stale FOV / focal-length / aperture overrides from prior runs are reset to the camera's native values (defensive cleanup of v1.5.4 takes).
+- **Resize Canvas** — overrides `CAMERAOBJECT_APERTURE` (sensor size) per format using AR_ResizeCanvas's formula: `new_aperture = source_aperture × target_width / source_width`. Same math used by Arttu Rautio's [AR_ResizeCanvas](https://aturtur.com/) C4D community script and described in Kengo Ito's *"絵を変えずにレンダーサイズを拡張する"* (extending render size without changing the picture) note article. Sensor-based instead of focal-length so existing focal-length animations and DOF setups stay intact.
+
+**Bug fixes in the Multi-Format orchestrator (v1.5.4 carry-over):**
+
+- `take.SetCamera(td, source_cam)` now assigned to every generated Take — previously `take.GetCamera(td)` returned `None`, falling back to the scene's active camera.
+- `FindOrAddOverrideParam` is **find-OR-add**, not find-AND-update. The orchestrator now calls `ovr.SetParameter(...)` explicitly after the find/add to ensure the intended value is written (previous behavior silently kept stale values from earlier runs).
+- C4D's physical / Redshift cameras clamp `CAMERAOBJECT_FOV` overrides to the focal-derived native FOV. The new Resize Canvas mode uses the sensor (`CAMERAOBJECT_APERTURE`) instead, which isn't clamped.
+
+**Bug fix: panel `_refresh` crash on non-QC tab reopen**
+
+When the panel reopened on a Render / Versions / Tools tab (saved from the previous session), `self.ua` (the StatusArea UserArea) stayed `None` because `_build_tab_qc` hadn't run yet, and the auto-refresh crashed on `self.ua.set_state(...)`. Added the same `if self.ua is not None` guard already used for `self.score_ua`.
+
+**Bug fix: camera Z convention in NDC projection**
+
+The first iteration of QC #12's projection math assumed C4D cameras look down `-Z` (a common convention from OpenGL / Maya). Verified empirically that **C4D uses `+Z` forward** (left-handed system): points in front of the camera have `p_cam.z > 0`. Without this fix every projected bbox corner read as "behind camera" and the check returned zero violations against a clearly out-of-frame subject.
+
+**Known limitation deferred to v1.5.6**
+
+A viewport overlay (live colored rectangles showing each format's crop + safe area in the active camera view) was prototyped for v1.5.5 but couldn't ship: `c4d.plugins.SceneHookData` was removed / migrated in C4D 2026 and the replacement isn't documented in the local SDK clone. The QC check itself works fully — only the live viewport visualization is postponed. Probable replacements to evaluate for v1.5.6: TagData attached to the active camera, or a MessageData hook.
+
+---
 
 ### v1.5.4 | 08.05.2026
 
