@@ -48,6 +48,78 @@ Standardized presets with resolution display, one-click switching:
 
 **Reset All** resets all presets from a template file. **Force 9:16 / 16:9** toggles aspect ratio for social media delivery.
 
+#### Multi-Format Delivery
+
+End-to-end workflow for shipping the same animation in multiple delivery aspects (16:9, 9:16, 1:1, 4:5, 21:9) — generation, composition guidance, and validation.
+
+##### Multi-Format Render Setup
+
+Render tab → **Generate Format Takes...** opens a dialog that creates a child Take per delivery aspect. Each Take has its own cloned Render Data with format-specific resolution + output path (subfolder mode `output/16x9/`, `output/9x16/`, ... or filename suffix mode `file_16x9`, `file_9x16`, ...). Idempotent on re-runs (uses `take.FindOrAddOverrideParam` with explicit value force).
+
+##### Composition Mode (the camera question)
+
+The dialog has a **Composition Mode** dropdown that controls how the camera behaves across the generated Takes. There are two meaningful workflows in mograph delivery, and Sentinel exposes both:
+
+**Mode "None" — default** *(matches Greyscalegorilla "Social Frame")*
+
+The camera doesn't change between Takes. Only the render resolution (and therefore aspect ratio) changes per Take. C4D's default behavior takes over: the camera's horizontal FOV stays constant, the vertical extent adapts to the new aspect.
+
+For a master 16:9 scene with a person in T-pose:
+- **16:9 master** renders normally.
+- **9:16 take** renders the *same* camera at 1080×1920 → the camera now shows **more vertical content** (the V-FOV extends from 21° to 64°). You'll see sky above and floor below that weren't in the master.
+- **21:9 take** renders the same camera at 2560×1080 → camera shows **less vertical content** (V-FOV shrinks). Top of head and feet get cropped.
+
+Use Mode None when: (a) you'll crop in post anyway (renders master + post-cut to all formats), or (b) you're fine with each Take showing slightly different vertical extents and you'll compose to keep subjects in the master safe area.
+
+**Mode "Resize Canvas"** *(matches Arttu Rautio's [AR_ResizeCanvas](https://aturtur.com/) script)*
+
+The camera's sensor (`CAMERAOBJECT_APERTURE`) is overridden per Take using `new_aperture = source_aperture × target_width / source_width`. The focal length stays the same; the virtual sensor changes. The result is that the angular field of view **rotates** between formats — wider aspects gain horizontal coverage, taller aspects gain vertical coverage. Same lens character, different sensor crop.
+
+For the same master 16:9 person scene:
+- **16:9 master** renders normally.
+- **9:16 take** renders with aperture 20.25mm (was 36mm) → H-FOV shrinks to 20.86°, V-FOV grows to 36.24°. You see **less to the sides** (less horizontal context) but **more head-to-toe** (more vertical context). The view "rotates" — what was a horizontal slice is now a vertical slice of the same focal length.
+- **21:9 take** renders with aperture 48mm → H-FOV grows to 47.15°, V-FOV shrinks to 13°. You see more sides, less vertical.
+
+Use Resize Canvas when: you want each Take to be its own intentional composition with the same lens character (e.g. for cinematic recomposition where the wide camera "rotates" between landscape and portrait orientations).
+
+Sensor-based (not focal-length) on purpose — animated zooms / depth-of-field setups stay intact, since focal length and F-stop are untouched.
+
+##### Safe-Area Viewport Overlay *(v1.5.6)*
+
+Render tab → **Show Safe-Area Overlay in viewport** checkbox renders live colored rectangles in the active camera viewport showing, for each active multi-format Take, where its **per-format safe area** lands within the master view:
+
+| Format | Color | Real-world safe-area context |
+|---|---|---|
+| 16:9 | white | broadcast standard, 5% symmetric insets |
+| 9:16 | orange | IG Reels / TikTok, asymmetric insets for caption (15% bottom) + icon stack (10% right) |
+| 1:1 | cyan | IG Square, small overlay margins |
+| 4:5 | magenta | IG Feed portrait, 10% bottom for caption |
+| 21:9 | yellow | cinema, 5% symmetric |
+
+Each rectangle is labeled with its format id (`9x16`, `4x5`, etc.) and **already has the per-format safe-area insets baked in** — i.e. the rectangle shows where your subject must stay to survive the crop AND the platform's UI overlays. It's not just the raw aspect crop.
+
+**Implementation note**: the overlay is rendered by an auto-managed `Sentinel Safe-Area Overlay` object (ObjectData plugin) that lives at the scene root. Created automatically when you toggle the checkbox on, persists with the `.c4d` save, recreated on demand if you delete it manually.
+
+**The overlay always uses the "compose for crop" model** (same as QC #12 below), regardless of the active Composition Mode. This means:
+
+- **Mode None + crop in post** → overlay matches the final post-cropped render exactly.
+- **Mode None + direct take render** → overlay is a composition reference; the actual rendered Take will show more content vertically than the overlay rectangle indicates (default C4D behavior extends V-FOV). The overlay still tells you where to keep your key compositional elements.
+- **Mode Resize Canvas** → overlay is a master-view composition reference. Each Take renders its own composition via sensor override, so the actual rendered output differs from the overlay rectangle.
+
+In short: the overlay is the answer to *"if my master view got cropped to each delivery aspect and platform safe areas were applied, where would I need to keep my subjects?"* — which is the same question QC #12 validates.
+
+##### Cross-Aspect Safe-Area Check (QC #12)
+
+The QC panel's row #12 validates the question above automatically. Mark important compositional elements (logo, title, character) as "Safe Area Subjects" via Tools tab → **Mark / Unmark Safe Area Subject** smart-toggle button (operates on the current selection; mark/unmark depending on selection state).
+
+The check:
+- Runs automatically on every Sentinel refresh using the current frame (cheap — no scene time-travel).
+- Click **Info** for a full keyframe sweep: samples each marked object's PSR keyframes + midpoints between consecutive keys (catches arc swings that exit safe areas between key poses). Original timeline position is restored when the sweep finishes.
+- Reports violations per `(object × format × frames + offending edges)` — e.g. `✗ 9x16: out by left, right, bottom @ frames 1010–1030`.
+- **Select** button selects all marked objects with at least one violation, deduplicated across formats.
+
+The marker is stored as UserData (`[Sentinel] Safe Area Subject`) on each marked object — persists natively in the `.c4d` save, no sidecar needed.
+
 #### Redshift AOV Management
 Two-tier AOV system configured per compositor target:
 
