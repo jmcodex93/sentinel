@@ -1,4 +1,4 @@
-# Sentinel v1.5.5
+# Sentinel v1.5.6
 
 Quality control, render management, and workflow automation plugin for Cinema 4D production environments — keeping the watchdog spirit of YS Guardian.
 
@@ -302,6 +302,35 @@ The snapshot system uses external Python with Pillow for color-accurate conversi
 - Ensure abc_retime plugin is installed in Cinema 4D plugins folder
 
 ## Changelog
+
+### v1.5.6 | 12.05.2026
+
+**New: Cross-Aspect Safe-Area viewport overlay**
+
+The QC #12 safe-area regions (deferred from v1.5.5 because `c4d.plugins.SceneHookData` was removed in C4D 2026) are now rendered live in the active camera viewport, so artists can compose against the actual delivery crops without having to switch between Takes or check the Info dialog.
+
+- **Auto-managed marker object** — toggling the new "Show Safe-Area Overlay in viewport" checkbox (Render tab → Multi-Format Setup section) auto-creates a `Sentinel Safe-Area Overlay` object at the scene root. The object's `Draw()` renders the rectangles. If you delete the object manually, the next toggle ON recreates it. Identified by plugin TYPE (not name), so renames don't break detection.
+- **Per-format colors**:
+  - **16:9** white (broadcast master)
+  - **9:16** orange (IG Reels / TikTok)
+  - **1:1** cyan (IG Square)
+  - **4:5** magenta (IG Feed portrait)
+  - **21:9** yellow (cinema)
+- Each rectangle labeled with its `fmt_id` in the top-left corner.
+- Persists with the `.c4d` save and survives panel reopens (the toggle state and the marker object both stick).
+- Same crop-interpretation math as QC #12: rectangles represent where each delivery aspect would crop the master view, with per-format safe-area insets applied (e.g. 9:16 caption/icon region). The overlay is a **composition aid**, not an exact render preview — its model is "compose for crops, deliver multi-aspect", matching the GSG Social Frame workflow and the default Composition Mode (None).
+- Auto-refreshes the cached rectangles when Multi-Format Setup regenerates Takes — no manual refresh needed.
+
+**Architecture — pivot from SceneHookData to ObjectData**
+
+The viewport overlay was deferred from v1.5.5 because `c4d.plugins.SceneHookData` and `RegisterSceneHookPlugin` were removed/migrated in C4D 2026. v1.5.6 went through an investigation round to pick the right replacement:
+
+1. **TagData with `Draw()`** — the obvious first candidate (tag-on-camera architecture). Verified empirically with a probe: TagData registers cleanly and `Init` + `Execute` fire as expected, but `Draw` is **never invoked** by C4D 2026's Python viewport pipeline. Only the tag's built-in handle gets drawn. Path abandoned.
+2. **ObjectData with `Draw()`** — confirmed working. `DRAWPASS_OBJECT` fires regardless of selection. `bd.SetMatrix_Screen()` + `bd.DrawLine` + `bd.DrawHUDText` all work as expected. `bd.GetSafeFrame()` returns the rendered frame's letterboxed rectangle inside the viewport — exactly what's needed to position format rectangles correctly. This is the path Sentinel took.
+
+The final architecture: one `SafeAreaOverlayObject` (ObjectData) per document, auto-managed by the panel. Communicates with the panel via a module-level singleton (`_overlay_state`) — the panel mutates state, the marker's Draw reads it. No per-frame scene scanning, no projection per draw — Draw just iterates a pre-computed list of pixel rectangles.
+
+---
 
 ### v1.5.5 | 11.05.2026
 

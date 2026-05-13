@@ -50,13 +50,30 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 # Plugin ID - change if ID collision
 PLUGIN_ID = 2099069
-PLUGIN_NAME = "Sentinel v1.5.5"
+PLUGIN_NAME = "Sentinel v1.5.6"
 
-# Note: a SceneHookData-based viewport overlay for the cross-aspect
-# safe areas was investigated for v1.5.5 but deferred to v1.5.6 —
-# `c4d.plugins.SceneHookData` was removed/migrated in C4D 2026 and the
-# alternative API needs proper investigation (likely TagData on the
-# active camera, or a MessageData hook).
+# Secondary plugin: SafeAreaOverlayObject (ObjectData) for the
+# cross-aspect safe-area viewport overlay (QC #12 visualization,
+# v1.5.6).
+#
+# Investigation history:
+#   - v1.5.5: prototyped via SceneHookData → API removed in C4D 2026
+#   - v1.5.6 probe round 1: TagData.Draw → registers cleanly but Draw
+#     is NEVER invoked by C4D 2026's viewport pipeline (only Init +
+#     Execute fire). Only the tag's built-in handle is drawn.
+#   - v1.5.6 probe round 2: ObjectData.Draw → fires in DRAWPASS_OBJECT
+#     even without selection. Screen-space drawing via
+#     `bd.SetMatrix_Screen()` + `bd.DrawLine` + `bd.DrawHUDText` all
+#     work as expected. `bd.GetSafeFrame()` returns the rendered
+#     frame's letterboxed rectangle inside the viewport — exactly
+#     what we need to position our format overlay correctly.
+#
+# Architecture: one ObjectData marker object per document (auto-created
+# at scene root when the panel toggle is enabled). Reads from the
+# module-level `_overlay_state` singleton so the panel can toggle it
+# without finding/modifying the object.
+SAFE_AREA_OVERLAY_PLUGIN_ID = 2099072  # dev-range; replace with
+                                       # Maxon-allocated for production
 
 # Preset names - normalized to lowercase with underscores
 # The system accepts both "pre_render" and "pre-render" (case-insensitive)
@@ -4468,26 +4485,261 @@ def check_cross_aspect_safe_area(doc, sample_strategy="keyframes"):
 
 
 # ============================================================
-# Cross-Aspect Safe-Area QC (#12) — Viewport overlay
+# Cross-Aspect Safe-Area QC (#12) — Viewport overlay (v1.5.6)
 # ============================================================
-# A SceneHookData-based viewport overlay was prototyped for v1.5.5
-# but couldn't ship: `c4d.plugins.SceneHookData` and the matching
-# `RegisterSceneHookPlugin` were removed/migrated in C4D 2026 and
-# the official replacement isn't documented in the local SDK clone.
+# Implementation: one ObjectData marker object per document, auto-
+# created at scene root when the panel toggle is enabled. The marker
+# draws each active multi-format Take's safe-area rectangle in the
+# active camera viewport using screen-space lines positioned via
+# `bd.GetSafeFrame()`.
 #
-# Deferred to v1.5.6 — see ROADMAP.md. Probable replacement
-# strategies to evaluate:
-#   1. TagData plugin attached to the active camera (Draw fires per
-#      viewport redraw). Pro: API confirmed present in 2026. Con:
-#      pollutes the scene with a tag.
-#   2. MessageData with EVMSG_DOCUMENTRECALCULATED + a custom
-#      ObjectData "marker" with Draw. More invasive.
-#   3. Wait for Maxon docs / SDK updates to clarify the migration
-#      path. The Plugin Cafe community usually surfaces these in
-#      a few months.
+# Two-piece architecture:
+#   - `_SafeAreaOverlayState` singleton — module-level state shared
+#     between the Sentinel panel (CommandData) and the marker object's
+#     Draw method. The panel mutates it, the marker reads it.
+#   - `SafeAreaOverlayObject(plugins.ObjectData)` — registered with a
+#     unique plugin ID. Auto-created in the scene by Sentinel when the
+#     overlay toggle is enabled.
 #
-# Until then, QC #12 still works fully — it just reports violations
-# through the panel's Info dialog without a live viewport overlay.
+# Why not TagData on the active camera (originally proposed):
+#   TagData.Draw is NOT routed by C4D 2026's Python viewport pipeline —
+#   Init and Execute fire as expected, but Draw is never invoked.
+#   Verified empirically with the v1.5.6 probe round. ObjectData.Draw
+#   on the other hand fires reliably in DRAWPASS_OBJECT regardless of
+#   selection, which matches our use case (always-on overlay).
+#
+# Why a marker object and not a scene-level draw hook:
+#   `SceneHookData` was removed in C4D 2026 (the original v1.5.5
+#   intent). The ObjectData marker is the closest "always-on" Draw
+#   API available in 2026 Python.
+
+
+# Per-format outline colors. Matched to the cross-platform delivery
+# convention (warm/orange for vertical social, cool for square/feed,
+# white for the broadcast master, yellow for cinema).
+_SAFE_AREA_COLORS = {
+    "16x9": c4d.Vector(0.95, 0.95, 0.95),  # white — master/broadcast
+    "9x16": c4d.Vector(0.95, 0.55, 0.15),  # orange — IG Reels / TikTok
+    "1x1":  c4d.Vector(0.50, 0.85, 0.95),  # cyan — IG Square
+    "4x5":  c4d.Vector(0.85, 0.35, 0.85),  # magenta — IG Feed portrait
+    "21x9": c4d.Vector(0.95, 0.85, 0.20),  # yellow — cinema
+}
+
+
+class _SafeAreaOverlayState:
+    """Module-level singleton for sharing viewport-overlay state between
+    the Sentinel panel and the `SafeAreaOverlayObject` marker.
+
+    The panel calls `update_from_doc(doc)` whenever scene topology
+    likely changed (overlay toggle, Multi-Format regeneration). The
+    marker's Draw reads `enabled` + `format_rects` on every redraw.
+
+    Threading note: C4D runs Draw on the viewport thread. Plain bool
+    + list-of-tuples reads are safe; we never mutate from the draw
+    side, only read.
+    """
+
+    def __init__(self):
+        self.enabled = False
+        self.master_aspect = 16.0 / 9.0
+        # list of (fmt_id, c4d.Vector color, dict safe_box_in_master_ndc)
+        self.format_rects = []
+
+    def update_from_doc(self, doc):
+        """Recompute cached per-format master-NDC rectangles from the
+        current document state."""
+        self.format_rects = []
+        if doc is None:
+            return
+        try:
+            td = doc.GetTakeData()
+            if td is None:
+                return
+            main_take = td.GetMainTake()
+            if main_take is None:
+                return
+            params = resolve_take_projection_params(main_take, td, doc)
+            aspect = params.get("aspect") if params else None
+            if aspect is None or aspect <= 0:
+                # Fallback: doc's active render data
+                rd = doc.GetActiveRenderData()
+                if rd:
+                    try:
+                        w = int(rd[c4d.RDATA_XRES])
+                        h = int(rd[c4d.RDATA_YRES])
+                        aspect = float(w) / float(h) if h > 0 else (16.0 / 9.0)
+                    except Exception:
+                        aspect = 16.0 / 9.0
+                else:
+                    aspect = 16.0 / 9.0
+            self.master_aspect = float(aspect)
+
+            mf_takes = find_active_multiformat_takes(doc)
+            rects = []
+            for fmt_id, _take in mf_takes:
+                safe_box = format_safe_area_in_master_ndc(fmt_id,
+                                                          self.master_aspect)
+                color = _SAFE_AREA_COLORS.get(fmt_id,
+                                              c4d.Vector(0.6, 0.6, 0.6))
+                rects.append((fmt_id, color, safe_box))
+            self.format_rects = rects
+        except Exception as e:
+            safe_print(f"SafeAreaOverlay state update error: {e}")
+
+
+# Module-level singleton instance. Both the panel and the ObjectData
+# marker reference it through this name.
+_overlay_state = _SafeAreaOverlayState()
+
+
+# Defensive check: confirm ObjectData + the draw constants we rely on
+# exist before defining the class. Falls back to `object` so the
+# module still parses if any of these is missing (panel still works,
+# just no overlay).
+try:
+    _ObjectDataBase = plugins.ObjectData
+    _ = c4d.DRAWPASS_OBJECT
+    _ = c4d.DRAWRESULT_OK
+    _ = c4d.DRAWRESULT_SKIP
+    _ = c4d.OBJECT_GENERATOR
+    _SAFE_AREA_OBJECT_AVAILABLE = True
+except Exception as _exc:
+    _ObjectDataBase = object
+    _SAFE_AREA_OBJECT_AVAILABLE = False
+    safe_print(f"ObjectData API not available ({_exc}) — safe-area "
+               "viewport overlay disabled. Panel still works.")
+
+
+class SafeAreaOverlayObject(_ObjectDataBase):
+    """ObjectData plugin: a marker null whose Draw renders the cross-
+    aspect safe-area rectangles into the active camera viewport.
+
+    Auto-created by the Sentinel panel when the "Show Safe-Area
+    Overlay" toggle is enabled. Reads from `_overlay_state` — when
+    `enabled` is False or no formats are active, the Draw body skips
+    immediately (sub-millisecond overhead).
+    """
+
+    def Init(self, node, isCloneInit=False):
+        return True
+
+    def Draw(self, op, drawpass, bd, bh):
+        # Only do work on DRAWPASS_OBJECT — confirmed via probe that
+        # this pass fires regardless of selection. DRAWPASS_HANDLES
+        # only fires when the object is selected, which isn't what we
+        # want for an always-on overlay.
+        if drawpass != c4d.DRAWPASS_OBJECT:
+            return c4d.DRAWRESULT_OK
+
+        try:
+            if not _overlay_state.enabled:
+                return c4d.DRAWRESULT_SKIP
+            rects = _overlay_state.format_rects
+            if not rects:
+                return c4d.DRAWRESULT_SKIP
+
+            # `bd.GetSafeFrame()` returns the safe-frame rectangle in
+            # viewport pixel coordinates — i.e. where the camera's
+            # actual rendered frame lands (handles letterbox/pillarbox
+            # automatically). We position the format rectangles inside
+            # this area.
+            safe = bd.GetSafeFrame()
+            if not safe:
+                return c4d.DRAWRESULT_SKIP
+            cl = int(safe.get("cl", 0))
+            ct = int(safe.get("ct", 0))
+            cr = int(safe.get("cr", 0))
+            cb = int(safe.get("cb", 0))
+            master_w = cr - cl
+            master_h = cb - ct
+            if master_w < 4 or master_h < 4:
+                return c4d.DRAWRESULT_SKIP
+
+            # Switch to 2D screen-space drawing. After this, DrawLine
+            # treats Vector(x, y, 0) as pixel coordinates.
+            bd.SetMatrix_Screen()
+
+            for fmt_id, color, safe_box in rects:
+                # Map master NDC ([-1, +1]) → pixel coords inside the
+                # safe-frame rectangle. NDC y=+1 is top, -1 is bottom;
+                # screen y increases downward → flip.
+                px_left = cl + (safe_box["left"] + 1.0) * 0.5 * master_w
+                px_right = cl + (safe_box["right"] + 1.0) * 0.5 * master_w
+                px_top = ct + (1.0 - safe_box["top"]) * 0.5 * master_h
+                px_bot = ct + (1.0 - safe_box["bottom"]) * 0.5 * master_h
+
+                # Skip degenerate
+                if px_right - px_left < 1.0 or px_bot - px_top < 1.0:
+                    continue
+
+                bd.SetPen(color)
+                p_tl = c4d.Vector(px_left, px_top, 0)
+                p_tr = c4d.Vector(px_right, px_top, 0)
+                p_br = c4d.Vector(px_right, px_bot, 0)
+                p_bl = c4d.Vector(px_left, px_bot, 0)
+                bd.DrawLine(p_tl, p_tr, 0)
+                bd.DrawLine(p_tr, p_br, 0)
+                bd.DrawLine(p_br, p_bl, 0)
+                bd.DrawLine(p_bl, p_tl, 0)
+
+                # Format label in the top-left corner of each rect.
+                try:
+                    bd.DrawHUDText(int(px_left + 4),
+                                   int(px_top + 4),
+                                   fmt_id)
+                except Exception:
+                    pass
+
+            return c4d.DRAWRESULT_OK
+        except Exception as e:
+            safe_print(f"SafeAreaOverlayObject.Draw error: {e}")
+            return c4d.DRAWRESULT_SKIP
+
+
+def find_or_create_safe_area_overlay_object(doc):
+    """Locate the existing overlay marker in `doc`, or create one at
+    scene root if none exists. Identified by plugin TYPE
+    (`SAFE_AREA_OVERLAY_PLUGIN_ID`), so renames don't break detection.
+
+    Returns the BaseObject, or None on failure / when the plugin isn't
+    registered (e.g. ObjectData API missing in this C4D build).
+    """
+    if doc is None or not _SAFE_AREA_OBJECT_AVAILABLE:
+        return None
+
+    # Search existing
+    def _find(start):
+        op = start
+        while op is not None:
+            if op.GetType() == SAFE_AREA_OVERLAY_PLUGIN_ID:
+                return op
+            child = op.GetDown()
+            if child is not None:
+                found = _find(child)
+                if found is not None:
+                    return found
+            op = op.GetNext()
+        return None
+
+    existing = _find(doc.GetFirstObject())
+    if existing is not None:
+        return existing
+
+    # Create new at scene root
+    try:
+        obj = c4d.BaseObject(SAFE_AREA_OVERLAY_PLUGIN_ID)
+        if obj is None:
+            return None
+        obj.SetName("Sentinel Safe-Area Overlay")
+        doc.StartUndo()
+        doc.InsertObject(obj)
+        doc.AddUndo(c4d.UNDOTYPE_NEW, obj)
+        doc.EndUndo()
+        c4d.EventAdd()
+        return obj
+    except Exception as e:
+        safe_print(f"Could not create safe-area overlay object: {e}")
+        return None
 
 
 class MultiFormatDialog(gui.GeDialog):
@@ -5627,6 +5879,7 @@ class G:
     BTN_FORCE_VERTICAL = 1204  # Force 9:16
     BTN_RESET_ALL = 1206      # Reset all presets from template
     BTN_MULTIFORMAT = 1207    # Multi-Format Render Setup (generate Takes for 16:9, 9:16, 1:1, 4:5, 21:9)
+    CHK_SAFE_AREA_OVERLAY = 1208  # Viewport overlay toggle (v1.5.6, ObjectData-backed)
 
     # Quick Actions
     BTN_CREATE_HIERARCHY = 1126
@@ -5862,6 +6115,18 @@ class YSPanel(gui.GeDialog):
         self.GroupBegin(81, c4d.BFH_SCALEFIT, 1, 0)
         self.AddButton(G.BTN_MULTIFORMAT, c4d.BFH_SCALEFIT, 0, 0,
                        "Generate Format Takes...")
+        # Viewport overlay toggle (v1.5.6) — auto-creates a marker
+        # ObjectData object in the scene when enabled. The object's
+        # Draw renders each active multi-format Take's safe-area
+        # rectangle in the active camera viewport. Persists with the
+        # .c4d save; survives panel reopens.
+        self.AddCheckbox(G.CHK_SAFE_AREA_OVERLAY, c4d.BFH_LEFT, 0, 0,
+                         "Show Safe-Area Overlay in viewport")
+        # Reflect current session state (singleton survives tab rebuild)
+        try:
+            self.SetBool(G.CHK_SAFE_AREA_OVERLAY, bool(_overlay_state.enabled))
+        except Exception:
+            pass
         self.GroupEnd()
 
         # ── Redshift AOVs ──
@@ -6568,6 +6833,22 @@ class YSPanel(gui.GeDialog):
 
         elif cid == G.BTN_MULTIFORMAT:
             self._open_multiformat_dialog(doc)
+
+        elif cid == G.CHK_SAFE_AREA_OVERLAY:
+            # Toggle the safe-area viewport overlay. On enable: ensure
+            # the marker object exists in the scene (auto-create at
+            # root if missing) + refresh the cached format rectangles.
+            # On disable: just flip the flag (Draw becomes a no-op).
+            new_state = bool(self.GetBool(G.CHK_SAFE_AREA_OVERLAY))
+            _overlay_state.enabled = new_state
+            if new_state:
+                if _SAFE_AREA_OBJECT_AVAILABLE:
+                    find_or_create_safe_area_overlay_object(doc)
+                else:
+                    safe_print("Safe-Area Overlay: ObjectData API "
+                               "unavailable in this C4D build.")
+                _overlay_state.update_from_doc(doc)
+            c4d.EventAdd()
 
         elif cid == G.ARTIST:
             # Artist name changed - save to global settings
@@ -7703,6 +7984,14 @@ class YSPanel(gui.GeDialog):
         except Exception:
             pass
 
+        # Refresh the safe-area overlay cache — the set of active
+        # multi-format Takes likely changed, so the cached rectangles
+        # need recomputing for the next viewport redraw.
+        try:
+            _overlay_state.update_from_doc(doc)
+        except Exception:
+            pass
+
         c4d.EventAdd()
 
     def _update_aspect_button(self):
@@ -8396,6 +8685,31 @@ def Register():
         safe_print(f"{PLUGIN_NAME} registered successfully")
     else:
         safe_print("Failed to register Guardian panel")
+
+    # Secondary plugin: SafeAreaOverlayObject (ObjectData) for the
+    # cross-aspect safe-area viewport overlay (v1.5.6).
+    # Failure here is non-fatal — the panel still works, just no overlay.
+    if _SAFE_AREA_OBJECT_AVAILABLE:
+        try:
+            overlay_ok = plugins.RegisterObjectPlugin(
+                id=SAFE_AREA_OVERLAY_PLUGIN_ID,
+                str="Sentinel Safe-Area Overlay",
+                g=SafeAreaOverlayObject,
+                description="safearea_overlay",
+                info=c4d.OBJECT_GENERATOR,
+                icon=None,
+            )
+            if overlay_ok:
+                safe_print("Sentinel Safe-Area Overlay (ObjectData) registered")
+            else:
+                safe_print("Failed to register Safe-Area Overlay ObjectData — "
+                           "overlay disabled, panel still works")
+        except Exception as e:
+            safe_print(f"Safe-Area Overlay registration crashed: {e} — "
+                       "overlay disabled, panel still works")
+    else:
+        safe_print("ObjectData API unavailable in this C4D — overlay disabled")
+
     return ok
 
 if __name__ == "__main__":

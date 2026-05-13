@@ -66,6 +66,49 @@
 
 ---
 
+### v1.5.6 — Cross-Aspect Safe-Area Viewport Overlay ✅
+
+Closes the v1.5.5 deferred work: live colored rectangles rendered in the active camera viewport showing each multi-format Take's crop region. Same crop-interpretation math as QC #12, so the artist composes against the same safe areas the check validates against.
+
+#### Investigation phase
+- [x] Probed `TagData.Draw` in C4D 2026 — registers cleanly but `Draw` is never invoked by the Python viewport pipeline (only `Init` + `Execute` fire). Verified with a throwaway probe plugin.
+- [x] Probed `ObjectData.Draw` in C4D 2026 — `Draw` fires reliably in `DRAWPASS_OBJECT` regardless of selection. `bd.SetMatrix_Screen()`, `bd.DrawLine`, `bd.DrawHUDText`, `bd.GetSafeFrame()` all verified working. Confirmed via the OCIO node 2025 SDK example.
+- [x] Discovered `bd.GetSafeFrame()` returns the letterboxed render-frame rectangle within the viewport — eliminates the need for manual letterbox math.
+- [x] Selected ObjectData architecture (rejected TagData hybrid as unnecessary complexity for a scene-wide overlay).
+
+#### Resource files (new `plugin/res/` folder)
+- [x] `c4d_symbols.h` — module-wide symbol table (dummy + room for future)
+- [x] `description/safearea_overlay.res` — `INCLUDE Obase`, no user-facing parameters (all state in the panel singleton)
+- [x] `description/safearea_overlay.h` — header
+- [x] `strings_us/description/safearea_overlay.str` — localized name "Sentinel Safe-Area Overlay"
+
+#### Plugin code (sentinel_panel.pyp additions)
+- [x] `SAFE_AREA_OVERLAY_PLUGIN_ID = 2099072` constant
+- [x] `_SAFE_AREA_COLORS` palette — white master, orange Reels, cyan square, magenta portrait, yellow cinema
+- [x] `_SafeAreaOverlayState` module-level singleton — `enabled` flag + `master_aspect` + cached `format_rects` list of (fmt_id, color, master_ndc_safe_box). `update_from_doc()` recomputes the cached rectangles from the active multi-format Takes
+- [x] `_overlay_state` global instance, shared between the panel and the marker
+- [x] Defensive `_SAFE_AREA_OBJECT_AVAILABLE` flag — if `plugins.ObjectData` or any draw constants are missing in this C4D build, fall back to `object` base and skip registration (panel still works)
+- [x] `SafeAreaOverlayObject(plugins.ObjectData)` — `Init` + `Draw`. Draw body: only fires on `DRAWPASS_OBJECT`; reads `_overlay_state`; queries `bd.GetSafeFrame()`; maps each format's master-NDC safe-box to pixel coords; draws 4 outline lines + HUD label per format
+- [x] `find_or_create_safe_area_overlay_object(doc)` — locate by plugin TYPE (not name → robust to rename) or create at scene root with `StartUndo/EndUndo`
+- [x] `RegisterObjectPlugin` call in `Register()`, guarded by `_SAFE_AREA_OBJECT_AVAILABLE` flag, non-fatal failure (just logs)
+
+#### Panel UI
+- [x] `CHK_SAFE_AREA_OVERLAY` checkbox added to Render tab → Multi-Format Setup section
+- [x] Checkbox state synced from `_overlay_state.enabled` on every tab rebuild (singleton survives rebuild)
+- [x] Command handler: toggle ON → `find_or_create_safe_area_overlay_object(doc)` + `update_from_doc(doc)`; toggle OFF → just flips flag (Draw becomes no-op)
+- [x] `EventAdd` after toggle for immediate viewport refresh
+- [x] Multi-Format orchestrator dialog's post-action also calls `_overlay_state.update_from_doc(doc)` so regenerating Takes refreshes the cached rectangles for the next redraw
+
+#### Composition Mode interaction (documented)
+- [x] Overlay uses the crop-interpretation model regardless of Composition Mode (matches QC #12)
+- [x] Mode "None" + overlay: rectangles match what you'd get by cropping the master in post (the GSG Social Frame workflow)
+- [x] Mode "Resize Canvas" + overlay: rectangles are a composition reference, not an exact render preview (each take recomposes the camera per format)
+- [x] User-facing docs in README + CLAUDE.md explain this clearly
+
+**Why this version**: closes the live-feedback loop on cross-aspect delivery. With the overlay enabled, artists compose against the actual delivery crops in real time, the QC #12 check validates those crops, and the Multi-Format Setup generates the per-aspect Takes. End-to-end multi-format workflow without leaving the viewport.
+
+---
+
 ### v1.5.5 — Cross-Aspect Safe-Area QC + Multi-Format refactor ✅
 
 After v1.5.4 shipped Multi-Format Setup, user testing showed two things: the "Auto-FOV" option (vertical-FOV-constant) didn't match the artist's mental model, and there was no automated way to verify subject framing across the generated delivery formats. v1.5.5 addresses both.
@@ -464,9 +507,7 @@ Add a dropdown or settings dialog to change the studio standard FPS without edit
 
 > Note: Multi-Format Render Setup shipped early as v1.5.4.
 > Note: Cross-Aspect Safe-Area QC (#12) shipped as v1.5.5.
-
-#### Safe-Area Viewport Overlay (carried over from v1.5.5)
-Live colored rectangles in the active camera viewport showing each multi-format Take's crop region + per-format safe-area insets. Prototyped in v1.5.5 but deferred because `c4d.plugins.SceneHookData` was removed in C4D 2026. Need to evaluate TagData (attached to active camera) or MessageData as the new mechanism.
+> Note: Safe-Area Viewport Overlay shipped as v1.5.6.
 
 #### Texture Repathing Tool
 Bulk find-and-replace for texture paths:
