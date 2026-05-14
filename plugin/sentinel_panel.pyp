@@ -1112,8 +1112,12 @@ def scan_all_texture_paths(doc):
                                 "octane_node" if space_label == "octane" else
                                 "arnold_node"
                             )
+                            # Pass the graph ref to the walker so it can
+                            # store it in each record's context — required
+                            # at write time for the maxon transaction.
                             _scan_node_graph(root, mat, mat_name,
-                                             source_type, _add)
+                                             source_type, _add,
+                                             graph_ref=graph)
                         except Exception:
                             continue
 
@@ -1195,9 +1199,14 @@ def scan_all_texture_paths(doc):
     return records
 
 
-def _scan_node_graph(root_node, host_mat, mat_name, source_type, add_fn):
+def _scan_node_graph(root_node, host_mat, mat_name, source_type, add_fn,
+                    graph_ref=None):
     """Walk every GraphNode under `root_node` recursively, checking each
     node's `GetPortValue()` for texture-like paths.
+
+    `graph_ref` is the maxon GraphModelRef that owns this node tree.
+    Stored in each record's context so `apply_texture_path_change` can
+    open a transaction at write time.
 
     Architecture note: in C4D 2026's maxon node graph API, `node.GetInputs()`
     does NOT return what we need for texture-bearing ports. Instead, inputs
@@ -1253,7 +1262,7 @@ def _scan_node_graph(root_node, host_mat, mat_name, source_type, add_fn):
                 node_id = "port"
             channel = node_id.split(".")[-1] if "." in node_id else node_id
             add_fn(source_type, host_mat, mat_name, channel,
-                   {"port": node}, fp)
+                   {"port": node, "graph": graph_ref}, fp)
         try:
             for child in node.GetChildren():
                 walk(child, depth + 1)
@@ -1341,11 +1350,54 @@ def apply_texture_path_change(record, new_path, doc=None):
             return True
 
         elif source_type in ("rs_node", "octane_node", "arnold_node"):
-            # Node graph writes require a maxon transaction context.
-            # Deferred to v1.5.7 Step 2 (deliberate scope split).
-            safe_print(f"apply_texture_path_change: node-graph write for "
-                       f"{source_type} not yet implemented (Step 2).")
-            return False
+            # Node-graph port write via maxon transaction.
+            # Pattern (verified in Cinema-4D-Python-API-Examples/
+            # scripts/05_modules/node/modify_port_value_r26.py):
+            #
+            #   url = maxon.Url(new_path_str)
+            #   with graph.BeginTransaction(userData) as transaction:
+            #       port.SetPortValue(url)
+            #       transaction.Commit()     # ← REQUIRED. The context
+            #                                   manager exit does NOT
+            #                                   auto-commit — it rolls
+            #                                   back if Commit isn't
+            #                                   called explicitly.
+            #
+            # We pass `UndoMode.ADD` in user_data so the transaction
+            # joins the doc's outer StartUndo / EndUndo (the dialog's
+            # Apply All wraps the whole batch for one-Cmd+Z reversal).
+            if not MAXON_AVAILABLE:
+                safe_print("apply_texture_path_change: maxon module "
+                           "unavailable — skipping node-graph write.")
+                return False
+            port = context.get("port")
+            graph = context.get("graph")
+            if port is None or graph is None:
+                safe_print(f"apply_texture_path_change: missing port/graph "
+                           f"in context for {source_type}.")
+                return False
+            try:
+                import maxon as _maxon
+                url = _maxon.Url(str(new_path))
+                user_data = _maxon.DataDictionary()
+                try:
+                    # Join the surrounding undo (StartUndo wrap from caller)
+                    user_data.Set(_maxon.nodes.UndoMode,
+                                  _maxon.nodes.UNDO_MODE.ADD)
+                except Exception:
+                    pass
+                with graph.BeginTransaction(user_data) as transaction:
+                    port.SetPortValue(url)
+                    # CRITICAL: explicit commit. Without this, the
+                    # transaction rolls back at `with` exit and the
+                    # write silently vanishes — we'd see no exception
+                    # but the value wouldn't change.
+                    transaction.Commit()
+                return True
+            except Exception as e:
+                safe_print(f"apply_texture_path_change: node-graph write "
+                           f"failed for {source_type}: {e}")
+                return False
 
         else:
             safe_print(f"apply_texture_path_change: unknown source_type "
