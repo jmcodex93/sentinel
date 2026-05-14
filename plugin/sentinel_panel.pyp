@@ -757,43 +757,299 @@ def check_output_paths(doc):
     check_cache.set(doc, "output", issues)
     return issues
 
-# ---------------- unified texture check ----------------
+# ============================================================
+# Texture scan + repathing helpers (QC #6 + v1.5.7 Repathing Tool)
+# ============================================================
+# Redshift-specific compound DescID file references. RS stores file
+# paths on certain objects (dome HDR, IES profile, VDB volume, RS proxy)
+# as a TWO-LEVEL DescID — root parameter id + REDSHIFT_FILE_PATH
+# sub-field. These don't surface as filename params in the standard
+# BaseContainer iterator; you have to query `obj[ROOT_ID, FILE_PATH_ID]`
+# explicitly to read them.
+#
+# Constants discovered via renderEngine (DunHouGo) reference clone:
+#   light[REDSHIFT_LIGHT_DOME_TEX0, REDSHIFT_FILE_PATH]      = hdr_path
+#   light[REDSHIFT_LIGHT_PHYSICAL_TEXTURE, REDSHIFT_FILE_PATH]
+#   light[REDSHIFT_LIGHT_IES_PROFILE, REDSHIFT_FILE_PATH]    = ies_path
+#   volume[REDSHIFT_VOLUME_FILE, REDSHIFT_FILE_PATH]         = vdb_path
+#   proxy[REDSHIFT_PROXY_FILE, REDSHIFT_FILE_PATH]           = proxy_path
+RS_OBJECT_FILE_REFS = [
+    ("REDSHIFT_LIGHT_DOME_TEX0",      "Dome HDR"),
+    ("REDSHIFT_LIGHT_PHYSICAL_TEXTURE", "Light texture"),
+    ("REDSHIFT_LIGHT_IES_PROFILE",    "IES profile"),
+    ("REDSHIFT_VOLUME_FILE",          "Volume (VDB)"),
+    ("REDSHIFT_PROXY_FILE",           "RS Proxy"),
+]
+
+# Known node-space identifiers for material node graphs. Sentinel's
+# scan walks each registered space looking for file-bearing ports.
+# Adding a new renderer means adding the space id here.
 RS_NODESPACE = "com.redshift3d.redshift4c4d.class.nodespace"
+# Octane and Arnold node spaces — best-effort. C4D 2024+ adopted the
+# maxon node graph API for these renderers but the namespace strings
+# aren't widely documented; if the IDs change, the scan silently skips
+# (HasSpace returns False) and the user just doesn't see those node
+# textures. Easy to extend later.
+OCTANE_NODESPACE = "net.maxon.octanespace"
+ARNOLD_NODESPACE = "com.autodesk.arnold.nodespace"
+TEXTURE_NODE_SPACES = (
+    ("redshift", RS_NODESPACE),
+    ("octane",   OCTANE_NODESPACE),
+    ("arnold",   ARNOLD_NODESPACE),
+)
 
-def check_textures_unified(doc):
-    """Unified check: scans classic shaders, RS nodes, and alembics for absolute paths and missing files"""
-    cached = check_cache.get(doc, "textures")
-    if cached is not None:
-        return cached
+# Common subfolders to search when auto-finding a missing texture by
+# filename only (Step 2's "Auto-Find Missing" smart action). Conservative
+# strategy — exact filename match only, common mograph asset layouts.
+_TEXTURE_SEARCH_SUBDIRS = ("", "tex", "textures", "Textures", "maps",
+                          "Maps", "assets", "Assets", "img", "images",
+                          "HDR", "hdr", "hdris", "HDRIs")
 
-    issues = []
-    seen_paths = set()
-    doc_path = doc.GetDocumentPath() or ""
+# Image / HDR extensions we recognize as textures. Used to filter out
+# false positives when walking node port values that happen to be strings.
+_TEXTURE_EXTENSIONS = {
+    ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".exr", ".hdr", ".tx",
+    ".tex", ".psd", ".bmp", ".gif", ".tga", ".dds", ".webp", ".iff",
+    ".pic", ".picon", ".rla", ".rpf", ".sgi", ".rgb", ".rgba", ".jp2",
+    ".cr2", ".dng", ".raw",
+}
 
-    def resolve(filepath):
-        if not filepath:
-            return None
-        filepath = str(filepath).strip()
-        if not filepath:
-            return None
-        if _is_absolute_path(filepath):
-            return filepath
-        if doc_path:
-            return os.path.join(doc_path, filepath)
+
+def _looks_like_texture_path(s):
+    """Heuristic: does this string look like a texture file path?
+
+    Recognized forms (verified empirically in C4D 2026):
+      - `relative:///foo.jpg` — maxon Url with relative scheme, the
+        most common form for RS node texture ports
+      - `file:///abs/path.jpg` — maxon Url with absolute file scheme
+      - `asset:abc123def` — RS Asset Manager managed reference
+        (may not contain slashes — check BEFORE the slash gate)
+      - `preset:rs/builtin/...` — RS preset reference
+      - `/abs/path.jpg`, `C:/path/x.jpg`, `rel/path.jpg` — plain paths
+        with a recognized extension
+    """
+    if not s or len(s) < 4:
+        return False
+    s = str(s).strip()
+    if s in ("None", "<empty>", ""):
+        return False
+    # RS Asset Manager / preset URIs — may not contain slashes
+    if s.startswith("asset:") or s.startswith("preset:"):
+        return True
+    lower = s.lower()
+    # Maxon Url schemes (relative://, file://) + plain paths must
+    # have a recognized image extension
+    has_path_indicator = (
+        s.startswith("relative://") or s.startswith("file://") or
+        "/" in s or "\\" in s
+    )
+    if not has_path_indicator:
+        return False
+    return any(lower.endswith(ext) for ext in _TEXTURE_EXTENSIONS)
+
+
+def compute_relative_texture_path(abs_path, doc_path):
+    """Convert an absolute texture path to one relative to `doc_path`.
+
+    Returns the relative path string on success, or None when:
+      - `doc_path` is empty (doc never saved)
+      - The two paths live on different drives / volumes (Windows
+        cross-drive case)
+      - The relative result climbs more than 4 levels up (`../../../../`
+        which usually means the texture isn't in a sensible sibling
+        location and a relative path would be fragile)
+
+    Note: returns POSIX-style separators on all platforms (C4D accepts
+    forward slashes uniformly).
+    """
+    if not abs_path or not doc_path:
         return None
+    try:
+        rel = os.path.relpath(abs_path, doc_path)
+    except (ValueError, OSError):
+        # Different drive on Windows raises ValueError
+        return None
+    # Reject overly-deep climbs
+    if rel.count("..") > 4:
+        return None
+    # Reject if relpath bottomed out at the absolute path (no common root)
+    if os.path.isabs(rel):
+        return None
+    return rel.replace("\\", "/")
 
-    def add_issue(source, filepath):
-        """Check a file path and add issue if absolute or missing"""
-        if not filepath or filepath in seen_paths:
+
+def find_missing_texture_candidates(filename, doc_path,
+                                    extra_search_dirs=None):
+    """Conservative auto-find for a missing texture by filename match.
+
+    Returns a list of absolute paths where a file with that EXACT
+    filename exists. Empty list = not found.
+
+    Searches `_TEXTURE_SEARCH_SUBDIRS` under `doc_path` (and any extra
+    paths provided). Exact filename match only — no fuzzy / partial
+    matching to avoid wrong-but-similar files.
+    """
+    if not filename or not doc_path:
+        return []
+    name = os.path.basename(filename)
+    if not name:
+        return []
+    candidates = []
+    search_dirs = list(_TEXTURE_SEARCH_SUBDIRS)
+    if extra_search_dirs:
+        search_dirs.extend(extra_search_dirs)
+    for sub in search_dirs:
+        candidate = os.path.join(doc_path, sub, name) if sub else os.path.join(doc_path, name)
+        try:
+            if os.path.isfile(candidate):
+                candidates.append(candidate)
+        except Exception:
+            continue
+    return candidates
+
+
+def _resolve_relative_texture(rel_path, doc_path):
+    """Find a relative texture by searching standard texture subfolders.
+
+    Replicates Redshift's automatic texture search behavior: a path like
+    `xfgpebk_8K_Albedo.jpg` is found whether it sits at `<doc>/`,
+    `<doc>/tex/`, `<doc>/textures/`, etc. Without this, every
+    `relative:///foo.jpg` URL that points to a tex/ subfolder reads as
+    MISSING even when RS Asset Manager shows it healthy.
+
+    Returns the resolved absolute path or None if not found anywhere.
+    """
+    if not rel_path or not doc_path:
+        return None
+    rel = rel_path.lstrip("/")
+    # Direct resolution first (covers paths that already include subdir)
+    direct = os.path.normpath(os.path.join(doc_path, rel))
+    if os.path.isfile(direct):
+        return direct
+    # Search common subdirs (matches RS texture search semantics)
+    for subdir in _TEXTURE_SEARCH_SUBDIRS:
+        if not subdir:
+            continue
+        cand = os.path.normpath(os.path.join(doc_path, subdir, rel))
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+def _classify_texture_path(filepath, doc_path):
+    """Classify a texture path into a status string.
+
+    Status values:
+      - "asset_uri" — internal asset:/preset: URI, RS Asset Manager
+        managed (not user-repathable in the traditional sense).
+      - "empty"   — empty / whitespace string.
+      - "absolute" — absolute path on disk (raw or file:// URL).
+      - "missing"  — relative path that doesn't resolve to an existing
+                     file in `doc_path` or any standard texture subfolder.
+      - "ok"       — relative path (raw or relative:// URL) that
+                     resolves to a file on disk (anywhere RS would find it).
+
+    Maxon URL schemes are recognized:
+      - `relative:///foo.jpg` → relative to doc_path, searched
+        across standard texture subfolders (tex/, textures/, etc.)
+      - `file:///abs/path.jpg` → absolute
+
+    Returns (status, resolved_abs_path_or_None).
+    """
+    if not filepath:
+        return "empty", None
+    s = str(filepath).strip()
+    if not s:
+        return "empty", None
+
+    # RS Asset Manager / preset URIs
+    if s.startswith("asset:") or s.startswith("preset:"):
+        return "asset_uri", None
+
+    # Maxon Url: relative://
+    if s.startswith("relative://"):
+        rel = s[len("relative://"):].lstrip("/")
+        resolved = _resolve_relative_texture(rel, doc_path)
+        if resolved is not None:
+            return "ok", resolved
+        # Fall back to the direct path for the "expected location" report
+        direct = os.path.normpath(os.path.join(doc_path or ".", rel))
+        return "missing", direct
+
+    # Maxon Url: file://
+    if s.startswith("file://"):
+        abs_part = s[len("file://"):]
+        # On Windows file:// URLs sometimes have a leading slash before drive
+        if abs_part.startswith("/") and len(abs_part) > 3 and abs_part[2] == ":":
+            abs_part = abs_part.lstrip("/")
+        return "absolute", abs_part
+
+    # Plain absolute path
+    if _is_absolute_path(s):
+        return "absolute", s
+
+    # Plain relative path — same search-subdir fallback as relative://
+    resolved = _resolve_relative_texture(s, doc_path)
+    if resolved is not None:
+        return "ok", resolved
+    direct = os.path.normpath(os.path.join(doc_path or ".", s))
+    return "missing", direct
+
+
+def scan_all_texture_paths(doc):
+    """Comprehensive scan of every texture path in the document.
+
+    Returns a flat list of TextureRecord dicts — one per (texture-bearing
+    location, current_path) pair. Includes everything: OK paths, absolute,
+    missing, asset_uri.
+
+    Each TextureRecord:
+        {
+          "source_type": str — "classic_shader" | "bc_param" | "rs_node" |
+                                "octane_node" | "arnold_node" | "alembic",
+          "host":        BaseObject | BaseMaterial — live ref (for write-back)
+          "host_name":   str — human-readable identifier
+          "channel":     str — shader/channel name (e.g. "Diffuse")
+          "context":     dict — source-specific extras (shader ref, port
+                                ref, etc.) the writer uses to apply changes
+          "current_path": str
+          "status":      "ok" | "absolute" | "missing" | "asset_uri" | "empty"
+          "resolved":    str | None — abs path on disk if it exists
+        }
+
+    Performance: caps at ~500 records (safety net for huge scenes). Most
+    real scenes have 20–200 textures.
+    """
+    records = []
+    if not doc:
+        return records
+
+    doc_path = doc.GetDocumentPath() or ""
+    seen = set()  # dedupe by (host_id, channel, path) to avoid noise
+
+    def _add(source_type, host, host_name, channel, context, path):
+        if not path:
             return
-        seen_paths.add(filepath)
-
-        if _is_absolute_path(filepath):
-            issues.append({"source": source, "path": filepath, "issue": "absolute"})
-        else:
-            resolved = resolve(filepath)
-            if resolved and not os.path.exists(resolved):
-                issues.append({"source": source, "path": filepath, "issue": "missing", "resolved": resolved})
+        # Dedupe key — same shader-channel-path combo shouldn't be added twice
+        try:
+            host_id = id(host)
+        except Exception:
+            host_id = 0
+        key = (source_type, host_id, channel, str(path))
+        if key in seen:
+            return
+        seen.add(key)
+        status, resolved = _classify_texture_path(str(path), doc_path)
+        records.append({
+            "source_type": source_type,
+            "host":        host,
+            "host_name":   host_name,
+            "channel":     channel,
+            "context":     context or {},
+            "current_path": str(path),
+            "status":      status,
+            "resolved":    resolved,
+        })
 
     try:
         materials = doc.GetMaterials() or []
@@ -801,21 +1057,26 @@ def check_textures_unified(doc):
         for mat in materials:
             if not mat:
                 continue
-            mat_name = mat.GetName()
+            mat_name = mat.GetName() or "<unnamed>"
 
-            # --- Classic shaders ---
-            shader = mat.GetFirstShader()
-            while shader:
-                if shader.GetType() == c4d.Xbitmap:
-                    try:
-                        fp = shader[c4d.BITMAPSHADER_FILENAME]
-                        if fp:
-                            add_issue(f"Shader in '{mat_name}'", str(fp))
-                    except Exception:
-                        pass
-                shader = shader.GetNext()
+            # ── Classic shaders (Bitmap, etc.) walking the chain ──
+            try:
+                shader = mat.GetFirstShader()
+                while shader:
+                    if shader.GetType() == c4d.Xbitmap:
+                        try:
+                            fp = shader[c4d.BITMAPSHADER_FILENAME]
+                            if fp:
+                                _add("classic_shader", mat, mat_name,
+                                     "Bitmap shader",
+                                     {"shader": shader}, str(fp))
+                        except Exception:
+                            pass
+                    shader = shader.GetNext()
+            except Exception:
+                pass
 
-            # --- BaseContainer file params ---
+            # ── Material BaseContainer params (HDR/IBL, area light tex, etc.) ──
             try:
                 bc = mat.GetDataInstance()
                 if bc:
@@ -823,104 +1084,329 @@ def check_textures_unified(doc):
                         try:
                             fp = bc.GetFilename(desc_id)
                             if fp and str(fp).strip():
-                                add_issue(f"Material '{mat_name}'", str(fp))
+                                _add("bc_param", mat, mat_name,
+                                     "Material param",
+                                     {"desc_id": desc_id}, str(fp))
                         except Exception:
                             pass
             except Exception:
                 pass
 
-            # --- RS Node graph ---
+            # ── Node graphs (RS / Octane / Arnold) ──
             if MAXON_AVAILABLE:
                 try:
                     nodeMat = mat.GetNodeMaterialReference()
-                    if nodeMat and nodeMat.HasSpace(RS_NODESPACE):
-                        graph = nodeMat.GetGraph(RS_NODESPACE)
-                        if graph:
-                            root = graph.GetViewRoot()
-
-                            def check_port_value(port):
-                                try:
-                                    val = None
-                                    try:
-                                        val = port.GetPortValue()
-                                    except Exception:
-                                        try:
-                                            val = port.GetDefaultValue()
-                                        except Exception:
-                                            return None
-                                    if val is None:
-                                        return None
-                                    filepath = ""
-                                    try:
-                                        if hasattr(val, 'GetSystemPath'):
-                                            filepath = str(val.GetSystemPath())
-                                    except Exception:
-                                        pass
-                                    if not filepath:
-                                        try:
-                                            if hasattr(val, 'ToString'):
-                                                filepath = str(val.ToString())
-                                        except Exception:
-                                            pass
-                                    if not filepath:
-                                        filepath = str(val)
-                                    if (not filepath or filepath == "None" or len(filepath) < 4
-                                            or not ("/" in filepath or "\\" in filepath)):
-                                        return None
-                                    if filepath.startswith("asset:") or filepath.startswith("preset:"):
-                                        return None
-                                    return filepath
-                                except Exception:
-                                    return None
-
-                            def scan_ports(port):
-                                if not port:
-                                    return
-                                fp = check_port_value(port)
-                                if fp:
-                                    add_issue(f"RS Node in '{mat_name}'", fp)
-                                try:
-                                    for child in port.GetChildren():
-                                        scan_ports(child)
-                                except Exception:
-                                    pass
-
-                            def scan_node(node, depth=0):
-                                if not node or depth > 10:
-                                    return
-                                try:
-                                    inputs = node.GetInputs()
-                                    if inputs:
-                                        for port in inputs.GetChildren():
-                                            scan_ports(port)
-                                    for child in node.GetChildren():
-                                        scan_node(child, depth + 1)
-                                except Exception:
-                                    pass
-
-                            scan_node(root)
                 except Exception:
-                    pass
+                    nodeMat = None
+                if nodeMat is not None:
+                    for space_label, space_id in TEXTURE_NODE_SPACES:
+                        try:
+                            if not nodeMat.HasSpace(space_id):
+                                continue
+                            graph = nodeMat.GetGraph(space_id)
+                            if graph is None:
+                                continue
+                            root = graph.GetViewRoot()
+                            source_type = (
+                                "rs_node" if space_label == "redshift" else
+                                "octane_node" if space_label == "octane" else
+                                "arnold_node"
+                            )
+                            _scan_node_graph(root, mat, mat_name,
+                                             source_type, _add)
+                        except Exception:
+                            continue
 
-            if len(issues) > 50:
+            if len(records) > 500:
                 break
 
-        # --- Alembic objects ---
-        first = doc.GetFirstObject()
-        if first:
-            for obj in _iter_objs(first, MAX_OBJECTS_PER_CHECK):
-                if not obj:
-                    continue
-                if obj.GetType() == 1028083:
-                    try:
-                        fp = obj[c4d.ALEMBIC_PATH]
-                        if fp:
-                            add_issue(f"Alembic '{obj.GetName()}'", str(fp))
-                    except Exception:
-                        pass
-                if len(issues) > 50:
-                    break
+        # ── Object-level texture references ──
+        # Covers: Alembic objects (ALEMBIC_PATH), RS Dome Light / Area
+        # Light HDR textures (live in the object's BaseContainer), volume
+        # cache files, etc. Anything stored as a BC filename param on a
+        # scene object is captured here.
+        if len(records) < 500:
+            try:
+                first = doc.GetFirstObject()
+                if first:
+                    for obj in _iter_objs(first, MAX_OBJECTS_PER_CHECK):
+                        if not obj:
+                            continue
+                        obj_name = obj.GetName() or "<obj>"
 
+                        # Alembic objects use a specific param ID
+                        # (type 1028083). Keep this as a distinct
+                        # source_type for clearer reporting.
+                        if obj.GetType() == 1028083:
+                            try:
+                                fp = obj[c4d.ALEMBIC_PATH]
+                                if fp:
+                                    _add("alembic", obj, obj_name,
+                                         "Alembic cache", {}, str(fp))
+                            except Exception:
+                                pass
+
+                        # Generic BC scan — catches simple filename params
+                        # (anything that responds to bc.GetFilename(desc_id)).
+                        try:
+                            bc = obj.GetDataInstance()
+                            if bc:
+                                for desc_id, _ in bc:
+                                    try:
+                                        fp = bc.GetFilename(desc_id)
+                                        if fp and str(fp).strip():
+                                            _add("object_bc", obj, obj_name,
+                                                 "Object param",
+                                                 {"desc_id": desc_id}, str(fp))
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+
+                        # Redshift compound-DescID file refs: HDR on dome
+                        # lights, IES profiles, VDB volumes, RS proxies.
+                        # These don't show up in the BC iterator — they
+                        # use a `obj[ROOT_ID, REDSHIFT_FILE_PATH]` two-level
+                        # access pattern (per renderEngine reference).
+                        file_path_id = getattr(c4d, "REDSHIFT_FILE_PATH", None)
+                        if file_path_id is not None:
+                            for const_name, channel in RS_OBJECT_FILE_REFS:
+                                root_id = getattr(c4d, const_name, None)
+                                if root_id is None:
+                                    continue
+                                try:
+                                    value = obj[root_id, file_path_id]
+                                except Exception:
+                                    continue
+                                if value and str(value).strip():
+                                    _add("rs_object_fileref", obj, obj_name,
+                                         channel,
+                                         {"root_id": root_id,
+                                          "field_id": file_path_id},
+                                         str(value))
+
+                        if len(records) > 500:
+                            break
+            except Exception:
+                pass
+    except Exception as e:
+        safe_print(f"scan_all_texture_paths error: {e}")
+
+    return records
+
+
+def _scan_node_graph(root_node, host_mat, mat_name, source_type, add_fn):
+    """Walk every GraphNode under `root_node` recursively, checking each
+    node's `GetPortValue()` for texture-like paths.
+
+    Architecture note: in C4D 2026's maxon node graph API, `node.GetInputs()`
+    does NOT return what we need for texture-bearing ports. Instead, inputs
+    live as the `<` pseudo-child of each node (GraphNode kind=2), with
+    individual port nodes nested below — and texture ports specifically
+    have sub-port leaves like `path`, `colorspace`, `framerate`, etc.
+
+    Empirically (verified with the v1.5.7 probe round), the leaf
+    `path` GraphNode carries a maxon Url value like:
+        `relative:///1679705615_celes-club-...jpg`
+        `file:///Users/x/y.jpg`
+        `asset:abc123` (RS Asset Manager)
+
+    Walking by `GetChildren()` only (no `GetInputs()` reliance) and
+    calling `GetPortValue()` on every descendant catches all of these
+    forms uniformly. Depth cap = 20 to absorb deep texture sub-port
+    hierarchies plus generous safety margin.
+    """
+
+    def read_port_value(node):
+        """Return the port's value as a string if it looks like a
+        texture path, otherwise None. We prefer `str(val)` over
+        `GetSystemPath()` here so the URL scheme (`relative://`,
+        `file://`) is preserved for the classifier — otherwise
+        relative paths get resolved to absolute and we lose the
+        "is this OK as relative or should it be flagged absolute?"
+        distinction."""
+        try:
+            val = node.GetPortValue()
+        except Exception:
+            return None
+        if val is None:
+            return None
+        try:
+            s = str(val)
+        except Exception:
+            return None
+        return s if _looks_like_texture_path(s) else None
+
+    def walk(node, depth=0):
+        if not node or depth > 20:
+            return
+        # Try reading a value from this node — most GraphNodes will
+        # return None (they're container nodes or non-port-bearing
+        # kinds), but leaf ports return their actual value.
+        fp = read_port_value(node)
+        if fp:
+            # Human-friendly channel: last segment of dotted node id
+            # (e.g. "com.redshift...filename.path" → "path")
+            try:
+                node_id = str(node.GetId())
+            except Exception:
+                node_id = "port"
+            channel = node_id.split(".")[-1] if "." in node_id else node_id
+            add_fn(source_type, host_mat, mat_name, channel,
+                   {"port": node}, fp)
+        try:
+            for child in node.GetChildren():
+                walk(child, depth + 1)
+        except Exception:
+            pass
+
+    walk(root_node)
+
+
+def apply_texture_path_change(record, new_path, doc=None):
+    """Write `new_path` back to the texture record's host.
+
+    Source-type dispatch:
+      - classic_shader: shader[c4d.BITMAPSHADER_FILENAME] = new_path
+      - bc_param: host.GetDataInstance().SetFilename(desc_id, new_path)
+      - alembic: obj[c4d.ALEMBIC_PATH] = new_path
+      - rs_node / octane_node / arnold_node: requires a graph transaction,
+        deferred to Step 2 — currently returns False with a console log.
+
+    Wraps the change in AddUndo when `doc` is provided so the entire
+    Apply All operation can be reverted with a single Cmd+Z (caller is
+    expected to bracket the loop with StartUndo / EndUndo).
+
+    Returns True on success, False on failure (logs to console).
+    """
+    if not record or new_path is None:
+        return False
+    source_type = record.get("source_type")
+    host = record.get("host")
+    context = record.get("context") or {}
+
+    try:
+        if source_type == "classic_shader":
+            shader = context.get("shader")
+            if shader is None:
+                return False
+            if doc is not None:
+                try:
+                    doc.AddUndo(c4d.UNDOTYPE_CHANGE, shader)
+                except Exception:
+                    pass
+            shader[c4d.BITMAPSHADER_FILENAME] = new_path
+            return True
+
+        elif source_type in ("bc_param", "object_bc"):
+            # Same write path for both — bc_param lives on a material,
+            # object_bc lives on an object. The mechanism is identical.
+            desc_id = context.get("desc_id")
+            if host is None or desc_id is None:
+                return False
+            bc = host.GetDataInstance()
+            if bc is None:
+                return False
+            if doc is not None:
+                try:
+                    doc.AddUndo(c4d.UNDOTYPE_CHANGE, host)
+                except Exception:
+                    pass
+            bc.SetFilename(desc_id, new_path)
+            return True
+
+        elif source_type == "alembic":
+            if host is None:
+                return False
+            if doc is not None:
+                try:
+                    doc.AddUndo(c4d.UNDOTYPE_CHANGE, host)
+                except Exception:
+                    pass
+            host[c4d.ALEMBIC_PATH] = new_path
+            return True
+
+        elif source_type == "rs_object_fileref":
+            # Redshift compound DescID: host[ROOT_ID, FIELD_ID] = path
+            root_id = context.get("root_id")
+            field_id = context.get("field_id")
+            if host is None or root_id is None or field_id is None:
+                return False
+            if doc is not None:
+                try:
+                    doc.AddUndo(c4d.UNDOTYPE_CHANGE, host)
+                except Exception:
+                    pass
+            host[root_id, field_id] = new_path
+            return True
+
+        elif source_type in ("rs_node", "octane_node", "arnold_node"):
+            # Node graph writes require a maxon transaction context.
+            # Deferred to v1.5.7 Step 2 (deliberate scope split).
+            safe_print(f"apply_texture_path_change: node-graph write for "
+                       f"{source_type} not yet implemented (Step 2).")
+            return False
+
+        else:
+            safe_print(f"apply_texture_path_change: unknown source_type "
+                       f"{source_type!r}")
+            return False
+    except Exception as e:
+        safe_print(f"apply_texture_path_change error ({source_type}): {e}")
+        return False
+
+
+def check_textures_unified(doc):
+    """QC #6 wrapper: returns the legacy-shaped issue list (kept for
+    backwards-compat with the panel's existing render code). Internally
+    delegates to `scan_all_texture_paths` and filters to only the
+    problematic statuses.
+
+    Legacy record shape:
+        {"source": str, "path": str, "issue": "absolute" | "missing",
+         "resolved": str | None}
+    """
+    cached = check_cache.get(doc, "textures")
+    if cached is not None:
+        return cached
+
+    issues = []
+    try:
+        records = scan_all_texture_paths(doc)
+        for r in records:
+            status = r.get("status")
+            if status not in ("absolute", "missing"):
+                continue
+            # Reconstruct the legacy `source` label
+            host_name = r.get("host_name") or "<unknown>"
+            stype = r.get("source_type") or ""
+            if stype == "classic_shader":
+                source = f"Shader in '{host_name}'"
+            elif stype == "bc_param":
+                source = f"Material '{host_name}'"
+            elif stype == "object_bc":
+                source = f"Object '{host_name}'"
+            elif stype == "rs_object_fileref":
+                source = f"RS Object '{host_name}'"
+            elif stype in ("rs_node", "octane_node", "arnold_node"):
+                renderer = {
+                    "rs_node": "RS Node",
+                    "octane_node": "Octane Node",
+                    "arnold_node": "Arnold Node",
+                }[stype]
+                source = f"{renderer} in '{host_name}'"
+            elif stype == "alembic":
+                source = f"Alembic '{host_name}'"
+            else:
+                source = host_name
+            issues.append({
+                "source": source,
+                "path": r.get("current_path", ""),
+                "issue": status,
+                "resolved": r.get("resolved"),
+            })
+            if len(issues) >= 50:
+                break
     except Exception as e:
         safe_print(f"Error in unified texture check: {e}")
 
