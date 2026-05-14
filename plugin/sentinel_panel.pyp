@@ -784,19 +784,106 @@ RS_OBJECT_FILE_REFS = [
 # Known node-space identifiers for material node graphs. Sentinel's
 # scan walks each registered space looking for file-bearing ports.
 # Adding a new renderer means adding the space id here.
+#
+# IDs verified against the DunHouGo renderEngine constants/common_id.py.
+# Note: **Octane is NOT here** — Octane materials in C4D 2026 use the
+# legacy classic-shader chain API, not maxon node graphs. They're
+# scanned separately as `octane_shader` records (see Octane image
+# texture detection in the shader-chain walker below).
+#
+# V-Ray support is deliberately omitted — not part of Sentinel's
+# target workflow. The walker IS generic enough to support it if the
+# id is added to the tuple below.
 RS_NODESPACE = "com.redshift3d.redshift4c4d.class.nodespace"
-# Octane and Arnold node spaces — best-effort. C4D 2024+ adopted the
-# maxon node graph API for these renderers but the namespace strings
-# aren't widely documented; if the IDs change, the scan silently skips
-# (HasSpace returns False) and the user just doesn't see those node
-# textures. Easy to extend later.
-OCTANE_NODESPACE = "net.maxon.octanespace"
 ARNOLD_NODESPACE = "com.autodesk.arnold.nodespace"
 TEXTURE_NODE_SPACES = (
     ("redshift", RS_NODESPACE),
-    ("octane",   OCTANE_NODESPACE),
     ("arnold",   ARNOLD_NODESPACE),
 )
+
+# Octane uses the LEGACY classic shader chain on materials, with image
+# textures as `c4d.BaseList2D(ID_OCTANE_IMAGE_TEXTURE)` nodes that store
+# their path at `node[c4d.IMAGETEXTURE_FILE]`. The renderEngine
+# README explicitly warns: "Due to Octane use his Custom UserArea UI
+# base on old layer system, and didn't support python, we can only
+# modify Octane materials in material level, but can not interactive
+# with selections in octane node editor."
+#
+# Plugin type ID for Octane image texture nodes (from
+# renderEngine/constants/octane_id.py):
+ID_OCTANE_IMAGE_TEXTURE = 1029508
+
+
+def _scan_shader_chain(host, host_name, owner_source_type, add_fn):
+    """Walk `host`'s shader chain via GetFirstShader / GetNext.
+
+    Detects:
+      - `Xbitmap` (classic C4D Bitmap shader, type 5833) → reads
+        `c4d.BITMAPSHADER_FILENAME`. This is also where Arnold stores
+        the HDR for its Sky object — Arnold's `ArnoldShaderLinkCustomData`
+        builds an Xbitmap and attaches it as a child shader of the
+        sky/light object, so it shows up here.
+      - `ID_OCTANE_IMAGE_TEXTURE` (1029508) → reads
+        `c4d.IMAGETEXTURE_FILE`. Used by Octane image-texture nodes
+        on materials AND on environment tags.
+
+    `host` can be a BaseMaterial, a BaseObject, or a BaseTag — anything
+    that responds to GetFirstShader / GetNext. The source_type recorded
+    for each finding combines the owner kind with the shader kind:
+      - "classic_shader"  — Xbitmap on a material
+      - "octane_shader"   — Octane image on a material
+      - "object_shader"   — Xbitmap on an object (e.g. Arnold Sky HDR)
+      - "object_oct_shader" — Octane image on an object
+      - "tag_shader"      — Xbitmap on a tag
+      - "tag_oct_shader"  — Octane image on a tag (e.g. Octane Env Tag)
+    """
+    try:
+        shader = host.GetFirstShader()
+    except Exception:
+        return
+    while shader is not None:
+        try:
+            stype = shader.GetType()
+        except Exception:
+            stype = 0
+
+        if stype == c4d.Xbitmap:
+            try:
+                fp = shader[c4d.BITMAPSHADER_FILENAME]
+                if fp:
+                    if owner_source_type == "material":
+                        src = "classic_shader"
+                    elif owner_source_type == "object":
+                        src = "object_shader"
+                    elif owner_source_type == "tag":
+                        src = "tag_shader"
+                    else:
+                        src = "classic_shader"
+                    add_fn(src, host, host_name, "Bitmap shader",
+                           {"shader": shader}, str(fp))
+            except Exception:
+                pass
+        elif stype == ID_OCTANE_IMAGE_TEXTURE:
+            try:
+                fp = shader[c4d.IMAGETEXTURE_FILE]
+                if fp:
+                    if owner_source_type == "material":
+                        src = "octane_shader"
+                    elif owner_source_type == "object":
+                        src = "object_oct_shader"
+                    elif owner_source_type == "tag":
+                        src = "tag_oct_shader"
+                    else:
+                        src = "octane_shader"
+                    add_fn(src, host, host_name, "Octane image",
+                           {"shader": shader}, str(fp))
+            except Exception:
+                pass
+
+        try:
+            shader = shader.GetNext()
+        except Exception:
+            break
 
 # Common subfolders to search when auto-finding a missing texture by
 # filename only (Step 2's "Auto-Find Missing" smart action). Conservative
@@ -1005,8 +1092,10 @@ def scan_all_texture_paths(doc):
 
     Each TextureRecord:
         {
-          "source_type": str — "classic_shader" | "bc_param" | "rs_node" |
-                                "octane_node" | "arnold_node" | "alembic",
+          "source_type": str — "classic_shader" | "octane_shader" |
+                                "bc_param" | "rs_node" | "arnold_node" |
+                                "alembic" | "object_bc" |
+                                "rs_object_fileref",
           "host":        BaseObject | BaseMaterial — live ref (for write-back)
           "host_name":   str — human-readable identifier
           "channel":     str — shader/channel name (e.g. "Diffuse")
@@ -1059,22 +1148,8 @@ def scan_all_texture_paths(doc):
                 continue
             mat_name = mat.GetName() or "<unnamed>"
 
-            # ── Classic shaders (Bitmap, etc.) walking the chain ──
-            try:
-                shader = mat.GetFirstShader()
-                while shader:
-                    if shader.GetType() == c4d.Xbitmap:
-                        try:
-                            fp = shader[c4d.BITMAPSHADER_FILENAME]
-                            if fp:
-                                _add("classic_shader", mat, mat_name,
-                                     "Bitmap shader",
-                                     {"shader": shader}, str(fp))
-                        except Exception:
-                            pass
-                    shader = shader.GetNext()
-            except Exception:
-                pass
+            # ── Classic + Octane shader chain on material ──
+            _scan_shader_chain(mat, mat_name, "material", _add)
 
             # ── Material BaseContainer params (HDR/IBL, area light tex, etc.) ──
             try:
@@ -1107,11 +1182,10 @@ def scan_all_texture_paths(doc):
                             if graph is None:
                                 continue
                             root = graph.GetViewRoot()
-                            source_type = (
-                                "rs_node" if space_label == "redshift" else
-                                "octane_node" if space_label == "octane" else
-                                "arnold_node"
-                            )
+                            source_type = {
+                                "redshift": "rs_node",
+                                "arnold":   "arnold_node",
+                            }.get(space_label, f"{space_label}_node")
                             # Pass the graph ref to the walker so it can
                             # store it in each record's context — required
                             # at write time for the maxon transaction.
@@ -1164,6 +1238,36 @@ def scan_all_texture_paths(doc):
                                                  {"desc_id": desc_id}, str(fp))
                                     except Exception:
                                         pass
+                        except Exception:
+                            pass
+
+                        # Shader chain on the OBJECT itself — Arnold Sky /
+                        # SkyDome stores its HDR as an Xbitmap shader
+                        # attached to the light object (via
+                        # ArnoldShaderLinkCustomData → Xbitmap shader
+                        # under the object). Same path for any other
+                        # renderer that follows the same pattern.
+                        _scan_shader_chain(obj, obj_name, "object", _add)
+
+                        # Tag shader chains — Octane's Environment Tag
+                        # (type 1029643) holds its HDR as an Octane Image
+                        # shader inside the tag's own shader chain. Other
+                        # tags (texture tag, etc.) might do the same.
+                        try:
+                            tag = obj.GetFirstTag()
+                            while tag is not None:
+                                try:
+                                    tag_name = tag.GetName() or "<tag>"
+                                except Exception:
+                                    tag_name = "<tag>"
+                                _scan_shader_chain(
+                                    tag,
+                                    f"{obj_name} / {tag_name}",
+                                    "tag", _add)
+                                try:
+                                    tag = tag.GetNext()
+                                except Exception:
+                                    break
                         except Exception:
                             pass
 
@@ -1277,10 +1381,12 @@ def apply_texture_path_change(record, new_path, doc=None):
 
     Source-type dispatch:
       - classic_shader: shader[c4d.BITMAPSHADER_FILENAME] = new_path
-      - bc_param: host.GetDataInstance().SetFilename(desc_id, new_path)
+      - octane_shader: shader[c4d.IMAGETEXTURE_FILE] = new_path
+      - bc_param / object_bc: bc.SetFilename(desc_id, new_path)
       - alembic: obj[c4d.ALEMBIC_PATH] = new_path
-      - rs_node / octane_node / arnold_node: requires a graph transaction,
-        deferred to Step 2 — currently returns False with a console log.
+      - rs_object_fileref: obj[root_id, c4d.REDSHIFT_FILE_PATH] = new_path
+      - rs_node / arnold_node: maxon graph transaction with explicit
+        Commit() — port.SetPortValue(maxon.Url(new_path)).
 
     Wraps the change in AddUndo when `doc` is provided so the entire
     Apply All operation can be reverted with a single Cmd+Z (caller is
@@ -1295,7 +1401,9 @@ def apply_texture_path_change(record, new_path, doc=None):
     context = record.get("context") or {}
 
     try:
-        if source_type == "classic_shader":
+        # All Xbitmap-backed sources share one write path (material,
+        # object, tag) — they're all shaders with BITMAPSHADER_FILENAME.
+        if source_type in ("classic_shader", "object_shader", "tag_shader"):
             shader = context.get("shader")
             if shader is None:
                 return False
@@ -1305,6 +1413,21 @@ def apply_texture_path_change(record, new_path, doc=None):
                 except Exception:
                     pass
             shader[c4d.BITMAPSHADER_FILENAME] = new_path
+            return True
+
+        # All Octane Image-backed sources share one write path
+        # (material, object, tag) — same IMAGETEXTURE_FILE param.
+        elif source_type in ("octane_shader", "object_oct_shader",
+                             "tag_oct_shader"):
+            shader = context.get("shader")
+            if shader is None:
+                return False
+            if doc is not None:
+                try:
+                    doc.AddUndo(c4d.UNDOTYPE_CHANGE, shader)
+                except Exception:
+                    pass
+            shader[c4d.IMAGETEXTURE_FILE] = new_path
             return True
 
         elif source_type in ("bc_param", "object_bc"):
@@ -1349,7 +1472,7 @@ def apply_texture_path_change(record, new_path, doc=None):
             host[root_id, field_id] = new_path
             return True
 
-        elif source_type in ("rs_node", "octane_node", "arnold_node"):
+        elif source_type in ("rs_node", "arnold_node"):
             # Node-graph port write via maxon transaction.
             # Pattern (verified in Cinema-4D-Python-API-Examples/
             # scripts/05_modules/node/modify_port_value_r26.py):
@@ -1434,16 +1557,25 @@ def check_textures_unified(doc):
             stype = r.get("source_type") or ""
             if stype == "classic_shader":
                 source = f"Shader in '{host_name}'"
+            elif stype == "octane_shader":
+                source = f"Octane in '{host_name}'"
+            elif stype == "object_shader":
+                source = f"Sky/Light shader on '{host_name}'"
+            elif stype == "object_oct_shader":
+                source = f"Octane shader on '{host_name}'"
+            elif stype == "tag_shader":
+                source = f"Tag shader on '{host_name}'"
+            elif stype == "tag_oct_shader":
+                source = f"Octane env tag on '{host_name}'"
             elif stype == "bc_param":
                 source = f"Material '{host_name}'"
             elif stype == "object_bc":
                 source = f"Object '{host_name}'"
             elif stype == "rs_object_fileref":
                 source = f"RS Object '{host_name}'"
-            elif stype in ("rs_node", "octane_node", "arnold_node"):
+            elif stype in ("rs_node", "arnold_node"):
                 renderer = {
-                    "rs_node": "RS Node",
-                    "octane_node": "Octane Node",
+                    "rs_node":     "RS Node",
                     "arnold_node": "Arnold Node",
                 }[stype]
                 source = f"{renderer} in '{host_name}'"
