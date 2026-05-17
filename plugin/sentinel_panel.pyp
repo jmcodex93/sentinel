@@ -50,7 +50,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 # Plugin ID - change if ID collision
 PLUGIN_ID = 2099069
-PLUGIN_NAME = "Sentinel v1.5.6"
+PLUGIN_NAME = "Sentinel v1.5.7"
 
 # Secondary plugin: SafeAreaOverlayObject (ObjectData) for the
 # cross-aspect safe-area viewport overlay (QC #12 visualization,
@@ -1502,6 +1502,21 @@ def apply_texture_path_change(record, new_path, doc=None):
             try:
                 import maxon as _maxon
                 url = _maxon.Url(str(new_path))
+                # Register a classic undo on the host material BEFORE the
+                # transaction. UNDOTYPE_CHANGE snapshots the whole material
+                # (its embedded node graph included), so Cmd+Z reverts the
+                # port edit. It ALSO gives the maxon transaction's
+                # UndoMode.ADD a classic undo item inside the caller's open
+                # StartUndo / EndUndo bracket to attach to — without this
+                # anchor the bracket is empty and the node-graph change does
+                # NOT join the document undo stack (mirrors the official
+                # Maxon example create_redshift_nodematerial_2024.py, which
+                # always calls doc.AddUndo before the ADD-mode transaction).
+                if doc is not None and host is not None:
+                    try:
+                        doc.AddUndo(c4d.UNDOTYPE_CHANGE, host)
+                    except Exception:
+                        pass
                 user_data = _maxon.DataDictionary()
                 try:
                     # Join the surrounding undo (StartUndo wrap from caller)
@@ -5587,6 +5602,631 @@ class MultiFormatDialog(gui.GeDialog):
         return True
 
 
+# ============================================================
+# Texture Repathing Dialog (v1.5.7)
+# ============================================================
+
+# Persisted Find / Replace history — last 5 pairs, newest first.
+TEXTURE_REPATH_PRESETS_KEY = "texture_repath_presets"
+TEXTURE_REPATH_PRESETS_MAX = 5
+
+
+def load_repath_presets():
+    """Return the persisted Find/Replace history as a list of
+    (find, replace) tuples — newest first, capped at 5.
+
+    Stored in `sentinel_settings.json` as a list of [find, replace]
+    pairs. Defensive against a malformed/legacy value.
+    """
+    raw = GlobalSettings.get(TEXTURE_REPATH_PRESETS_KEY, [])
+    out = []
+    if isinstance(raw, list):
+        for item in raw:
+            if (isinstance(item, (list, tuple)) and len(item) == 2):
+                f, r = str(item[0]), str(item[1])
+                if f:
+                    out.append((f, r))
+    return out[:TEXTURE_REPATH_PRESETS_MAX]
+
+
+def save_repath_preset(find_str, replace_str):
+    """Push a (find, replace) pair to the front of the persisted
+    history. De-dupes an identical existing pair and caps at 5."""
+    find_str = (find_str or "").strip()
+    if not find_str:
+        return
+    replace_str = (replace_str or "").strip()
+    presets = [p for p in load_repath_presets()
+               if not (p[0] == find_str and p[1] == replace_str)]
+    presets.insert(0, (find_str, replace_str))
+    presets = presets[:TEXTURE_REPATH_PRESETS_MAX]
+    try:
+        GlobalSettings.set(TEXTURE_REPATH_PRESETS_KEY,
+                           [list(p) for p in presets])
+    except Exception as e:
+        safe_print(f"save_repath_preset error: {e}")
+
+
+class TextureRepathingDialog(gui.GeDialog):
+    """Modal dialog for the Texture Repathing Tool.
+
+    Orchestrates the v1.5.7 feature end-to-end:
+      - Scans textures via `scan_all_texture_paths(doc)`
+      - Displays them in a `TextureListArea` (scrollable, filterable)
+      - Lets the user propose bulk changes (Find / Replace prefix),
+        smart actions (Make All Relative, Auto-Find Missing), and
+        per-row overrides (file picker via the `[…]` button)
+      - Previews changes before commit (pending changes shown in green)
+      - Applies all pending changes wrapped in StartUndo / EndUndo so
+        a single Cmd+Z reverts the whole batch
+
+    Opened ASYNC (not modal): a modal dialog captures the keyboard, so the
+    Cmd+Z shortcut never reaches Cinema 4D and the user cannot undo applied
+    changes until the dialog closes. Async keeps C4D interactive.
+
+    Public flow:
+        dlg = TextureRepathingDialog(doc)
+        dlg.Open(c4d.DLG_TYPE_ASYNC, defaultw=900, defaulth=620)
+    """
+
+    # Widget IDs
+    LBL_SUMMARY = 1001
+    COMBO_FILTER = 1002
+    USERAREA_LIST = 1003
+    SCROLL_LIST = 1004
+    EDIT_FIND = 1010
+    EDIT_REPLACE = 1011
+    BTN_PREVIEW = 1012
+    BTN_APPLY_BULK = 1013
+    COMBO_RECENT = 1014
+    CHK_MATCH_CASE = 1015
+    BTN_MAKE_RELATIVE = 1020
+    BTN_AUTO_FIND = 1021
+    BTN_CLEAR_PENDING = 1022
+    LBL_PENDING_COUNT = 1030
+    BTN_CANCEL = 1040
+    BTN_APPLY_ALL = 1041
+
+    FILTER_LABELS = [
+        ("all",       "All records"),
+        ("missing",   "Missing only"),
+        ("absolute",  "Absolute only"),
+        ("ok",        "OK only"),
+        ("asset_uri", "Asset URI only"),
+    ]
+
+    def __init__(self, doc):
+        super().__init__()
+        self.doc = doc
+        self.records = []
+        # pending changes: dict {record_idx -> new_path_string}
+        self.pending_changes = {}
+        self.list_ua = None
+        self.applied_summary = None  # filled by Apply All for callers
+        # Dirty flag set by CoreMessage when the scene changes (e.g. an
+        # external Cmd+Z). Consumed by Timer to re-scan and refresh the
+        # list so it never shows a stale post-apply state.
+        self._needs_rescan = False
+        # Find/Replace history shown in the Recent combo (newest first).
+        self._recent_presets = []
+
+    # ── Layout ─────────────────────────────────────────
+    def CreateLayout(self):
+        self.SetTitle("Texture Repathing")
+
+        self.GroupBegin(0, c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT, 1, 0)
+        self.GroupBorderSpace(12, 10, 12, 10)
+        self.GroupSpace(0, 6)
+
+        # ── Status summary line ──
+        self.AddStaticText(self.LBL_SUMMARY, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+
+        # ── Filter row ──
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 3, 0)
+        self.GroupSpace(8, 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 50, 0, "Filter:", 0)
+        self.AddComboBox(self.COMBO_FILTER, c4d.BFH_LEFT, 180, 0)
+        self.AddStaticText(self.LBL_PENDING_COUNT, c4d.BFH_RIGHT, 0, 0, "", 0)
+        self.GroupEnd()
+
+        # ── Texture list (scrollable UserArea) ──
+        # The UserArea reports its full content height via GetMinSize();
+        # the ScrollGroup is the viewport and supplies the scrollbar so
+        # long texture lists scroll instead of being clipped.
+        self.ScrollGroupBegin(self.SCROLL_LIST,
+                              c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT,
+                              c4d.SCROLLGROUP_VERT | c4d.SCROLLGROUP_AUTOVERT,
+                              0, 260)
+        self.AddUserArea(self.USERAREA_LIST, c4d.BFH_SCALEFIT, 600, 400)
+        if self.list_ua is None:
+            self.list_ua = TextureListArea()
+        self.AttachUserArea(self.list_ua, self.USERAREA_LIST)
+        self.list_ua.click_callback = self._on_row_click
+        self.GroupEnd()
+
+        self.AddSeparatorH(8)
+
+        # ── Bulk Find & Replace ──
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 1, 0,
+                        "Bulk Find & Replace")
+        self.GroupBorderSpace(8, 8, 8, 8)
+        self.GroupSpace(6, 4)
+
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 70, 0, "Find:", 0)
+        self.AddEditText(self.EDIT_FIND, c4d.BFH_SCALEFIT, 0, 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 70, 0, "Replace with:", 0)
+        self.AddEditText(self.EDIT_REPLACE, c4d.BFH_SCALEFIT, 0, 0)
+        self.GroupEnd()
+
+        # Recent Find/Replace presets (persisted, last 5)
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 70, 0, "Recent:", 0)
+        self.AddComboBox(self.COMBO_RECENT, c4d.BFH_SCALEFIT, 0, 0)
+        self.GroupEnd()
+
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 3, 0)
+        self.GroupSpace(6, 0)
+        self.AddCheckbox(self.CHK_MATCH_CASE, c4d.BFH_SCALEFIT | c4d.BFV_CENTER,
+                         0, 0, "Match case")
+        self.AddButton(self.BTN_PREVIEW, c4d.BFH_RIGHT, 110, 0, "Preview")
+        self.AddButton(self.BTN_APPLY_BULK, c4d.BFH_RIGHT, 130, 0,
+                       "Apply to all matching")
+        self.GroupEnd()
+
+        self.GroupEnd()  # bulk
+
+        # ── Smart Actions ──
+        self.AddSeparatorH(4)
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 3, 0, "Smart Actions")
+        self.GroupBorderSpace(8, 8, 8, 8)
+        self.GroupSpace(6, 0)
+        self.AddButton(self.BTN_AUTO_FIND, c4d.BFH_SCALEFIT, 0, 0,
+                       "Auto-Find Missing")
+        self.AddButton(self.BTN_MAKE_RELATIVE, c4d.BFH_SCALEFIT, 0, 0,
+                       "Make All Relative")
+        self.AddButton(self.BTN_CLEAR_PENDING, c4d.BFH_SCALEFIT, 0, 0,
+                       "Clear pending")
+        self.GroupEnd()
+
+        # ── Footer ──
+        self.AddSeparatorH(8)
+        self.GroupBegin(0, c4d.BFH_RIGHT, 2, 0)
+        self.GroupSpace(8, 0)
+        self.AddButton(self.BTN_CANCEL, c4d.BFH_RIGHT, 100, 0, "Cancel")
+        self.AddButton(self.BTN_APPLY_ALL, c4d.BFH_RIGHT, 160, 0,
+                       "Apply All (0)")
+        self.GroupEnd()
+
+        self.GroupEnd()  # main
+        return True
+
+    def InitValues(self):
+        # Populate filter combo
+        for i, (val, label) in enumerate(self.FILTER_LABELS):
+            self.AddChild(self.COMBO_FILTER, i, label)
+        self.SetInt32(self.COMBO_FILTER, 0)
+
+        # Recent Find/Replace history
+        self._populate_recent_combo()
+
+        # Find/Replace matching is case-insensitive by default — most
+        # users expect "rough" to match "8K_Roughness.jpg".
+        self.SetBool(self.CHK_MATCH_CASE, False)
+
+        # Initial scan
+        self._rescan()
+
+        # Poll for scene changes (external undo/redo, edits) so the list
+        # stays in sync without the user reopening the dialog.
+        self.SetTimer(400)
+        return True
+
+    # ── Recent Find/Replace presets ────────────────────
+    def _populate_recent_combo(self):
+        """(Re)build the Recent combo from persisted presets.
+
+        Index 0 is a non-selectable placeholder; indices 1..N map to
+        `self._recent_presets[idx-1]`.
+        """
+        def _clip(s, n=22):
+            s = s or ""
+            return s if len(s) <= n else s[:n - 1] + "…"
+
+        try:
+            self.FreeChildren(self.COMBO_RECENT)
+        except Exception:
+            pass
+        self.AddChild(self.COMBO_RECENT, 0, "Recent find / replace…")
+        self._recent_presets = load_repath_presets()
+        for i, (f, r) in enumerate(self._recent_presets, start=1):
+            label = '"%s"  →  "%s"' % (_clip(f), _clip(r))
+            self.AddChild(self.COMBO_RECENT, i, label)
+        self.SetInt32(self.COMBO_RECENT, 0)
+
+    # ── Scene-change sync ──────────────────────────────
+    def CoreMessage(self, mid, msg):
+        """Flag a rescan whenever the scene changes (incl. Cmd+Z)."""
+        if mid == c4d.EVMSG_CHANGE:
+            self._needs_rescan = True
+        return gui.GeDialog.CoreMessage(self, mid, msg)
+
+    def Timer(self, msg):
+        """Consume the dirty flag and refresh the list.
+
+        Skipped while there are pending (un-applied) changes so an
+        external scene event doesn't wipe an edit the user is mid-way
+        through. After a Cmd+Z of our own Apply All, pending_changes is
+        already empty, so the reverted state shows up here.
+        """
+        if self._needs_rescan and not self.pending_changes:
+            self._needs_rescan = False
+            try:
+                self._rescan()
+            except Exception:
+                pass
+
+    # ── Scan / state ───────────────────────────────────
+    def _rescan(self):
+        """Re-run the scan and refresh the list area."""
+        try:
+            self.records = scan_all_texture_paths(self.doc) or []
+        except Exception as e:
+            safe_print(f"TextureRepathingDialog scan error: {e}")
+            self.records = []
+        # Drop pending changes that reference indices outside the new
+        # range (defensive — if the scene changed between scans).
+        self.pending_changes = {
+            k: v for k, v in self.pending_changes.items()
+            if k < len(self.records)
+        }
+        self._refresh_summary()
+        self._refresh_list()
+
+    def _refresh_summary(self):
+        counts = {"missing": 0, "absolute": 0, "asset_uri": 0,
+                  "ok": 0, "empty": 0}
+        for r in self.records:
+            counts[r.get("status", "empty")] = counts.get(
+                r.get("status", "empty"), 0) + 1
+        total = len(self.records)
+        summary = (f"  ✗ {counts['missing']} missing    "
+                   f"⚠ {counts['absolute']} absolute    "
+                   f"≈ {counts['asset_uri']} asset URI    "
+                   f"✓ {counts['ok']} OK    "
+                   f"({total} total)")
+        try:
+            self.SetString(self.LBL_SUMMARY, summary)
+        except Exception:
+            pass
+
+    def _refresh_list(self):
+        if self.list_ua is None:
+            return
+        filter_idx = int(self.GetInt32(self.COMBO_FILTER))
+        filter_val = self.FILTER_LABELS[filter_idx][0] if (
+            0 <= filter_idx < len(self.FILTER_LABELS)) else "all"
+        self.list_ua.set_state(self.records, filter_val,
+                               self.pending_changes)
+        # Tell the ScrollGroup to re-query the UserArea's GetMinSize so
+        # the scrollbar updates when the row count changes (filter swap,
+        # rescan, etc.).
+        try:
+            self.LayoutChanged(self.SCROLL_LIST)
+        except Exception:
+            pass
+        self._refresh_pending_count()
+
+    def _refresh_pending_count(self):
+        n = len(self.pending_changes)
+        try:
+            self.SetString(self.LBL_PENDING_COUNT,
+                           f"Pending changes: {n}")
+            # Update the Apply All button label too
+            self.SetString(self.BTN_APPLY_ALL, f"Apply All ({n})")
+        except Exception:
+            pass
+
+    # ── Bulk Find & Replace ────────────────────────────
+    def _do_find_replace_preview(self):
+        import re
+        find_str = self.GetString(self.EDIT_FIND).strip()
+        repl_str = self.GetString(self.EDIT_REPLACE).strip()
+        if not find_str:
+            c4d.gui.MessageDialog("Enter a string in the 'Find' field.")
+            return
+
+        # Matching is case-insensitive unless 'Match case' is ticked —
+        # most users expect "rough" to match "8K_Roughness.jpg".
+        match_case = bool(self.GetBool(self.CHK_MATCH_CASE))
+
+        def _apply_sub(text):
+            """Return (matched_bool, new_text) for `text`."""
+            if match_case:
+                if find_str in text:
+                    return True, text.replace(find_str, repl_str)
+                return False, text
+            # Case-insensitive. A lambda replacement keeps `repl_str`
+            # literal — re.sub would otherwise interpret backslashes /
+            # group refs in Windows-style replacement paths.
+            if find_str.lower() in text.lower():
+                return True, re.sub(re.escape(find_str),
+                                    lambda m: repl_str, text,
+                                    flags=re.IGNORECASE)
+            return False, text
+
+        new_pending = dict(self.pending_changes)
+        matched = 0
+        for i, r in enumerate(self.records):
+            status = r.get("status")
+            if status in ("asset_uri", "empty"):
+                continue
+            cur = str(r.get("current_path", ""))
+            hit, new_path = _apply_sub(cur)
+            if hit:
+                new_pending[i] = new_path
+                matched += 1
+        if matched == 0:
+            case_note = ("" if match_case else
+                         " (matching is case-insensitive)")
+            c4d.gui.MessageDialog(
+                f"No paths contain '{find_str}'{case_note}.\n\n"
+                "Tip: paths may use 'relative://' or 'file://' URL "
+                "prefixes — paste the exact string you see in the list.")
+            return
+        self.pending_changes = new_pending
+        # Persist this Find/Replace pair to the Recent history.
+        save_repath_preset(find_str, repl_str)
+        self._populate_recent_combo()
+        self._refresh_list()
+        c4d.gui.MessageDialog(
+            f"Previewing {matched} change(s). Review them in the list "
+            f"(shown in green below each row) and click 'Apply All' to "
+            f"commit, or 'Clear pending' to discard.")
+
+    def _do_make_all_relative(self):
+        """Convert every absolute / file:// path to relative-to-doc."""
+        doc_path = self.doc.GetDocumentPath() or ""
+        if not doc_path:
+            c4d.gui.MessageDialog(
+                "The document must be saved first — relative paths "
+                "are computed against the document folder.")
+            return
+        new_pending = dict(self.pending_changes)
+        converted = 0
+        skipped_cross_drive = 0
+        for i, r in enumerate(self.records):
+            if r.get("status") != "absolute":
+                continue
+            cur = str(r.get("current_path", ""))
+            # If file:// URL, strip the prefix to get the absolute path
+            if cur.startswith("file://"):
+                abs_part = cur[len("file://"):]
+                if abs_part.startswith("/") and len(abs_part) > 3 and abs_part[2] == ":":
+                    abs_part = abs_part.lstrip("/")
+            else:
+                abs_part = cur
+            rel = compute_relative_texture_path(abs_part, doc_path)
+            if rel is None:
+                skipped_cross_drive += 1
+                continue
+            new_pending[i] = rel
+            converted += 1
+        self.pending_changes = new_pending
+        self._refresh_list()
+        msg = f"{converted} absolute path(s) → relative."
+        if skipped_cross_drive:
+            msg += (f"\n\n{skipped_cross_drive} path(s) skipped (cross-drive "
+                    f"— can't be made relative).")
+        c4d.gui.MessageDialog(msg)
+
+    def _do_auto_find_missing(self):
+        """For each missing record, search common subdirs by filename."""
+        doc_path = self.doc.GetDocumentPath() or ""
+        if not doc_path:
+            c4d.gui.MessageDialog(
+                "The document must be saved first — auto-find searches "
+                "subfolders of the document folder.")
+            return
+        new_pending = dict(self.pending_changes)
+        resolved = 0
+        ambiguous = 0
+        for i, r in enumerate(self.records):
+            if r.get("status") != "missing":
+                continue
+            cur = str(r.get("current_path", ""))
+            # Get filename from path / URL
+            if cur.startswith("relative://"):
+                fname_part = cur[len("relative://"):].lstrip("/")
+            elif cur.startswith("file://"):
+                fname_part = cur[len("file://"):]
+            else:
+                fname_part = cur
+            fname = os.path.basename(fname_part) if fname_part else ""
+            if not fname:
+                continue
+            candidates = find_missing_texture_candidates(fname, doc_path)
+            if len(candidates) == 1:
+                # Compute back to a relative URL if possible
+                rel = compute_relative_texture_path(candidates[0], doc_path)
+                # If the original used relative://, keep that scheme
+                if cur.startswith("relative://") and rel:
+                    new_pending[i] = "relative:///" + rel
+                else:
+                    new_pending[i] = rel or candidates[0]
+                resolved += 1
+            elif len(candidates) > 1:
+                ambiguous += 1
+        self.pending_changes = new_pending
+        self._refresh_list()
+        msg = f"Auto-find: {resolved} resolved."
+        if ambiguous:
+            msg += (f"\n{ambiguous} ambiguous (multiple matches — "
+                    f"resolve manually via the [...] button).")
+        c4d.gui.MessageDialog(msg)
+
+    def _do_clear_pending(self):
+        if not self.pending_changes:
+            return
+        n = len(self.pending_changes)
+        if c4d.gui.QuestionDialog(
+                f"Discard {n} pending change(s)?\n\n"
+                "(The scene is unchanged — these are just preview changes "
+                "that haven't been committed.)"):
+            self.pending_changes = {}
+            self._refresh_list()
+
+    # ── Per-row file picker (browse callback) ──────────
+    def _on_row_click(self, rec_idx, region):
+        if rec_idx < 0 or rec_idx >= len(self.records):
+            return
+        rec = self.records[rec_idx]
+        status = rec.get("status")
+        if status in ("asset_uri", "empty"):
+            return
+        # Always open a file picker — the existing path / pending change
+        # is just preview info, not the picker target.
+        host_name = rec.get("host_name", "<?>")
+        cur = str(rec.get("current_path", ""))
+        picked = c4d.storage.LoadDialog(
+            title=f"Select texture for '{host_name}'",
+            flags=c4d.FILESELECT_LOAD,
+        )
+        if not picked:
+            return
+        # Try to make it relative to doc; otherwise use as absolute.
+        doc_path = self.doc.GetDocumentPath() or ""
+        rel = compute_relative_texture_path(picked, doc_path) if doc_path else None
+        if rel:
+            # Preserve URL scheme when the original was relative://
+            if cur.startswith("relative://"):
+                self.pending_changes[rec_idx] = "relative:///" + rel
+            else:
+                self.pending_changes[rec_idx] = rel
+        else:
+            # Cross-drive or unsaved doc — keep absolute
+            self.pending_changes[rec_idx] = picked
+        self._refresh_list()
+
+    # ── Apply All ──────────────────────────────────────
+    def _do_apply_all(self):
+        if not self.pending_changes:
+            c4d.gui.MessageDialog("No pending changes to apply.")
+            return False
+
+        n_total = len(self.pending_changes)
+        if not c4d.gui.QuestionDialog(
+                f"Apply {n_total} change(s) to the scene?\n\n"
+                "All changes are wrapped in a single undo step — "
+                "Cmd+Z reverts the whole batch."):
+            return False
+
+        succeeded = 0
+        failed = []
+        try:
+            self.doc.StartUndo()
+            for idx, new_path in list(self.pending_changes.items()):
+                if idx >= len(self.records):
+                    failed.append((idx, "index out of range"))
+                    continue
+                rec = self.records[idx]
+                try:
+                    ok = apply_texture_path_change(rec, new_path, self.doc)
+                    if ok:
+                        succeeded += 1
+                    else:
+                        failed.append((idx, "writer returned False"))
+                except Exception as e:
+                    failed.append((idx, str(e)))
+        finally:
+            try:
+                self.doc.EndUndo()
+            except Exception:
+                pass
+            try:
+                c4d.EventAdd()
+            except Exception:
+                pass
+
+        # Build summary
+        lines = [f"Applied {succeeded} of {n_total} change(s)."]
+        if failed:
+            lines.append("")
+            lines.append(f"Failed ({len(failed)}):")
+            for idx, err in failed[:8]:
+                host = "<?>"
+                if 0 <= idx < len(self.records):
+                    host = self.records[idx].get("host_name", "<?>")
+                lines.append(f"  • [{host}] {err}")
+            if len(failed) > 8:
+                lines.append(f"  ... +{len(failed) - 8} more")
+        c4d.gui.MessageDialog("\n".join(lines))
+
+        self.applied_summary = {
+            "applied": succeeded,
+            "failed": failed,
+            "total": n_total,
+        }
+        # Clear pending + rescan (file system may have changed too)
+        self.pending_changes = {}
+        self._rescan()
+        return True
+
+    # ── Command dispatch ───────────────────────────────
+    def Command(self, cid, msg):
+        if cid == self.BTN_CANCEL:
+            self.Close()
+            return True
+
+        if cid == self.COMBO_FILTER:
+            self._refresh_list()
+            return True
+
+        if cid == self.COMBO_RECENT:
+            # Selecting a recent preset fills the Find/Replace fields,
+            # then the combo snaps back to the placeholder.
+            idx = int(self.GetInt32(self.COMBO_RECENT))
+            if 1 <= idx <= len(self._recent_presets):
+                find_str, repl_str = self._recent_presets[idx - 1]
+                self.SetString(self.EDIT_FIND, find_str)
+                self.SetString(self.EDIT_REPLACE, repl_str)
+            self.SetInt32(self.COMBO_RECENT, 0)
+            return True
+
+        if cid == self.BTN_PREVIEW:
+            self._do_find_replace_preview()
+            return True
+
+        if cid == self.BTN_APPLY_BULK:
+            # Preview is non-destructive — apply just calls preview which
+            # already stores into pending_changes. Same operation.
+            self._do_find_replace_preview()
+            return True
+
+        if cid == self.BTN_MAKE_RELATIVE:
+            self._do_make_all_relative()
+            return True
+
+        if cid == self.BTN_AUTO_FIND:
+            self._do_auto_find_missing()
+            return True
+
+        if cid == self.BTN_CLEAR_PENDING:
+            self._do_clear_pending()
+            return True
+
+        if cid == self.BTN_APPLY_ALL:
+            # Apply and keep the dialog open for further repath rounds.
+            # The dialog is opened ASYNC, so Cinema 4D stays interactive —
+            # the user can Cmd+Z the applied batch (a single undo step)
+            # without closing the tool. _do_apply_all rescans on success
+            # so the list reflects the new scene state.
+            self._do_apply_all()
+            return True
+
+        return True
+
+
 # ---------------- Scene Collector ----------------
 def collect_scene(doc, artist_name):
     """Pre-flight QC + Save Project with Assets + Verify + Manifest"""
@@ -6346,6 +6986,303 @@ class HistoryArea(gui.GeUserArea):
             safe_print(f"Error in HistoryArea.DrawMsg: {e}")
 
 
+# ============================================================
+# Texture Repathing — TextureListArea (v1.5.7)
+# ============================================================
+# Custom-drawn list of texture records produced by
+# `scan_all_texture_paths(doc)`. One row per record:
+#
+#   [status] host_name (channel)  current_path...  [...]
+#   → new_path (only if pending change)
+#
+# Status glyphs (BMP-compatible):
+#   ✗  missing  — red
+#   ⚠  absolute — amber
+#   ≈  asset_uri — light blue (READ-ONLY, no `[...]` button)
+#   ✓  ok        — green
+#
+# Asset URIs are dimmed and not interactive — they're managed by the
+# renderer's internal asset manager (RS Asset Manager, Octane Asset DB,
+# Arnold Asset DB) and shouldn't be edited from Sentinel.
+
+_COL_TEXLIST_BG       = c4d.Vector(0.10, 0.10, 0.10)
+_COL_TEXLIST_ROW      = c4d.Vector(0.14, 0.14, 0.14)
+_COL_TEXLIST_ROW_ALT  = c4d.Vector(0.16, 0.16, 0.16)
+_COL_TEXLIST_TEXT     = c4d.Vector(0.85, 0.85, 0.85)
+_COL_TEXLIST_DIM      = c4d.Vector(0.55, 0.55, 0.55)
+_COL_TEXLIST_GREEN    = c4d.Vector(0.30, 0.80, 0.40)
+_COL_TEXLIST_RED      = c4d.Vector(0.95, 0.40, 0.40)
+_COL_TEXLIST_AMBER    = c4d.Vector(0.95, 0.75, 0.30)
+_COL_TEXLIST_BLUE     = c4d.Vector(0.45, 0.75, 0.95)
+_COL_TEXLIST_PENDING  = c4d.Vector(0.40, 0.85, 0.45)
+_COL_TEXLIST_BTN_BG   = c4d.Vector(0.22, 0.22, 0.22)
+
+
+def _format_path_compact(path, max_chars=60):
+    """Smart middle-truncate of a path string for display.
+
+    Keeps the start (so the artist sees the prefix that's usually the
+    interesting part — `relative://`, `/Users/foo/`, etc.) AND the
+    filename at the end. Drops the middle when too long.
+    """
+    if not path:
+        return ""
+    s = str(path)
+    if len(s) <= max_chars:
+        return s
+    keep_end = max(20, max_chars // 2)
+    keep_start = max(10, max_chars - keep_end - 3)
+    return s[:keep_start] + "..." + s[-keep_end:]
+
+
+class TextureListArea(gui.GeUserArea):
+    """Scrollable custom-drawn list of texture records for the
+    Repathing dialog.
+
+    State is set via `set_state(records, filter_status, pending_changes)`.
+    Clicks are routed through `click_callback(record_idx, region)` where
+    `region` is one of:
+      - "row"    — click on the row body (open file picker)
+      - "browse" — click on the `[...]` browse button
+      - None     — click in unfilled area
+    Asset URI rows are not clickable (they call back with region=None).
+    """
+
+    ROW_HEIGHT = 38      # 2 lines per row: path + optional pending preview
+    ROW_PAD = 2
+    EMPTY_HEIGHT = 36
+    BROWSE_BTN_W = 26
+    MARGIN = 6
+
+    # Filter values
+    FILTER_ALL = "all"
+    FILTER_MISSING = "missing"
+    FILTER_ABSOLUTE = "absolute"
+    FILTER_OK = "ok"
+    FILTER_ASSET_URI = "asset_uri"
+
+    def __init__(self):
+        super().__init__()
+        self.records = []                 # full list from scan
+        self.filter_status = self.FILTER_ALL
+        self.pending_changes = {}         # {record_idx: new_path_str}
+        self.click_callback = None        # callable(record_idx, region)
+        self.empty_msg = "No textures in scene"
+        self.font = c4d.FONT_DEFAULT
+        # Computed during draw — used by hit-testing
+        self._visible_indices = []        # filtered indices in display order
+
+    # ── state ───────────────────────────────────────
+    def set_state(self, records, filter_status=None, pending_changes=None):
+        self.records = list(records) if records else []
+        if filter_status is not None:
+            self.filter_status = filter_status
+        if pending_changes is not None:
+            self.pending_changes = dict(pending_changes)
+        self._recompute_visible()
+        try:
+            self.LayoutChanged()
+        except Exception:
+            pass
+        self.Redraw()
+
+    def _recompute_visible(self):
+        f = self.filter_status
+        if f == self.FILTER_ALL:
+            self._visible_indices = list(range(len(self.records)))
+        else:
+            self._visible_indices = [
+                i for i, r in enumerate(self.records)
+                if r.get("status") == f
+            ]
+
+    def GetMinSize(self):
+        # Report the FULL content height — the enclosing ScrollGroup is
+        # the viewport and supplies the scrollbar. Returning the real
+        # height is what tells the scroll group the content overflows.
+        if not self._visible_indices:
+            return 400, self.EMPTY_HEIGHT
+        n = len(self._visible_indices)
+        h = n * (self.ROW_HEIGHT + self.ROW_PAD) + self.ROW_PAD + 4
+        return 400, h
+
+    # ── click detection ─────────────────────────────
+    def _hit_test(self, local_x, local_y):
+        """Return (record_idx, region) for a click at local coords.
+        record_idx is the absolute index into self.records (not the
+        filtered display index). region: "row" | "browse" | None.
+        """
+        try:
+            y = int(local_y) - self.ROW_PAD
+            if y < 0:
+                return -1, None
+            row_pixel = self.ROW_HEIGHT + self.ROW_PAD
+            display_idx = y // row_pixel
+            if not (0 <= display_idx < len(self._visible_indices)):
+                return -1, None
+            rec_idx = self._visible_indices[display_idx]
+            rec = self.records[rec_idx]
+            status = rec.get("status")
+            if status in ("asset_uri", "empty"):
+                return rec_idx, None  # not interactive
+
+            # Browse button is the rightmost BROWSE_BTN_W pixels
+            w = self.GetWidth()
+            x = int(local_x)
+            if x >= w - self.BROWSE_BTN_W - self.MARGIN:
+                return rec_idx, "browse"
+            return rec_idx, "row"
+        except Exception:
+            return -1, None
+
+    def InputEvent(self, msg):
+        try:
+            device = msg[c4d.BFM_INPUT_DEVICE]
+            channel = msg[c4d.BFM_INPUT_CHANNEL]
+            if device != c4d.BFM_INPUT_MOUSE or channel != c4d.BFM_INPUT_MOUSELEFT:
+                return False
+            mx = int(msg[c4d.BFM_INPUT_X])
+            my = int(msg[c4d.BFM_INPUT_Y])
+            lx, ly = _ua_local_coords(self, mx, my)
+            rec_idx, region = self._hit_test(lx, ly)
+            if rec_idx >= 0 and region is not None and self.click_callback:
+                self.click_callback(rec_idx, region)
+                return True
+        except Exception as e:
+            safe_print(f"TextureListArea.InputEvent error: {e}")
+        return False
+
+    # ── drawing ─────────────────────────────────────
+    def _status_glyph_color(self, status):
+        return {
+            "missing":   ("✗", _COL_TEXLIST_RED),
+            "absolute":  ("⚠", _COL_TEXLIST_AMBER),
+            "asset_uri": ("≈", _COL_TEXLIST_BLUE),
+            "ok":        ("✓", _COL_TEXLIST_GREEN),
+            "empty":     ("·", _COL_TEXLIST_DIM),
+        }.get(status, ("?", _COL_TEXLIST_DIM))
+
+    def DrawMsg(self, x1, y1, x2, y2, msg):
+        try:
+            self.OffScreenOn()
+            w = self.GetWidth()
+            h = self.GetHeight()
+            self.DrawSetPen(_COL_TEXLIST_BG)
+            self.DrawRectangle(0, 0, w, h)
+
+            try:
+                self.DrawSetFont(self.font)
+            except Exception:
+                pass
+
+            if not self._visible_indices:
+                msg_txt = (self.empty_msg if not self.records
+                           else f"No textures match filter "
+                                f"'{self.filter_status}'")
+                self.DrawSetTextCol(_COL_TEXLIST_DIM, _COL_TEXLIST_BG)
+                self.DrawText(msg_txt, 8, (h - 12) // 2)
+                return
+
+            # Column layout (approximate widths within available width)
+            #   [status 22] [host 180] [channel 100] [path expand] [btn 26]
+            COL_STATUS = 22
+            COL_HOST = 180
+            COL_CHAN = 100
+            BTN_W = self.BROWSE_BTN_W
+            margin = self.MARGIN
+
+            x = self.ROW_PAD
+            y = self.ROW_PAD
+
+            for display_idx, rec_idx in enumerate(self._visible_indices):
+                rec = self.records[rec_idx]
+                row_top = y
+                row_bot = y + self.ROW_HEIGHT
+                # Skip rows fully outside the redraw clip region — keeps
+                # drawing cheap when the scrolled list is long.
+                if row_bot < y1 or row_top > y2:
+                    y += self.ROW_HEIGHT + self.ROW_PAD
+                    continue
+                bg = (_COL_TEXLIST_ROW_ALT if (display_idx % 2)
+                      else _COL_TEXLIST_ROW)
+                self.DrawSetPen(bg)
+                self.DrawRectangle(int(x), int(row_top),
+                                   int(w - self.ROW_PAD), int(row_bot))
+
+                # Two-line layout: first line = main info, second = pending
+                # change (or current path if no pending). 14px line height.
+                line1_y = int(row_top + 4)
+                line2_y = int(row_top + 4 + 16)
+                status = rec.get("status", "")
+                glyph, glyph_col = self._status_glyph_color(status)
+
+                # Status glyph
+                self.DrawSetTextCol(glyph_col, bg)
+                self.DrawText(glyph, int(x + margin), line1_y)
+
+                cx = int(x + margin + COL_STATUS)
+
+                # Host name (truncated if too long)
+                host = str(rec.get("host_name", "<?>"))
+                if len(host) > 28:
+                    host = host[:25] + "..."
+                self.DrawSetTextCol(_COL_TEXLIST_TEXT, bg)
+                self.DrawText(host, cx, line1_y)
+                cx += COL_HOST
+
+                # Channel name
+                channel = str(rec.get("channel", ""))[:16]
+                self.DrawSetTextCol(_COL_TEXLIST_DIM, bg)
+                self.DrawText(channel, cx, line1_y)
+                cx += COL_CHAN
+
+                # Source type tag (small, right of channel) — useful at a
+                # glance to know which renderer this is from.
+                stype = rec.get("source_type", "")
+                stype_short = stype.replace("_shader", "").replace(
+                    "_node", "/node").replace("_oct_", "/oct ").replace(
+                    "_fileref", "/ref")
+                self.DrawSetTextCol(_COL_TEXLIST_DIM, bg)
+                self.DrawText(f"[{stype_short}]", cx, line1_y)
+
+                # Browse button — rightmost. Hidden for non-interactive
+                # rows (asset_uri / empty).
+                interactive = status not in ("asset_uri", "empty")
+                if interactive:
+                    btn_x0 = int(w - BTN_W - margin)
+                    btn_y0 = int(row_top + 4)
+                    btn_y1 = int(row_top + self.ROW_HEIGHT - 4)
+                    self.DrawSetPen(_COL_TEXLIST_BTN_BG)
+                    self.DrawRectangle(btn_x0, btn_y0,
+                                       int(w - margin), btn_y1)
+                    self.DrawSetTextCol(_COL_TEXLIST_TEXT,
+                                        _COL_TEXLIST_BTN_BG)
+                    self.DrawText("...",
+                                  btn_x0 + 6, btn_y0 + 4)
+
+                # Second line: pending change OR current path
+                pending = self.pending_changes.get(rec_idx)
+                if pending:
+                    # Show "→ new_path" in green
+                    self.DrawSetTextCol(_COL_TEXLIST_PENDING, bg)
+                    pending_short = _format_path_compact(pending, 80)
+                    self.DrawText(f"→ {pending_short}",
+                                  int(x + margin + COL_STATUS), line2_y)
+                else:
+                    # Show current path muted
+                    cur = _format_path_compact(rec.get("current_path", ""), 80)
+                    text_col = (_COL_TEXLIST_DIM if status == "asset_uri"
+                                else _COL_TEXLIST_TEXT)
+                    self.DrawSetTextCol(text_col, bg)
+                    self.DrawText(cur,
+                                  int(x + margin + COL_STATUS), line2_y)
+
+                y += self.ROW_HEIGHT + self.ROW_PAD
+
+        except Exception as e:
+            safe_print(f"Error in TextureListArea.DrawMsg: {e}")
+
+
 # ---------------- Snapshot Handler ----------------
 # ---------------- Snapshot System (cross-platform) ----------------
 
@@ -6586,6 +7523,7 @@ class G:
     BTN_BUG_REPORT = 1307
     BTN_SETTINGS = 1308
     LABEL_AOV_INFO = 1309   # read-only summary of comp + multi-part in Render tab
+    BTN_TEXTURE_REPATH = 1310  # Tools tab: open Texture Repathing dialog (v1.5.7)
 
 class YSPanel(gui.GeDialog):
     def __init__(self):
@@ -6902,6 +7840,13 @@ class YSPanel(gui.GeDialog):
         self.GroupBegin(52, c4d.BFH_SCALEFIT, 1, 0)
         self.AddButton(G.BTN_MARK_SAFE_AREA, c4d.BFH_SCALEFIT, 0, 0,
                        "Mark / Unmark Safe Area Subject")
+        self.GroupEnd()
+
+        # ── Asset Management ── (v1.5.7 Texture Repathing tool)
+        self._add_section_label("Asset Management")
+        self.GroupBegin(53, c4d.BFH_SCALEFIT, 1, 0)
+        self.AddButton(G.BTN_TEXTURE_REPATH, c4d.BFH_SCALEFIT, 0, 0,
+                       "Texture Repathing...")
         self.GroupEnd()
 
         # Spacer
@@ -7624,6 +8569,9 @@ class YSPanel(gui.GeDialog):
         elif cid == G.BTN_MARK_SAFE_AREA:
             self._toggle_safe_area_mark(doc)
 
+        elif cid == G.BTN_TEXTURE_REPATH:
+            self._open_texture_repathing(doc)
+
         elif cid == G.BTN_GITHUB:
             # Open GitHub repository
             github_url = "https://github.com/jmcodex93/sentinel"
@@ -7711,10 +8659,14 @@ class YSPanel(gui.GeDialog):
                     for i, t in enumerate(missing[:10], 1):
                         info_msg += f"  {i}. {t['source']}\n     {t['path']}\n"
                     info_msg += "\n"
-                info_msg += "Fix: Project > Save Project with Assets"
+                info_msg += ("Open the Texture Repathing tool to fix these "
+                             "in bulk (find/replace, make relative, "
+                             "auto-find missing)?")
+                if c4d.gui.QuestionDialog(info_msg):
+                    self._open_texture_repathing(doc)
             else:
-                info_msg = "All assets OK. No absolute paths or missing files."
-            c4d.gui.MessageDialog(info_msg)
+                c4d.gui.MessageDialog(
+                    "All assets OK. No absolute paths or missing files.")
 
         elif cid == G.BTN_SEL_UNUSED_MATS:
             if self._unused_mats_bad:
@@ -8382,6 +9334,39 @@ class YSPanel(gui.GeDialog):
         if failed_count:
             msg += f"\n({failed_count} failed — see Console for details)"
         safe_print(msg)
+
+    def _open_texture_repathing(self, doc):
+        """Open the Texture Repathing dialog (v1.5.7).
+
+        Bulk find/replace + smart-fix utility for texture paths across all
+        renderers (Redshift / Octane / Arnold).
+
+        Opened ASYNC (not modal) so Cinema 4D's main window stays
+        interactive while the tool is open — critically, this keeps the
+        Cmd+Z shortcut working. A modal dialog captures the keyboard, so
+        after applying changes the user could not undo them with Cmd+Z
+        until the dialog closed. The panel holds a reference so the dialog
+        object isn't garbage-collected while open. QC check #6 refreshes
+        on its own via the CoreMessage dirty-flag once changes hit the
+        scene, so no explicit refresh is needed here.
+        """
+        if not doc:
+            c4d.gui.MessageDialog("No active document.")
+            return
+        try:
+            existing = getattr(self, "_texture_repath_dlg", None)
+            if existing is not None:
+                try:
+                    if existing.IsOpen():
+                        existing.Close()
+                except Exception:
+                    pass
+            dlg = TextureRepathingDialog(doc)
+            self._texture_repath_dlg = dlg
+            dlg.Open(c4d.DLG_TYPE_ASYNC, defaultw=900, defaulth=620)
+        except Exception as e:
+            c4d.gui.MessageDialog(f"Texture Repathing failed to open:\n{e}")
+            safe_print(f"Texture Repathing error: {e}")
 
     def _create_hierarchy(self, doc):
         self._merge_c4d_file(doc, "nulls.c4d")

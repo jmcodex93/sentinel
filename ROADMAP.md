@@ -66,6 +66,36 @@
 
 ---
 
+### v1.5.7 — Texture Repathing Tool ✅
+
+Multi-renderer bulk find/replace + smart-fix utility for texture paths. Pulled forward from the v1.6.0 "Asset Health & Validation" tier — texture path breakage is a daily pain point and the highest-impact item in that bucket.
+
+#### Investigation phase (multi-renderer texture storage)
+- [x] Probed how each renderer stores texture paths — they are all different. Redshift/Arnold use maxon node graphs; Octane uses a legacy shader chain (`ID_OCTANE_IMAGE_TEXTURE` 1029508, not a maxon graph); RS Dome Light HDR is a compound DescID (`obj[ROOT_ID, REDSHIFT_FILE_PATH]`); Arnold Sky HDR is an Xbitmap on the object; Octane Environment HDR lives in a tag shader chain.
+- [x] Discovered `node.GetInputs()` does not return texture-bearing ports in C4D 2026 — must walk `GetChildren()` recursively and read `GetPortValue()` on every leaf.
+- [x] Confirmed node-graph writes need an explicit `transaction.Commit()` — the `with graph.BeginTransaction()` block rolls back silently on exit otherwise.
+- [x] Probed undo: `doc.AddUndo(c4d.UNDOTYPE_CHANGE, material)` anchors the `StartUndo`/`EndUndo` bracket so the transaction's `UndoMode.ADD` joins the document undo step. Also found `doc.DoUndo()` from the Script Manager is an unreliable test proxy — real Cmd+Z verified via the Edit menu.
+
+#### Scan + writers (sentinel_panel.pyp)
+- [x] `scan_all_texture_paths(doc)` — structured TextureRecord scan across node graphs, classic shader chains, BaseContainer params, RS object file-refs, Alembic, tag shader chains
+- [x] `_scan_node_graph` (RS/Arnold) + `_scan_shader_chain` (Xbitmap + Octane image, material/object/tag)
+- [x] `_classify_texture_path` — OK / absolute / missing / asset_uri / empty; `relative://` resolved via common subdir search
+- [x] `apply_texture_path_change` — per-source-type writer dispatch; maxon transaction with mandatory Commit for node graphs
+- [x] Pure helpers: `compute_relative_texture_path`, `find_missing_texture_candidates`, `_resolve_relative_texture`, `_looks_like_texture_path`
+
+#### Dialog + UI
+- [x] `TextureRepathingDialog` — async (not modal, so Cmd+Z works), `CoreMessage`/`Timer` auto-refresh
+- [x] `TextureListArea` UserArea wrapped in a native `ScrollGroup` (vertical scroll); status filter; counts summary header
+- [x] Bulk Find/Replace — case-insensitive default + "Match case" toggle; `re.sub` lambda replacement (Windows backslash-safe)
+- [x] Last-5 Find/Replace presets persisted in `sentinel_settings.json` (`load_repath_presets` / `save_repath_preset`), Recent combo
+- [x] Smart Actions — Auto-Find Missing, Make All Relative, Clear pending; per-row `[...]` file picker
+- [x] Apply All — single undo step (`StartUndo`/`EndUndo`), per-change error capture, summary dialog
+- [x] Tools tab → Asset Management → "Texture Repathing..." button; QC #6 Assets Info → contextual launch
+
+**Why this version**: closes the loop opened by QC #6 — the check already *detected* asset path problems; now Sentinel also *fixes* them, in bulk, across every renderer, undo-safe. V-Ray support intentionally dropped (out of studio scope).
+
+---
+
 ### v1.5.6 — Cross-Aspect Safe-Area Viewport Overlay ✅
 
 Closes the v1.5.5 deferred work: live colored rectangles rendered in the active camera viewport showing each multi-format Take's crop region. Same crop-interpretation math as QC #12, so the artist composes against the same safe areas the check validates against.
@@ -508,15 +538,7 @@ Add a dropdown or settings dialog to change the studio standard FPS without edit
 > Note: Multi-Format Render Setup shipped early as v1.5.4.
 > Note: Cross-Aspect Safe-Area QC (#12) shipped as v1.5.5.
 > Note: Safe-Area Viewport Overlay shipped as v1.5.6.
-
-#### Texture Repathing Tool
-Bulk find-and-replace for texture paths:
-- Show all textures with current paths
-- Find/replace path prefixes (e.g., `/Users/old/` → `/server/project/`)
-- One-click "make all relative"
-- Works with classic shaders AND RS node materials
-
-**Why**: Moving projects between machines/servers breaks all texture paths. This is a daily pain point.
+> Note: Texture Repathing Tool shipped as v1.5.7.
 
 #### Post-Render Validation
 Verify render output after completion:

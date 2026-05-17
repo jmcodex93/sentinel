@@ -1,7 +1,7 @@
 # Sentinel Plugin - Development Rules
 
 ## Project Overview
-Sentinel (v1.5.6) is a Cinema 4D quality control and workflow automation plugin designed for professional 3D production workflows. **Originally built as YS Guardian at Yambo Studio**, now maintained and extended by Javier Melgar as Sentinel — keeping the watchdog spirit while expanding into versioning, status tracking, and modern mograph workflow tools. It acts as a real-time watchdog that continuously monitors scenes for production issues, plus provides render management and scene tools.
+Sentinel (v1.5.7) is a Cinema 4D quality control and workflow automation plugin designed for professional 3D production workflows. **Originally built as YS Guardian at Yambo Studio**, now maintained and extended by Javier Melgar as Sentinel — keeping the watchdog spirit while expanding into versioning, status tracking, and modern mograph workflow tools. It acts as a real-time watchdog that continuously monitors scenes for production issues, plus provides render management and scene tools.
 
 The plugin performs **12 quality checks** in real-time:
 1. **Lights Organization** - Ensures all lights are properly organized in a "lights" group (Select + Fix)
@@ -17,7 +17,7 @@ The plugin performs **12 quality checks** in real-time:
 11. **FPS / Frame Range** - Validates FPS, start frame = 1001 (VFX standard), frame step, timeline + preview alignment, all presets (Info + Fix)
 12. **Cross-Aspect Safe Area** - Verifies opt-in marked subjects (UserData) stay inside per-format safe-area regions when delivering across multiple aspect ratios via Multi-Format Setup. Auto-refresh uses current frame; Info button runs full keyframe sweep (Select + Info)
 
-Additional features: RS AOV management (Essentials/Production/Light Groups), Scene Collector, QC Report export, Render Presets with aspect ratio toggle, and a full suite of scene tools.
+Additional features: RS AOV management (Essentials/Production/Light Groups), Scene Collector, QC Report export, Render Presets with aspect ratio toggle, Texture Repathing tool (multi-renderer bulk find/replace + smart-fix), and a full suite of scene tools.
 
 ## Core Files (DO NOT DELETE)
 - `plugin/sentinel_panel.pyp` - Main plugin file (~5,400 lines, originally `ys_guardian_panel.pyp`)
@@ -75,7 +75,7 @@ For multi-step work, write the plan as `step → verify` pairs. Weak criteria ("
 - **QC check results**: Cached with 0.5s cooldown, dirty-flag invalidation via CoreMessage
 - **Scene stats**: Object count, polygon count, materials, lights
 
-## Current Status (v1.5.6)
+## Current Status (v1.5.7)
 
 ### What Works ✅
 - **All 12 Quality Checks**: Lights, visibility, keyframes, camera shift, presets, assets/textures, unused materials, default names, output paths, take validation, FPS/frame range, cross-aspect safe area
@@ -97,6 +97,7 @@ For multi-step work, write the plan as `step → verify` pairs. Weak criteria ("
 - **Multi-Format Render Setup** (v1.5.4, refactored v1.5.5): One-click child-Take generator for the 5 standard delivery aspects (16:9, 9:16, 1:1, 4:5, 21:9). Each Take gets a cloned Render Data with format-specific resolution + output path. **Composition Mode** dropdown chooses between (a) "None" — camera unchanged, only resolution/output overrides (default, matches GSG Social Frame plugin); or (b) "Resize Canvas" — sensor-size override per format using AR_ResizeCanvas math (`new_aperture = src × target_w / src_w`), safer than focal-length override (doesn't break zoom animations or DOF). Idempotent; explicit `take.SetCamera` + `SetParameter` after `FindOrAddOverrideParam` (defends against find-OR-add silent skip); cleans up stale FOV/focal/aperture overrides on re-run. Full undo wrapping; summary dialog with composition mode
 - **Cross-Aspect Safe Area** (v1.5.5): QC #12 verifies opt-in marked subjects stay inside per-format safe-area regions across all active Multi-Format delivery Takes. **Crop interpretation** model: bbox projects once into the master Take's NDC, then each format's safe area is computed as a centered crop region with per-side insets (e.g. 9:16 inset 8/15/5/10 for IG Reels caption + icon stack). Auto-refresh uses current frame (cheap); Info button runs full keyframe sweep (PSR keyframes + midpoints, original timeline position restored via try/finally). Tools tab → "Mark / Unmark Safe Area Subject" smart-toggle button drives the UserData marker. Sample frame violations reported per (object × format × frames + edges)
 - **Safe-Area Viewport Overlay** (v1.5.6): Live colored rectangles rendered in the active camera viewport showing each multi-format Take's crop region (16x9 white, 9x16 orange, 1x1 cyan, 4x5 magenta, 21x9 yellow). Toggle in Render tab auto-creates a managed `SafeAreaOverlayObject` (ObjectData) marker at scene root; persists with `.c4d` save. Same crop-interpretation math as QC #12. Implementation pivoted from `SceneHookData` (removed in C4D 2026) → `TagData.Draw` (registers but never invoked by viewport pipeline) → `ObjectData.Draw` in `DRAWPASS_OBJECT` (confirmed working, fires regardless of selection)
+- **Texture Repathing** (v1.5.7): Multi-renderer bulk find/replace + smart-fix tool for texture paths. Tools tab → "Asset Management" → "Texture Repathing..." (also reachable from QC #6 Assets Info). Async dialog (keeps C4D interactive so Cmd+Z works). Comprehensive `scan_all_texture_paths` covers RS/Arnold maxon node graphs, classic Xbitmap shader chains, Octane legacy image shaders, material/object BaseContainer params, RS Dome Light HDR (compound DescID), Alembic caches, and tag shader chains (Octane Environment Tag). Per-path status: OK / absolute / missing / asset_uri / empty (`relative://` resolved by searching common subdirs like Redshift does). Scrollable `TextureListArea` UserArea (ScrollGroup-backed) with status filter. Bulk Find/Replace (case-insensitive default + Match case toggle), last-5 presets persisted in `sentinel_settings.json`. Smart Actions: Auto-Find Missing, Make All Relative, Clear pending. Per-row `[...]` file picker. Apply All wraps the batch in one undo step (`StartUndo`/`EndUndo` + node-graph `doc.AddUndo(UNDOTYPE_CHANGE, mat)` anchor so the maxon `UndoMode.ADD` transaction joins the document undo). Auto-refreshes on scene change via `CoreMessage`/`Timer`
 - **Snapshot System**: Cross-platform EXR→PNG with full ACES pipeline (ACEScg→sRGB)
 - **Scene Tools**: Hierarchy, H→Layers, Solo Layers, Drop to Floor, Vibrate Null, ABC Retime, Camera Rigs
 - **CoreMessage dirty-flag**: Instant scene change detection, no polling waste
@@ -195,6 +196,7 @@ cd "../11 C4D DEV/renderEngine" && git pull
 - **v1.5.1** (May 2026): Scene Notes & TODOs (sidecar JSON, modal editor, panel caption); Collect Scene clean delivery naming (strips `_v###[_status]` from filename, preserves traceability in manifest); notes integrated in QC report export and Scene Collector manifest + sidecar copied to delivery
 - **v1.5.2** (May 2026): UI/UX redesign — Scene Header always visible (filename caption + Shot/Artist + QC progress bar) + 4 tabs (QC / Render / Versions / Tools) using QuickTab CustomGUI + dynamic rebuild via `LayoutFlushGroup` (HideElement does not collapse layout space in C4D 2026, hence rebuild on tab switch). Footer (GitHub / Report Bug) always visible. Documented C4D auto-shrink limitation in known limitations.
 - **v1.5.4** (May 2026): **Multi-Format Render Setup** — Render tab → "Generate Format Takes..." opens a modal that creates child Takes for the 5 standard delivery aspects (16:9 / 9:16 / 1:1 / 4:5 / 21:9). Each Take gets a cloned Render Data with format-specific resolution + output path (subfolder or suffix mode). Optional auto-FOV keeps vertical FOV constant across formats via `take.FindOrAddOverrideParam(td, cam, fov_id, target_fov)` (idempotent, updates on re-run). Full undo wrapping. Summary dialog with created/updated/skipped/errors counts. Backed by orchestrator `generate_multiformat_takes(doc, options)` and `MultiFormatDialog` (modal). Math: `target_h_fov = 2*atan((target_aspect/source_aspect)*tan(source_h_fov/2))`.
+- **v1.5.7** (May 2026): **Texture Repathing tool**. New multi-renderer bulk find/replace + smart-fix utility for texture paths — built for both project supervision (whole-scene asset validation) and artists (one-button fixes, undo-safe). Tools tab → "Asset Management" → "Texture Repathing...", plus a contextual launch from QC #6 Assets Info. Backbone: `scan_all_texture_paths(doc)` returns structured TextureRecords across every storage mechanism found by empirical probing — RS/Arnold maxon node graphs (`GetChildren()` walk, `GetPortValue()` leaves), classic Xbitmap shader chains, Octane legacy image shaders (`ID_OCTANE_IMAGE_TEXTURE` 1029508), material/object BaseContainer filename params, RS Dome Light HDR (`obj[ROOT_ID, REDSHIFT_FILE_PATH]` compound DescID), Alembic caches, and tag shader chains (Octane Environment Tag, Arnold Sky). Writers in `apply_texture_path_change` dispatch per source_type; node-graph writes use a maxon transaction with **mandatory** explicit `transaction.Commit()` (the `with` exit rolls back silently otherwise). UI: scrollable `TextureListArea` UserArea wrapped in a native `ScrollGroup`, status filter dropdown, Bulk Find/Replace (case-insensitive by default + "Match case" checkbox; `re.sub` with a lambda replacement so Windows backslash paths survive), last-5 Find/Replace presets persisted in `sentinel_settings.json`, Smart Actions (Auto-Find Missing, Make All Relative, Clear pending), per-row `[...]` file picker. **Undo**: Apply All wraps the batch in `StartUndo`/`EndUndo`; for node graphs `doc.AddUndo(c4d.UNDOTYPE_CHANGE, mat)` is the anchor that lets the transaction's `UndoMode.ADD` join the document undo step — a single Cmd+Z reverts the whole batch (verified: `Edit → Undo Modify <mat>`). Dialog is **async** not modal (a modal dialog captures the keyboard, so Cmd+Z never reached C4D); `CoreMessage`/`Timer` auto-refresh keeps the list in sync after an external undo. Diagnostic note: `doc.DoUndo()` called from the Script Manager is unreliable and is NOT a valid proxy for real Cmd+Z — verify undo via the Edit menu instead. V-Ray support intentionally dropped (out of studio scope).
 - **v1.5.6** (May 2026): **Safe-Area Viewport Overlay**. Closes the v1.5.5 deferred work. After confirming `c4d.plugins.SceneHookData` is gone in C4D 2026 AND `TagData.Draw` is registered but never invoked (Init+Execute fire, Draw doesn't), pivoted to `ObjectData.Draw` in `DRAWPASS_OBJECT` which works reliably. Architecture: `SafeAreaOverlayObject(plugins.ObjectData)` auto-created at scene root when the Render-tab toggle is enabled. Marker is identified by plugin TYPE (`SAFE_AREA_OVERLAY_PLUGIN_ID = 2099072`), not name. Draw queries `bd.GetSafeFrame()` for the in-viewport letterboxed render rectangle, maps each format's master-NDC safe-box to pixel coords, draws 4 outline lines + HUD label per format. Per-format colors (white master, orange Reels, cyan square, magenta portrait, yellow cinema). Module-level `_overlay_state` singleton shared between panel and marker. New `plugin/res/` folder with `description/safearea_overlay.res` (`INCLUDE Obase`), `.h`, and `.str` for the localized name. Multi-Format orchestrator now also refreshes the overlay cache after Take regeneration. Composition Mode interaction documented: overlay always uses crop-interpretation model (matches QC #12), so Mode None + post-crop matches exactly; Mode Resize Canvas overlay is a composition reference (each take recomposes the camera per format).
 - **v1.5.5** (May 2026): **Cross-Aspect Safe-Area QC (#12) + Multi-Format refactor**. New QC check verifies opt-in marked subjects (UserData boolean `[Sentinel] Safe Area Subject`) stay inside per-format safe areas across all active Multi-Format delivery Takes. Uses crop-interpretation math: bbox projects ONCE into master NDC, each format's safe area lives there as a centered crop region with per-side insets. Sample strategies "current_frame" (auto-refresh, cheap) and "keyframes" (Info button, full sweep with `SetTime`+`ExecutePasses` per sample). Tools tab → smart-toggle "Mark / Unmark Safe Area Subject" button. Score header now `X/12`. Multi-Format refactor: replaced Auto-FOV checkbox with Composition Mode dropdown (None / Resize Canvas). Resize Canvas uses sensor-size override (`new_aperture = src × target_w / src_w`) matching AR_ResizeCanvas community script. v1.5.4 carry-over fixes: `take.SetCamera` now assigned; `SetParameter` explicit after `FindOrAddOverrideParam` (defends against find-OR-add silent skip); C4D physical/RS cameras clamp FOV overrides — switched to sensor (aperture) override which isn't clamped. Other fixes: panel `_refresh` crash on non-QC tab reopen; NDC projection corrected from `-Z forward` to `+Z forward` (C4D left-handed convention). **Deferred to v1.5.6**: live viewport overlay (`c4d.plugins.SceneHookData` removed in C4D 2026 — pending TagData / MessageData investigation).
 
@@ -261,6 +263,17 @@ cd "../11 C4D DEV/renderEngine" && git pull
 - [ ] Safe-Area Overlay: deleting the marker object + toggle ON recreates it
 - [ ] Safe-Area Overlay: regenerating Multi-Format Takes auto-refreshes the cached rectangles
 - [ ] Safe-Area Overlay: rectangles correctly positioned inside `bd.GetSafeFrame()` (handles letterbox/pillarbox)
+- [ ] Texture Repathing: Tools tab → Asset Management → "Texture Repathing..." opens the async dialog
+- [ ] Texture Repathing: QC #6 Assets Info → offers to launch the tool when there are path issues
+- [ ] Texture Repathing: scan lists RS/Arnold node textures, classic shaders, Octane image shaders, RS Dome HDR
+- [ ] Texture Repathing: status filter (All/Missing/Absolute/OK/Asset URI) updates the list + scrollbar
+- [ ] Texture Repathing: list scrolls (ScrollGroup) when there are more rows than fit
+- [ ] Texture Repathing: Find/Replace is case-insensitive by default; "Match case" toggle enforces exact case
+- [ ] Texture Repathing: Preview shows pending changes in green; Apply All commits + shows summary
+- [ ] Texture Repathing: Apply All on a node-graph texture is reverted by a single Cmd+Z (Edit → Undo Modify <mat>)
+- [ ] Texture Repathing: Make All Relative / Auto-Find Missing / per-row [...] file picker work
+- [ ] Texture Repathing: last-5 Find/Replace presets persist in sentinel_settings.json, recallable via Recent combo
+- [ ] Texture Repathing: list auto-refreshes after an external Cmd+Z (CoreMessage/Timer)
 - [ ] Scene Tools: all 8 buttons functional (Hierarchy, H→Layers, Solo, Drop, Vibrate, ABC Retime, Cam Simple, Cam Shakel)
 - [ ] Output: Open Folder, Save Still, Export QC, Collect Scene
 - [ ] Snapshot dir picker ("...") persists between sessions
@@ -268,9 +281,9 @@ cd "../11 C4D DEV/renderEngine" && git pull
 - [ ] Shot ID syncs with Take system
 - [ ] Cross-platform: macOS and Windows
 
-### Current UI Layout (v1.5.6):
+### Current UI Layout (v1.5.7):
 ```
-┌─ Sentinel v1.5.6 ──────────────────────────────┐
+┌─ Sentinel v1.5.7 ──────────────────────────────┐
 │  Scene Header (always visible) ─────────────   │
 │  ▸ Scene:  test_v007_TR.c4d                    │  ← filename caption
 │  Shot ID: [Main]   Artist: [Motioneer]         │  ← editable
@@ -291,7 +304,8 @@ cd "../11 C4D DEV/renderEngine" && git pull
 │        (#12 = Cross-Aspect Safe Area)          │
 │    Render: Preset + Multi-Format + AOVs + Snap │
 │    Versions: Notes + Save Version + Recent     │
-│    Tools: Layout / Animation / QC Marking      │
+│    Tools: Layout / Animation / QC Marking /    │
+│           Asset Management (Texture Repathing) │
 │                                                │
 │ ─────────────────────────────────────────────  │
 │  Footer (always visible)                       │

@@ -1,4 +1,4 @@
-# Sentinel v1.5.6
+# Sentinel v1.5.7
 
 Quality control, render management, and workflow automation plugin for Cinema 4D production environments — keeping the watchdog spirit of YS Guardian.
 
@@ -169,6 +169,33 @@ C4D's `SaveProject` saves the project using the delivery folder's name. Sentinel
 
 #### QC Report Export
 One-click JSON export with quality score, scene complexity stats, and detailed results for all 10 checks.
+
+### Asset Management
+
+#### Texture Repathing *(v1.5.7)*
+
+A bulk find/replace and smart-fix tool for texture paths — built to be both **supervisor-friendly** (validate every asset in a scene at a glance) and **artist-friendly** (one-button fixes, undo-safe). Tools tab → **Asset Management → Texture Repathing...**, or launch it straight from the QC #6 (Assets) Info dialog when path issues are detected.
+
+**Multi-renderer scan** — finds every texture path in the scene, across all the different ways each renderer stores them:
+- **Redshift / Arnold** node graphs (maxon node API)
+- **Octane** legacy image shaders
+- Classic Xbitmap shader chains (materials, objects, tags)
+- Material / object BaseContainer filename params
+- **Redshift Dome Light HDR** (compound DescID)
+- Alembic cache files
+- Octane Environment Tag / Arnold Sky HDR (tag shader chains)
+
+*(V-Ray is intentionally out of scope.)*
+
+**Per-path status** — each row is classified `OK` / `absolute` / `missing` / `asset URI` / `empty`. `relative://` URLs are resolved by searching common texture subfolders (`tex/`, `textures/`, `hdr/`, ...) the same way Redshift does, so a valid relative path isn't falsely flagged.
+
+**The dialog**:
+- Scrollable list with a status filter (All / Missing / Absolute / OK / Asset URI) and a summary header (`✗ N missing  ⚠ N absolute  ≈ N asset URI  ✓ N OK`)
+- **Bulk Find & Replace** — case-insensitive by default (so `rough` matches `8K_Roughness.jpg`), with a **Match case** toggle for exact matching. Last 5 Find/Replace pairs are remembered between sessions (Recent dropdown).
+- **Smart Actions** — *Auto-Find Missing* (locates moved files by name), *Make All Relative* (absolute → relative-to-document), *Clear pending*
+- Per-row **`[...]`** button — pick a replacement file manually
+- Pending changes preview in green before you commit anything
+- **Apply All** writes the whole batch as a **single undo step** — one Cmd+Z reverts everything. The dialog is non-modal, so Cinema 4D stays interactive while it's open and the list auto-refreshes if you undo externally.
 
 ### Workflow Automation
 
@@ -374,6 +401,27 @@ The snapshot system uses external Python with Pillow for color-accurate conversi
 - Ensure abc_retime plugin is installed in Cinema 4D plugins folder
 
 ## Changelog
+
+### v1.5.7 | 14.05.2026
+
+**New: Texture Repathing tool**
+
+A multi-renderer bulk find/replace + smart-fix utility for texture paths. Texture path problems — broken renders, missing assets on delivery, absolute paths that only work on one machine — are one of the most common and expensive production failures, and fixing them by hand means hunting through every material, node graph, light and tag. This tool unifies that into one workflow.
+
+- **Comprehensive scan** across every texture-storage mechanism: Redshift/Arnold maxon node graphs, classic Xbitmap shader chains, Octane legacy image shaders, material/object BaseContainer params, Redshift Dome Light HDR (compound DescID), Alembic caches, and tag shader chains (Octane Environment Tag, Arnold Sky). Each renderer stores textures completely differently — the scan was built from empirical probing of each one.
+- **Status classification** per path (OK / absolute / missing / asset URI / empty), with `relative://` resolution that searches common texture subfolders like Redshift does.
+- **Scrollable list** (`TextureListArea` UserArea in a native ScrollGroup) with a status filter and a counts summary header.
+- **Bulk Find & Replace** — case-insensitive by default, optional "Match case". Last 5 Find/Replace pairs persist in `sentinel_settings.json` and are recallable from a Recent dropdown.
+- **Smart Actions** — Auto-Find Missing, Make All Relative, Clear pending. Per-row file picker for manual repathing.
+- **Apply All** commits the batch as a single undo step (one Cmd+Z reverts everything).
+- Launchable from Tools tab → Asset Management, or contextually from the QC #6 Assets Info dialog.
+
+**Architecture notes**
+
+- Node-graph writes go through a maxon transaction with a **mandatory explicit `transaction.Commit()`** — without it the `with` block exits by rolling back, and the write silently vanishes.
+- Undo for node-graph port changes needs `doc.AddUndo(c4d.UNDOTYPE_CHANGE, material)` as an anchor inside the `StartUndo`/`EndUndo` bracket so the transaction's `UndoMode.ADD` joins the document undo step. Verified via the Edit → Undo menu (`Undo Modify <material>`).
+- The dialog is **async, not modal** — a modal dialog captures the keyboard, so Cmd+Z never reached Cinema 4D while it was open. Async keeps C4D interactive; a `CoreMessage`/`Timer` loop auto-refreshes the list after external scene changes.
+- Diagnostic gotcha worth recording: `doc.DoUndo()` called from the Script Manager is unreliable and is *not* a valid proxy for a real Cmd+Z — verify undo behaviour through the Edit menu instead.
 
 ### v1.5.6 | 12.05.2026
 
