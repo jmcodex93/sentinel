@@ -2419,6 +2419,20 @@ def export_qc_report(doc, results, artist_name):
         "items": [issue["issue"] for issue in fps_bad],
     }
 
+    # Cross-Aspect Safe Area check
+    cross_aspect_bad = results.get("cross_aspect_bad", [])
+    report["checks"]["cross_aspect"] = {
+        "status": "PASS" if not cross_aspect_bad else "FAIL",
+        "count": len(cross_aspect_bad),
+        "label": "Cross-aspect safe-area violations",
+        "items": [
+            f"{v.get('object_name', 'unnamed')} [{v.get('fmt_id', '?')}] "
+            f"sides={','.join(sorted(v.get('sides', [])))} "
+            f"frames={','.join(str(f) for f in v.get('frames', []))}"
+            for v in cross_aspect_bad[:30]
+        ],
+    }
+
     # Summary
     total = len(report["checks"])
     passed = sum(1 for c in report["checks"].values() if c["status"] == "PASS")
@@ -2756,7 +2770,7 @@ def _humanize_time_diff(timestamp_str):
 
 
 def _build_qc_summary(doc):
-    """Run all 11 QC checks (using cache) and return a compact summary dict."""
+    """Run all 12 QC checks (using cache) and return a compact summary dict."""
     counts = {
         "lights":      len(check_lights(doc) or []),
         "vis":         len(check_visibility_traps(doc) or []),
@@ -2769,6 +2783,8 @@ def _build_qc_summary(doc):
         "output":      len(check_output_paths(doc) or []),
         "takes":       len(check_takes(doc) or []),
         "fps_range":   len(check_fps_range(doc) or []),
+        "cross_aspect": len(check_cross_aspect_safe_area(
+            doc, sample_strategy="current_frame") or []),
     }
     total = len(counts)
     passed = sum(1 for v in counts.values() if v == 0)
@@ -6270,6 +6286,15 @@ def collect_scene(doc, artist_name):
     vis = check_visibility_traps(doc)
     if vis:
         issues.append(f"  {len(vis)} visibility mismatches")
+    keys = check_keys(doc)
+    if keys:
+        issues.append(f"  {len(keys)} multi-axis keyframes")
+    cam_bad = check_camera_shift(doc)
+    if cam_bad:
+        issues.append(f"  {len(cam_bad)} camera shift issues")
+    rdc = check_render_conflicts(doc)
+    if rdc:
+        issues.append(f"  {int(rdc)} render preset issues")
     textures = check_textures_unified(doc)
     if textures:
         issues.append(f"  {len(textures)} asset path issues")
@@ -6285,6 +6310,13 @@ def collect_scene(doc, artist_name):
     output = check_output_paths(doc)
     if output:
         issues.append(f"  {len(output)} output path issues")
+    fps_range = check_fps_range(doc)
+    if fps_range:
+        issues.append(f"  {len(fps_range)} FPS/range issues")
+    cross_aspect = check_cross_aspect_safe_area(
+        doc, sample_strategy="current_frame")
+    if cross_aspect:
+        issues.append(f"  {len(cross_aspect)} cross-aspect violations")
 
     # Show pre-flight results
     if issues:
@@ -6306,7 +6338,6 @@ def collect_scene(doc, artist_name):
                 fixed += fix_lights(doc, lights)
             if unused:
                 fixed += fix_unused_materials(doc, unused)
-            cam_bad = check_camera_shift(doc)
             if cam_bad:
                 fixed += fix_camera_shift(doc, cam_bad)
             safe_print(f"Scene Collector: Auto-fixed {fixed} issues")
@@ -8955,6 +8986,7 @@ class YSPanel(gui.GeDialog):
                 "output_bad": self._output_bad,
                 "takes_bad": self._takes_bad,
                 "fps_range_bad": self._fps_range_bad,
+                "cross_aspect_bad": self._cross_aspect_bad,
                 "output_count": len(self._output_bad) if self._output_bad else 0,
                 "scene_stats": self._scene_stats,
             }
