@@ -66,6 +66,30 @@
 
 ---
 
+### v1.5.8 — Multi-Format polish 🚧 IN PROGRESS
+
+Refinements to the Safe-Area Overlay + Multi-Format suite, in the working tree alongside v1.6.0.
+
+- [x] **Preserve Vertical composition mode** — third Composition Mode option mirroring the C4D Frame plugin's default: focal-length override per format keeping the vertical field constant (`compute_target_focal_preserve_vertical(source_focal, src_w, src_h, ...)`)
+- [x] Enriched per-format HUD labels in the viewport overlay (pretty aspect id + canonical resolution)
+- [x] Optional dim mask outside the **intersection** of all active formats' safe areas (pass 1 underneath the outline rectangles)
+- [x] `format_crop_in_master_ndc(fmt_id, master_aspect)` helper
+- [ ] Verify in C4D: HUD labels, dim mask toggle, Preserve Vertical focal override per take
+
+### v1.6.0 — Camera Frame per-camera overlay 🚧 IN PROGRESS
+
+Per-camera multi-format framing config (vs the scene-global v1.5.6 overlay). Benchmark parity with the mariosundays "C4D Frame" tag plugin.
+
+- [x] `CameraFrameTag` (TagData, plugin id 2099073) attached to a camera — per-format enable + color params (`CAMFRAME_*` ids 1011–1502)
+- [x] `CameraFrameDrawer` (ObjectData, plugin id 2099074) — auto-managed companion marker that does the actual viewport drawing, because `TagData.Draw` registers but never fires in C4D 2026 (hybrid architecture)
+- [x] `find_or_create_camera_frame_drawer(doc)` — locate by plugin TYPE or create at scene root
+- [x] Resource triplets: `plugin/res/description/camera_frame.res|.h`, `camera_frame_drawer.res|.h`, `strings_us` .str files
+- [x] Registration in `Register()` guarded by `_CAMERA_FRAME_TAG_AVAILABLE` (graceful fallback)
+- [ ] Verify in C4D: tag on camera draws frames, colors editable in AM, drawer auto-created on first tag
+- [ ] Document in CLAUDE.md + README on release
+
+---
+
 ### v1.5.7 — Texture Repathing Tool ✅
 
 Multi-renderer bulk find/replace + smart-fix utility for texture paths. Pulled forward from the v1.6.0 "Asset Health & Validation" tier — texture path breakage is a daily pain point and the highest-impact item in that bucket.

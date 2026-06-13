@@ -20,7 +20,7 @@ The plugin performs **12 quality checks** in real-time:
 Additional features: RS AOV management (Essentials/Production/Light Groups), Scene Collector, QC Report export, Render Presets with aspect ratio toggle, Texture Repathing tool (multi-renderer bulk find/replace + smart-fix), and a full suite of scene tools.
 
 ## Core Files (DO NOT DELETE)
-- `plugin/sentinel_panel.pyp` - Main plugin file (~5,400 lines, originally `ys_guardian_panel.pyp`)
+- `plugin/sentinel_panel.pyp` - Main plugin file (~10,400 lines, originally `ys_guardian_panel.pyp`)
 - `plugin/res/` - Resource descriptions required by C4D for plugins that need a `description` parameter (e.g. SafeAreaOverlayObject in v1.5.6). Contains `c4d_symbols.h`, `description/safearea_overlay.res|.h`, `strings_us/description/safearea_overlay.str`. Adding new ObjectData/TagData plugins needs new `.res|.h|.str` triplets here.
 - `plugin/exr_converter_external.py` - Cross-platform EXR→PNG with ACES pipeline
 - `plugin/abc_retime/` - Bundled ABC Retime plugin (by axisfx2)
@@ -52,7 +52,7 @@ Additional features: RS AOV management (Essentials/Production/Light Groups), Sce
 Before coding, restate the task as a verifiable success criterion so the loop can close on its own instead of waiting for the user to eyeball it.
 - **"Add QC check X"** → "Open a scene that violates X, run QC, confirm the new check reports it; open a clean scene, confirm it doesn't."
 - **"Fix bug Y"** → "Reproduce Y in C4D first, then verify the fix makes the repro pass."
-- **"Refactor Z"** → "All 10 QC checks still produce the same results before and after."
+- **"Refactor Z"** → "All 12 QC checks still produce the same results before and after."
 - **"Add UI button"** → "Plugin reloads without errors, button appears in expected section, click triggers the action, status text updates."
 
 For multi-step work, write the plan as `step → verify` pairs. Weak criteria ("make it work") force ping-pong; strong criteria let the work finish in one pass.
@@ -202,7 +202,7 @@ cd "../11 C4D DEV/renderEngine" && git pull
 
 ## Testing Checklist
 - [ ] Main plugin file loads without errors
-- [ ] All 11 quality checks function correctly
+- [ ] All 12 quality checks function correctly
 - [ ] Select/Fix/Info buttons work per check
 - [ ] Auto-fix: lights→group, cameras→reset shift, unused mats→delete, FPS/range→standard
 - [ ] FPS/range fix preserves duration, aligns timeline + preview, snaps playhead

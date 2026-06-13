@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableDelayedExpansion EnableExtensions
 
-REM YS Guardian Professional Installer v1.0.3
+REM Sentinel Professional Installer v1.5.7
 REM This installer must be run as Administrator
 
 REM Keep window open after execution
@@ -14,16 +14,16 @@ REM =========================================================
 REM INITIALIZATION
 REM =========================================================
 
-set "VERSION=1.0.3"
+set "VERSION=1.5.7"
 set "INSTALL_DIR=%~dp0"
-set "LOG_FILE=%TEMP%\ys_guardian_install.log"
+set "LOG_FILE=%TEMP%\sentinel_install.log"
 set "PLUGIN_DIR=%INSTALL_DIR%plugin"
 set "C4D_DIR=%INSTALL_DIR%c4d"
-set "ICONS_DIR=%INSTALL_DIR%icons"
-set "DEST_DIR=C:\Program Files\Maxon Cinema 4D 2024\plugins\YS_Guardian"
+set "ICONS_DIR=%PLUGIN_DIR%\icons"
+set "DEST_DIR=C:\Program Files\Maxon Cinema 4D 2024\plugins\Sentinel"
 
 REM Clear log file
-echo YS Guardian Installation Log > "%LOG_FILE%"
+echo Sentinel Installation Log > "%LOG_FILE%"
 echo Started: %date% %time% >> "%LOG_FILE%"
 echo ========================================== >> "%LOG_FILE%"
 
@@ -33,22 +33,12 @@ REM =========================================================
 
 cls
 echo =========================================================
-echo     YS Guardian v%VERSION% - Professional Installation
+echo     Sentinel v%VERSION% - Professional Installation
 echo     Cinema 4D 2024 Quality Control Plugin
 echo =========================================================
 echo.
 echo     Features:
-echo     - 5 Real-time quality checks with color-coded status
-echo     - Render Preset dropdown with template-based forcing
-echo     - Force button: Apply template settings to active preset
-echo     - Force All button: Reset all 4 presets from template
-echo     - Always-on monitoring (all quality checks active)
-echo     - Ultra-compact UI (70%% smaller than v1.0)
-echo     - 10 Quick Actions in single row (H-^>L, Solo, 3D, etc)
-echo     - ABC Retime plugin bundled (one-click tag application)
-echo     - 3 Camera setups: Simple, Shakel, Path (one-click merge)
-echo     - Redshift snapshot management (Save Still)
-echo     - Template-based render settings for consistency
+echo     - 12 real-time quality checks, tabbed UI (QC / Render / Versions / Tools), Smart Save Versions, Multi-Format Render Setup + Safe-Area overlay, Texture Repathing, RS AOV management, Scene Collector
 echo.
 echo =========================================================
 echo.
@@ -94,18 +84,8 @@ REM =========================================================
 echo Verifying source files...
 set "MISSING_FILES=0"
 
-if not exist "%PLUGIN_DIR%\ys_guardian_panel.pyp" (
-    echo [ERROR] Missing: ys_guardian_panel.pyp
-    set "MISSING_FILES=1"
-)
-
-if not exist "%PLUGIN_DIR%\redshift_snapshot_manager_fixed.py" (
-    echo [ERROR] Missing: redshift_snapshot_manager_fixed.py
-    set "MISSING_FILES=1"
-)
-
-if not exist "%PLUGIN_DIR%\exr_to_png_converter_simple.py" (
-    echo [ERROR] Missing: exr_to_png_converter_simple.py
+if not exist "%PLUGIN_DIR%\sentinel_panel.pyp" (
+    echo [ERROR] Missing: sentinel_panel.pyp
     set "MISSING_FILES=1"
 )
 
@@ -114,8 +94,13 @@ if not exist "%PLUGIN_DIR%\exr_converter_external.py" (
     set "MISSING_FILES=1"
 )
 
-if not exist "%PLUGIN_DIR%\python_path_config.py" (
-    echo [ERROR] Missing: python_path_config.py
+if not exist "%PLUGIN_DIR%\res" (
+    echo [ERROR] Missing: res folder
+    set "MISSING_FILES=1"
+)
+
+if not exist "%PLUGIN_DIR%\abc_retime" (
+    echo [ERROR] Missing: abc_retime folder
     set "MISSING_FILES=1"
 )
 
@@ -154,20 +139,17 @@ echo.
 echo Step 2: Installing core plugin files...
 echo ----------------------------------------
 
-copy /Y "%PLUGIN_DIR%\ys_guardian_panel.pyp" "%DEST_DIR%\" >nul 2>&1
+copy /Y "%PLUGIN_DIR%\sentinel_panel.pyp" "%DEST_DIR%\" >nul 2>&1
 if !errorlevel! equ 0 (echo [OK] Main plugin file) else (echo [FAILED] Main plugin file & goto :error_exit)
-
-copy /Y "%PLUGIN_DIR%\redshift_snapshot_manager_fixed.py" "%DEST_DIR%\" >nul 2>&1
-if !errorlevel! equ 0 (echo [OK] Snapshot manager) else (echo [FAILED] Snapshot manager)
-
-copy /Y "%PLUGIN_DIR%\exr_to_png_converter_simple.py" "%DEST_DIR%\" >nul 2>&1
-if !errorlevel! equ 0 (echo [OK] Simple converter) else (echo [FAILED] Simple converter)
 
 copy /Y "%PLUGIN_DIR%\exr_converter_external.py" "%DEST_DIR%\" >nul 2>&1
 if !errorlevel! equ 0 (echo [OK] External converter) else (echo [FAILED] External converter)
 
-copy /Y "%PLUGIN_DIR%\python_path_config.py" "%DEST_DIR%\" >nul 2>&1
-if !errorlevel! equ 0 (echo [OK] Python path config) else (echo [FAILED] Python path config)
+xcopy /E /I /Y "%PLUGIN_DIR%\res" "%DEST_DIR%\res" >nul 2>&1
+if !errorlevel! equ 0 (echo [OK] C4D resource descriptions) else (echo [FAILED] C4D resource descriptions & goto :error_exit)
+
+xcopy /E /I /Y "%PLUGIN_DIR%\abc_retime" "%DEST_DIR%\abc_retime" >nul 2>&1
+if !errorlevel! equ 0 (echo [OK] ABC Retime plugin bundle) else (echo [FAILED] ABC Retime plugin bundle & goto :error_exit)
 
 REM Delete any old corrupted Python cache
 if exist "%DEST_DIR%\.python_path_cache" (
@@ -255,55 +237,34 @@ if exist "%C4D_DIR%\new.c4d" (
 )
 
 REM =========================================================
-REM INSTALL PLUGIN ICON
+REM INSTALL PLUGIN ICONS
 REM =========================================================
 
 echo.
-echo Step 4: Installing plugin icon...
+echo Step 4: Installing plugin icons...
 echo ----------------------------------------
 
-if not exist "%DEST_DIR%\icons" mkdir "%DEST_DIR%\icons" 2>nul
-
-if exist "%ICONS_DIR%\ys-logo-alpha-32.png" (
-    copy /Y "%ICONS_DIR%\ys-logo-alpha-32.png" "%DEST_DIR%\icons\" >nul 2>&1
+if exist "%ICONS_DIR%" (
+    xcopy /E /I /Y "%ICONS_DIR%" "%DEST_DIR%\icons" >nul 2>&1
     if !errorlevel! equ 0 (
-        echo [OK] Plugin icon installed to: %DEST_DIR%\icons\
+        echo [OK] Plugin icons installed to: %DEST_DIR%\icons\
     ) else (
-        echo [WARNING] Could not copy icon ^(plugin will work without it^)
+        echo [WARNING] Could not copy icons ^(plugin will work without them^)
     )
 ) else (
-    echo [WARNING] Icon not found at: %ICONS_DIR%\ys-logo-alpha-32.png
-    echo            ^(plugin will work without it^)
+    echo [WARNING] Icons folder not found at: %ICONS_DIR%
+    echo            ^(plugin will work without icons^)
 )
 
 REM =========================================================
-REM INSTALL ABC RETIME PLUGIN
+REM ABC RETIME PLUGIN
 REM =========================================================
 
 echo.
-echo Step 5: Installing ABC Retime plugin...
+echo Step 5: ABC Retime plugin...
 echo ----------------------------------------
-
-set "ABC_RETIME_SOURCE=%PLUGIN_DIR%\abc_retime"
-set "ABC_RETIME_DEST=C:\Program Files\Maxon Cinema 4D 2024\plugins\abc_retime"
-
-if exist "%ABC_RETIME_SOURCE%\main.pyp" (
-    if not exist "%ABC_RETIME_DEST%" mkdir "%ABC_RETIME_DEST%" 2>nul
-
-    xcopy /E /I /Y "%ABC_RETIME_SOURCE%" "%ABC_RETIME_DEST%" >nul 2>&1
-    if !errorlevel! equ 0 (
-        echo [OK] ABC Retime plugin installed
-        echo      Plugin ID: 1058910
-        echo      Access: Right-click Tags ^> Extensions ^> Alembic Retime
-    ) else (
-        echo [WARNING] Could not install ABC Retime plugin
-        echo           Snapshot and quality checks will still work
-    )
-) else (
-    echo [WARNING] ABC Retime source not found
-    echo           Expected: %ABC_RETIME_SOURCE%
-    echo           This is optional - main plugin will work without it
-)
+echo [OK] Installed inside Sentinel plugin folder: %DEST_DIR%\abc_retime
+echo      legacy folder is intentionally not copied
 
 REM =========================================================
 REM CREATE OUTPUT DIRECTORIES
@@ -313,12 +274,12 @@ echo.
 echo Step 6: Creating output directories...
 echo ----------------------------------------
 
-if not exist "C:\YS_Guardian_Output" (
-    mkdir "C:\YS_Guardian_Output" 2>nul
-    echo [OK] Created: C:\YS_Guardian_Output
-    echo YS Guardian Log > "C:\YS_Guardian_Output\snapshot_log.txt"
+if not exist "C:\Sentinel_Output" (
+    mkdir "C:\Sentinel_Output" 2>nul
+    echo [OK] Created: C:\Sentinel_Output
+    echo Sentinel Log > "C:\Sentinel_Output\snapshot_log.txt"
 ) else (
-    echo [OK] Directory exists: C:\YS_Guardian_Output
+    echo [OK] Directory exists: C:\Sentinel_Output
 )
 
 if not exist "C:\cache\rs snapshots" (
@@ -365,18 +326,18 @@ echo.
 echo NEXT STEPS:
 echo -----------
 echo 1. Restart Cinema 4D 2024
-echo 2. Go to Extensions ^> YS Guardian Panel
+echo 2. Go to Extensions ^> Sentinel Panel
 echo 3. Use the Preset dropdown to switch between render presets
 echo 4. Click "Force" to apply template settings to active preset
 echo 5. Click "Force All" to reset all 4 presets from template
 echo.
-echo NEW IN v1.1.0:
+echo NEW IN v1.5.7:
 echo --------------
-echo - Ultra-compact UI (70%% smaller - ~200px height)
-echo - Template-based preset forcing (new.c4d required)
-echo - Dropdown for render preset selection
-echo - Always-on monitoring (no manual controls)
-echo - 10 Quick Actions in single row
+echo - 12 real-time quality checks
+echo - Tabbed UI (QC / Render / Versions / Tools)
+echo - Smart Save Versions
+echo - Multi-Format Render Setup + Safe-Area overlay
+echo - Texture Repathing, RS AOV management, Scene Collector
 echo.
 echo REDSHIFT SETUP (REQUIRED FOR SNAPSHOTS):
 echo -----------------------------------------
@@ -592,7 +553,7 @@ echo                  INSTALLATION FAILED
 echo =========================================================
 echo.
 echo Please check the error messages above.
-echo For support, contact the YS Guardian team.
+echo For support, contact the Sentinel team.
 echo.
 echo Press any key to exit...
 pause >nul

@@ -1,10 +1,10 @@
 # Sentinel Installation Guide
 
-> Sentinel was originally **YS Guardian** (Yambo Studio). Rebranded in v1.5.0. The Windows installer scripts in this folder still reference the legacy name in their filenames; we'll update those in a future iteration. The instructions below use the new Sentinel paths.
+> Sentinel was originally **YS Guardian** (Yambo Studio). Rebranded in v1.5.0.
 
 ## Quick Start
 
-1. **Right-click** `INSTALL_YS_GUARDIAN.bat`
+1. **Right-click** `INSTALL_SENTINEL.bat`
 2. Select **"Run as Administrator"**
 3. Follow the prompts
 4. Restart Cinema 4D 2024
@@ -72,10 +72,10 @@ For the snapshot feature to work:
 
 ### "Cinema 4D 2024 not found"
 - The installer expects C4D at: `C:\Program Files\Maxon Cinema 4D 2024\`
-- If installed elsewhere, edit the `INSTALL_YS_GUARDIAN.bat` file
+- If installed elsewhere, edit the `INSTALL_SENTINEL.bat` file
 
 ### Window closes immediately
-- Use `RUN_INSTALLER.bat` instead - it keeps the window open
+- Run `INSTALL_SENTINEL.bat` from an already-open Command Prompt so output stays visible
 
 ### EXR conversion not working
 - Run `TEST_PYTHON_SETUP.bat` to diagnose Python issues

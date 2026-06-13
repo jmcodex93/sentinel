@@ -10,7 +10,7 @@ Quality control, render management, and workflow automation plugin for Cinema 4D
 
 Sentinel is a Cinema 4D plugin that **watches your scene in real-time** and helps you ship cleaner renders. It runs continuous quality checks, manages render presets and Redshift AOVs, captures versioned saves with full metadata, and automates the boring parts of mograph delivery.
 
-Sentinel monitors Cinema 4D scenes in real-time with **11 quality checks**, catching production issues before they reach the render farm. It also provides **Redshift AOV management** (Essentials/Production tiers with per-compositor config), **Scene Collector** (pre-flight QC + asset collection + manifest), and a full suite of scene tools: camera rigs (by keyframe wizard Riccardo Bottoni), abc_retime integration (by Austin Marola & Axis), Hierarchy→Layers, Solo Layers, Drop to Floor, and more.
+Sentinel monitors Cinema 4D scenes in real-time with **12 quality checks**, catching production issues before they reach the render farm. It also provides **Redshift AOV management** (Essentials/Production tiers with per-compositor config), **Scene Collector** (pre-flight QC + asset collection + manifest), and a full suite of scene tools: camera rigs (by keyframe wizard Riccardo Bottoni), abc_retime integration (by Austin Marola & Axis), Hierarchy→Layers, Solo Layers, Drop to Floor, and more.
 
 **IMPORTANT**: The snapshot feature requires Python 3.x with Pillow and NumPy for EXR→PNG conversion with ACES tone mapping.
 
@@ -20,7 +20,7 @@ Sentinel monitors Cinema 4D scenes in real-time with **11 quality checks**, catc
 
 ### Pipeline Checks
 
-Eleven continuous quality checks to keep your C4D files clean:
+Twelve continuous quality checks to keep your C4D files clean:
 
 - **Lights Organization** – Validates proper light group structure (Select + Fix)
 - **Visibility Consistency** – Detects viewport/render visibility mismatches (Select)
@@ -33,6 +33,7 @@ Eleven continuous quality checks to keep your C4D files clean:
 - **Output Paths** – Missing tokens, empty render output paths (Info)
 - **Take Validation** – Camera assigned per take, $take token in output paths (Info)
 - **FPS / Frame Range** – FPS, start frame = 1001 (VFX standard), frame step, timeline + preview alignment, all presets (Info + Fix)
+- **Cross-Aspect Safe Area** – Opt-in marked subjects stay inside safe-area regions across multi-format delivery aspects (Select + Info)
 
 Status display with color coding provides instant visual feedback. Per-check Select/Info/Fix buttons for one-click correction. Auto-fix available for lights, cameras, and unused materials.
 
@@ -132,7 +133,7 @@ Two-tier AOV system configured per compositor target:
 
 #### Scene Collector
 Pre-flight workflow for scene delivery:
-1. Runs all 10 QC checks with summary
+1. Runs all 12 QC checks with summary
 2. Offers auto-fix for fixable issues
 3. Calls `c4d.documents.SaveProject()` for native asset collection
 4. Generates `sentinel_manifest.json` with scene info, assets, and missing file list
@@ -168,7 +169,7 @@ C4D's `SaveProject` saves the project using the delivery folder's name. Sentinel
 - Manifest preserves traceability: `original_filename`, `original_version`, `original_status`
 
 #### QC Report Export
-One-click JSON export with quality score, scene complexity stats, and detailed results for all 10 checks.
+One-click JSON export with quality score, scene complexity stats, and detailed results for all 12 checks.
 
 ### Asset Management
 
@@ -246,7 +247,7 @@ This system maintains color accuracy by matching your scene's ACES tone mapping,
 
 ```bash
 # Run as Administrator
-INSTALL_YS_GUARDIAN.bat
+INSTALL_SENTINEL.bat
 ```
 
 The installer handles:
@@ -283,7 +284,7 @@ The installer creates the cache directory automatically. This configuration is r
 
 ### Quality Workflow
 
-Status display shows real-time results for all 11 checks:
+Status display shows real-time results for all 12 checks:
 
 ```
 [FAIL] LIGHTS        : 3 lights outside lights group     [Select] [Fix]
@@ -297,6 +298,7 @@ Status display shows real-time results for all 11 checks:
 [ OK ] OUTPUT        : Output paths valid                 [Info]
 [ OK ] TAKES         : All takes configured               [Info]
 [FAIL] FPS/RANGE     : 4 FPS/range issue(s)              [Info]   [Fix]
+[WARN] SAFE AREA     : 2 objects outside 9:16 safe area  [Select] [Info]
 ```
 
 **Select** buttons cycle through problematic objects. **Fix** buttons auto-resolve issues. **Info** buttons show detailed diagnostics.

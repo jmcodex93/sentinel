@@ -8,7 +8,7 @@ if "%1" neq "nopause" (
 )
 
 echo =========================================================
-echo     YS Guardian - Python Setup Diagnostic Tool
+echo     Sentinel - Python Setup Diagnostic Tool
 echo =========================================================
 echo.
 echo This tool will help diagnose Python installation issues
@@ -169,7 +169,7 @@ if !PYTHON_FOUND!==1 (
     echo.
     echo Next steps:
     echo 1. Install any missing packages listed above
-    echo 2. Rerun the YS Guardian installer
+    echo 2. Rerun the Sentinel installer
     echo 3. The EXR converter should now work
 ) else (
     echo [✗] Python is NOT properly installed!
@@ -177,7 +177,7 @@ if !PYTHON_FOUND!==1 (
     echo To fix this issue:
     echo.
     echo OPTION 1 - Automatic ^(Recommended^):
-    echo   1. Run INSTALL_YS_GUARDIAN.bat as Administrator
+    echo   1. Run INSTALL_SENTINEL.bat as Administrator
     echo   2. Choose 'Y' when asked to install Python
     echo   3. The installer will handle everything
     echo.
