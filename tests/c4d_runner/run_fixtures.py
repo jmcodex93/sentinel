@@ -118,13 +118,11 @@ def _load_document(path: Path):
     if not path.exists():
         return None, f"missing fixture scene: {path}"
     try:
+        # C4D 2026 has no SCENEFILTER_TAKES/RENDERDATA — takes and render data
+        # load with the document; OBJECTS|MATERIALS is the full-load pair.
         doc = documents.LoadDocument(
             str(path),
-            c4d.SCENEFILTER_OBJECTS
-            | c4d.SCENEFILTER_MATERIALS
-            | c4d.SCENEFILTER_MERGESCENE
-            | c4d.SCENEFILTER_TAKES
-            | c4d.SCENEFILTER_RENDERDATA,
+            c4d.SCENEFILTER_OBJECTS | c4d.SCENEFILTER_MATERIALS,
         )
     except Exception as exc:
         return None, f"LoadDocument failed for {path}: {exc}"

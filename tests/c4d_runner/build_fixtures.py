@@ -60,7 +60,7 @@ def _set_doc_timing(doc, fps, start, end):
     doc.SetTime(c4d.BaseTime(int(start), int(fps)))
 
 
-def _setup_render_data(doc, name, fps, start, end, path, xres=1920, yres=1080):
+def _setup_render_data(doc, name, fps, start, end, path, xres=1920, yres=1080, multipass_path=None):
     rd = doc.GetActiveRenderData()
     if rd is None:
         rd = documents.RenderData()
@@ -73,6 +73,8 @@ def _setup_render_data(doc, name, fps, start, end, path, xres=1920, yres=1080):
     rd[c4d.RDATA_FRAMETO] = c4d.BaseTime(int(end), int(fps))
     rd[c4d.RDATA_FRAMESEQUENCE] = c4d.RDATA_FRAMESEQUENCE_MANUAL
     rd[c4d.RDATA_PATH] = path
+    if multipass_path is not None:
+        rd[c4d.RDATA_MULTIPASS_FILENAME] = multipass_path
     rd[c4d.RDATA_XRES] = float(xres)
     rd[c4d.RDATA_YRES] = float(yres)
     return rd
@@ -210,6 +212,7 @@ def _build_clean(module):
         1001,
         1010,
         "renders/$prj_$take_$frame",
+        multipass_path="renders/mp/$prj_$take_mp",
     )
 
     lights = _make_object(c4d.Onull, "lights", doc)
