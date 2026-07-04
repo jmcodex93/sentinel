@@ -165,3 +165,33 @@ def test_build_override_records_matches_baseline_shape_without_writing(tmp_path)
     assert record["reason"] == "client-provided placeholder"
     assert record["date"]
     assert not list(tmp_path.glob("*_baseline.json"))
+
+
+def test_gate_dialog_can_proceed_requires_reason_for_blocking_override(sentinel_module):
+    from sentinel.ui.dialogs import gate_dialog_can_proceed
+
+    blocking = [{"check_id": "textures", "blocks": True}]
+
+    assert gate_dialog_can_proceed(blocking, [], {"textures": "override"}, "") is False
+    assert gate_dialog_can_proceed(blocking, [], {"textures": "override"}, "approved for review") is True
+    assert gate_dialog_can_proceed(blocking, [], {"textures": "baseline"}, "") is True
+
+
+def test_gate_dialog_can_proceed_handles_fixable_fail_decisions(sentinel_module):
+    from sentinel.ui.dialogs import gate_dialog_can_proceed
+
+    fixable = [{"check_id": "lights", "blocks": True}]
+
+    assert gate_dialog_can_proceed([], fixable, {}, "") is False
+    assert gate_dialog_can_proceed([], fixable, {"lights": "fix"}, "") is True
+    assert gate_dialog_can_proceed([], fixable, {"lights": "override"}, "") is False
+    assert gate_dialog_can_proceed([], fixable, {"lights": "override"}, "one-off delivery") is True
+    assert gate_dialog_can_proceed([], fixable, {"lights": "baseline"}, "") is True
+
+
+def test_gate_dialog_can_proceed_allows_warn_fixable_without_decision(sentinel_module):
+    from sentinel.ui.dialogs import gate_dialog_can_proceed
+
+    warn_fixable = [{"check_id": "unused_mats", "blocks": False}]
+
+    assert gate_dialog_can_proceed([], warn_fixable, {}, "") is True

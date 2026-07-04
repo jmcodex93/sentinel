@@ -85,3 +85,16 @@ class G:
     BTN_SETTINGS = 1308
     LABEL_AOV_INFO = 1309   # read-only summary of comp + multi-part in Render tab
     BTN_TEXTURE_REPATH = 1310  # Tools tab: open Texture Repathing dialog (v1.5.7)
+
+
+class GateTriageIds:
+    """Widget ID ranges for the modal quality-gate triage dialog."""
+
+    BTN_PROCEED = 2001
+    BTN_CANCEL = 2002
+    EDT_REASON = 2003
+    TXT_SUMMARY = 2004
+
+    FIX_BASE = 2100
+    OVERRIDE_BASE = 2200
+    BASELINE_BASE = 2300

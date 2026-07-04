@@ -14,6 +14,7 @@ if _ROOT not in sys.path:
 
 import sentinel
 from sentinel import baseline
+from sentinel import gate as quality_gate
 from sentinel import PLUGIN_NAME, PLUGIN_VERSION
 from sentinel.common.cache import CheckCache, check_cache
 from sentinel.common.constants import (
@@ -38,6 +39,7 @@ from sentinel.common.helpers import (
 from sentinel.common.settings import GlobalSettings
 from sentinel.qc.results import (
     CheckResult,
+    material_identity,
     object_identity,
     structured_cache_key,
 )
@@ -59,6 +61,7 @@ from sentinel.ui.user_areas import (
 )
 from sentinel.ui.dialogs import (
     BaselineActionDialog,
+    GateTriageDialog,
     MultiFormatDialog,
     NotesDialog,
     SaveVersionDialog,
@@ -837,6 +840,151 @@ def _build_qc_summary(doc):
     return compute_score(registry_results, rules_context)
 
 
+def _compute_gate_snapshot(doc, rules_context, doc_full_path):
+    """Compute the gate verdict through the baseline-aware recovered path."""
+    registry_results = run_all_checks(doc, _current_module(), rules_context)
+    path = baseline.get_baseline_path(doc_full_path)
+    baseline.merge_conflict_copies(path)
+    entries, status = baseline.load_baseline(path)
+    gate_entries = entries if status == baseline.STATUS_OK else []
+    score = compute_score(
+        registry_results,
+        rules_context,
+        baseline_entries=gate_entries,
+        current_params=getattr(rules_context, "params", {}),
+    )
+    gate_result = quality_gate.evaluate_gate(score, rules_context)
+    return {
+        "registry_results": registry_results,
+        "baseline_path": path,
+        "baseline_status": status,
+        "score": score,
+        "gate_result": gate_result,
+    }
+
+
+def _gate_new_violations(gate_result, check_id):
+    for bucket_name in ("fixable", "blocking", "advisory"):
+        for item in gate_result.get(bucket_name, []) or []:
+            if item.get("check_id") == check_id:
+                return list(item.get("violations") or [])
+    return []
+
+
+def _gate_new_counts(gate_result):
+    counts = {}
+    for bucket_name in ("fixable", "blocking", "advisory"):
+        for item in gate_result.get(bucket_name, []) or []:
+            counts[item.get("check_id")] = int(item.get("new_count") or 0)
+    return counts
+
+
+def _gate_fix_payload(check_id, registry_results, gate_result):
+    if check_id == "fps_range":
+        return {"check_id": check_id, "objects": []}
+
+    new_keys = {
+        quality_gate.identity_key(violation.get("identity"))
+        for violation in _gate_new_violations(gate_result, check_id)
+        if isinstance(violation, dict)
+    }
+    result_pair = (registry_results or {}).get(check_id, {}) or {}
+    legacy_objs = result_pair.get("legacy_result") or []
+    identity_fn = material_identity if check_id == "unused_mats" else object_identity
+    objs = quality_gate.filter_to_new(
+        legacy_objs,
+        new_keys,
+        identity_fn,
+        quality_gate.identity_key,
+    )
+    return {"check_id": check_id, "objects": objs}
+
+
+def _run_quality_gate(doc, rules_context, artist_name, doc_full_path):
+    """Run the modal quality gate. Returns a result dict or abort marker."""
+    snapshot = _compute_gate_snapshot(doc, rules_context, doc_full_path)
+    gate_result = snapshot["gate_result"]
+    gate_overrides = []
+    baseline_changed = False
+    disabled_fix_ids = set()
+    cap = len(gate_result.get("fixable") or [])
+    fix_iterations = 0
+
+    while not gate_result.get("passed"):
+        if fix_iterations >= cap:
+            disabled_fix_ids.update(
+                item.get("check_id")
+                for item in gate_result.get("fixable", []) or []
+                if item.get("check_id")
+            )
+
+        dlg = GateTriageDialog(
+            gate_result,
+            sidecar_invalid=(snapshot["baseline_status"] == baseline.STATUS_INVALID),
+            disabled_fix_ids=disabled_fix_ids,
+        )
+        try:
+            dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=620, defaulth=420)
+        except Exception as e:
+            safe_print(f"GateTriageDialog open error: {e}")
+            return {"proceed": False, "overrides": gate_overrides, "baseline_changed": baseline_changed}
+
+        if not dlg.proceed:
+            return {"proceed": False, "overrides": gate_overrides, "baseline_changed": baseline_changed}
+
+        previous_counts = _gate_new_counts(gate_result)
+        attempted_fix_ids = list(dlg.fixes or [])
+        fixes = [
+            _gate_fix_payload(check_id, snapshot["registry_results"], gate_result)
+            for check_id in attempted_fix_ids
+        ]
+        if attempted_fix_ids:
+            apply_fixes(doc, fixes)
+
+        path = snapshot["baseline_path"]
+        for check_id in dlg.baseline_accepts or []:
+            for violation in _gate_new_violations(gate_result, check_id):
+                acceptance = baseline.entry_from_violation(
+                    violation,
+                    artist_name,
+                    dlg.reason or "",
+                    current_params=getattr(rules_context, "params", {}),
+                )
+                if acceptance and baseline.add_acceptance(path, acceptance):
+                    baseline_changed = True
+
+        for check_id in dlg.overrides or []:
+            gate_overrides.extend(
+                quality_gate.build_override_records(
+                    _gate_new_violations(gate_result, check_id),
+                    artist_name,
+                    dlg.reason,
+                )
+            )
+
+        if baseline_changed or attempted_fix_ids:
+            check_cache.clear()
+            c4d.EventAdd()
+
+        if not attempted_fix_ids:
+            break
+
+        snapshot = _compute_gate_snapshot(doc, rules_context, doc_full_path)
+        gate_result = snapshot["gate_result"]
+        current_counts = _gate_new_counts(gate_result)
+        for check_id in attempted_fix_ids:
+            if current_counts.get(check_id, 0) >= previous_counts.get(check_id, 0):
+                disabled_fix_ids.add(check_id)
+        fix_iterations += 1
+
+    return {
+        "proceed": True,
+        "overrides": gate_overrides,
+        "baseline_changed": baseline_changed,
+        "baseline_path": snapshot.get("baseline_path"),
+    }
+
+
 
 
 def smart_save_version(doc, comment, run_qc=True, artist_name="", status=None):
@@ -919,6 +1067,18 @@ def smart_save_version(doc, comment, run_qc=True, artist_name="", status=None):
         result["message"] = f"Target already exists: {new_filename} (refusing to overwrite)"
         return result
 
+    gate_overrides = []
+    rules_context = _active_rules_for_doc(doc)
+    if (
+        getattr(rules_context, "params", {}).get("gates_enabled", False)
+        and clean_status.upper() in ("TR", "CR", "FINAL")
+    ):
+        gate_result = _run_quality_gate(doc, rules_context, artist_name, new_path)
+        if not gate_result.get("proceed"):
+            result["message"] = "Quality gate cancelled"
+            return result
+        gate_overrides = list(gate_result.get("overrides") or [])
+
     # ── Capture metadata BEFORE saving (so QC reflects pre-save state) ──
     qc_summary = _build_qc_summary(doc) if run_qc else None
     stats = get_scene_stats(doc) or {}
@@ -983,6 +1143,8 @@ def smart_save_version(doc, comment, run_qc=True, artist_name="", status=None):
             entry["accepted"] = qc_summary.get("accepted", 0)
             entry["qc_baseline"] = build_baseline_artifact_details(qc_summary)
         entry["disabled_checks"] = list(qc_summary.get("disabled", []) or [])
+    if gate_overrides:
+        entry["gate_overrides"] = gate_overrides
 
     appended = append_history_entry(history_path, entry)
 
@@ -1097,6 +1259,8 @@ def collect_scene(doc, artist_name):
         c4d.gui.MessageDialog("Please save the scene first before collecting.")
         return
 
+    original_full_path = _doc_full_path(doc)
+
     # Capture original metadata BEFORE SaveProject runs — SaveProject changes
     # the doc's path/name to the delivery folder, losing the original identity.
     original_doc_name = doc.GetDocumentName() or "scene.c4d"
@@ -1189,6 +1353,22 @@ def collect_scene(doc, artist_name):
         if not c4d.gui.QuestionDialog("Pre-flight: All checks passed!\n\nProceed with Save Project with Assets?"):
             return
 
+    gate_overrides = []
+    gate_evaluated = False
+    if getattr(rules_context, "params", {}).get("gates_enabled", False):
+        gate_evaluated = True
+        gate_result = _run_quality_gate(doc, rules_context, artist_name, original_full_path)
+        if not gate_result.get("proceed"):
+            safe_print("Scene Collector: Quality gate cancelled")
+            return
+        gate_overrides = list(gate_result.get("overrides") or [])
+        if gate_result.get("baseline_changed"):
+            refreshed_path = gate_result.get("baseline_path") or baseline.get_baseline_path(original_full_path)
+            refreshed_entries, refreshed_status = baseline.load_baseline(refreshed_path)
+            if refreshed_status == baseline.STATUS_OK:
+                original_baseline_path = refreshed_path
+                original_baseline_entries = refreshed_entries
+
     # ── Phase 2: Collect via C4D native ──
     safe_print("Scene Collector: Running Save Project with Assets...")
 
@@ -1276,6 +1456,8 @@ def collect_scene(doc, artist_name):
         "missing_list": [],
         "pre_flight_issues": issues,
     }
+    if gate_evaluated:
+        manifest["gate_overrides"] = gate_overrides
     baseline_collection_active = bool(original_baseline_path)
     rules_collection_active = bool(rules_context.rules_path)
     if rules_collection_active:
