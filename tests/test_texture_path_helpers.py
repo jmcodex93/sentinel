@@ -76,6 +76,38 @@ def test_classify_texture_path_reports_missing_expected_location(
     assert Path(resolved) == doc_path / "missing" / "diffuse.exr"
 
 
+def test_texture_path_classifier_corpus_pins_current_behavior(
+    sentinel_module, tmp_path
+):
+    doc_path = tmp_path / "shot"
+    tex_dir = doc_path / "tex"
+    tex_dir.mkdir(parents=True)
+    texture = tex_dir / "diffuse.exr"
+    texture.write_text("placeholder", encoding="utf-8")
+
+    corpus = [
+        ("empty", "", False, False, ("empty", None)),
+        ("mac_absolute", "/mnt/assets/tex/diffuse.exr", True, True, ("absolute", "/mnt/assets/tex/diffuse.exr")),
+        ("win_absolute", r"C:\show\shot\tex\diffuse.png", True, True, ("absolute", r"C:\show\shot\tex\diffuse.png")),
+        ("unc_absolute", r"\\server\share\tex\diffuse.jpg", True, True, ("absolute", r"\\server\share\tex\diffuse.jpg")),
+        ("relative_found", "diffuse.exr", False, False, ("ok", str(texture))),
+        ("relative_subdir_found", "tex/diffuse.exr", False, True, ("ok", str(texture))),
+        ("relative_uri_found", "relative:///diffuse.exr", False, True, ("ok", str(texture))),
+        ("non_texture_extension", "docs/readme.txt", False, False, ("missing", str(doc_path / "docs" / "readme.txt"))),
+    ]
+
+    for label, path, is_absolute, looks_like, classified in corpus:
+        assert sentinel_module._is_absolute_path(path) is is_absolute, label
+        assert sentinel_module._looks_like_texture_path(path) is looks_like, label
+        status, resolved = sentinel_module._classify_texture_path(path, str(doc_path))
+        expected_status, expected_resolved = classified
+        assert status == expected_status, label
+        if expected_resolved is None:
+            assert resolved is None, label
+        else:
+            assert Path(resolved) == Path(expected_resolved), label
+
+
 def test_compute_relative_texture_path_uses_forward_slashes(sentinel_module, tmp_path):
     doc_path = tmp_path / "shot" / "c4d"
     texture_path = tmp_path / "shot" / "tex" / "diffuse.exr"

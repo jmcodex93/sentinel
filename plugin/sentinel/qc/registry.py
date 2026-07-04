@@ -94,8 +94,8 @@ CHECK_REGISTRY = [
         names_key=None,
         severity="FAIL",
         has_fix=False,
-        structured_fn="panel.check_textures_unified_structured",
-        legacy_fn="panel.check_textures_unified",
+        structured_fn="assets.check_textures_unified_structured",
+        legacy_fn="assets.check_textures_unified",
         preflight_template="  {n} asset path issues",
     ),
     CheckEntry(
@@ -168,8 +168,8 @@ CHECK_REGISTRY = [
         names_key=None,
         severity="WARN",
         has_fix=False,
-        structured_fn="panel.check_cross_aspect_safe_area_structured",
-        legacy_fn="panel.check_cross_aspect_safe_area",
+        structured_fn="safe_areas.check_cross_aspect_safe_area_structured",
+        legacy_fn="safe_areas.check_cross_aspect_safe_area",
         preflight_template="  {n} cross-aspect violations",
         structured_kwargs={"sample_strategy": "current_frame"},
         legacy_kwargs={"sample_strategy": "current_frame"},
@@ -203,6 +203,10 @@ def resolve_function(fn_ref, panel_module=None):
         module = import_module("sentinel.checks.scene")
     elif source == "render":
         module = import_module("sentinel.checks.render")
+    elif source == "assets":
+        module = import_module("sentinel.checks.assets")
+    elif source == "safe_areas":
+        module = import_module("sentinel.checks.safe_areas")
     elif source == "panel":
         if panel_module is None:
             raise ValueError(f"Panel module is required to resolve {fn_ref}")

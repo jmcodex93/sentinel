@@ -2,10 +2,21 @@
 """Pure Python baseline sidecar engine for accepted QC violations."""
 
 import getpass
+import importlib.util
 import json
 import os
-import re
 from datetime import datetime
+
+try:
+    from sentinel.versioning import parse_version_filename
+except ModuleNotFoundError:
+    _versioning_path = os.path.join(os.path.dirname(__file__), "versioning.py")
+    _versioning_spec = importlib.util.spec_from_file_location(
+        "sentinel_versioning_fallback", _versioning_path
+    )
+    _versioning_module = importlib.util.module_from_spec(_versioning_spec)
+    _versioning_spec.loader.exec_module(_versioning_module)
+    parse_version_filename = _versioning_module.parse_version_filename
 
 
 SCHEMA_VERSION = 1
@@ -13,26 +24,7 @@ STATUS_OK = "ok"
 STATUS_MISSING = "missing"
 STATUS_INVALID = "invalid"
 
-_VERSION_RE = re.compile(r"_v(\d+)(?:_([A-Za-z][A-Za-z0-9]*))?$", re.IGNORECASE)
 _MISSING = object()
-
-
-def _parse_version_filename(name_no_ext):
-    # duplicated from .pyp parse_version_filename; consolidate in U10
-    if not name_no_ext:
-        return "", None, None
-    match = _VERSION_RE.search(name_no_ext)
-    if match:
-        base = name_no_ext[: match.start()]
-        try:
-            version = int(match.group(1))
-        except ValueError:
-            return name_no_ext, None, None
-        status = match.group(2)
-        status = status.upper() if status else None
-        if base:
-            return base, version, status
-    return name_no_ext, None, None
 
 
 def get_baseline_path(doc_path):
@@ -41,7 +33,7 @@ def get_baseline_path(doc_path):
         return None
     folder = os.path.dirname(doc_path)
     name_no_ext = os.path.splitext(os.path.basename(doc_path))[0]
-    base, _version, _status = _parse_version_filename(name_no_ext)
+    base, _version, _status = parse_version_filename(name_no_ext)
     if not base:
         base = name_no_ext or "scene"
     return os.path.join(folder, f"{base}_baseline.json")
