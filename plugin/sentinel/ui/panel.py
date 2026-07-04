@@ -333,8 +333,8 @@ def _fix_one_render_data(doc, rd, standard_fps, start_frame=1001):
     return changes, final_start, final_end
 
 
-def fix_fps_range(doc):
-    """Auto-fix FPS/range across ALL render presets. Aligns timeline to active preset."""
+def _apply_fps_range(doc):
+    """Apply FPS/range fixes. Caller owns undo, cache invalidation, and EventAdd."""
     fixes = []
     if not doc.GetFirstRenderData():
         return fixes
@@ -344,61 +344,71 @@ def fix_fps_range(doc):
     start_frame = int(rules_context.params.get("start_frame", 1001))
     active_rd = doc.GetActiveRenderData()
 
+    # --- Document-level FPS (once) ---
+    doc_fps = doc.GetFps()
+    if doc_fps != standard_fps:
+        doc.AddUndo(c4d.UNDOTYPE_CHANGE_SMALL, doc)
+        doc.SetFps(standard_fps)
+        fixes.append(f"Document FPS: {doc_fps} -> {standard_fps}")
+
+    # --- Iterate all render datas ---
+    active_final_start = start_frame
+    active_final_end = start_frame
+
+    rd = doc.GetFirstRenderData()
+    while rd:
+        doc.AddUndo(c4d.UNDOTYPE_CHANGE, rd)
+        changes, final_start, final_end = _fix_one_render_data(
+            doc, rd, standard_fps, start_frame)
+        fixes.extend(changes)
+        if rd == active_rd:
+            active_final_start = final_start
+            active_final_end = final_end
+        rd = rd.GetNext()
+
+    # --- Align timeline + preview to ACTIVE preset's range ---
+    tl_min = doc[c4d.DOCUMENT_MINTIME].GetFrame(standard_fps)
+    tl_max = doc[c4d.DOCUMENT_MAXTIME].GetFrame(standard_fps)
+    loop_min = doc[c4d.DOCUMENT_LOOPMINTIME].GetFrame(standard_fps)
+    loop_max = doc[c4d.DOCUMENT_LOOPMAXTIME].GetFrame(standard_fps)
+
+    if tl_min != active_final_start or tl_max != active_final_end:
+        # Avoid intermediate min > max state
+        if active_final_start >= tl_max:
+            doc[c4d.DOCUMENT_MAXTIME] = c4d.BaseTime(active_final_end, standard_fps)
+            doc[c4d.DOCUMENT_MINTIME] = c4d.BaseTime(active_final_start, standard_fps)
+        else:
+            doc[c4d.DOCUMENT_MINTIME] = c4d.BaseTime(active_final_start, standard_fps)
+            doc[c4d.DOCUMENT_MAXTIME] = c4d.BaseTime(active_final_end, standard_fps)
+        fixes.append(f"Timeline: {tl_min}-{tl_max} -> {active_final_start}-{active_final_end}")
+
+    if loop_min != active_final_start or loop_max != active_final_end:
+        if active_final_start >= loop_max:
+            doc[c4d.DOCUMENT_LOOPMAXTIME] = c4d.BaseTime(active_final_end, standard_fps)
+            doc[c4d.DOCUMENT_LOOPMINTIME] = c4d.BaseTime(active_final_start, standard_fps)
+        else:
+            doc[c4d.DOCUMENT_LOOPMINTIME] = c4d.BaseTime(active_final_start, standard_fps)
+            doc[c4d.DOCUMENT_LOOPMAXTIME] = c4d.BaseTime(active_final_end, standard_fps)
+        fixes.append(f"Preview range: {loop_min}-{loop_max} -> {active_final_start}-{active_final_end}")
+
+    # --- Snap playhead to range if it fell outside ---
+    playhead = doc.GetTime().GetFrame(standard_fps)
+    if playhead < active_final_start or playhead > active_final_end:
+        doc.SetTime(c4d.BaseTime(active_final_start, standard_fps))
+        fixes.append(f"Playhead: frame {playhead} -> {active_final_start} (out of range)")
+
+    return fixes
+
+
+def fix_fps_range(doc):
+    """Auto-fix FPS/range across ALL render presets. Aligns timeline to active preset."""
+    fixes = []
+    if not doc.GetFirstRenderData():
+        return fixes
+
     doc.StartUndo()
     try:
-        # --- Document-level FPS (once) ---
-        doc_fps = doc.GetFps()
-        if doc_fps != standard_fps:
-            doc.AddUndo(c4d.UNDOTYPE_CHANGE_SMALL, doc)
-            doc.SetFps(standard_fps)
-            fixes.append(f"Document FPS: {doc_fps} -> {standard_fps}")
-
-        # --- Iterate all render datas ---
-        active_final_start = start_frame
-        active_final_end = start_frame
-
-        rd = doc.GetFirstRenderData()
-        while rd:
-            doc.AddUndo(c4d.UNDOTYPE_CHANGE, rd)
-            changes, final_start, final_end = _fix_one_render_data(
-                doc, rd, standard_fps, start_frame)
-            fixes.extend(changes)
-            if rd == active_rd:
-                active_final_start = final_start
-                active_final_end = final_end
-            rd = rd.GetNext()
-
-        # --- Align timeline + preview to ACTIVE preset's range ---
-        tl_min = doc[c4d.DOCUMENT_MINTIME].GetFrame(standard_fps)
-        tl_max = doc[c4d.DOCUMENT_MAXTIME].GetFrame(standard_fps)
-        loop_min = doc[c4d.DOCUMENT_LOOPMINTIME].GetFrame(standard_fps)
-        loop_max = doc[c4d.DOCUMENT_LOOPMAXTIME].GetFrame(standard_fps)
-
-        if tl_min != active_final_start or tl_max != active_final_end:
-            # Avoid intermediate min > max state
-            if active_final_start >= tl_max:
-                doc[c4d.DOCUMENT_MAXTIME] = c4d.BaseTime(active_final_end, standard_fps)
-                doc[c4d.DOCUMENT_MINTIME] = c4d.BaseTime(active_final_start, standard_fps)
-            else:
-                doc[c4d.DOCUMENT_MINTIME] = c4d.BaseTime(active_final_start, standard_fps)
-                doc[c4d.DOCUMENT_MAXTIME] = c4d.BaseTime(active_final_end, standard_fps)
-            fixes.append(f"Timeline: {tl_min}-{tl_max} -> {active_final_start}-{active_final_end}")
-
-        if loop_min != active_final_start or loop_max != active_final_end:
-            if active_final_start >= loop_max:
-                doc[c4d.DOCUMENT_LOOPMAXTIME] = c4d.BaseTime(active_final_end, standard_fps)
-                doc[c4d.DOCUMENT_LOOPMINTIME] = c4d.BaseTime(active_final_start, standard_fps)
-            else:
-                doc[c4d.DOCUMENT_LOOPMINTIME] = c4d.BaseTime(active_final_start, standard_fps)
-                doc[c4d.DOCUMENT_LOOPMAXTIME] = c4d.BaseTime(active_final_end, standard_fps)
-            fixes.append(f"Preview range: {loop_min}-{loop_max} -> {active_final_start}-{active_final_end}")
-
-        # --- Snap playhead to range if it fell outside ---
-        playhead = doc.GetTime().GetFrame(standard_fps)
-        if playhead < active_final_start or playhead > active_final_end:
-            doc.SetTime(c4d.BaseTime(active_final_start, standard_fps))
-            fixes.append(f"Playhead: frame {playhead} -> {active_final_start} (out of range)")
-
+        fixes = _apply_fps_range(doc)
     except Exception as e:
         safe_print(f"Error fixing FPS/range: {e}")
     finally:
@@ -409,13 +419,8 @@ def fix_fps_range(doc):
     return fixes
 
 # ---------------- auto-fix functions ----------------
-def fix_lights(doc, lights_bad):
-    """Move stray lights into a 'lights' group null"""
-    if not lights_bad:
-        return 0
-
-    doc.StartUndo()
-
+def _apply_lights(doc, lights_bad):
+    """Apply light grouping fix. Caller owns undo, cache invalidation, and EventAdd."""
     # Find or create the lights group
     lights_group = None
     obj = doc.GetFirstObject()
@@ -438,17 +443,24 @@ def fix_lights(doc, lights_bad):
         light.InsertUnderLast(lights_group)
         moved += 1
 
+    return moved
+
+
+def fix_lights(doc, lights_bad):
+    """Move stray lights into a 'lights' group null"""
+    if not lights_bad:
+        return 0
+
+    doc.StartUndo()
+    moved = _apply_lights(doc, lights_bad)
     doc.EndUndo()
     check_cache.clear()
     c4d.EventAdd()
     return moved
 
-def fix_camera_shift(doc, cam_bad):
-    """Reset camera shift to 0 on all flagged cameras"""
-    if not cam_bad:
-        return 0
 
-    doc.StartUndo()
+def _apply_camera_shift(doc, cam_bad):
+    """Apply camera shift reset. Caller owns undo, cache invalidation, and EventAdd."""
     fixed = 0
     for cam in cam_bad:
         doc.AddUndo(c4d.UNDOTYPE_CHANGE, cam)
@@ -459,10 +471,32 @@ def fix_camera_shift(doc, cam_bad):
         except Exception:
             pass
 
+    return fixed
+
+
+def fix_camera_shift(doc, cam_bad):
+    """Reset camera shift to 0 on all flagged cameras"""
+    if not cam_bad:
+        return 0
+
+    doc.StartUndo()
+    fixed = _apply_camera_shift(doc, cam_bad)
     doc.EndUndo()
     check_cache.clear()
     c4d.EventAdd()
     return fixed
+
+
+def _apply_unused_materials(doc, unused_mats):
+    """Apply unused-material deletion. Caller owns undo, cache invalidation, and EventAdd."""
+    deleted = 0
+    for mat in unused_mats:
+        doc.AddUndo(c4d.UNDOTYPE_DELETE, mat)
+        mat.Remove()
+        deleted += 1
+
+    return deleted
+
 
 def fix_unused_materials(doc, unused_mats):
     """Delete unused materials from the scene"""
@@ -470,16 +504,46 @@ def fix_unused_materials(doc, unused_mats):
         return 0
 
     doc.StartUndo()
-    deleted = 0
-    for mat in unused_mats:
-        doc.AddUndo(c4d.UNDOTYPE_DELETE, mat)
-        mat.Remove()
-        deleted += 1
-
+    deleted = _apply_unused_materials(doc, unused_mats)
     doc.EndUndo()
     check_cache.clear()
     c4d.EventAdd()
     return deleted
+
+
+def apply_fixes(doc, fixes):
+    """Apply selected auto-fixes as one undo step.
+
+    ``fixes`` items have shape {"check_id": str, "objects": list}. The caller
+    is responsible for passing only live objects/materials filtered to new
+    violations. ``fps_range`` ignores ``objects`` and normalizes all presets.
+    """
+    dispatch = {
+        "lights": _apply_lights,
+        "cam": _apply_camera_shift,
+        "unused_mats": _apply_unused_materials,
+        "fps_range": lambda active_doc, _objects: _apply_fps_range(active_doc),
+    }
+    results = []
+
+    try:
+        doc.StartUndo()
+        try:
+            for item in fixes or []:
+                check_id = item.get("check_id")
+                apply_one = dispatch.get(check_id)
+                if not apply_one:
+                    continue
+                objects = item.get("objects") or []
+                if check_id != "fps_range" and not objects:
+                    continue
+                results.append({"check_id": check_id, "result": apply_one(doc, objects)})
+        finally:
+            doc.EndUndo()
+    finally:
+        check_cache.clear()
+        c4d.EventAdd()
+    return results
 
 _REPORT_KEY_BY_CHECK_ID = {
     "lights": "lights",
