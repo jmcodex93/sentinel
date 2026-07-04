@@ -8,28 +8,31 @@ import sys
 import webbrowser
 from collections import defaultdict
 
-# ---------------- Safe Print Function ----------------
-def safe_print(msg):
-    """Print to console with null safety. Prefix matches plugin brand."""
-    try:
-        if msg is not None:
-            print(f"[Sentinel] {msg}")
-    except (UnicodeEncodeError, AttributeError):
-        pass  # Print failed, continue silently
+_ROOT = os.path.dirname(__file__)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
-# ---------------- Platform Utilities ----------------
-def open_in_explorer(path):
-    """Open a file or folder in the system file manager (cross-platform)"""
-    import subprocess
-    try:
-        if sys.platform == "darwin":
-            subprocess.Popen(["open", path])
-        elif sys.platform == "win32":
-            os.startfile(path)
-        else:
-            subprocess.Popen(["xdg-open", path])
-    except Exception as e:
-        safe_print(f"Could not open path: {path} - {e}")
+import sentinel
+from sentinel import PLUGIN_NAME, PLUGIN_VERSION
+from sentinel.common.cache import CheckCache, check_cache
+from sentinel.common.constants import (
+    CACHE_DURATION,
+    CHECK_COOLDOWN,
+    LEGACY_SETTINGS_FILE,
+    MAX_OBJECTS_PER_CHECK,
+    PLUGIN_ID,
+    PRESETS,
+    SAFE_AREA_OVERLAY_PLUGIN_ID,
+    SETTINGS_FILE,
+)
+from sentinel.common.helpers import (
+    _any_ancestor_named,
+    _iter_objs,
+    _safe_name,
+    open_in_explorer,
+    safe_print,
+)
+from sentinel.common.settings import GlobalSettings
 
 # Import maxon for node material access
 try:
@@ -45,235 +48,11 @@ try:
 except ImportError:
     REDSHIFT_AVAILABLE = False
 
-# Import maxon module path
-sys.path.insert(0, os.path.dirname(__file__))
-
-# Plugin ID - change if ID collision
-PLUGIN_ID = 2099069
-PLUGIN_NAME = "Sentinel v1.5.7"
-
-# Secondary plugin: SafeAreaOverlayObject (ObjectData) for the
-# cross-aspect safe-area viewport overlay (QC #12 visualization,
-# v1.5.6).
-#
-# Investigation history:
-#   - v1.5.5: prototyped via SceneHookData → API removed in C4D 2026
-#   - v1.5.6 probe round 1: TagData.Draw → registers cleanly but Draw
-#     is NEVER invoked by C4D 2026's viewport pipeline (only Init +
-#     Execute fire). Only the tag's built-in handle is drawn.
-#   - v1.5.6 probe round 2: ObjectData.Draw → fires in DRAWPASS_OBJECT
-#     even without selection. Screen-space drawing via
-#     `bd.SetMatrix_Screen()` + `bd.DrawLine` + `bd.DrawHUDText` all
-#     work as expected. `bd.GetSafeFrame()` returns the rendered
-#     frame's letterboxed rectangle inside the viewport — exactly
-#     what we need to position our format overlay correctly.
-#
-# Architecture: one ObjectData marker object per document (auto-created
-# at scene root when the panel toggle is enabled). Reads from the
-# module-level `_overlay_state` singleton so the panel can toggle it
-# without finding/modifying the object.
-SAFE_AREA_OVERLAY_PLUGIN_ID = 2099072  # dev-range; replace with
-                                       # Maxon-allocated for production
-
-# Preset names - normalized to lowercase with underscores
-# The system accepts both "pre_render" and "pre-render" (case-insensitive)
-PRESETS = ["previz", "pre_render", "render", "stills"]
-
 def normalize_preset_name(name):
     """Normalize preset name: lowercase, replace hyphens/spaces with underscores"""
     if not name:
         return ""
     return name.strip().lower().replace("-", "_").replace(" ", "_")
-
-# Performance settings for watcher
-MAX_OBJECTS_PER_CHECK = 1000  # Process in chunks
-CACHE_DURATION = 2.0  # Cache results for 2 seconds (optimized for performance)
-CHECK_COOLDOWN = 0.5  # Minimum time between checks
-
-# Global settings file for artist name (Sentinel)
-SETTINGS_FILE = "sentinel_settings.json"
-LEGACY_SETTINGS_FILE = "ys_guardian_settings.json"  # pre-rebrand, auto-migrated on first load
-
-# ---------------- Settings Persistence ----------------
-class GlobalSettings:
-    """Manages computer-level settings (not scene-specific)"""
-
-    @staticmethod
-    def get_settings_path():
-        prefs_path = c4d.storage.GeGetC4DPath(c4d.C4D_PATH_PREFS)
-        return os.path.join(prefs_path, SETTINGS_FILE)
-
-    @staticmethod
-    def _legacy_path():
-        prefs_path = c4d.storage.GeGetC4DPath(c4d.C4D_PATH_PREFS)
-        return os.path.join(prefs_path, LEGACY_SETTINGS_FILE)
-
-    @staticmethod
-    def _load():
-        settings_path = GlobalSettings.get_settings_path()
-        # Try new file first
-        if os.path.exists(settings_path):
-            try:
-                with open(settings_path, 'r') as f:
-                    return json.load(f)
-            except Exception:
-                pass
-        # One-time migration from legacy YS Guardian settings
-        legacy_path = GlobalSettings._legacy_path()
-        if os.path.exists(legacy_path):
-            try:
-                with open(legacy_path, 'r') as f:
-                    data = json.load(f)
-                # Persist to new path so future loads skip the migration check
-                with open(settings_path, 'w') as f:
-                    json.dump(data, f, indent=2)
-                safe_print(f"Migrated legacy settings: {LEGACY_SETTINGS_FILE} -> {SETTINGS_FILE}")
-                return data
-            except Exception as e:
-                safe_print(f"Could not migrate legacy settings: {e}")
-        return {}
-
-    @staticmethod
-    def _save(settings):
-        try:
-            with open(GlobalSettings.get_settings_path(), 'w') as f:
-                json.dump(settings, f, indent=2)
-            return True
-        except Exception:
-            return False
-
-    @staticmethod
-    def get(key, default=''):
-        return GlobalSettings._load().get(key, default)
-
-    @staticmethod
-    def set(key, value):
-        settings = GlobalSettings._load()
-        settings[key] = value
-        return GlobalSettings._save(settings)
-
-    @staticmethod
-    def load_artist_name():
-        return GlobalSettings.get('artist_name', '')
-
-    @staticmethod
-    def save_artist_name(artist_name):
-        return GlobalSettings.set('artist_name', artist_name)
-
-    @staticmethod
-    def get_snapshot_dir():
-        """Get configured RS snapshot directory, or platform default"""
-        saved = GlobalSettings.get('snapshot_dir', '')
-        if saved:
-            return saved
-        if sys.platform == "darwin":
-            return os.path.expanduser("~/Library/Caches/Redshift/Snapshots")
-        return r"C:\cache\rs snapshots"
-
-    @staticmethod
-    def set_snapshot_dir(path):
-        return GlobalSettings.set('snapshot_dir', path)
-
-    @staticmethod
-    def get_standard_fps():
-        """Get studio standard FPS (default 25)"""
-        return int(GlobalSettings.get('standard_fps', 25))
-
-    @staticmethod
-    def set_standard_fps(fps):
-        return GlobalSettings.set('standard_fps', int(fps))
-
-# ---------------- Performance Cache ----------------
-class CheckCache:
-    def __init__(self):
-        self.cache = {}
-        self.last_update = 0
-        self.doc_id = None
-        self.ancestor_vis_cache = {}  # Persistent ancestor visibility cache
-
-    def get(self, doc, key):
-        doc_id = id(doc)
-        now = time.time()
-
-        if (self.doc_id == doc_id and
-            key in self.cache and
-            now - self.last_update < CACHE_DURATION):
-            return self.cache[key]
-        return None
-
-    def set(self, doc, key, value):
-        self.doc_id = id(doc)
-        self.cache[key] = value
-        self.last_update = time.time()
-
-    def get_ancestor_visibility(self, obj):
-        """Get cached ancestor visibility or calculate and cache"""
-        obj_id = id(obj)
-        if obj_id in self.ancestor_vis_cache:
-            return self.ancestor_vis_cache[obj_id]
-        return None
-
-    def set_ancestor_visibility(self, obj, vis_tuple):
-        """Cache ancestor visibility for object"""
-        obj_id = id(obj)
-        self.ancestor_vis_cache[obj_id] = vis_tuple
-
-    def clear(self):
-        self.cache.clear()
-        self.ancestor_vis_cache.clear()
-        self.doc_id = None
-
-# Global cache instance
-check_cache = CheckCache()
-
-def _safe_name(obj):
-    """Get object name safely, returns 'unknown' if object is dead"""
-    try:
-        return obj.GetName() or "unnamed"
-    except Exception:
-        return "unknown"
-
-# ---------------- utils ----------------
-def _iter_objs(op, max_count=None):
-    """Optimized object iterator with limit"""
-    count = 0
-    stack = [op]
-
-    while stack and (max_count is None or count < max_count):
-        current = stack.pop()
-        if current is None:
-            continue
-
-        yield current
-        count += 1
-
-        child = current.GetDown()
-        if child:
-            stack.append(child)
-
-        sibling = current.GetNext()
-        if sibling:
-            stack.append(sibling)
-
-def _any_ancestor_named(o, names_lower):
-    """Check if any ancestor has one of the specified names"""
-    if not o:
-        return False
-
-    p = o.GetUp()
-    depth = 0
-    max_depth = 100
-
-    while p and depth < max_depth:
-        try:
-            nm = (p.GetName() or "").strip().lower()
-            if nm in names_lower:
-                return True
-        except Exception:
-            pass
-        p = p.GetUp()
-        depth += 1
-    return False
 
 # ---------------- lights (optimized) ----------------
 RS_LIGHT_ID = 1036751  # Redshift Light

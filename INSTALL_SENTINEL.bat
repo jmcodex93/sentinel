@@ -89,6 +89,11 @@ if not exist "%PLUGIN_DIR%\sentinel_panel.pyp" (
     set "MISSING_FILES=1"
 )
 
+if not exist "%PLUGIN_DIR%\sentinel" (
+    echo [ERROR] Missing: sentinel package folder
+    set "MISSING_FILES=1"
+)
+
 if not exist "%PLUGIN_DIR%\exr_converter_external.py" (
     echo [ERROR] Missing: exr_converter_external.py
     set "MISSING_FILES=1"
@@ -141,6 +146,9 @@ echo ----------------------------------------
 
 copy /Y "%PLUGIN_DIR%\sentinel_panel.pyp" "%DEST_DIR%\" >nul 2>&1
 if !errorlevel! equ 0 (echo [OK] Main plugin file) else (echo [FAILED] Main plugin file & goto :error_exit)
+
+xcopy /E /I /Y "%PLUGIN_DIR%\sentinel" "%DEST_DIR%\sentinel" >nul 2>&1
+if !errorlevel! equ 0 (echo [OK] Sentinel Python package) else (echo [FAILED] Sentinel Python package & goto :error_exit)
 
 copy /Y "%PLUGIN_DIR%\exr_converter_external.py" "%DEST_DIR%\" >nul 2>&1
 if !errorlevel! equ 0 (echo [OK] External converter) else (echo [FAILED] External converter)

@@ -11,6 +11,18 @@
 
 That's it! The installer handles everything automatically and keeps the window open to show results.
 
+## Manual Install
+
+Copy these `plugin/` folder contents into your Cinema 4D plugins `Sentinel` folder:
+
+- `sentinel_panel.pyp`
+- `sentinel/`
+- `res/`
+- `abc_retime/`
+- `exr_converter_external.py`
+
+Then restart Cinema 4D.
+
 ## Diagnostic Tool
 
 If you have issues with Python or EXR conversion:
@@ -25,9 +37,10 @@ If you have issues with Python or EXR conversion:
 
 2. **Installs Plugin Files**
    - Main plugin: `sentinel_panel.pyp`
-   - Snapshot manager
-   - EXR to PNG converters
-   - Python configuration helper
+   - Python package: `sentinel/`
+   - C4D resources: `res/`
+   - ABC Retime plugin bundle: `abc_retime/`
+   - External EXR converter: `exr_converter_external.py`
 
 3. **Sets Up Directories**
    - Plugin directory: `C:\Program Files\Maxon Cinema 4D 2024\plugins\Sentinel\`
@@ -87,10 +100,12 @@ For the snapshot feature to work:
 ```
 C:\Program Files\Maxon Cinema 4D 2024\plugins\Sentinel\
 ├── sentinel_panel.pyp             (main plugin)
-├── redshift_snapshot_manager_fixed.py
-├── exr_to_png_converter_simple.py
+├── sentinel\                      (Sentinel Python package)
+│   ├── __init__.py
+│   └── common\
 ├── exr_converter_external.py
-├── python_path_config.py
+├── res\                           (C4D resource descriptions)
+├── abc_retime\                    (ABC Retime plugin bundle)
 ├── c4d\
 │   └── VibrateNull.c4d
 └── icons\
