@@ -40,7 +40,9 @@ from sentinel.qc.results import (
     structured_cache_key,
 )
 from sentinel.qc.registry import CHECK_REGISTRY, CheckDisplayView, RowKeysView
+from sentinel.qc.registry import entry_severity
 from sentinel.qc.score import compute_score, count_violations, run_all_checks
+from sentinel.rules import get_active_rules
 
 # Import maxon for node material access
 try:
@@ -61,6 +63,39 @@ def normalize_preset_name(name):
     if not name:
         return ""
     return name.strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _doc_path_for_rules(doc):
+    if doc is None:
+        return ""
+    try:
+        return doc.GetDocumentPath() or ""
+    except Exception:
+        return ""
+
+
+def _machine_rule_settings():
+    try:
+        return {"standard_fps": GlobalSettings.get_standard_fps()}
+    except Exception:
+        return {}
+
+
+def _active_rules_for_doc(doc):
+    return get_active_rules(_doc_path_for_rules(doc), _machine_rule_settings())
+
+
+def _rules_header_text(rules_context):
+    if rules_context is None:
+        return "Rules: defaults"
+    if rules_context.rules_path:
+        text = f"Rules: {os.path.basename(rules_context.rules_path)} (project)"
+    else:
+        text = "Rules: defaults"
+    shadow_count = len(rules_context.shadowed_paths or [])
+    if shadow_count:
+        text += f" - shadows {shadow_count}"
+    return text
 
 # ---------------- migrated scene QC wrappers ----------------
 def check_lights(doc):
@@ -1329,7 +1364,7 @@ def check_takes(doc):
 def check_fps_range(doc):
     return render_checks.legacy_items(render_checks.check_fps_range(doc))
 
-def _fix_one_render_data(doc, rd, standard_fps):
+def _fix_one_render_data(doc, rd, standard_fps, start_frame=1001):
     """Fix a single render data. Returns list of human-readable change strings.
 
     Caller is responsible for StartUndo/EndUndo and AddUndo. Returns final
@@ -1357,16 +1392,16 @@ def _fix_one_render_data(doc, rd, standard_fps):
         rd[c4d.RDATA_FRAMESTEP] = 1
         changes.append(f"{tag} Frame step {frame_step} -> 1")
 
-    final_start = 1001
-    final_end = 1001
+    final_start = start_frame
+    final_end = start_frame
 
     if is_stills:
-        if frame_mode == c4d.RDATA_FRAMESEQUENCE_MANUAL and current_start != 1001:
+        if frame_mode == c4d.RDATA_FRAMESEQUENCE_MANUAL and current_start != start_frame:
             duration = max(0, current_end - current_start)
-            final_end = 1001 + duration
-            rd[c4d.RDATA_FRAMEFROM] = c4d.BaseTime(1001, standard_fps)
+            final_end = start_frame + duration
+            rd[c4d.RDATA_FRAMEFROM] = c4d.BaseTime(start_frame, standard_fps)
             rd[c4d.RDATA_FRAMETO] = c4d.BaseTime(final_end, standard_fps)
-            changes.append(f"{tag} Frame range {current_start}-{current_end} -> 1001-{final_end}")
+            changes.append(f"{tag} Frame range {current_start}-{current_end} -> {start_frame}-{final_end}")
         elif frame_mode == c4d.RDATA_FRAMESEQUENCE_ALLFRAMES:
             rd[c4d.RDATA_FRAMESEQUENCE] = c4d.RDATA_FRAMESEQUENCE_CURRENTFRAME
             changes.append(f"{tag} Frame mode 'All Frames' -> 'Current Frame'")
@@ -1374,17 +1409,17 @@ def _fix_one_render_data(doc, rd, standard_fps):
             # Re-anchor BaseTime to new fps
             rd[c4d.RDATA_FRAMEFROM] = c4d.BaseTime(current_start, standard_fps)
             rd[c4d.RDATA_FRAMETO] = c4d.BaseTime(current_end, standard_fps)
-            final_end = current_end if current_end >= 1001 else 1001
+            final_end = current_end if current_end >= start_frame else start_frame
         else:
-            final_end = current_end if current_end >= 1001 else 1001
+            final_end = current_end if current_end >= start_frame else start_frame
     else:
-        # Animation: range start at 1001, preserve duration
+        # Animation: range start at configured project frame, preserve duration
         duration = max(0, current_end - current_start)
-        final_end = 1001 + duration
-        if current_start != 1001 or rd_fps_old != standard_fps:
+        final_end = start_frame + duration
+        if current_start != start_frame or rd_fps_old != standard_fps:
             rd[c4d.RDATA_FRAMEFROM] = c4d.BaseTime(final_start, standard_fps)
             rd[c4d.RDATA_FRAMETO] = c4d.BaseTime(final_end, standard_fps)
-            if current_start != 1001:
+            if current_start != start_frame:
                 changes.append(f"{tag} Frame range {current_start}-{current_end} -> {final_start}-{final_end}")
         if frame_mode in (c4d.RDATA_FRAMESEQUENCE_CURRENTFRAME, c4d.RDATA_FRAMESEQUENCE_ALLFRAMES):
             rd[c4d.RDATA_FRAMESEQUENCE] = c4d.RDATA_FRAMESEQUENCE_MANUAL
@@ -1399,7 +1434,9 @@ def fix_fps_range(doc):
     if not doc.GetFirstRenderData():
         return fixes
 
-    standard_fps = GlobalSettings.get_standard_fps()
+    rules_context = _active_rules_for_doc(doc)
+    standard_fps = int(rules_context.params.get("standard_fps", GlobalSettings.get_standard_fps()))
+    start_frame = int(rules_context.params.get("start_frame", 1001))
     active_rd = doc.GetActiveRenderData()
 
     doc.StartUndo()
@@ -1412,13 +1449,14 @@ def fix_fps_range(doc):
             fixes.append(f"Document FPS: {doc_fps} -> {standard_fps}")
 
         # --- Iterate all render datas ---
-        active_final_start = 1001
-        active_final_end = 1001
+        active_final_start = start_frame
+        active_final_end = start_frame
 
         rd = doc.GetFirstRenderData()
         while rd:
             doc.AddUndo(c4d.UNDOTYPE_CHANGE, rd)
-            changes, final_start, final_end = _fix_one_render_data(doc, rd, standard_fps)
+            changes, final_start, final_end = _fix_one_render_data(
+                doc, rd, standard_fps, start_frame)
             fixes.extend(changes)
             if rd == active_rd:
                 active_final_start = final_start
@@ -1986,7 +2024,8 @@ def _current_module():
 
 def _build_qc_summary(doc):
     """Run all QC checks (using cache) and return a compact summary dict."""
-    return compute_score(run_all_checks(doc, _current_module()))
+    rules_context = _active_rules_for_doc(doc)
+    return compute_score(run_all_checks(doc, _current_module(), rules_context), rules_context)
 
 
 def preview_next_filename(doc, status=None):
@@ -2838,6 +2877,7 @@ class SentinelSettingsDialog(gui.GeDialog):
     COMBO_HISTORY_MAX = 1006
     BTN_CANCEL = 1007
     BTN_SAVE = 1008
+    LABEL_STANDARD_FPS = 1009
 
     # FPS choices in the combo
     FPS_OPTIONS = [24, 25, 30, 60]
@@ -2847,6 +2887,7 @@ class SentinelSettingsDialog(gui.GeDialog):
     def __init__(self):
         super().__init__()
         self.confirmed = False
+        self._standard_fps_overridden = False
 
     def CreateLayout(self):
         self.SetTitle("Sentinel Settings")
@@ -2860,7 +2901,7 @@ class SentinelSettingsDialog(gui.GeDialog):
 
         self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
         self.GroupSpace(8, 4)
-        self.AddStaticText(0, c4d.BFH_LEFT, 180, 0, "Standard FPS:", 0)
+        self.AddStaticText(self.LABEL_STANDARD_FPS, c4d.BFH_LEFT, 260, 0, "Standard FPS:", 0)
         self.AddComboBox(self.COMBO_FPS, c4d.BFH_LEFT, 100, 0)
 
         self.AddStaticText(0, c4d.BFH_LEFT, 180, 0, "Default Compositor:", 0)
@@ -2909,13 +2950,30 @@ class SentinelSettingsDialog(gui.GeDialog):
             self.AddChild(self.COMBO_FPS, i, f"{fps} fps")
         try:
             current_fps = GlobalSettings.get_standard_fps()
+            doc = c4d.documents.GetActiveDocument()
+            rules_context = _active_rules_for_doc(doc)
+            self._standard_fps_overridden = (
+                rules_context.field_sources.get("standard_fps") == "project"
+            )
+            if self._standard_fps_overridden:
+                current_fps = rules_context.params.get("standard_fps", current_fps)
         except Exception:
             current_fps = 25
+            self._standard_fps_overridden = False
         try:
             idx = self.FPS_OPTIONS.index(int(current_fps))
         except ValueError:
             idx = self.FPS_OPTIONS.index(25) if 25 in self.FPS_OPTIONS else 0
         self.SetInt32(self.COMBO_FPS, idx)
+        if self._standard_fps_overridden:
+            self.SetString(
+                self.LABEL_STANDARD_FPS,
+                "Standard FPS (overridden by project rules):",
+            )
+            try:
+                self.Enable(self.COMBO_FPS, False)
+            except Exception:
+                pass
 
         # Compositor combo
         for i, comp in enumerate(self.COMP_OPTIONS):
@@ -2965,7 +3023,7 @@ class SentinelSettingsDialog(gui.GeDialog):
             try:
                 # Standard FPS
                 fps_idx = int(self.GetInt32(self.COMBO_FPS))
-                if 0 <= fps_idx < len(self.FPS_OPTIONS):
+                if not self._standard_fps_overridden and 0 <= fps_idx < len(self.FPS_OPTIONS):
                     GlobalSettings.set_standard_fps(self.FPS_OPTIONS[fps_idx])
 
                 # Compositor
@@ -3562,7 +3620,18 @@ SAFE_AREA_INSETS = {
 }
 
 
-def safe_area_ndc_box(fmt_id):
+def _safe_area_insets(fmt_id, rules_context=None, fallback=None):
+    try:
+        if rules_context is not None:
+            insets = rules_context.params.get("safe_area_insets", {}).get(fmt_id)
+            if insets:
+                return insets
+    except Exception:
+        pass
+    return SAFE_AREA_INSETS.get(fmt_id, fallback)
+
+
+def safe_area_ndc_box(fmt_id, rules_context=None):
     """Return safe-area rectangle in NDC space (Normalized Device Coords).
 
     NDC convention used by Sentinel:
@@ -3575,7 +3644,7 @@ def safe_area_ndc_box(fmt_id):
     Unknown format ids return the full NDC range (no insets) so
     the check degrades gracefully instead of false-positive flooding.
     """
-    insets = SAFE_AREA_INSETS.get(fmt_id)
+    insets = _safe_area_insets(fmt_id, rules_context, fallback=None)
     if not insets:
         return {"left": -1.0, "right": 1.0, "bottom": -1.0, "top": 1.0}
     return {
@@ -3586,7 +3655,7 @@ def safe_area_ndc_box(fmt_id):
     }
 
 
-def format_safe_area_in_master_ndc(fmt_id, master_aspect):
+def format_safe_area_in_master_ndc(fmt_id, master_aspect, rules_context=None):
     """Return the format's safe-area rectangle expressed in MASTER NDC.
 
     This is the "crop interpretation" of cross-aspect safe area —
@@ -3618,7 +3687,7 @@ def format_safe_area_in_master_ndc(fmt_id, master_aspect):
         return {"left": -1.0, "right": 1.0, "bottom": -1.0, "top": 1.0}
 
     f_aspect = format_aspect(fmt_def)
-    insets = SAFE_AREA_INSETS.get(fmt_id, {
+    insets = _safe_area_insets(fmt_id, rules_context, {
         "top": 0.05, "bottom": 0.05, "left": 0.05, "right": 0.05,
     })
 
@@ -4210,7 +4279,7 @@ def _evaluate_object_at_frame(doc, frame, fps):
         pass
 
 
-def _scan_cross_aspect_safe_area(doc, sample_strategy="keyframes"):
+def _scan_cross_aspect_safe_area(doc, sample_strategy="keyframes", rules_context=None):
     """QC #12 — verify Safe Area subjects stay within per-format safe
     areas across all active Multi-Format delivery Takes.
 
@@ -4261,6 +4330,8 @@ def _scan_cross_aspect_safe_area(doc, sample_strategy="keyframes"):
     """
     if doc is None:
         return []
+    if rules_context is None:
+        rules_context = _active_rules_for_doc(doc)
 
     marked = find_marked_safe_area_objects(doc)
     if not marked:
@@ -4297,7 +4368,7 @@ def _scan_cross_aspect_safe_area(doc, sample_strategy="keyframes"):
     format_safe_boxes = {}
     for fmt_id, _take in mf_takes:
         format_safe_boxes[fmt_id] = format_safe_area_in_master_ndc(
-            fmt_id, master_aspect)
+            fmt_id, master_aspect, rules_context)
 
     fps = doc.GetFps()
     original_time = doc.GetTime()
@@ -4403,7 +4474,7 @@ def _cross_aspect_safe_area_result(violations):
     return result
 
 
-def check_cross_aspect_safe_area_structured(doc, sample_strategy="keyframes"):
+def check_cross_aspect_safe_area_structured(doc, sample_strategy="keyframes", rules_context=None):
     """QC #12 structured wrapper.
 
     Frames are deliberately stored only in violation extras, never in the
@@ -4411,13 +4482,14 @@ def check_cross_aspect_safe_area_structured(doc, sample_strategy="keyframes"):
     the same no-cache runtime behavior for sample_strategy-sensitive results.
     """
     return _cross_aspect_safe_area_result(
-        _scan_cross_aspect_safe_area(doc, sample_strategy=sample_strategy)
+        _scan_cross_aspect_safe_area(
+            doc, sample_strategy=sample_strategy, rules_context=rules_context)
     )
 
 
-def check_cross_aspect_safe_area(doc, sample_strategy="keyframes"):
+def check_cross_aspect_safe_area(doc, sample_strategy="keyframes", rules_context=None):
     return check_cross_aspect_safe_area_structured(
-        doc, sample_strategy=sample_strategy
+        doc, sample_strategy=sample_strategy, rules_context=rules_context
     ).to_legacy()
 
 
@@ -4510,12 +4582,14 @@ class _SafeAreaOverlayState:
                 else:
                     aspect = 16.0 / 9.0
             self.master_aspect = float(aspect)
+            rules_context = _active_rules_for_doc(doc)
 
             mf_takes = find_active_multiformat_takes(doc)
             rects = []
             for fmt_id, _take in mf_takes:
                 safe_box = format_safe_area_in_master_ndc(fmt_id,
-                                                          self.master_aspect)
+                                                          self.master_aspect,
+                                                          rules_context)
                 color = _SAFE_AREA_COLORS.get(fmt_id,
                                               c4d.Vector(0.6, 0.6, 0.6))
                 rects.append((fmt_id, color, safe_box))
@@ -5516,7 +5590,8 @@ def collect_scene(doc, artist_name):
     safe_print("Scene Collector: Running pre-flight checks...")
 
     issues = []
-    registry_results = run_all_checks(doc, _current_module())
+    rules_context = _active_rules_for_doc(doc)
+    registry_results = run_all_checks(doc, _current_module(), rules_context)
     legacy_by_id = {
         check_id: pair.get("legacy_result")
         for check_id, pair in registry_results.items()
@@ -5971,8 +6046,15 @@ class StatusArea(gui.GeUserArea):
                     continue
 
                 severity, ok_msg, fail_tpl, name_key = cfg
+                severity = self.data.get("_severity_by_id", {}).get(key, severity)
+                disabled = key in set(self.data.get("_disabled_checks", []))
 
-                if val > 0:
+                if disabled:
+                    status = "[OFF ]"
+                    message = "Disabled by project rules"
+                    text_col = _COL_GRAY
+                    bg = _COL_BG
+                elif val > 0:
                     status = f"[{severity}]"
                     first = ""
                     if name_key:
@@ -6683,6 +6765,7 @@ class G:
     CANVAS = 1008
     SCORE_CANVAS = 1180  # ScoreHeader UserArea
     LABEL_FILENAME = 1192  # Scene identity caption (filename of active doc)
+    LABEL_RULES = 1193     # Active ruleset caption
 
     # Tabbed layout (Phase 2 of UI redesign)
     TAB_BAR = 1200            # CUSTOMGUI_QUICKTAB widget
@@ -6765,6 +6848,7 @@ class YSPanel(gui.GeDialog):
         super().__init__()
         self._last_doc = None
         self._last_check_time = 0
+        self._last_rules_identity = None
         self.ua = None
         self.score_ua = None  # ScoreHeader instance
         self.history_ua = None  # HistoryArea instance
@@ -7324,9 +7408,13 @@ class YSPanel(gui.GeDialog):
 
         # Check cooldown
         now = time.time()
-        if now - self._last_check_time < CHECK_COOLDOWN:
+        rules_context = _active_rules_for_doc(doc)
+        rules_identity = rules_context.identity
+        rules_changed = self._last_rules_identity != rules_identity
+        if now - self._last_check_time < CHECK_COOLDOWN and not rules_changed:
             return
         self._last_check_time = now
+        self._last_rules_identity = rules_identity
 
         try:
             # Clear stale references before running checks
@@ -7335,8 +7423,8 @@ class YSPanel(gui.GeDialog):
             # Run checks from the registry. QC #12 uses "current_frame" via
             # registry kwargs in auto-refresh; click "Info" still upgrades to
             # full keyframe sampling for a complete timeline analysis.
-            registry_results = run_all_checks(doc, _current_module())
-            score_summary = compute_score(registry_results)
+            registry_results = run_all_checks(doc, _current_module(), rules_context)
+            score_summary = compute_score(registry_results, rules_context)
             counts_by_id = score_summary["counts"]
             legacy_by_id = {
                 check_id: pair.get("legacy_result")
@@ -7375,6 +7463,11 @@ class YSPanel(gui.GeDialog):
             # it lives in the always-visible Scene Header.)
             if self.ua is not None:
                 state = dict(counts_by_id)
+                state["_disabled_checks"] = score_summary.get("disabled", [])
+                state["_severity_by_id"] = {
+                    entry.check_id: entry_severity(entry, rules_context)
+                    for entry in CHECK_REGISTRY
+                }
                 for entry in CHECK_REGISTRY:
                     if entry.names_key:
                         items = legacy_by_id.get(entry.check_id) or []
@@ -7397,6 +7490,10 @@ class YSPanel(gui.GeDialog):
                 stats_str = f"{poly_str}  ·  {scene_stats.get('materials', 0)} mats  ·  {scene_stats.get('lights', 0)} lights"
             if self.score_ua is not None:
                 self.score_ua.set_state(passed, total_checks, stats_str)
+            try:
+                self.SetString(G.LABEL_RULES, _rules_header_text(rules_context))
+            except Exception:
+                pass
 
             # Store results
             self._lights_bad = lights_bad
@@ -7456,6 +7553,7 @@ class YSPanel(gui.GeDialog):
         self.AddUserArea(G.SCORE_CANVAS, c4d.BFH_SCALEFIT|c4d.BFV_FIT, 0, ScoreHeader.HEIGHT)
         self.score_ua = ScoreHeader()
         self.AttachUserArea(self.score_ua, G.SCORE_CANVAS)
+        self.AddStaticText(G.LABEL_RULES, c4d.BFH_LEFT, 0, 0, "Rules: defaults", 0)
 
         self.GroupEnd()  # end Scene Header
 
@@ -7854,13 +7952,16 @@ class YSPanel(gui.GeDialog):
                 safe_print("No camera shift issues found")
 
         elif cid == G.BTN_INFO_PRESET:
+            rules_context = _active_rules_for_doc(doc)
+            approved_presets = list(rules_context.params.get("approved_presets", PRESETS))
+            approved_set = {normalize_preset_name(name) for name in approved_presets}
             info_msg = "RENDER PRESETS:\n\n"
-            info_msg += "Standard presets: previz, pre_render, render, stills\n\n"
+            info_msg += f"Standard presets: {', '.join(approved_presets)}\n\n"
             rd = doc.GetFirstRenderData()
             while rd:
                 name = rd.GetName()
                 normalized = normalize_preset_name(name)
-                status = "OK" if normalized in set(PRESETS) else "NON-STANDARD"
+                status = "OK" if normalized in approved_set else "NON-STANDARD"
                 info_msg += f"  [{status}] {name}\n"
                 rd = rd.GetNext()
             c4d.gui.MessageDialog(info_msg)
@@ -7948,7 +8049,9 @@ class YSPanel(gui.GeDialog):
             c4d.gui.MessageDialog(info_msg)
 
         elif cid == G.BTN_INFO_FPS:
-            standard_fps = GlobalSettings.get_standard_fps()
+            rules_context = _active_rules_for_doc(doc)
+            standard_fps = int(rules_context.params.get("standard_fps", GlobalSettings.get_standard_fps()))
+            start_frame = int(rules_context.params.get("start_frame", 1001))
             doc_fps = doc.GetFps()
             rd = doc.GetActiveRenderData()
             info_msg = f"FPS & FRAME RANGE\n\n"
@@ -7984,7 +8087,7 @@ class YSPanel(gui.GeDialog):
                 info_msg += f"Playhead: frame {playhead}\n"
 
                 if is_stills:
-                    info_msg += f"\nStills: 'Current Frame' is OK; range start expected at 1001."
+                    info_msg += f"\nStills: 'Current Frame' is OK; range start expected at {start_frame}."
                 else:
                     info_msg += f"\nAnimation: timeline + preview must match render range."
             if self._fps_range_bad:
@@ -8025,11 +8128,13 @@ class YSPanel(gui.GeDialog):
 
         elif cid == G.BTN_FIX_FPS:
             if self._fps_range_bad:
-                standard_fps = GlobalSettings.get_standard_fps()
+                rules_context = _active_rules_for_doc(doc)
+                standard_fps = int(rules_context.params.get("standard_fps", GlobalSettings.get_standard_fps()))
+                start_frame = int(rules_context.params.get("start_frame", 1001))
                 # Build confirmation listing what will change
                 count = len(self._fps_range_bad)
                 preview = f"FIX FPS / FRAME RANGE\n\n"
-                preview += f"Standard: {standard_fps} fps, start frame 1001\n\n"
+                preview += f"Standard: {standard_fps} fps, start frame {start_frame}\n\n"
                 preview += f"Issues to fix ({count}):\n"
                 for issue in self._fps_range_bad[:15]:
                     preview += f"  - {issue['issue']}\n"

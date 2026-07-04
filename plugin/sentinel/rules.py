@@ -95,6 +95,7 @@ DEFAULTS = {
 }
 
 _RULES_CACHE: dict[str, dict[str, Any]] = {}
+_ACTIVE_RULE_IDENTITIES: dict[str, tuple[str | None, float | None]] = {}
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,29 @@ class RulesContext:
 def invalidate() -> None:
     """Clear the module-level rules cache."""
     _RULES_CACHE.clear()
+    _ACTIVE_RULE_IDENTITIES.clear()
+
+
+def get_active_rules(
+    doc_path: str | os.PathLike[str] | None,
+    machine_settings: dict[str, Any] | None = None,
+) -> RulesContext:
+    """Resolve active rules for runtime checks and invalidate QC cache on file changes."""
+    if machine_settings is None:
+        machine_settings = _load_machine_settings()
+
+    context = resolve_rules(doc_path, machine_settings or {})
+    cache_key = _active_identity_key(doc_path)
+    previous_identity = _ACTIVE_RULE_IDENTITIES.get(cache_key)
+    if previous_identity is not None and previous_identity != context.identity:
+        try:
+            from sentinel.common.cache import check_cache
+
+            check_cache.clear()
+        except Exception:
+            pass
+    _ACTIVE_RULE_IDENTITIES[cache_key] = context.identity
+    return context
 
 
 def discover_rules_file(scene_dir: str | os.PathLike[str] | None) -> tuple[str | None, list[str]]:
@@ -210,6 +234,26 @@ def _scene_dir(scene_path: str | os.PathLike[str]) -> Path:
     if path.is_dir():
         return path
     return path.parent
+
+
+def _active_identity_key(doc_path: str | os.PathLike[str] | None) -> str:
+    if not doc_path:
+        return "<unsaved>"
+    try:
+        return str(_scene_dir(doc_path))
+    except Exception:
+        return str(doc_path)
+
+
+def _load_machine_settings() -> dict[str, Any]:
+    settings: dict[str, Any] = {}
+    try:
+        from sentinel.common.settings import GlobalSettings
+
+        settings["standard_fps"] = GlobalSettings.get_standard_fps()
+    except Exception:
+        pass
+    return settings
 
 
 def _mtime(path: str | None) -> float | None:

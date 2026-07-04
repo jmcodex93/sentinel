@@ -14,6 +14,24 @@ from sentinel.qc.results import (
     param_identity,
     store_result as _store_result,
 )
+from sentinel.rules import get_active_rules
+
+
+def _doc_path_for_rules(doc):
+    try:
+        return doc.GetDocumentPath() or ""
+    except Exception:
+        return ""
+
+
+def _machine_rule_settings():
+    return {"standard_fps": GlobalSettings.get_standard_fps()}
+
+
+def _rules_context(doc, rules_context=None):
+    if rules_context is not None:
+        return rules_context
+    return get_active_rules(_doc_path_for_rules(doc), _machine_rule_settings())
 
 
 def normalize_preset_name(name):
@@ -44,13 +62,17 @@ def _render_conflicts_result(legacy_value, violations_data=None):
 
 
 # ---------------- render preset conflicts (optimized) ----------------
-def check_render_conflicts(doc):
+def check_render_conflicts(doc, rules_context=None):
     """Check for render setting conflicts - accepts pre_render, pre-render, Pre-Render etc."""
+    context = _rules_context(doc, rules_context)
     cached_result = _cached_result(doc, "rdc", _render_conflicts_result)
     if cached_result is not None:
         return cached_result
 
-    allowed = set(PRESETS)
+    allowed = {
+        normalize_preset_name(name)
+        for name in context.params.get("approved_presets", PRESETS)
+    }
     name_counts = defaultdict(int)
     extras = 0
     violations_data = []
@@ -265,13 +287,14 @@ def _fps_range_result(issues, violations_data=None):
     return result
 
 
-def check_fps_range(doc):
+def check_fps_range(doc, rules_context=None):
     """Validate FPS, frame range, frame step, and timeline alignment across ALL presets.
 
     Doc-level FPS is checked once. Each render data is validated independently for
     FPS, frame step (=1), range start (1001), and mode. Timeline + preview alignment
     is validated against the ACTIVE preset (since timeline is shared).
     """
+    context = _rules_context(doc, rules_context)
     cached_result = _cached_result(doc, "fps_range", _fps_range_result)
     if cached_result is not None:
         return cached_result
@@ -279,7 +302,8 @@ def check_fps_range(doc):
     issues = []
     violations_data = []
     try:
-        standard_fps = GlobalSettings.get_standard_fps()
+        standard_fps = int(context.params.get("standard_fps", GlobalSettings.get_standard_fps()))
+        start_frame = int(context.params.get("start_frame", 1001))
         doc_fps = doc.GetFps()
 
         # --- Document-level FPS (checked once) ---
@@ -343,39 +367,39 @@ def check_fps_range(doc):
             frame_mode = rd[c4d.RDATA_FRAMESEQUENCE]
 
             if is_stills:
-                if frame_mode == c4d.RDATA_FRAMESEQUENCE_MANUAL and frame_start != 1001:
+                if frame_mode == c4d.RDATA_FRAMESEQUENCE_MANUAL and frame_start != start_frame:
                     issues.append({
-                        "issue": f"{tag} Stills start frame is {frame_start}, expected 1001",
+                        "issue": f"{tag} Stills start frame is {frame_start}, expected {start_frame}",
                         "type": "start_frame",
                         "preset": preset_name,
                     })
                     violations_data.append({
-                        "issue": f"{tag} Stills start frame is {frame_start}, expected 1001",
+                        "issue": f"{tag} Stills start frame is {frame_start}, expected {start_frame}",
                         "type": "start_frame",
                         "preset": preset_name,
                         "value": frame_start,
                     })
                 if frame_mode == c4d.RDATA_FRAMESEQUENCE_ALLFRAMES:
                     issues.append({
-                        "issue": f"{tag} Stills set to 'All Frames' (use Current Frame or 1001)",
+                        "issue": f"{tag} Stills set to 'All Frames' (use Current Frame or {start_frame})",
                         "type": "mode",
                         "preset": preset_name,
                     })
                     violations_data.append({
-                        "issue": f"{tag} Stills set to 'All Frames' (use Current Frame or 1001)",
+                        "issue": f"{tag} Stills set to 'All Frames' (use Current Frame or {start_frame})",
                         "type": "mode",
                         "preset": preset_name,
                         "value": frame_mode,
                     })
             else:
-                if frame_start != 1001:
+                if frame_start != start_frame:
                     issues.append({
-                        "issue": f"{tag} Start frame is {frame_start}, expected 1001",
+                        "issue": f"{tag} Start frame is {frame_start}, expected {start_frame}",
                         "type": "start_frame",
                         "preset": preset_name,
                     })
                     violations_data.append({
-                        "issue": f"{tag} Start frame is {frame_start}, expected 1001",
+                        "issue": f"{tag} Start frame is {frame_start}, expected {start_frame}",
                         "type": "start_frame",
                         "preset": preset_name,
                         "value": frame_start,
@@ -438,14 +462,14 @@ def check_fps_range(doc):
                 loop_max = doc[c4d.DOCUMENT_LOOPMAXTIME].GetFrame(doc_fps)
 
                 if is_stills:
-                    if not (tl_min <= 1001 <= tl_max):
+                    if not (tl_min <= start_frame <= tl_max):
                         issues.append({
-                            "issue": f"Timeline ({tl_min}-{tl_max}) doesn't include frame 1001",
+                            "issue": f"Timeline ({tl_min}-{tl_max}) doesn't include frame {start_frame}",
                             "type": "timeline",
                             "preset": None,
                         })
                         violations_data.append({
-                            "issue": f"Timeline ({tl_min}-{tl_max}) doesn't include frame 1001",
+                            "issue": f"Timeline ({tl_min}-{tl_max}) doesn't include frame {start_frame}",
                             "type": "timeline",
                             "preset": None,
                             "value": f"{tl_min}-{tl_max}",

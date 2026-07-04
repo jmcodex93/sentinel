@@ -88,6 +88,9 @@ def _load_sentinel():
 
     # Pin machine-dependent settings for deterministic fixture output.
     module.GlobalSettings.get_standard_fps = staticmethod(lambda: 25)
+    # Rules resolution reads GlobalSettings lazily, so this pin still feeds
+    # the default rules context when no sentinel_rules.json fixture is present.
+    module.get_active_rules("", {"standard_fps": 25})
     module.check_cache.clear()
     return module
 

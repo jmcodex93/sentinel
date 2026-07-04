@@ -14,6 +14,7 @@ from sentinel.qc.results import (
     object_identity,
     store_result as _store_result,
 )
+from sentinel.rules import get_active_rules
 
 
 def _object_result(check_id, legacy_items_value, message, extras_builder=None):
@@ -440,20 +441,26 @@ _DEFAULT_NAMES = {
 }
 
 
-def _default_names_result(offenders):
-    return _object_result(
-        "default_names",
-        offenders,
-        "Object has a default or generic name",
-        lambda item: {"name": item.GetName() if item else ""},
-    )
+def _doc_path_for_rules(doc):
+    try:
+        return doc.GetDocumentPath() or ""
+    except Exception:
+        return ""
 
 
-def check_default_names(doc):
+def check_default_names(doc, rules_context=None):
     """Check for objects with default/generic names (Cube, Null, Sphere.1, etc.)"""
+    if rules_context is None:
+        rules_context = get_active_rules(_doc_path_for_rules(doc))
     cached_result = _cached_result(doc, "names", _default_names_result)
     if cached_result is not None:
         return cached_result
+
+    default_names = {
+        str(name).strip().lower()
+        for name in rules_context.params.get("default_names", _DEFAULT_NAMES)
+        if str(name).strip()
+    }
 
     offenders = []
     first = doc.GetFirstObject()
@@ -472,7 +479,7 @@ def check_default_names(doc):
             # Strip trailing ".N" suffix (e.g., "Cube.1", "Null.23")
             base = name.rsplit(".", 1)[0].strip().lower() if "." in name else name.lower()
 
-            if base in _DEFAULT_NAMES:
+            if base in default_names:
                 offenders.append(obj)
 
             if len(offenders) > 50:
@@ -482,3 +489,12 @@ def check_default_names(doc):
         safe_print(f"Error checking default names: {e}")
 
     return _store_result(doc, "names", offenders, _default_names_result(offenders))
+
+
+def _default_names_result(offenders):
+    return _object_result(
+        "default_names",
+        offenders,
+        "Object has a default or generic name",
+        lambda item: {"name": item.GetName() if item else ""},
+    )

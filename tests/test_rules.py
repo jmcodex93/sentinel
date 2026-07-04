@@ -180,3 +180,44 @@ def test_unknown_check_id_rejects_entire_map_but_rest_of_file_applies(tmp_path):
     assert context.params["checks_enabled"] == expected_enabled
     assert any("check_severity" in warning and "unknown check id" in warning for warning in context.warnings)
     assert any("checks_enabled" in warning and "unknown check id" in warning for warning in context.warnings)
+
+
+def test_effective_params_feed_registry_consumer_from_project_machine_defaults(tmp_path):
+    scene_dir = tmp_path / "project" / "shots"
+    scene_dir.mkdir(parents=True)
+    write_rules(
+        scene_dir,
+        {
+            "standard_fps": 24,
+            "approved_presets": ["render", "custom"],
+        },
+    )
+
+    rules.invalidate()
+    context = rules.resolve_rules(
+        scene_dir / "shot.c4d",
+        {
+            "standard_fps": 30,
+            "start_frame": 1000,
+            "default_names": ["locator"],
+        },
+    )
+
+    def fake_registry_consumer(rules_context):
+        return {
+            "fps": rules_context.params["standard_fps"],
+            "start": rules_context.params["start_frame"],
+            "presets": rules_context.params["approved_presets"],
+            "names": rules_context.params["default_names"],
+            "safe_area_9x16": rules_context.params["safe_area_insets"]["9x16"],
+        }
+
+    consumed = fake_registry_consumer(context)
+
+    assert consumed["fps"] == 24
+    assert context.field_sources["standard_fps"] == "project"
+    assert consumed["start"] == 1000
+    assert context.field_sources["start_frame"] == "machine"
+    assert consumed["presets"] == ["render", "custom"]
+    assert consumed["names"] == ["locator"]
+    assert consumed["safe_area_9x16"] == rules.DEFAULTS["safe_area_insets"]["9x16"]

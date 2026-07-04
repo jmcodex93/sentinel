@@ -1,4 +1,5 @@
 from collections import OrderedDict
+from types import SimpleNamespace
 
 import pytest
 
@@ -91,3 +92,39 @@ def test_compute_score_matches_legacy_emptiness_semantics(sentinel_module):
     assert mixed_summary["counts"]["output"] == 1
     assert mixed_summary["passed"] == len(CHECK_REGISTRY) - 3
     assert mixed_summary["score"] == f"{len(CHECK_REGISTRY) - 3}/{len(CHECK_REGISTRY)}"
+
+
+def test_severity_override_changes_display_view_not_score(sentinel_module):
+    from sentinel.qc.registry import CHECK_REGISTRY, build_check_display
+    from sentinel.qc.score import compute_score
+
+    results = _empty_results(CHECK_REGISTRY)
+    results["names"] = {"legacy_result": ["Cube"]}
+    default_summary = compute_score(results)
+
+    context = SimpleNamespace(params={"check_severity": {"names": "FAIL"}})
+    overridden_display = build_check_display(rules_context=context)
+    overridden_summary = compute_score(results, context)
+
+    assert overridden_display["names"][0] == "FAIL"
+    assert sentinel_module._CHECK_DISPLAY["names"][0] == "WARN"
+    assert overridden_summary["score"] == default_summary["score"]
+    assert overridden_summary["counts"] == default_summary["counts"]
+
+
+def test_disabled_check_is_removed_from_score_denominator(sentinel_module):
+    from sentinel.qc.registry import CHECK_REGISTRY
+    from sentinel.qc.score import compute_score
+
+    results = _empty_results(CHECK_REGISTRY)
+    results["names"] = {"legacy_result": ["Cube"]}
+    context = SimpleNamespace(params={"checks_enabled": {"names": False}})
+
+    summary = compute_score(results, context)
+
+    assert "names" not in summary["counts"]
+    assert summary["disabled"] == ["names"]
+    assert summary["disabled_count"] == 1
+    assert summary["total"] == len(CHECK_REGISTRY) - 1
+    assert summary["passed"] == len(CHECK_REGISTRY) - 1
+    assert summary["score"] == f"{len(CHECK_REGISTRY) - 1}/{len(CHECK_REGISTRY) - 1}"

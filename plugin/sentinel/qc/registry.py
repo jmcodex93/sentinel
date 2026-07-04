@@ -212,23 +212,41 @@ def resolve_function(fn_ref, panel_module=None):
     return getattr(module, func_name)
 
 
-def display_tuple(entry):
+def _rules_params(rules_context):
+    return getattr(rules_context, "params", {}) if rules_context is not None else {}
+
+
+def is_check_enabled(entry, rules_context=None):
+    checks_enabled = _rules_params(rules_context).get("checks_enabled", {})
+    return bool(checks_enabled.get(entry.check_id, True))
+
+
+def entry_severity(entry, rules_context=None):
+    check_severity = _rules_params(rules_context).get("check_severity", {})
+    return check_severity.get(entry.check_id, entry.severity)
+
+
+def display_tuple(entry, rules_context=None):
     return (
-        entry.severity,
+        entry_severity(entry, rules_context),
         entry.label_ok,
         entry.label_fail_template,
         entry.names_key,
     )
 
 
-def build_check_display(entries=None):
+def build_check_display(entries=None, rules_context=None):
     entries = CHECK_REGISTRY if entries is None else entries
-    return OrderedDict((entry.check_id, display_tuple(entry)) for entry in entries)
+    return OrderedDict((entry.check_id, display_tuple(entry, rules_context)) for entry in entries)
 
 
-def build_row_keys(entries=None):
+def build_row_keys(entries=None, rules_context=None, include_disabled=True):
     entries = CHECK_REGISTRY if entries is None else entries
-    return [entry.check_id for entry in entries]
+    return [
+        entry.check_id
+        for entry in entries
+        if include_disabled or is_check_enabled(entry, rules_context)
+    ]
 
 
 class CheckDisplayView(Mapping):
