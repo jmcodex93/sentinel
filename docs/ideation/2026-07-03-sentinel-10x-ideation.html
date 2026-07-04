@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ideación: Sentinel 10x — features y roadmap</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  :root{
+    --bg:#f7f7f5; --surface:#ffffff; --ink:#1a1d21; --muted:#5b6068;
+    --line:#e3e2de; --accent:#0f6b5c; --accent-soft:#e4f2ee; --accent-text:#0b4d43;
+    --warn:#9a6200; --warn-soft:#fdf3e0; --danger:#a4322a; --danger-soft:#faeae8;
+    --info:#31547d; --info-soft:#e9f0f8; --chipbg:#eef0f2;
+    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.6 'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
+  .page{max-width:920px;margin-inline:auto;padding:48px 28px 80px}
+  p,li{max-width:72ch}
+  h1{font-size:1.9rem;line-height:1.25;font-weight:800;margin:.2em 0 .3em}
+  h2{font-size:1.35rem;font-weight:700;margin:2.2em 0 .6em;padding-top:.4em;border-top:1px solid var(--line)}
+  h3{font-size:1.08rem;font-weight:700;margin:1.4em 0 .4em}
+  a{color:var(--accent-text)}
+  code{font-family:var(--mono);font-size:.86em;background:var(--chipbg);padding:.1em .35em;border-radius:4px}
+  .eyebrow{font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:var(--accent);margin-bottom:4px}
+  .meta{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 6px}
+  .meta span{background:var(--chipbg);border-radius:999px;padding:3px 12px;font-size:.8rem;font-weight:600;color:var(--muted)}
+  .lede{font-size:1.05rem;color:var(--muted);max-width:72ch}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:26px 0 6px}
+  .stats div{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .stats b{display:block;font-size:1.45rem;font-weight:800}
+  .stats small{color:var(--muted);font-size:.78rem}
+  section{margin-top:8px}
+  .axes{list-style:none;padding:0;margin:10px 0}
+  .axes li{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:9px 14px;margin-bottom:6px}
+  .axes b{color:var(--accent-text)}
+  .jump{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 18px;margin:16px 0 26px}
+  .jump ol{margin:6px 0 0;padding-left:22px}
+  .jump li{margin:3px 0}
+  article.idea{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:22px 24px;margin:0 0 26px}
+  .idea-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+  .idnum{font-family:var(--mono);font-weight:600;font-size:.85rem;background:var(--accent-soft);color:var(--accent-text);border-radius:999px;padding:3px 11px}
+  .idea h3{margin:0;font-size:1.16rem}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 14px}
+  .chips span{border-radius:999px;padding:2px 11px;font-size:.75rem;font-weight:600}
+  .chip-axis{background:var(--info-soft);color:var(--info)}
+  .chip-conf{background:var(--accent-soft);color:var(--accent-text)}
+  .chip-cx{background:var(--warn-soft);color:var(--warn)}
+  .field{margin:.65em 0}
+  .field b.lbl{display:block;font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:2px}
+  .crit{background:var(--accent-soft);border-radius:10px;padding:12px 16px;margin-top:14px}
+  .crit .lbl{color:var(--accent-text)}
+  .crit ul{margin:4px 0 0;padding-left:20px}
+  .crit li{margin:4px 0;max-width:none}
+  .callout{border-radius:12px;padding:16px 20px;margin:18px 0}
+  .callout .eyebrow{margin-bottom:6px}
+  .callout-warn{background:var(--warn-soft)}
+  .callout-warn .eyebrow{color:var(--warn)}
+  .callout-info{background:var(--info-soft)}
+  .callout-info .eyebrow{color:var(--info)}
+  table{border-collapse:collapse;width:100%;margin:14px 0;background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:.92rem}
+  th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--chipbg);font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  tr:last-child td{border-bottom:none}
+  figure{margin:18px 0;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px}
+  figcaption{font-size:.8rem;color:var(--muted);margin-top:8px}
+  .svgwrap{overflow-x:auto}
+  footer.composition-signal{margin-top:60px;padding-top:16px;border-top:1px solid var(--line);font-size:.78rem;color:var(--muted)}
+  details.ground{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 16px;margin:12px 0}
+  details.ground summary{cursor:pointer;font-weight:600}
+  details.ground ul{padding-left:20px}
+</style>
+</head>
+<body>
+<div class="page">
+
+<div class="eyebrow">Ideación · ce-ideate</div>
+<h1>Sentinel 10x: capacidades que multiplican su valor</h1>
+<p class="lede">Conjunto priorizado de 7 direcciones (de 49 candidatas generadas) para convertir Sentinel de watchdog por escena en la capa de confianza de todo el pipeline de entrega — con criterios de aceptación verificables por feature y una secuencia de roadmap que respeta el mandato de la auditoría de junio 2026.</p>
+<div class="meta">
+  <span>fecha: 2026-07-03</span>
+  <span>topic: sentinel-10x-roadmap</span>
+  <span>mode: repo-grounded</span>
+  <span>focus: features 10x + criterios de aceptación</span>
+</div>
+<div class="stats">
+  <div><b>49</b><small>ideas brutas (6 frames)</small></div>
+  <div><b>7</b><small>supervivientes</small></div>
+  <div><b>12</b><small>rechazadas / fusionadas</small></div>
+  <div><b>5/5</b><small>ejes cubiertos</small></div>
+</div>
+
+<section id="grounding">
+<h2>Grounding Context</h2>
+<p><strong>Contexto de código.</strong> Sentinel v1.5.7 (~10.400 líneas, un solo <code>.pyp</code>): 12 checks QC en tiempo real, Smart Save Version con etiquetas de estado (WIP/TR/CR/FINAL), sidecars JSON (<code>_history</code>, <code>_notes</code>), gestión de AOVs RS, Scene Collector, Multi-Format Takes + Safe-Area (QC #12 + overlay), Texture Repathing multi-renderer. Restricción de diseño: sin servidor. En vuelo: v1.5.8 (pulido multi-formato) y v1.6.0 (Camera Frame por cámara), ambos pendientes de verificación en C4D.</p>
+<p><strong>Auditoría de supervisor (2026-06-12, autoritativa).</strong> "Verificar antes de añadir features": (1) higiene de ramas, (2) escalera de verificación (tests puros + escenas fixture), (3) unificar los 12 checks en todos los artefactos [hecho], (4) instalador/onboarding (hardcodeado a C4D 2024), (5) <em>Post-Render Validation como la feature nueva de mayor valor</em>. Anti-patrón nombrado: "confianza falsa" — todo artefacto que reporte QC debe consumir la lista canónica de 12 checks.</p>
+<details class="ground"><summary>Investigación externa (resumen)</summary>
+<ul>
+<li><strong>Deadline</strong>: 300+ checks pre-flight; el submitter de C4D enumera <em>todas</em> las dependencias (texturas, VDB, Alembic, RS proxies, OCIO, XRefs) y los plugins de terceros con versión. Su Sanity Check usa 3 niveles: FATAL (bloquea) / Corregible (checkbox auto-fix o ignorar-con-intención) / Aviso.</li>
+<li><strong>Ayon/OpenPype</strong>: pipeline de publicación Create→Collect→Validate→Extract→Integrate; los validadores bloquean el publish con sugerencias accionables.</li>
+<li><strong>Patrones de linters/CI que mapean</strong>: taxonomía formal de severidad (glTF-Validator: Error/Warning/Info/Hint + <code>severityOverrides</code>), reglas como configuración (ESLint), baseline de violaciones aceptadas (RuboCop <code>--auto-gen-config</code>, SonarQube "clean as you code"), gates estilo pre-commit. <em>Ningún tool de C4D combina severidad + supresión por objeto + baseline de escena</em> — hueco verificado.</li>
+<li><strong>Dolores de artistas C4D/RS 2025-26</strong>: ~20% de primeras submissions a granja fallan por rutas; "Save Project with Assets" es poco fiable y omite referencias de RS Proxy; el caos de versionado manual v001/v002 está documentado como norma; el boom de auto-reframe con IA valida Multi-Format/Safe-Area.</li>
+<li><strong>Mercado small-studio</strong>: fatiga de tool-sprawl; trackers local-first sin servidor (Picoprod) validan la filosofía sidecar-JSON de Sentinel. Kitsu demuestra que la revisión "sin login" es el patrón portable.</li>
+<li><strong>Huecos sin explotar detectados</strong>: estimación de coste/tiempo de render desde introspección de escena (nadie lo hace); QC de escena asistido por LLM (whitespace, aún inmaduro); presets de render por plataforma social (bitrates TikTok/Reels/Shorts).</li>
+</ul>
+</details>
+</section>
+
+<section id="axes">
+<h2>Topic Axes</h2>
+<ul class="axes">
+<li><b>1 · Red de seguridad de render</b> — gate pre-flight antes de collect/granja + validación post-render de secuencias y AOVs.</li>
+<li><b>2 · Motor QC como plataforma</b> — severidad formal, reglas configurables, baselines/excepciones, verificabilidad.</li>
+<li><b>3 · Capa de revisión y visibilidad</b> — slates, informes para cliente/supervisor, dashboard multi-escena, trayectoria por versión.</li>
+<li><b>4 · Entrega y multi-formato</b> — collector confiable, tokens, correlación versión↔render entregado.</li>
+<li><b>5 · Alcance de producto y adopción</b> — onboarding/instalador, configurabilidad para terceros, distribución.</li>
+</ul>
+</section>
+
+<section id="ranked">
+<h2>Ranked Ideas</h2>
+
+<div class="jump">
+<strong>Índice</strong>
+<ol>
+<li><a href="#i1">Validación Post-Render — el check que corre cuando la escena ya está cerrada</a></li>
+<li><a href="#i2">Motor QC 2.0 — registro de checks + severidad + reglas configurables + baseline</a></li>
+<li><a href="#i3">Quality Gates en Save FINAL y Collect Scene</a></li>
+<li><a href="#i4">Collect confiable — manifiesto completo de dependencias + certificado de entrega</a></li>
+<li><a href="#i5">Panel de supervisor — QC por carpeta + trayectoria por versión</a></li>
+<li><a href="#i6">Instalador multi-versión + Sentinel Doctor</a></li>
+<li><a href="#i7">Slate de revisión + informe HTML legible por el cliente</a></li>
+</ol>
+</div>
+
+<div class="callout callout-warn">
+<div class="eyebrow">Prerrequisito de la auditoría — Fase 0, antes de cualquier superviviente</div>
+<p style="margin:.3em 0">La auditoría de supervisor ordena, por delante de toda feature nueva: <strong>(a)</strong> congelar el WIP de v1.5.8/v1.6.0 fuera de <code>main</code> y verificarlo en C4D; <strong>(b)</strong> la <strong>escalera de verificación</strong> — tests pytest para los helpers puros (parseo de versiones, matemática de crops/safe-area, clasificación de rutas) + escenas fixture reproducibles (una que viola y una limpia por check) con un runner que compara resultados contra JSON esperado. No es una feature de valor para el usuario y por eso no compite en el ranking, pero <em>cada criterio de aceptación de abajo se apoya en ella</em>: sin fixtures, ningún criterio es verificable de forma barata. Criterio de cierre de Fase 0: <code>pytest</code> verde en los helpers puros + runner de fixtures reporta 12/12 checks con el resultado esperado en ambas escenas.</p>
+</div>
+
+<article class="idea" id="i1">
+<div class="idea-head"><span class="idnum">I1</span><h3>Validación Post-Render — el check que corre cuando la escena ya está cerrada</h3></div>
+<div class="chips"><span class="chip-axis">Eje 1 · Red de seguridad de render</span><span class="chip-conf">Confianza 90%</span><span class="chip-cx">Complejidad Media</span></div>
+<div class="field"><b class="lbl">Descripción</b>
+Un botón "Validar render" (pestaña Render) que lee las rutas de salida que Sentinel ya conoce (tokens, rango, Takes multi-formato, config de AOVs) y audita los frames en disco: huecos en la secuencia respecto al rango canónico (1001–N), frames de 0 bytes o truncados, capas AOV esperadas presentes en las cabeceras EXR, resolución correcta por Take, y un <em>control chart</em> de tamaño de fichero (un frame que se desvía &gt;3σ de su vecindad delata frames negros, blowups de NaN o fallos de denoiser sin abrir un solo píxel). El resultado se adjunta al sidecar de historial, cerrando la correlación versión↔render: dado un folder de render, Sentinel responde qué versión de escena lo produjo y avisa si el folder contiene frames de una versión anterior.</div>
+<figure>
+<div class="svgwrap">
+<svg viewBox="0 0 780 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Control chart de tamaños de frame con un outlier">
+  <text x="16" y="24" font-size="13" font-weight="700" fill="#1a1d21">Tamaño de fichero por frame (proxy barato de corrupción)</text>
+  <line x1="50" y1="150" x2="750" y2="150" stroke="#c9c8c4" stroke-width="1"/>
+  <line x1="50" y1="60" x2="750" y2="60" stroke="#9a6200" stroke-width="1" stroke-dasharray="5 4"/>
+  <line x1="50" y1="130" x2="750" y2="130" stroke="#9a6200" stroke-width="1" stroke-dasharray="5 4"/>
+  <text x="754" y="64" font-size="10" fill="#9a6200">+3σ</text>
+  <text x="754" y="134" font-size="10" fill="#9a6200">−3σ</text>
+  <polyline fill="none" stroke="#0f6b5c" stroke-width="2"
+    points="60,96 100,92 140,98 180,94 220,90 260,95 300,93 340,97 380,91 420,95 460,94 540,96 580,92 620,97 660,93 700,95 740,94"/>
+  <circle cx="500" cy="145" r="6" fill="#a4322a"/>
+  <text x="500" y="172" font-size="11" font-weight="600" fill="#a4322a" text-anchor="middle">frame 1187 · negro</text>
+  <text x="60" y="172" font-size="10" fill="#5b6068">1001</text>
+  <text x="740" y="172" font-size="10" fill="#5b6068" text-anchor="end">1250</text>
+</svg>
+</div>
+<figcaption>Ilustrativo: la detección por tamaño (SPC de manufactura) encuentra el frame roto sin decodificar EXRs — puro Python, testeable con pytest sobre carpetas de ficheros dummy.</figcaption>
+</figure>
+<div class="field"><b class="lbl">Basis</b>
+<code>direct:</code> la auditoría de supervisor califica Post-Render Validation como "la feature nueva de mayor valor — core delivery; missing frames after a 12h render". Fue además la única idea propuesta de forma independiente por los <em>seis</em> frames de ideación. <code>external:</code> Ayon/OpenPype trata la validación post-extract como etapa obligatoria del publish; ShotGrid pliega los tech-checks en el estado de la versión.</div>
+<div class="field"><b class="lbl">Rationale</b>
+Sentinel hoy protege todo hasta el botón de render y nada después; el fallo más caro del pipeline (un hueco en una secuencia de 2.000 frames descubierto en comp o por el cliente) vive exactamente ahí. Sentinel es el único que tiene la verdad de referencia (rango QC #11, AOVs configurados, resoluciones por Take) para saber qué <em>debería</em> existir en disco.</div>
+<div class="field"><b class="lbl">Downsides</b>
+El parseo de cabeceras EXR necesita una dependencia mínima o un parser propio de cabeceras (el conversor EXR externo ya existe como precedente); las heurísticas de tamaño necesitan calibración para no dar falsos positivos en cortes de plano; renders multi-part complican el conteo de AOVs.</div>
+<div class="crit"><b class="lbl">Criterios de aceptación</b>
+<ul>
+<li>Carpeta fixture con secuencia completa 1001–1100 → informe "OK" (0 issues).</li>
+<li>Se borra el frame 1043 y se trunca el 1050 → el informe lista exactamente esos 2 frames con su tipo de fallo.</li>
+<li>Frame negro inyectado (fichero &lt;10% de la mediana) → marcado como outlier de tamaño con nº de frame.</li>
+<li>EXR sin la capa AOV <code>Beauty_Denoised</code> configurada en la escena → aviso de AOV ausente por frame afectado.</li>
+<li>Con 5 Takes multi-formato: el informe agrupa por Take y detecta el formato 9:16 sin renderizar.</li>
+<li>El resultado se anexa a <code>&lt;base&gt;_history.json</code> bajo la versión activa; "Trace render" sobre la carpeta responde versión + estado + score con datos del sidecar.</li>
+<li>La detección por tamaño y el escaneo de secuencia tienen tests pytest sin C4D (fixtures de carpetas dummy).</li>
+</ul>
+</div>
+</article>
+
+<article class="idea" id="i2">
+<div class="idea-head"><span class="idnum">I2</span><h3>Motor QC 2.0 — registro de checks + severidad + reglas configurables + baseline</h3></div>
+<div class="chips"><span class="chip-axis">Eje 2 · Motor QC como plataforma</span><span class="chip-conf">Confianza 85%</span><span class="chip-cx">Complejidad Alta</span></div>
+<div class="field"><b class="lbl">Descripción</b>
+Refactor arquitectónico en cuatro capas acumulativas. <strong>(a) Registro:</strong> los 12 checks pasan de funciones ad-hoc a entradas declarativas (id, severidad por defecto, capacidad de fix, parámetros); panel, QC Report, Collector y futuros gates iteran el registro — el check #13 cuesta una entrada, no N ediciones. <strong>(b) Severidad:</strong> taxonomía FATAL / Corregible / Aviso, con dos columnas de contexto (trabajo vs. entrega: una textura ausente es aviso durante blocking y FATAL al entregar). <strong>(c) Reglas como configuración:</strong> <code>sentinel_rules.json</code> por proyecto/estudio (FPS estándar, frame inicial, presets aprobados, insets de safe-area, severidades) publicable en una carpeta compartida — el header muestra "Ruleset: &lt;nombre&gt; v3"; sin fichero, defaults actuales. <strong>(d) Baseline:</strong> aceptar violaciones conocidas con motivo + autor (+ caducidad opcional) en un sidecar; el score y los gates solo cuentan violaciones <em>nuevas</em>.</div>
+<figure>
+<div class="svgwrap">
+<svg viewBox="0 0 780 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Capas del Motor QC 2.0 y sus consumidores">
+  <rect x="40" y="150" width="420" height="40" rx="8" fill="#e4f2ee" stroke="#0f6b5c"/>
+  <text x="250" y="175" font-size="13" font-weight="700" fill="#0b4d43" text-anchor="middle">(a) Registro de checks (QC-as-data)</text>
+  <rect x="70" y="100" width="360" height="40" rx="8" fill="#e9f0f8" stroke="#31547d"/>
+  <text x="250" y="125" font-size="13" font-weight="700" fill="#31547d" text-anchor="middle">(b) Severidad + (c) sentinel_rules.json</text>
+  <rect x="100" y="50" width="300" height="40" rx="8" fill="#fdf3e0" stroke="#9a6200"/>
+  <text x="250" y="75" font-size="13" font-weight="700" fill="#9a6200" text-anchor="middle">(d) Baseline por escena</text>
+  <line x1="480" y1="170" x2="560" y2="170" stroke="#5b6068" stroke-width="1.5" marker-end="url(#arr)"/>
+  <defs><marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5b6068"/></marker></defs>
+  <rect x="565" y="30" width="180" height="32" rx="8" fill="#ffffff" stroke="#c9c8c4"/>
+  <text x="655" y="51" font-size="12" text-anchor="middle" fill="#1a1d21">Panel QC</text>
+  <rect x="565" y="72" width="180" height="32" rx="8" fill="#ffffff" stroke="#c9c8c4"/>
+  <text x="655" y="93" font-size="12" text-anchor="middle" fill="#1a1d21">QC Report / Save Version</text>
+  <rect x="565" y="114" width="180" height="32" rx="8" fill="#ffffff" stroke="#c9c8c4"/>
+  <text x="655" y="135" font-size="12" text-anchor="middle" fill="#1a1d21">Collector preflight</text>
+  <rect x="565" y="156" width="180" height="32" rx="8" fill="#ffffff" stroke="#0f6b5c" stroke-dasharray="5 4"/>
+  <text x="655" y="177" font-size="12" text-anchor="middle" fill="#0b4d43">Gates (I3) · Dashboard (I5)</text>
+  <line x1="560" y1="170" x2="565" y2="46" stroke="none"/>
+</svg>
+</div>
+<figcaption>Ilustrativo: cada capa se apoya en la anterior; todos los consumidores (actuales y futuros) leen el mismo registro — el anti-patrón "confianza falsa" queda estructuralmente impedido.</figcaption>
+</figure>
+<div class="field"><b class="lbl">Basis</b>
+<code>direct:</code> el commit <code>56b9461</code> existe solo para "unificar los 12 checks en Save Version, QC Report y Collector" — prueba empírica de que la deriva de la lista es un coste recurrente; <code>standard_fps</code> ya es configurable pero por máquina, no por proyecto (dos artistas del mismo proyecto pueden tener reglas distintas hoy). <code>external:</code> Deadline (3 niveles a escala de 300+ checks), glTF-Validator (4 severidades + overrides), RuboCop/SonarQube (baseline "solo lo nuevo cuenta"); la investigación confirma que <em>ningún</em> tool de C4D combina severidad + supresión por objeto + baseline.</div>
+<div class="field"><b class="lbl">Rationale</b>
+Es la infraestructura que compone con todo lo demás: los gates (I3) necesitan severidad; el dashboard (I5) necesita resultados estructurados; la adopción por terceros (eje 5) necesita reglas sin forkear el .pyp. Y el baseline ataca la muerte típica de todo linter — una escena heredada clavada en 7/12 entrena al artista a ignorar el panel entero, destruyendo el valor de los 12 checks a la vez.</div>
+<div class="field"><b class="lbl">Downsides</b>
+Es el refactor más grande del roadmap y toca el corazón del plugin — exige la Fase 0 (fixtures) como red de seguridad ("los 12 checks producen el mismo resultado antes y después"). El baseline necesita identidad estable de objetos (clave <code>check_id + ruta jerárquica del objeto</code>; renombrar re-arma la excepción, misma debilidad asumida que RuboCop). Definir el contrato público del ruleset es una decisión cara de revertir.</div>
+<div class="crit"><b class="lbl">Criterios de aceptación</b>
+<ul>
+<li>Regresión: con el registro implantado y sin ruleset, las escenas fixture de la Fase 0 producen resultados idénticos a v1.5.7 en los 12 checks y en los 3 artefactos.</li>
+<li>Añadir un check de prueba #13 al registro lo hace aparecer en panel, QC Report y preflight sin tocar código de esos consumidores.</li>
+<li><code>sentinel_rules.json</code> con <code>fps: 24</code> y un preset extra aprobado → QC #11 acepta 24 fps y QC #5 acepta el preset; al borrar el fichero vuelven los defaults. El header muestra el nombre del ruleset activo.</li>
+<li>Dos instalaciones apuntando al mismo ruleset compartido reportan idéntico resultado sobre la misma escena.</li>
+<li>Baseline: escena con 5 violaciones → "Aceptar estado actual" (motivo obligatorio) → score pasa a contar 0 nuevas; una violación nueva sube el contador a 1; el panel muestra "5 baselined" expandible; borrar la entrada re-arma el check.</li>
+<li>Cambio de severidad en el ruleset (default_names → FATAL) se refleja en el orden del panel y en el peso del score.</li>
+<li>Helpers del registro/baseline con cobertura pytest sin C4D.</li>
+</ul>
+</div>
+</article>
+
+<article class="idea" id="i3">
+<div class="idea-head"><span class="idnum">I3</span><h3>Quality Gates en Save FINAL y Collect Scene</h3></div>
+<div class="chips"><span class="chip-axis">Eje 1 · Red de seguridad de render</span><span class="chip-conf">Confianza 85%</span><span class="chip-cx">Complejidad Media</span></div>
+<div class="field"><b class="lbl">Descripción</b>
+En las dos transiciones irreversibles del flujo — guardar una versión con estado TR/CR/FINAL y Collect Scene — aparece un diálogo de triaje bloqueante estilo Deadline: los fallos FATAL bloquean (u obligan a "anular con motivo", que queda registrado en el historial/manifiesto con autor y fecha); los Corregibles se listan con checkbox conectado a los auto-fixes existentes ("Fix &amp; continue", un solo undo); los Avisos requieren "continuar igualmente" explícito. Opcional y configurable por ruleset — el modo advisory actual sigue siendo el default.</div>
+<div class="field"><b class="lbl">Basis</b>
+<code>external:</code> el insight de la checklist quirúrgica de Gawande — la seguridad no viene de monitorizar más, sino de <em>momentos de atención forzada en las transiciones de fase</em>; Deadline Sanity Check y los validadores bloqueantes de Ayon son el mismo patrón convergido en producción. <code>direct:</code> el preflight del Collector ya ejecuta los checks (commit <code>56b9461</code>) — solo falta la política de enforcement; el "~20% de primeras submissions fallan por rutas" existe precisamente porque los checks son consultivos.</div>
+<div class="field"><b class="lbl">Rationale</b>
+Multiplica el valor de los 19 checks (los 12 actuales y los futuros) sin añadir ninguno: un panel que nadie está obligado a mirar no atrapa nada en la semana de deadline. El registro de anulaciones convierte además cada excepción en dato auditable para el supervisor ("¿quién pasó por encima del aviso y por qué?").</div>
+<div class="field"><b class="lbl">Downsides</b>
+Depende de la capa de severidad de I2 (sin ella, ¿qué bloquea?). Riesgo de fricción cultural si el default es bloquear — por eso arranca opt-in. Decidir qué es FATAL es política de estudio, no decisión técnica.</div>
+<div class="crit"><b class="lbl">Criterios de aceptación</b>
+<ul>
+<li>Escena fixture con textura ausente (FATAL en contexto entrega) → Collect Scene abre el diálogo y el botón de continuar está deshabilitado; con el gate desactivado en ruleset, el flujo actual no cambia.</li>
+<li>Anular con motivo → el collect procede y el manifiesto + <code>_history.json</code> contienen <code>{check, motivo, autor, fecha}</code>.</li>
+<li>3 issues corregibles marcados → "Fix &amp; continue" los arregla en un solo paso de undo (Cmd+Z único verificado vía menú Edit) y el gate re-evalúa en verde.</li>
+<li>Save Version WIP no dispara el gate; Save Version FINAL sí (política por defecto: gate solo en estados de revisión).</li>
+<li>Escena limpia → el diálogo no aparece (cero fricción cuando todo está bien).</li>
+<li>Las violaciones baselined (I2) no disparan el gate; las nuevas sí.</li>
+</ul>
+</div>
+</article>
+
+<article class="idea" id="i4">
+<div class="idea-head"><span class="idnum">I4</span><h3>Collect confiable — manifiesto completo de dependencias + certificado de entrega</h3></div>
+<div class="chips"><span class="chip-axis">Eje 4 · Entrega y multi-formato</span><span class="chip-conf">Confianza 70%</span><span class="chip-cx">Complejidad Alta</span></div>
+<div class="field"><b class="lbl">Descripción</b>
+Extender <code>scan_all_texture_paths</code> (v1.5.7) a <code>scan_all_dependencies</code>: RS Proxies, VDBs, cachés Alembic, perfiles IES, config OCIO, XRefs, más los plugins de terceros presentes en la escena con su versión. Scene Collector deja de fiarse a ciegas de <code>SaveProject()</code>: tras el collect, hace diff manifiesto↔carpeta entregada y señala todo lo que C4D omitió en silencio. La entrega incluye un <code>CERTIFICATE.json</code> + <code>.txt</code> legible (estilo preflight de prepress PDF/X): resultados de los 12 checks canónicos, inventario de dependencias con estado, plugins requeridos, artista, fecha y hash del <code>.c4d</code> recogido — la granja o el estudio receptor puede verificar el paquete sin abrir Cinema 4D.</div>
+<div class="field"><b class="lbl">Basis</b>
+<code>direct:</code> la investigación documenta que "Save Project with Assets" es poco fiable y "no siempre captura referencias de Redshift Proxy porque son técnicamente externas a la gestión de assets de C4D" (SuperRenders 2026); el escáner v1.5.7 ya recorre grafos de nodos RS/Arnold, shaders Octane, dome lights y Alembic — ~70% de la maquinaria de recorrido existe. <code>external:</code> el submitter de Deadline enumera exactamente este conjunto; el certificado es el artefacto receptor que Deadline nunca produce.</div>
+<div class="field"><b class="lbl">Rationale</b>
+La promesa del Collector es "esta carpeta es toda la escena"; hoy solo es cierta para texturas. Un manifiesto completo hace confiables los handoffs a granjas, freelancers y archivo — atacando la clase de fallo más cara y mejor documentada (20% de primeras submissions) — y el certificado convierte "confía en mí, pasé el QC" en una afirmación adjunta y comprobable que además consume la lista canónica (regla de la auditoría).</div>
+<div class="field"><b class="lbl">Downsides</b>
+Cada tipo de dependencia nuevo exige sondeo empírico por renderer (la lección de v1.5.7: cada mecanismo de almacenamiento fue un descubrimiento); la auditoría pide endurecer el escáner actual (escenas probe por renderer + verificación de undo) <em>antes</em> de extenderlo. La detección de versiones de plugins puede ser aproximada. Es el superviviente con más incertidumbre de alcance — de ahí su confianza 70%.</div>
+<div class="crit"><b class="lbl">Criterios de aceptación</b>
+<ul>
+<li>Escena fixture con RS Proxy + VDB + caché Alembic + HDR en dome light → el manifiesto lista las 4 dependencias con ruta y estado (ok/absoluta/ausente).</li>
+<li>Collect de esa escena → diff post-collect señala el RS Proxy que <code>SaveProject()</code> no copió; tras el fix, diff limpio.</li>
+<li><code>CERTIFICATE.json</code> contiene los 12 checks canónicos (idénticos al panel, verificado contra fixture), inventario, plugins con versión y hash del .c4d; el <code>.txt</code> es legible sin herramientas.</li>
+<li>Recalcular el hash sobre el .c4d entregado coincide con el del certificado; tras modificar el fichero, deja de coincidir.</li>
+<li>Escena solo-texturas se comporta exactamente como el Collector v1.5.7 (sin regresión).</li>
+<li>Escenas probe por renderer (RS/Arnold/Octane) del endurecimiento previo pasan en macOS y Windows.</li>
+</ul>
+</div>
+</article>
+
+<article class="idea" id="i5">
+<div class="idea-head"><span class="idnum">I5</span><h3>Panel de supervisor — QC por carpeta + trayectoria por versión</h3></div>
+<div class="chips"><span class="chip-axis">Eje 3 · Capa de revisión y visibilidad</span><span class="chip-conf">Confianza 70%</span><span class="chip-cx">Complejidad Media</span></div>
+<div class="field"><b class="lbl">Descripción</b>
+Dos niveles sobre datos que Sentinel ya escribe. <strong>Nivel 1 (barato):</strong> apuntar a una carpeta de proyecto y agregar los sidecars <code>_history.json</code>/<code>_notes.json</code> de todas las escenas sin abrirlas — tabla por shot: última versión, estado, score QC, TODOs pendientes, días sin guardar; filas marcadas si el shot está estancado o su score cayó. <strong>Nivel 2 (opcional):</strong> re-escaneo fresco por escena vía <code>LoadDocument</code> sin viewport, ejecutando los 12 checks canónicos. Export a informe HTML estático de un solo fichero en la carpeta del proyecto — el filesystem es la base de datos, cero servidor. Incluye la vista de trayectoria por shot: evolución del score entre versiones, transiciones de estado y qué check se rompió en qué versión (guardando el vector por-check en cada save, un dict pequeño).</div>
+<div class="field"><b class="lbl">Basis</b>
+<code>direct:</code> cada Save Version ya persiste score + stats + estado + timestamp por versión desde v1.4.2 — datos capturados gratis que nada relee; el escaneo del código lista "supervisor batch/folder QC dashboard" como palanca y la dirección de la auditoría es "expandir hacia arriba (supervisión de pipeline)". <code>external:</code> Kitsu/ShotGrid demuestran que los supervisores pagan exactamente por esta superficie; Picoprod valida el formato local-first sin servidor.</div>
+<div class="field"><b class="lbl">Rationale</b>
+Hoy el valor de Sentinel escala linealmente con la escena que un artista tenga abierta; la agregación lo hace escalar con el proyecto. Es el movimiento "de herramienta de artista a herramienta de equipo" con el coste marginal más bajo posible: leer JSON que ya existe. Y responde la pregunta real del supervisor — no "¿está limpia v012?" sino "¿cuándo empezó a degradarse este shot y quién anuló qué aviso?".</div>
+<div class="field"><b class="lbl">Downsides</b>
+El nivel 2 (re-escaneo con <code>LoadDocument</code>) necesita validar memoria/tiempo con escenas grandes y qué checks son significativos sin contexto de GUI; primera superficie multi-escena del plugin (decisión de identidad: ¿sigue siendo un panel de C4D o nace una vista aparte?). El vector por-check en el historial debe añadirse cuanto antes para que la trayectoria tenga datos.</div>
+<div class="crit"><b class="lbl">Criterios de aceptación</b>
+<ul>
+<li>Carpeta fixture con 5 escenas versionadas (sidecars variados) → la tabla muestra 5 filas con versión/estado/score/TODOs correctos sin abrir ninguna escena, en &lt;2 s.</li>
+<li>Shot con score en descenso entre sus 3 últimas versiones → fila marcada como regresión; shot WIP sin guardar &gt;7 días → marcado estancado.</li>
+<li>Nivel 2 sobre una escena con violaciones conocidas → mismos resultados que abrirla en el panel (consumo de la lista canónica verificado contra fixture).</li>
+<li>Export HTML: un solo fichero, se abre sin red, refleja la tabla y las trayectorias.</li>
+<li>Vista de trayectoria: entre v007 y v008 de la fixture se rompió el check de texturas → la vista lo nombra exactamente.</li>
+<li>Carpeta sin sidecars → mensaje claro, sin crash; sidecars corruptos se saltan con aviso.</li>
+</ul>
+</div>
+</article>
+
+<article class="idea" id="i6">
+<div class="idea-head"><span class="idnum">I6</span><h3>Instalador multi-versión + Sentinel Doctor</h3></div>
+<div class="chips"><span class="chip-axis">Eje 5 · Alcance de producto y adopción</span><span class="chip-conf">Confianza 90%</span><span class="chip-cx">Complejidad Baja</span></div>
+<div class="field"><b class="lbl">Descripción</b>
+Sustituir el instalador hardcodeado a C4D 2024 por uno que detecta todas las versiones de C4D instaladas (rutas estándar de plugins en macOS y Windows), permite elegir destinos y verifica que el payload (incluido <code>plugin/res/</code>) aterrizó. Más un "Sentinel Doctor" dentro del panel: auto-diagnóstico del entorno — compatibilidad de versión C4D, ficheros res presentes, migración de settings, renderers detectados (RS/Arnold/Octane), descubrimiento de Python externo para el conversor EXR, permisos de escritura — cada ítem con pista de solución en lenguaje llano, y un bloque de diagnóstico copiable para reportes de bug. Chequeo de actualización opcional contra el último tag de GitHub (un GET, sin infraestructura).</div>
+<div class="field"><b class="lbl">Basis</b>
+<code>direct:</code> prioridad 4 de la auditoría de supervisor: "installer/onboarding fix (hardcoded to C4D 2024)" — por delante de casi toda feature nueva. <code>external:</code> el patrón doctor (<code>brew doctor</code>, <code>flutter doctor</code>) es la respuesta estándar del tooling a la varianza de entornos: convierte emails de soporte en autoservicio.</div>
+<div class="field"><b class="lbl">Rationale</b>
+10x de valor exige &gt;1x de usuarios, y hoy el instalador falla justo en la versión de C4D (2026) que el plugin soporta. Todo el eje de adopción (rulesets de I2, distribución, eventual monetización) queda taponado mientras instalar requiera espeleología en el README. Para un proyecto de una persona, el Doctor es palanca sobre el recurso más escaso: el tiempo del mantenedor.</div>
+<div class="field"><b class="lbl">Downsides</b>
+Poco glamour; la matriz de pruebas es multi-OS × multi-versión de C4D y requiere máquinas o VMs de prueba. El chequeo de updates toca red (debe ser opt-in y fallar en silencio).</div>
+<div class="crit"><b class="lbl">Criterios de aceptación</b>
+<ul>
+<li>En una máquina con C4D 2026 (y solo 2026), el instalador la detecta, instala y el plugin aparece en el menú de Extensiones al arrancar — en macOS y Windows.</li>
+<li>Con 2 versiones de C4D instaladas, ofrece ambas y respeta la selección.</li>
+<li>Doctor en instalación sana → todo verde; tras borrar <code>plugin/res/description/safearea_overlay.res</code> → ítem rojo con mensaje que nombra el fichero ausente.</li>
+<li>Doctor detecta correctamente qué renderers hay instalados en la máquina de prueba.</li>
+<li>"Copiar diagnóstico" produce un bloque de texto con versiones, rutas y estados pegable en un issue de GitHub.</li>
+<li>Sin conexión de red, el Doctor y el chequeo de updates degradan con aviso silencioso (regla del proyecto: fallback graceful).</li>
+</ul>
+</div>
+</article>
+
+<article class="idea" id="i7">
+<div class="idea-head"><span class="idnum">I7</span><h3>Slate de revisión + informe HTML legible por el cliente</h3></div>
+<div class="chips"><span class="chip-axis">Eje 3 · Capa de revisión y visibilidad</span><span class="chip-conf">Confianza 80%</span><span class="chip-cx">Complejidad Media</span></div>
+<div class="field"><b class="lbl">Descripción</b>
+Hacer visible la disciplina de versionado fuera de C4D. <strong>(a) Slate:</strong> el pipeline EXR→PNG existente compone una franja con shot, versión + badge de estado, score QC, artista, frame y fecha sobre los PNGs de revisión, y estampa los mismos campos en los metadatos del fichero — un cliente viendo un WIP no puede confundirlo con el FINAL. <strong>(b) Informe:</strong> Export genera junto al JSON un HTML autocontenido (CSS inline, snapshot embebido en base64): nombre de escena, versión, badges verde/rojo por check, notas/TODOs y línea temporal de versiones; Collect Scene lo deposita en la carpeta de entrega. Un productor hace doble clic y sabe si el shot está limpio, final y qué versión es — sin cuenta, sin login, sin servidor.</div>
+<div class="field"><b class="lbl">Basis</b>
+<code>direct:</code> "Review Slate on snapshots" ya es Backlog Tier A del ROADMAP, y el conversor (<code>exr_converter_external.py</code>) es Python puro donde componer una franja con Pillow no toca ninguna restricción de la API de C4D. <code>external:</code> los burn-ins son universales en dailies de VFX (RV, ShotGrid) porque los nombres de fichero se pierden en hilos de Slack; Kitsu demuestra que la revisión sin-login es el patrón portable — el fichero HTML estático es su equivalente sin servidor.</div>
+<div class="field"><b class="lbl">Rationale</b>
+El rigor del sistema de versiones se evapora en el momento en que un PNG sale de la máquina; el slate y el informe lo hacen viajar hasta las personas que aprueban y pagan — convirtiendo el QC de higiene interna en confianza de cara al cliente que además diferencia las entregas del estudio.</div>
+<div class="field"><b class="lbl">Downsides</b>
+El layout del slate y qué metadatos se muestran externamente son política de estudio (debe ser opt-in y configurable vía ruleset de I2); Pillow como dependencia del conversor externo (aceptable: ya es un proceso externo); el informe HTML debe leer la lista canónica para no recrear "confianza falsa".</div>
+<div class="crit"><b class="lbl">Criterios de aceptación</b>
+<ul>
+<li>Snapshot EXR convertido con slate ON → el PNG muestra la franja con shot/versión/estado/score/artista/fecha correctos frente al sidecar; con slate OFF, píxeles intactos (diff binario limpio).</li>
+<li>Metadatos PNG contienen los mismos campos (verificable con <code>exiftool</code> o equivalente).</li>
+<li>Versión TR con score 9/12 → el badge del slate dice "TR · 9/12"; tras guardar FINAL 12/12, el siguiente snapshot lo refleja.</li>
+<li>Export QC produce <code>&lt;base&gt;_report.html</code> autocontenido: se abre sin red, checks idénticos al panel (fixture), snapshot embebido visible.</li>
+<li>Collect Scene copia el informe a la carpeta de entrega con el nombre limpio de la entrega.</li>
+<li>La composición del slate tiene test pytest (imagen dummy + metadatos → PNG esperado) sin C4D.</li>
+</ul>
+</div>
+</article>
+</section>
+
+<section id="secuencia">
+<h2>Secuencia de roadmap propuesta</h2>
+<p>Orden derivado de las dependencias entre supervivientes y del mandato de la auditoría (verificar antes de construir; post-render como primera feature nueva). I1 e I6 no dependen del Motor QC 2.0 y pueden avanzar en paralelo a su diseño; I3 no debe empezar antes que la capa de severidad de I2.</p>
+<figure>
+<div class="svgwrap">
+<svg viewBox="0 0 820 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Fases del roadmap">
+  <rect x="20" y="30" width="130" height="56" rx="9" fill="#fdf3e0" stroke="#9a6200"/>
+  <text x="85" y="53" font-size="12" font-weight="700" fill="#9a6200" text-anchor="middle">Fase 0</text>
+  <text x="85" y="71" font-size="11" fill="#1a1d21" text-anchor="middle">higiene + fixtures</text>
+  <rect x="180" y="30" width="130" height="56" rx="9" fill="#e4f2ee" stroke="#0f6b5c"/>
+  <text x="245" y="53" font-size="12" font-weight="700" fill="#0b4d43" text-anchor="middle">v1.6.x</text>
+  <text x="245" y="71" font-size="11" fill="#1a1d21" text-anchor="middle">I6 instalador+Doctor</text>
+  <rect x="340" y="30" width="130" height="56" rx="9" fill="#e4f2ee" stroke="#0f6b5c"/>
+  <text x="405" y="53" font-size="12" font-weight="700" fill="#0b4d43" text-anchor="middle">v1.7</text>
+  <text x="405" y="71" font-size="11" fill="#1a1d21" text-anchor="middle">I1 post-render</text>
+  <rect x="340" y="120" width="130" height="56" rx="9" fill="#e9f0f8" stroke="#31547d"/>
+  <text x="405" y="143" font-size="12" font-weight="700" fill="#31547d" text-anchor="middle">v1.7–1.8</text>
+  <text x="405" y="161" font-size="11" fill="#1a1d21" text-anchor="middle">I2 Motor QC 2.0</text>
+  <rect x="500" y="120" width="130" height="56" rx="9" fill="#e9f0f8" stroke="#31547d"/>
+  <text x="565" y="143" font-size="12" font-weight="700" fill="#31547d" text-anchor="middle">v1.8</text>
+  <text x="565" y="161" font-size="11" fill="#1a1d21" text-anchor="middle">I3 gates</text>
+  <rect x="500" y="30" width="130" height="56" rx="9" fill="#e4f2ee" stroke="#0f6b5c"/>
+  <text x="565" y="53" font-size="12" font-weight="700" fill="#0b4d43" text-anchor="middle">v1.9</text>
+  <text x="565" y="71" font-size="11" fill="#1a1d21" text-anchor="middle">I4 collect confiable</text>
+  <rect x="660" y="75" width="140" height="56" rx="9" fill="#faeae8" stroke="#a4322a"/>
+  <text x="730" y="98" font-size="12" font-weight="700" fill="#a4322a" text-anchor="middle">v2.0</text>
+  <text x="730" y="116" font-size="11" fill="#1a1d21" text-anchor="middle">I5 supervisor · I7 slate</text>
+  <line x1="150" y1="58" x2="176" y2="58" stroke="#5b6068" stroke-width="1.5" marker-end="url(#arr2)"/>
+  <line x1="310" y1="58" x2="336" y2="58" stroke="#5b6068" stroke-width="1.5" marker-end="url(#arr2)"/>
+  <line x1="310" y1="72" x2="336" y2="140" stroke="#5b6068" stroke-width="1.5" marker-end="url(#arr2)"/>
+  <line x1="470" y1="148" x2="496" y2="148" stroke="#5b6068" stroke-width="1.5" marker-end="url(#arr2)"/>
+  <line x1="470" y1="58" x2="496" y2="58" stroke="#5b6068" stroke-width="1.5" marker-end="url(#arr2)"/>
+  <line x1="630" y1="58" x2="670" y2="80" stroke="#5b6068" stroke-width="1.5" marker-end="url(#arr2)"/>
+  <line x1="630" y1="148" x2="670" y2="126" stroke="#5b6068" stroke-width="1.5" marker-end="url(#arr2)"/>
+  <defs><marker id="arr2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5b6068"/></marker></defs>
+  <text x="20" y="225" font-size="11" fill="#5b6068">Fase 0 es prerrequisito de todo (auditoría). I1/I6 no dependen de I2; I3 sí. I5/I7 se benefician del vector por-check (I2) y del certificado (I4).</text>
+</svg>
+</div>
+<figcaption>Orientativo, no un compromiso de fechas: la secuencia refleja dependencias técnicas y el orden de la auditoría.</figcaption>
+</figure>
+<table>
+<thead><tr><th>Fase</th><th>Contenido</th><th>Criterio de cierre de fase</th></tr></thead>
+<tbody>
+<tr><td>Fase 0</td><td>Higiene de ramas (v1.5.8 / v1.6.0 fuera de main y verificados) + escalera de verificación (pytest + fixtures + runner)</td><td>pytest verde; runner reporta 12/12 esperados en escena que viola y escena limpia</td></tr>
+<tr><td>v1.6.x</td><td>I6 instalador multi-versión + Doctor</td><td>Instalación limpia en C4D 2026 macOS y Windows sin editar rutas a mano</td></tr>
+<tr><td>v1.7</td><td>I1 validación post-render (+ endurecimiento del escáner de texturas que pide la auditoría)</td><td>Los 7 criterios de I1 pasan sobre carpetas fixture</td></tr>
+<tr><td>v1.7–1.8</td><td>I2 Motor QC 2.0 por capas: registro → severidad → ruleset → baseline</td><td>Regresión 12/12 idéntica a v1.5.7 + criterios de I2</td></tr>
+<tr><td>v1.8</td><td>I3 gates en FINAL/Collect (opt-in)</td><td>Criterios de I3, incluido el undo único del "Fix &amp; continue"</td></tr>
+<tr><td>v1.9</td><td>I4 manifiesto de dependencias + certificado</td><td>Criterios de I4 con escenas probe por renderer</td></tr>
+<tr><td>v2.0</td><td>I5 panel de supervisor + I7 slate/informe cliente</td><td>Criterios de I5 e I7; primer release "de equipo"</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="rejected">
+<h2>Rejection Summary</h2>
+<table>
+<thead><tr><th>#</th><th>Idea</th><th>Motivo</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>"Fix Everything Fixable" (batch de todos los auto-fixes con preview)</td><td>Subsumida en el diálogo de gates de I3 ("Fix &amp; continue"); como feature aislada duplica una idea más fuerte.</td></tr>
+<tr><td>2</td><td>Matriz de specs de entrega multi-formato (deliverable list por proyecto)</td><td>Duplica I1+I4; el sidecar de "formatos pedidos" es una extensión v2 natural de la validación post-render.</td></tr>
+<tr><td>3</td><td>Correlación versión↔render como feature aparte (chain of custody)</td><td>Fusionada en I1 (trace render + aviso de frames obsoletos); no justifica carta propia.</td></tr>
+<tr><td>4</td><td>Timeline / analítica del historial como feature aparte</td><td>Fusionada en I5 (vista de trayectoria); mismo dato, misma superficie.</td></tr>
+<tr><td>5</td><td>Certificado de entrega como feature aparte</td><td>Fusionado en I4; es el artefacto de salida del manifiesto, no una capacidad independiente.</td></tr>
+<tr><td>6</td><td>Barrido headless vía <code>c4dpy</code></td><td>Variante de implementación del nivel 2 de I5; viabilidad de licencia por puesto sin verificar — decisión de diseño, no idea.</td></tr>
+<tr><td>7</td><td>Harness de fixtures como "feature"</td><td>No es feature de valor de usuario: es el prerrequisito Fase 0 mandatado por la auditoría (recuadro arriba).</td></tr>
+<tr><td>8</td><td>Presets de render por plataforma social (bitrate/codec por target)</td><td>Hueco real verificado, pero valor marginal frente a los supervivientes; extensión natural del Multi-Format existente → backlog.</td></tr>
+<tr><td>9</td><td>Estimador de coste/tiempo de render desde stats de escena</td><td>Whitespace confirmado pero solo <code>reasoned:</code>; necesita histórico de renders que Sentinel aún no captura — candidato futuro tras I1.</td></tr>
+<tr><td>10</td><td>QC asistido por LLM / chequeo conversacional</td><td>Tendencia sin producto comparable aún; base insuficiente y fricción de dependencias — vigilar, no construir.</td></tr>
+<tr><td>11</td><td>QC de rutas/referencias USD</td><td>Prematuro: el round-trip profundo de materiales USD en C4D apunta a 2027; revisar entonces.</td></tr>
+<tr><td>12</td><td>Webhook Slack/Teams, atajos de teclado, denoise por AOV</td><td>Por debajo del umbral frente a los supervivientes; permanecen en el backlog existente del ROADMAP.</td></tr>
+</tbody>
+</table>
+<p>Cobertura de ejes: los 5 ejes tienen al menos un superviviente (eje 5 cubierto por I6 y por la capa de ruleset de I2); ningún hueco deliberado.</p>
+</section>
+
+<footer class="composition-signal">Compuesto 2026-07-03 por ce-ideate (repo-grounded) a partir del prompt del usuario, el escaneo del repo Sentinel, la auditoría <code>docs/audit/2026-06-12_supervisor_audit.md</code> y la investigación externa de la sesión.</footer>
+</div>
+</body>
+</html>
