@@ -34,6 +34,11 @@ from sentinel.common.helpers import (
     safe_print,
 )
 from sentinel.common.settings import GlobalSettings
+from sentinel.qc.results import (
+    CheckResult,
+    object_identity,
+    structured_cache_key,
+)
 
 # Import maxon for node material access
 try:
@@ -886,6 +891,109 @@ def apply_texture_path_change(record, new_path, doc=None):
         return False
 
 
+def _texture_issue_from_record(record):
+    status = record.get("status")
+    if status not in ("absolute", "missing"):
+        return None
+
+    # Reconstruct the legacy `source` label
+    host_name = record.get("host_name") or "<unknown>"
+    stype = record.get("source_type") or ""
+    if stype == "classic_shader":
+        source = f"Shader in '{host_name}'"
+    elif stype == "octane_shader":
+        source = f"Octane in '{host_name}'"
+    elif stype == "object_shader":
+        source = f"Sky/Light shader on '{host_name}'"
+    elif stype == "object_oct_shader":
+        source = f"Octane shader on '{host_name}'"
+    elif stype == "tag_shader":
+        source = f"Tag shader on '{host_name}'"
+    elif stype == "tag_oct_shader":
+        source = f"Octane env tag on '{host_name}'"
+    elif stype == "bc_param":
+        source = f"Material '{host_name}'"
+    elif stype == "object_bc":
+        source = f"Object '{host_name}'"
+    elif stype == "rs_object_fileref":
+        source = f"RS Object '{host_name}'"
+    elif stype in ("rs_node", "arnold_node"):
+        renderer = {
+            "rs_node":     "RS Node",
+            "arnold_node": "Arnold Node",
+        }[stype]
+        source = f"{renderer} in '{host_name}'"
+    elif stype == "alembic":
+        source = f"Alembic '{host_name}'"
+    else:
+        source = host_name
+
+    return {
+        "legacy": {
+            "source": source,
+            "path": record.get("current_path", ""),
+            "issue": status,
+            "resolved": record.get("resolved"),
+        },
+        "identity": {
+            "type": "texture_path",
+            "owner_name": host_name,
+            "path": record.get("current_path", ""),
+            "issue": status,
+        },
+        "extras": {
+            "source": source,
+            "path": record.get("current_path", ""),
+            "issue": status,
+            "resolved": record.get("resolved"),
+            "source_type": stype,
+            "channel": record.get("channel"),
+        },
+    }
+
+
+def _textures_result(issue_items):
+    legacy_issues = [item["legacy"] for item in issue_items]
+    result = CheckResult(
+        "textures",
+        metadata={"legacy_count": len(legacy_issues)},
+        legacy_items=legacy_issues,
+    )
+    for item in issue_items:
+        issue = item["legacy"]["issue"]
+        result.add_violation(
+            item["identity"],
+            f"Texture path is {issue}",
+            item["extras"],
+        )
+    return result
+
+
+def check_textures_unified_structured(doc):
+    """QC #6 structured result wrapper around scan_all_texture_paths."""
+    cached = check_cache.get(doc, structured_cache_key("textures"))
+    if cached is not None:
+        return cached
+
+    issue_items = []
+    try:
+        records = scan_all_texture_paths(doc)
+        for record in records:
+            issue_item = _texture_issue_from_record(record)
+            if issue_item is None:
+                continue
+            issue_items.append(issue_item)
+            if len(issue_items) >= 50:
+                break
+    except Exception as e:
+        safe_print(f"Error in unified texture check: {e}")
+
+    result = _textures_result(issue_items)
+    check_cache.set(doc, "textures", result.to_legacy())
+    check_cache.set(doc, structured_cache_key("textures"), result)
+    return result
+
+
 def check_textures_unified(doc):
     """QC #6 wrapper: returns the legacy-shaped issue list (kept for
     backwards-compat with the panel's existing render code). Internally
@@ -900,57 +1008,7 @@ def check_textures_unified(doc):
     if cached is not None:
         return cached
 
-    issues = []
-    try:
-        records = scan_all_texture_paths(doc)
-        for r in records:
-            status = r.get("status")
-            if status not in ("absolute", "missing"):
-                continue
-            # Reconstruct the legacy `source` label
-            host_name = r.get("host_name") or "<unknown>"
-            stype = r.get("source_type") or ""
-            if stype == "classic_shader":
-                source = f"Shader in '{host_name}'"
-            elif stype == "octane_shader":
-                source = f"Octane in '{host_name}'"
-            elif stype == "object_shader":
-                source = f"Sky/Light shader on '{host_name}'"
-            elif stype == "object_oct_shader":
-                source = f"Octane shader on '{host_name}'"
-            elif stype == "tag_shader":
-                source = f"Tag shader on '{host_name}'"
-            elif stype == "tag_oct_shader":
-                source = f"Octane env tag on '{host_name}'"
-            elif stype == "bc_param":
-                source = f"Material '{host_name}'"
-            elif stype == "object_bc":
-                source = f"Object '{host_name}'"
-            elif stype == "rs_object_fileref":
-                source = f"RS Object '{host_name}'"
-            elif stype in ("rs_node", "arnold_node"):
-                renderer = {
-                    "rs_node":     "RS Node",
-                    "arnold_node": "Arnold Node",
-                }[stype]
-                source = f"{renderer} in '{host_name}'"
-            elif stype == "alembic":
-                source = f"Alembic '{host_name}'"
-            else:
-                source = host_name
-            issues.append({
-                "source": source,
-                "path": r.get("current_path", ""),
-                "issue": status,
-                "resolved": r.get("resolved"),
-            })
-            if len(issues) >= 50:
-                break
-    except Exception as e:
-        safe_print(f"Error in unified texture check: {e}")
-
-    check_cache.set(doc, "textures", issues)
-    return issues
+    return check_textures_unified_structured(doc).to_legacy()
 
 # ---------------- scene complexity ----------------
 def get_scene_stats(doc):
@@ -4169,7 +4227,7 @@ def _evaluate_object_at_frame(doc, frame, fps):
         pass
 
 
-def check_cross_aspect_safe_area(doc, sample_strategy="keyframes"):
+def _scan_cross_aspect_safe_area(doc, sample_strategy="keyframes"):
     """QC #12 — verify Safe Area subjects stay within per-format safe
     areas across all active Multi-Format delivery Takes.
 
@@ -4334,6 +4392,50 @@ def check_cross_aspect_safe_area(doc, sample_strategy="keyframes"):
         c4d.EventAdd()
 
     return violations
+
+
+def _cross_aspect_safe_area_result(violations):
+    result = CheckResult(
+        "cross_aspect_safe_area",
+        metadata={"legacy_count": len(violations)},
+        legacy_items=violations,
+    )
+    for item in violations:
+        obj = item.get("object")
+        fmt_id = item.get("fmt_id")
+        result.add_violation(
+            {
+                "type": "cross_aspect_safe_area",
+                "object": object_identity(obj),
+                "fmt_id": fmt_id,
+            },
+            f"Safe-area subject violates {fmt_id} format",
+            {
+                "object_name": item.get("object_name"),
+                "fmt_id": fmt_id,
+                "sides": item.get("sides"),
+                "frames": item.get("frames"),
+            },
+        )
+    return result
+
+
+def check_cross_aspect_safe_area_structured(doc, sample_strategy="keyframes"):
+    """QC #12 structured wrapper.
+
+    Frames are deliberately stored only in violation extras, never in the
+    identity. The legacy check did not use check_cache, and this helper keeps
+    the same no-cache runtime behavior for sample_strategy-sensitive results.
+    """
+    return _cross_aspect_safe_area_result(
+        _scan_cross_aspect_safe_area(doc, sample_strategy=sample_strategy)
+    )
+
+
+def check_cross_aspect_safe_area(doc, sample_strategy="keyframes"):
+    return check_cross_aspect_safe_area_structured(
+        doc, sample_strategy=sample_strategy
+    ).to_legacy()
 
 
 # ============================================================

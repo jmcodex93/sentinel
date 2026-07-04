@@ -39,6 +39,25 @@ CHECKS = (
     ("fps_range", "check_fps_range"),
     ("cross_aspect_safe_area", "check_cross_aspect_safe_area"),
 )
+STRUCTURED_CHECKS = (
+    ("lights", "scene_checks", "check_lights", {}),
+    ("visibility_traps", "scene_checks", "check_visibility_traps", {}),
+    ("keys", "scene_checks", "check_keys", {}),
+    ("camera_shift", "scene_checks", "check_camera_shift", {}),
+    ("render_conflicts", "render_checks", "check_render_conflicts", {}),
+    ("textures", None, "check_textures_unified_structured", {}),
+    ("unused_materials", "scene_checks", "check_unused_materials", {}),
+    ("default_names", "scene_checks", "check_default_names", {}),
+    ("output_paths", "render_checks", "check_output_paths", {}),
+    ("takes", "render_checks", "check_takes", {}),
+    ("fps_range", "render_checks", "check_fps_range", {}),
+    (
+        "cross_aspect_safe_area",
+        None,
+        "check_cross_aspect_safe_area_structured",
+        {"sample_strategy": "current_frame"},
+    ),
+)
 
 
 def _script_path() -> Path:
@@ -107,6 +126,22 @@ def _normalize(value):
     return _normalize_path(value)
 
 
+def _placeholder_guid_values(value):
+    """Replace serialized GUID values so fixture oracles survive rebuilds."""
+    if isinstance(value, dict):
+        out = {}
+        for key in sorted(value.keys(), key=str):
+            normalized_key = str(key)
+            if normalized_key == "guid":
+                out[normalized_key] = "<guid>"
+            else:
+                out[normalized_key] = _placeholder_guid_values(value[key])
+        return out
+    if isinstance(value, list):
+        return [_placeholder_guid_values(item) for item in value]
+    return value
+
+
 def _run_checks(module, doc):
     module.check_cache.clear()
     results = {}
@@ -117,6 +152,21 @@ def _run_checks(module, doc):
         else:
             raw = func(doc)
         results[check_id] = _normalize(raw)
+    return results
+
+
+def _resolve_structured_callable(module, owner_attr, func_name):
+    owner = getattr(module, owner_attr) if owner_attr else module
+    return getattr(owner, func_name)
+
+
+def _run_structured_checks(module, doc):
+    module.check_cache.clear()
+    results = {}
+    for check_id, owner_attr, func_name, kwargs in STRUCTURED_CHECKS:
+        func = _resolve_structured_callable(module, owner_attr, func_name)
+        raw = func(doc, **kwargs)
+        results[check_id] = _placeholder_guid_values(_normalize(raw))
     return results
 
 
@@ -164,16 +214,17 @@ def _diff(expected, actual):
     )
 
 
-def _compare_fixture(name, actual, expected):
+def _compare_fixture(actual, expected, checks):
     failures = []
-    for check_id, _func_name in CHECKS:
+    check_ids = [item[0] for item in checks]
+    for check_id in check_ids:
         exp = expected.get(check_id)
         act = actual.get(check_id)
         if exp == act:
             continue
         failures.append((check_id, _diff(exp, act)))
-    extra = sorted(set(actual) - {check_id for check_id, _ in CHECKS})
-    missing = sorted({check_id for check_id, _ in CHECKS} - set(actual))
+    extra = sorted(set(actual) - set(check_ids))
+    missing = sorted(set(check_ids) - set(actual))
     for check_id in extra:
         failures.append((check_id, f"unexpected check key in actual: {check_id}"))
     for check_id in missing:
@@ -199,30 +250,52 @@ def main():
         for name in FIXTURE_NAMES:
             scene_path = FIXTURES_DIR / f"{name}.c4d"
             expected_path = FIXTURES_DIR / f"expected_{name}.json"
+            structured_expected_path = (
+                FIXTURES_DIR / f"expected_{name}_structured.json"
+            )
 
             doc, load_error = _load_document(scene_path)
             if load_error:
-                all_failures.append((name, "load", load_error))
+                all_failures.append((name, "runner", "load", load_error))
                 continue
             loaded_docs.append(doc)
 
             try:
                 actual = _run_checks(module, doc)
+                actual_structured = _run_structured_checks(module, doc)
             except Exception:
-                all_failures.append((name, "run", traceback.format_exc()))
+                all_failures.append((name, "runner", "run", traceback.format_exc()))
                 continue
 
             if freeze:
                 expected_path.write_text(_json_dump(actual) + "\n", encoding="utf-8")
+                structured_expected_path.write_text(
+                    _json_dump(actual_structured) + "\n",
+                    encoding="utf-8",
+                )
                 continue
 
             expected, expected_error = _read_expected(expected_path)
             if expected_error:
-                all_failures.append((name, "expected", expected_error))
-                continue
+                all_failures.append((name, "text", "expected", expected_error))
+            else:
+                for check_id, diff_text in _compare_fixture(
+                    actual, expected, CHECKS
+                ):
+                    all_failures.append((name, "text", check_id, diff_text))
 
-            for check_id, diff_text in _compare_fixture(name, actual, expected):
-                all_failures.append((name, check_id, diff_text))
+            structured_expected, structured_expected_error = _read_expected(
+                structured_expected_path
+            )
+            if structured_expected_error:
+                all_failures.append(
+                    (name, "structured", "expected", structured_expected_error)
+                )
+            else:
+                for check_id, diff_text in _compare_fixture(
+                    actual_structured, structured_expected, STRUCTURED_CHECKS
+                ):
+                    all_failures.append((name, "structured", check_id, diff_text))
     finally:
         for doc in loaded_docs:
             try:
@@ -241,20 +314,23 @@ def main():
 
     if all_failures:
         print(f"FAIL Sentinel fixture runner: {len(all_failures)} failure(s)")
-        for fixture_name, check_id, detail in all_failures:
-            print(f"\n[{fixture_name}] {check_id}")
+        for fixture_name, oracle, check_id, detail in all_failures:
+            if oracle in ("text", "structured"):
+                print(f"\n[{fixture_name}] {oracle} oracle: {check_id}")
+            else:
+                print(f"\n[{fixture_name}] {oracle}: {check_id}")
             print(detail)
         return 1
 
     if freeze:
         print(
-            "PASS Sentinel fixture runner: froze expected JSON for "
+            "PASS Sentinel fixture runner: froze text and structured expected JSON for "
             + ", ".join(FIXTURE_NAMES)
         )
     else:
         print(
             "PASS Sentinel fixture runner: "
-            f"{len(FIXTURE_NAMES)} fixture(s) matched expected JSON"
+            f"{len(FIXTURE_NAMES)} fixture(s) matched text and structured expected JSON"
         )
     return 0
 

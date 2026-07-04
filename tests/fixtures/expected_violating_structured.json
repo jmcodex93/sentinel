@@ -1,0 +1,756 @@
+{
+  "camera_shift": {
+    "check_id": "camera_shift",
+    "metadata": {
+      "legacy_count": 1
+    },
+    "violations": [
+      {
+        "check_id": "camera_shift",
+        "extras": {
+          "film_offset_x": 0.1,
+          "film_offset_y": -0.05
+        },
+        "identity": {
+          "guid": "<guid>",
+          "path": "/shifted_camera",
+          "sibling_index": 0,
+          "type": "object"
+        },
+        "message": "Camera has non-zero film offset"
+      }
+    ]
+  },
+  "cross_aspect_safe_area": {
+    "check_id": "cross_aspect_safe_area",
+    "metadata": {
+      "legacy_count": 3
+    },
+    "violations": [
+      {
+        "check_id": "cross_aspect_safe_area",
+        "extras": {
+          "fmt_id": "4x5",
+          "frames": [
+            0
+          ],
+          "object_name": "safe_area_subject_too_far_right",
+          "sides": [
+            "right"
+          ]
+        },
+        "identity": {
+          "fmt_id": "4x5",
+          "type": "cross_aspect_safe_area"
+        },
+        "message": "Safe-area subject violates 4x5 format"
+      },
+      {
+        "check_id": "cross_aspect_safe_area",
+        "extras": {
+          "fmt_id": "1x1",
+          "frames": [
+            0
+          ],
+          "object_name": "safe_area_subject_too_far_right",
+          "sides": [
+            "right"
+          ]
+        },
+        "identity": {
+          "fmt_id": "1x1",
+          "type": "cross_aspect_safe_area"
+        },
+        "message": "Safe-area subject violates 1x1 format"
+      },
+      {
+        "check_id": "cross_aspect_safe_area",
+        "extras": {
+          "fmt_id": "9x16",
+          "frames": [
+            0
+          ],
+          "object_name": "safe_area_subject_too_far_right",
+          "sides": [
+            "right"
+          ]
+        },
+        "identity": {
+          "fmt_id": "9x16",
+          "type": "cross_aspect_safe_area"
+        },
+        "message": "Safe-area subject violates 9x16 format"
+      }
+    ]
+  },
+  "default_names": {
+    "check_id": "default_names",
+    "metadata": {
+      "legacy_count": 2
+    },
+    "violations": [
+      {
+        "check_id": "default_names",
+        "extras": {
+          "name": "Null"
+        },
+        "identity": {
+          "guid": "<guid>",
+          "path": "/Null",
+          "sibling_index": 0,
+          "type": "object"
+        },
+        "message": "Object has a default or generic name"
+      },
+      {
+        "check_id": "default_names",
+        "extras": {
+          "name": "Cube"
+        },
+        "identity": {
+          "guid": "<guid>",
+          "path": "/Cube",
+          "sibling_index": 0,
+          "type": "object"
+        },
+        "message": "Object has a default or generic name"
+      }
+    ]
+  },
+  "fps_range": {
+    "check_id": "fps_range",
+    "metadata": {
+      "legacy_count": 13
+    },
+    "violations": [
+      {
+        "check_id": "fps_range",
+        "extras": {
+          "issue": "Document FPS is 30, expected 25",
+          "preset": null,
+          "type": "doc_fps"
+        },
+        "identity": {
+          "field": "doc_fps",
+          "param": "fps_range",
+          "type": "parameter",
+          "value": 30
+        },
+        "message": "Document FPS is 30, expected 25"
+      },
+      {
+        "check_id": "fps_range",
+        "extras": {
+          "issue": "[custom_preview] Render FPS is 30, expected 25",
+          "preset": "custom_preview",
+          "type": "rd_fps"
+        },
+        "identity": {
+          "field": "rd_fps",
+          "param": "fps_range",
+          "preset": "custom_preview",
+          "type": "parameter",
+          "value": 30
+        },
+        "message": "[custom_preview] Render FPS is 30, expected 25"
+      },
+      {
+        "check_id": "fps_range",
+        "extras": {
+          "issue": "[custom_preview] Start frame is 0, expected 1001",
+          "preset": "custom_preview",
+          "type": "start_frame"
+        },
+        "identity": {
+          "field": "start_frame",
+          "param": "fps_range",
+          "preset": "custom_preview",
+          "type": "parameter",
+          "value": 0
+        },
+        "message": "[custom_preview] Start frame is 0, expected 1001"
+      },
+      {
+        "check_id": "fps_range",
+        "extras": {
+          "issue": "[custom_preview_16x9] Render FPS is 30, expected 25",
+          "preset": "custom_preview_16x9",
+          "type": "rd_fps"
+        },
+        "identity": {
+          "field": "rd_fps",
+          "param": "fps_range",
+          "preset": "custom_preview_16x9",
+          "type": "parameter",
+          "value": 30
+        },
+        "message": "[custom_preview_16x9] Render FPS is 30, expected 25"
+      },
+      {
+        "check_id": "fps_range",
+        "extras": {
+          "issue": "[custom_preview_16x9] Start frame is 0, expected 1001",
+          "preset": "custom_preview_16x9",
+          "type": "start_frame"
+        },
+        "identity": {
+          "field": "start_frame",
+          "param": "fps_range",
+          "preset": "custom_preview_16x9",
+          "type": "parameter",
+          "value": 0
+        },
+        "message": "[custom_preview_16x9] Start frame is 0, expected 1001"
+      },
+      {
+        "check_id": "fps_range",
+        "extras": {
+          "issue": "[custom_preview_9x16] Render FPS is 30, expected 25",
+          "preset": "custom_preview_9x16",
+          "type": "rd_fps"
+        },
+        "identity": {
+          "field": "rd_fps",
+          "param": "fps_range",
+          "preset": "custom_preview_9x16",
+          "type": "parameter",
+          "value": 30
+        },
+        "message": "[custom_preview_9x16] Render FPS is 30, expected 25"
+      },
+      {
+        "check_id": "fps_range",
+        "extras": {
+          "issue": "[custom_preview_9x16] Start frame is 0, expected 1001",
+          "preset": "custom_preview_9x16",
+          "type": "start_frame"
+        },
+        "identity": {
+          "field": "start_frame",
+          "param": "fps_range",
+          "preset": "custom_preview_9x16",
+          "type": "parameter",
+          "value": 0
+        },
+        "message": "[custom_preview_9x16] Start frame is 0, expected 1001"
+      },
+      {
+        "check_id": "fps_range",
+        "extras": {
+          "issue": "[custom_preview_1x1] Render FPS is 30, expected 25",
+          "preset": "custom_preview_1x1",
+          "type": "rd_fps"
+        },
+        "identity": {
+          "field": "rd_fps",
+          "param": "fps_range",
+          "preset": "custom_preview_1x1",
+          "type": "parameter",
+          "value": 30
+        },
+        "message": "[custom_preview_1x1] Render FPS is 30, expected 25"
+      },
+      {
+        "check_id": "fps_range",
+        "extras": {
+          "issue": "[custom_preview_1x1] Start frame is 0, expected 1001",
+          "preset": "custom_preview_1x1",
+          "type": "start_frame"
+        },
+        "identity": {
+          "field": "start_frame",
+          "param": "fps_range",
+          "preset": "custom_preview_1x1",
+          "type": "parameter",
+          "value": 0
+        },
+        "message": "[custom_preview_1x1] Start frame is 0, expected 1001"
+      },
+      {
+        "check_id": "fps_range",
+        "extras": {
+          "issue": "[custom_preview_4x5] Render FPS is 30, expected 25",
+          "preset": "custom_preview_4x5",
+          "type": "rd_fps"
+        },
+        "identity": {
+          "field": "rd_fps",
+          "param": "fps_range",
+          "preset": "custom_preview_4x5",
+          "type": "parameter",
+          "value": 30
+        },
+        "message": "[custom_preview_4x5] Render FPS is 30, expected 25"
+      },
+      {
+        "check_id": "fps_range",
+        "extras": {
+          "issue": "[custom_preview_4x5] Start frame is 0, expected 1001",
+          "preset": "custom_preview_4x5",
+          "type": "start_frame"
+        },
+        "identity": {
+          "field": "start_frame",
+          "param": "fps_range",
+          "preset": "custom_preview_4x5",
+          "type": "parameter",
+          "value": 0
+        },
+        "message": "[custom_preview_4x5] Start frame is 0, expected 1001"
+      },
+      {
+        "check_id": "fps_range",
+        "extras": {
+          "issue": "[custom_preview_21x9] Render FPS is 30, expected 25",
+          "preset": "custom_preview_21x9",
+          "type": "rd_fps"
+        },
+        "identity": {
+          "field": "rd_fps",
+          "param": "fps_range",
+          "preset": "custom_preview_21x9",
+          "type": "parameter",
+          "value": 30
+        },
+        "message": "[custom_preview_21x9] Render FPS is 30, expected 25"
+      },
+      {
+        "check_id": "fps_range",
+        "extras": {
+          "issue": "[custom_preview_21x9] Start frame is 0, expected 1001",
+          "preset": "custom_preview_21x9",
+          "type": "start_frame"
+        },
+        "identity": {
+          "field": "start_frame",
+          "param": "fps_range",
+          "preset": "custom_preview_21x9",
+          "type": "parameter",
+          "value": 0
+        },
+        "message": "[custom_preview_21x9] Start frame is 0, expected 1001"
+      }
+    ]
+  },
+  "keys": {
+    "check_id": "keys",
+    "metadata": {
+      "legacy_count": 1
+    },
+    "violations": [
+      {
+        "check_id": "keys",
+        "identity": {
+          "guid": "<guid>",
+          "path": "/animated_multi_axis",
+          "sibling_index": 0,
+          "type": "object"
+        },
+        "message": "Object has multi-axis position or rotation keyframes"
+      }
+    ]
+  },
+  "lights": {
+    "check_id": "lights",
+    "metadata": {
+      "legacy_count": 1
+    },
+    "violations": [
+      {
+        "check_id": "lights",
+        "identity": {
+          "guid": "<guid>",
+          "path": "/stray_key_light",
+          "sibling_index": 0,
+          "type": "object"
+        },
+        "message": "Light is outside a light, lights, or lighting group"
+      }
+    ]
+  },
+  "output_paths": {
+    "check_id": "output_paths",
+    "metadata": {
+      "legacy_count": 7
+    },
+    "violations": [
+      {
+        "check_id": "output_paths",
+        "extras": {
+          "issue": "empty output path",
+          "preset": "custom_preview"
+        },
+        "identity": {
+          "field": "path",
+          "param": "output_path",
+          "preset": "custom_preview",
+          "type": "parameter",
+          "value": ""
+        },
+        "message": "empty output path"
+      },
+      {
+        "check_id": "output_paths",
+        "extras": {
+          "issue": "empty multi-pass path",
+          "preset": "custom_preview"
+        },
+        "identity": {
+          "field": "multi_pass_path",
+          "param": "output_path",
+          "preset": "custom_preview",
+          "type": "parameter",
+          "value": ""
+        },
+        "message": "empty multi-pass path"
+      },
+      {
+        "check_id": "output_paths",
+        "extras": {
+          "issue": "empty multi-pass path",
+          "preset": "custom_preview_16x9"
+        },
+        "identity": {
+          "field": "multi_pass_path",
+          "param": "output_path",
+          "preset": "custom_preview_16x9",
+          "type": "parameter",
+          "value": ""
+        },
+        "message": "empty multi-pass path"
+      },
+      {
+        "check_id": "output_paths",
+        "extras": {
+          "issue": "empty multi-pass path",
+          "preset": "custom_preview_9x16"
+        },
+        "identity": {
+          "field": "multi_pass_path",
+          "param": "output_path",
+          "preset": "custom_preview_9x16",
+          "type": "parameter",
+          "value": ""
+        },
+        "message": "empty multi-pass path"
+      },
+      {
+        "check_id": "output_paths",
+        "extras": {
+          "issue": "empty multi-pass path",
+          "preset": "custom_preview_1x1"
+        },
+        "identity": {
+          "field": "multi_pass_path",
+          "param": "output_path",
+          "preset": "custom_preview_1x1",
+          "type": "parameter",
+          "value": ""
+        },
+        "message": "empty multi-pass path"
+      },
+      {
+        "check_id": "output_paths",
+        "extras": {
+          "issue": "empty multi-pass path",
+          "preset": "custom_preview_4x5"
+        },
+        "identity": {
+          "field": "multi_pass_path",
+          "param": "output_path",
+          "preset": "custom_preview_4x5",
+          "type": "parameter",
+          "value": ""
+        },
+        "message": "empty multi-pass path"
+      },
+      {
+        "check_id": "output_paths",
+        "extras": {
+          "issue": "empty multi-pass path",
+          "preset": "custom_preview_21x9"
+        },
+        "identity": {
+          "field": "multi_pass_path",
+          "param": "output_path",
+          "preset": "custom_preview_21x9",
+          "type": "parameter",
+          "value": ""
+        },
+        "message": "empty multi-pass path"
+      }
+    ]
+  },
+  "render_conflicts": {
+    "check_id": "render_conflicts",
+    "metadata": {
+      "legacy_count": 6
+    },
+    "violations": [
+      {
+        "check_id": "render_conflicts",
+        "extras": {
+          "normalized_name": "custom_preview",
+          "preset": "custom_preview"
+        },
+        "identity": {
+          "field": "extra",
+          "param": "render_preset",
+          "preset": "custom_preview",
+          "type": "parameter",
+          "value": "custom_preview"
+        },
+        "message": "Non-standard render preset: custom_preview"
+      },
+      {
+        "check_id": "render_conflicts",
+        "extras": {
+          "normalized_name": "custom_preview_16x9",
+          "preset": "custom_preview_16x9"
+        },
+        "identity": {
+          "field": "extra",
+          "param": "render_preset",
+          "preset": "custom_preview_16x9",
+          "type": "parameter",
+          "value": "custom_preview_16x9"
+        },
+        "message": "Non-standard render preset: custom_preview_16x9"
+      },
+      {
+        "check_id": "render_conflicts",
+        "extras": {
+          "normalized_name": "custom_preview_9x16",
+          "preset": "custom_preview_9x16"
+        },
+        "identity": {
+          "field": "extra",
+          "param": "render_preset",
+          "preset": "custom_preview_9x16",
+          "type": "parameter",
+          "value": "custom_preview_9x16"
+        },
+        "message": "Non-standard render preset: custom_preview_9x16"
+      },
+      {
+        "check_id": "render_conflicts",
+        "extras": {
+          "normalized_name": "custom_preview_1x1",
+          "preset": "custom_preview_1x1"
+        },
+        "identity": {
+          "field": "extra",
+          "param": "render_preset",
+          "preset": "custom_preview_1x1",
+          "type": "parameter",
+          "value": "custom_preview_1x1"
+        },
+        "message": "Non-standard render preset: custom_preview_1x1"
+      },
+      {
+        "check_id": "render_conflicts",
+        "extras": {
+          "normalized_name": "custom_preview_4x5",
+          "preset": "custom_preview_4x5"
+        },
+        "identity": {
+          "field": "extra",
+          "param": "render_preset",
+          "preset": "custom_preview_4x5",
+          "type": "parameter",
+          "value": "custom_preview_4x5"
+        },
+        "message": "Non-standard render preset: custom_preview_4x5"
+      },
+      {
+        "check_id": "render_conflicts",
+        "extras": {
+          "normalized_name": "custom_preview_21x9",
+          "preset": "custom_preview_21x9"
+        },
+        "identity": {
+          "field": "extra",
+          "param": "render_preset",
+          "preset": "custom_preview_21x9",
+          "type": "parameter",
+          "value": "custom_preview_21x9"
+        },
+        "message": "Non-standard render preset: custom_preview_21x9"
+      }
+    ]
+  },
+  "takes": {
+    "check_id": "takes",
+    "metadata": {
+      "legacy_count": 7
+    },
+    "violations": [
+      {
+        "check_id": "takes",
+        "extras": {
+          "issue": "Output path missing $take token",
+          "take": "21x9"
+        },
+        "identity": {
+          "field": "path",
+          "param": "take",
+          "take": "21x9",
+          "type": "parameter",
+          "value": "./21x9/$prj_$frame"
+        },
+        "message": "Output path missing $take token"
+      },
+      {
+        "check_id": "takes",
+        "extras": {
+          "issue": "Output path missing $take token",
+          "take": "4x5"
+        },
+        "identity": {
+          "field": "path",
+          "param": "take",
+          "take": "4x5",
+          "type": "parameter",
+          "value": "./4x5/$prj_$frame"
+        },
+        "message": "Output path missing $take token"
+      },
+      {
+        "check_id": "takes",
+        "extras": {
+          "issue": "Output path missing $take token",
+          "take": "1x1"
+        },
+        "identity": {
+          "field": "path",
+          "param": "take",
+          "take": "1x1",
+          "type": "parameter",
+          "value": "./1x1/$prj_$frame"
+        },
+        "message": "Output path missing $take token"
+      },
+      {
+        "check_id": "takes",
+        "extras": {
+          "issue": "Output path missing $take token",
+          "take": "9x16"
+        },
+        "identity": {
+          "field": "path",
+          "param": "take",
+          "take": "9x16",
+          "type": "parameter",
+          "value": "./9x16/$prj_$frame"
+        },
+        "message": "Output path missing $take token"
+      },
+      {
+        "check_id": "takes",
+        "extras": {
+          "issue": "Output path missing $take token",
+          "take": "16x9"
+        },
+        "identity": {
+          "field": "path",
+          "param": "take",
+          "take": "16x9",
+          "type": "parameter",
+          "value": "./16x9/$prj_$frame"
+        },
+        "message": "Output path missing $take token"
+      },
+      {
+        "check_id": "takes",
+        "extras": {
+          "issue": "No camera assigned",
+          "take": "take_without_camera"
+        },
+        "identity": {
+          "field": "camera",
+          "param": "take",
+          "take": "take_without_camera",
+          "type": "parameter",
+          "value": null
+        },
+        "message": "No camera assigned"
+      },
+      {
+        "check_id": "takes",
+        "extras": {
+          "issue": "Inherited path missing $take token",
+          "take": "take_without_camera"
+        },
+        "identity": {
+          "field": "inherited_path",
+          "param": "take",
+          "take": "take_without_camera",
+          "type": "parameter",
+          "value": ""
+        },
+        "message": "Inherited path missing $take token"
+      }
+    ]
+  },
+  "textures": {
+    "check_id": "textures",
+    "metadata": {
+      "legacy_count": 1
+    },
+    "violations": [
+      {
+        "check_id": "textures",
+        "extras": {
+          "channel": "Bitmap shader",
+          "issue": "absolute",
+          "path": "/__sentinel_fixture_missing__/missing_albedo.exr",
+          "resolved": "/__sentinel_fixture_missing__/missing_albedo.exr",
+          "source": "Shader in 'missing_absolute_texture_mat'",
+          "source_type": "classic_shader"
+        },
+        "identity": {
+          "issue": "absolute",
+          "owner_name": "missing_absolute_texture_mat",
+          "path": "/__sentinel_fixture_missing__/missing_albedo.exr",
+          "type": "texture_path"
+        },
+        "message": "Texture path is absolute"
+      }
+    ]
+  },
+  "unused_materials": {
+    "check_id": "unused_materials",
+    "metadata": {
+      "legacy_count": 1
+    },
+    "violations": [
+      {
+        "check_id": "unused_materials",
+        "identity": {
+          "guid": "<guid>",
+          "name": "missing_absolute_texture_mat",
+          "type": "material"
+        },
+        "message": "Material is not assigned to any object"
+      }
+    ]
+  },
+  "visibility_traps": {
+    "check_id": "visibility_traps",
+    "metadata": {
+      "legacy_count": 1
+    },
+    "violations": [
+      {
+        "check_id": "visibility_traps",
+        "identity": {
+          "guid": "<guid>",
+          "path": "/hidden_in_editor_only",
+          "sibling_index": 0,
+          "type": "object"
+        },
+        "message": "Object has inconsistent viewport/render visibility"
+      }
+    ]
+  }
+}
