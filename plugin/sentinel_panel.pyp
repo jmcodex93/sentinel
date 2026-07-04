@@ -39,6 +39,8 @@ from sentinel.qc.results import (
     object_identity,
     structured_cache_key,
 )
+from sentinel.qc.registry import CHECK_REGISTRY, CheckDisplayView, RowKeysView
+from sentinel.qc.score import compute_score, count_violations, run_all_checks
 
 # Import maxon for node material access
 try:
@@ -1978,32 +1980,13 @@ def _humanize_time_diff(timestamp_str):
     return ts.strftime("%Y-%m-%d")
 
 
+def _current_module():
+    return sys.modules.get(__name__)
+
+
 def _build_qc_summary(doc):
-    """Run all 12 QC checks (using cache) and return a compact summary dict."""
-    counts = {
-        "lights":      len(check_lights(doc) or []),
-        "vis":         len(check_visibility_traps(doc) or []),
-        "keys":        len(check_keys(doc) or []),
-        "cam":         len(check_camera_shift(doc) or []),
-        "rdc":         int(check_render_conflicts(doc) or 0),
-        "textures":    len(check_textures_unified(doc) or []),
-        "unused_mats": len(check_unused_materials(doc) or []),
-        "names":       len(check_default_names(doc) or []),
-        "output":      len(check_output_paths(doc) or []),
-        "takes":       len(check_takes(doc) or []),
-        "fps_range":   len(check_fps_range(doc) or []),
-        "cross_aspect": len(check_cross_aspect_safe_area(
-            doc, sample_strategy="current_frame") or []),
-    }
-    total = len(counts)
-    passed = sum(1 for v in counts.values() if v == 0)
-    return {
-        "score": f"{passed}/{total}",
-        "pass": passed == total,
-        "passed": passed,
-        "total": total,
-        "counts": counts,
-    }
+    """Run all QC checks (using cache) and return a compact summary dict."""
+    return compute_score(run_all_checks(doc, _current_module()))
 
 
 def preview_next_filename(doc, status=None):
@@ -5533,43 +5516,27 @@ def collect_scene(doc, artist_name):
     safe_print("Scene Collector: Running pre-flight checks...")
 
     issues = []
-    lights = check_lights(doc)
-    if lights:
-        issues.append(f"  {len(lights)} lights outside group")
-    vis = check_visibility_traps(doc)
-    if vis:
-        issues.append(f"  {len(vis)} visibility mismatches")
-    keys = check_keys(doc)
-    if keys:
-        issues.append(f"  {len(keys)} multi-axis keyframes")
-    cam_bad = check_camera_shift(doc)
-    if cam_bad:
-        issues.append(f"  {len(cam_bad)} camera shift issues")
-    rdc = check_render_conflicts(doc)
-    if rdc:
-        issues.append(f"  {int(rdc)} render preset issues")
-    textures = check_textures_unified(doc)
-    if textures:
-        issues.append(f"  {len(textures)} asset path issues")
-    unused = check_unused_materials(doc)
-    if unused:
-        issues.append(f"  {len(unused)} unused materials")
-    names = check_default_names(doc)
-    if names:
-        issues.append(f"  {len(names)} objects with default names")
-    takes = check_takes(doc)
-    if takes:
-        issues.append(f"  {len(takes)} take issues")
-    output = check_output_paths(doc)
-    if output:
-        issues.append(f"  {len(output)} output path issues")
-    fps_range = check_fps_range(doc)
-    if fps_range:
-        issues.append(f"  {len(fps_range)} FPS/range issues")
-    cross_aspect = check_cross_aspect_safe_area(
-        doc, sample_strategy="current_frame")
-    if cross_aspect:
-        issues.append(f"  {len(cross_aspect)} cross-aspect violations")
+    registry_results = run_all_checks(doc, _current_module())
+    legacy_by_id = {
+        check_id: pair.get("legacy_result")
+        for check_id, pair in registry_results.items()
+    }
+    preflight_entries = sorted(
+        enumerate(CHECK_REGISTRY),
+        key=lambda item: (
+            item[1].preflight_order
+            if item[1].preflight_order is not None
+            else item[0]
+        ),
+    )
+    for _idx, entry in preflight_entries:
+        count = count_violations(entry.check_id, legacy_by_id.get(entry.check_id))
+        if count:
+            issues.append(entry.preflight_template.format(n=count))
+
+    lights = legacy_by_id.get("lights") or []
+    cam_bad = legacy_by_id.get("cam") or []
+    unused = legacy_by_id.get("unused_mats") or []
 
     # Show pre-flight results
     if issues:
@@ -5904,27 +5871,13 @@ class ScoreHeader(gui.GeUserArea):
             safe_print(f"Error in ScoreHeader.DrawMsg: {e}")
 
 
-# Check display config: (severity, ok_message, fail_template, name_key_for_first)
-_CHECK_DISPLAY = {
-    "lights":       ("FAIL", "All lights properly organized", "{n} lights outside lights group", None),
-    "vis":          ("WARN", "Visibility settings consistent", "Visibility mismatch on '{first}'", "vis_names"),
-    "keys":         ("WARN", "Keyframes properly configured", "Multi-axis keys on '{first}'", "keys_names"),
-    "cam":          ("FAIL", "Camera shifts at 0%", "{n} camera(s) with non-zero shift", None),
-    "rdc":          ("FAIL", "Render presets compliant", "{n} non-standard render preset(s)", None),
-    "textures":     ("FAIL", "All assets OK", "{n} asset issue(s)", None),
-    "unused_mats":  ("WARN", "All materials assigned", "{n} unused material(s)", None),
-    "names":        ("WARN", "All objects named", "Default name '{first}'", "names_list"),
-    "output":       ("FAIL", "Output paths configured", "{n} output path issue(s)", None),
-    "takes":        ("FAIL", "Takes configured", "{n} take issue(s)", None),
-    "fps_range":    ("FAIL", "FPS & frame range OK", "{n} FPS/range issue(s)", None),
-    "cross_aspect": ("WARN", "Subjects fit safe areas", "{n} cross-aspect violation(s)", None),
-}
+# Legacy alias: (severity, ok_message, fail_template, name_key_for_first).
+# Backed by CHECK_REGISTRY so consumers do not maintain a second check list.
+_CHECK_DISPLAY = CheckDisplayView()
 
 class StatusArea(gui.GeUserArea):
-    # Row order matches DrawMsg iteration; index here = clickable row index
-    ROW_KEYS = ["lights", "vis", "keys", "cam", "rdc", "textures",
-                "unused_mats", "names", "output", "takes", "fps_range",
-                "cross_aspect"]
+    # Row order matches CHECK_REGISTRY; index here = clickable row index.
+    ROW_KEYS = RowKeysView()
 
     def __init__(self):
         super().__init__()
@@ -6006,11 +5959,9 @@ class StatusArea(gui.GeUserArea):
             x = self.pad
             y = self.pad
 
-            for label, key in [("Lights","lights"), ("Visibility","vis"), ("Keyframes","keys"),
-                               ("Cameras","cam"), ("Presets","rdc"), ("Assets","textures"),
-                               ("Materials","unused_mats"), ("Naming","names"), ("Output","output"),
-                               ("Takes","takes"), ("FPS/Range","fps_range"),
-                               ("Safe Area","cross_aspect")]:
+            for entry in CHECK_REGISTRY:
+                label = entry.row_label
+                key = entry.check_id
                 if not self.show.get(key, False):
                     continue
 
@@ -7381,72 +7332,58 @@ class YSPanel(gui.GeDialog):
             # Clear stale references before running checks
             check_cache.clear()
 
-            # Run checks
-            lights_bad = check_lights(doc)
-            vis_bad = check_visibility_traps(doc)
-            keys_bad = check_keys(doc)
-            cam_bad = check_camera_shift(doc)
-            rdc_bad = check_render_conflicts(doc)
-            textures_bad = check_textures_unified(doc)
-            unused_mats_bad = check_unused_materials(doc)
-            names_bad = check_default_names(doc)
-            output_bad = check_output_paths(doc)
-            takes_bad = check_takes(doc)
-            fps_range_bad = check_fps_range(doc)
-            # QC #12 — uses "current_frame" strategy in auto-refresh (cheap:
-            # no SetTime / ExecutePasses). Click "Info" upgrades to full
-            # keyframe sampling for a complete timeline analysis.
-            cross_aspect_bad = check_cross_aspect_safe_area(
-                doc, sample_strategy="current_frame")
+            # Run checks from the registry. QC #12 uses "current_frame" via
+            # registry kwargs in auto-refresh; click "Info" still upgrades to
+            # full keyframe sampling for a complete timeline analysis.
+            registry_results = run_all_checks(doc, _current_module())
+            score_summary = compute_score(registry_results)
+            counts_by_id = score_summary["counts"]
+            legacy_by_id = {
+                check_id: pair.get("legacy_result")
+                for check_id, pair in registry_results.items()
+            }
+            lights_bad = legacy_by_id.get("lights") or []
+            vis_bad = legacy_by_id.get("vis") or []
+            keys_bad = legacy_by_id.get("keys") or []
+            cam_bad = legacy_by_id.get("cam") or []
+            textures_bad = legacy_by_id.get("textures") or []
+            unused_mats_bad = legacy_by_id.get("unused_mats") or []
+            names_bad = legacy_by_id.get("names") or []
+            output_bad = legacy_by_id.get("output") or []
+            takes_bad = legacy_by_id.get("takes") or []
+            fps_range_bad = legacy_by_id.get("fps_range") or []
+            cross_aspect_bad = legacy_by_id.get("cross_aspect") or []
             scene_stats = get_scene_stats(doc)
 
             # Count issues
-            lights_count = len(lights_bad) if lights_bad else 0
-            vis_count = len(vis_bad) if vis_bad else 0
-            keys_count = len(keys_bad) if keys_bad else 0
-            cam_count = len(cam_bad) if cam_bad else 0
-            rdc_count = int(rdc_bad) if rdc_bad else 0
-            textures_count = len(textures_bad) if textures_bad else 0
-            unused_mats_count = len(unused_mats_bad) if unused_mats_bad else 0
-            names_count = len(names_bad) if names_bad else 0
-            output_count = len(output_bad) if output_bad else 0
-            takes_count = len(takes_bad) if takes_bad else 0
-            fps_range_count = len(fps_range_bad) if fps_range_bad else 0
-            cross_aspect_count = len(cross_aspect_bad) if cross_aspect_bad else 0
+            lights_count = counts_by_id.get("lights", 0)
+            vis_count = counts_by_id.get("vis", 0)
+            keys_count = counts_by_id.get("keys", 0)
+            cam_count = counts_by_id.get("cam", 0)
+            rdc_count = counts_by_id.get("rdc", 0)
+            textures_count = counts_by_id.get("textures", 0)
+            unused_mats_count = counts_by_id.get("unused_mats", 0)
+            names_count = counts_by_id.get("names", 0)
+            output_count = counts_by_id.get("output", 0)
+            takes_count = counts_by_id.get("takes", 0)
+            fps_range_count = counts_by_id.get("fps_range", 0)
+            cross_aspect_count = counts_by_id.get("cross_aspect", 0)
 
             # Update StatusArea (only if QC tab has been built — when the
             # panel reopens on a non-QC tab, self.ua stays None until the
             # user clicks QC. Score header still updates regardless because
             # it lives in the always-visible Scene Header.)
             if self.ua is not None:
-                self.ua.set_state(
-                    dict(
-                        lights=lights_count,
-                        vis=vis_count,
-                        vis_names=[_safe_name(o) for o in (vis_bad[:10] if vis_bad else [])],
-                        keys=keys_count,
-                        keys_names=[_safe_name(o) for o in (keys_bad[:10] if keys_bad else [])],
-                        cam=cam_count,
-                        rdc=rdc_count,
-                        textures=textures_count,
-                        unused_mats=unused_mats_count,
-                        names=names_count,
-                        names_list=[_safe_name(o) for o in (names_bad[:10] if names_bad else [])],
-                        output=output_count,
-                        takes=takes_count,
-                        fps_range=fps_range_count,
-                        cross_aspect=cross_aspect_count,
-                    ),
-                    self.ua.show,
-                )
+                state = dict(counts_by_id)
+                for entry in CHECK_REGISTRY:
+                    if entry.names_key:
+                        items = legacy_by_id.get(entry.check_id) or []
+                        state[entry.names_key] = [_safe_name(o) for o in items[:10]]
+                self.ua.set_state(state, self.ua.show)
 
             # Update Score header — pass count + scene stats summary
-            counts = [lights_count, vis_count, keys_count, cam_count, rdc_count,
-                      textures_count, unused_mats_count, names_count,
-                      output_count, takes_count, fps_range_count,
-                      cross_aspect_count]
-            total_checks = len(counts)
-            passed = sum(1 for c in counts if c == 0)
+            total_checks = score_summary["total"]
+            passed = score_summary["passed"]
             stats_str = ""
             if scene_stats:
                 # Compact one-liner: "1.2M polys · 47 mats · 12 lights"
