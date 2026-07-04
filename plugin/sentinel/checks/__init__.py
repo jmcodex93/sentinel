@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """Structured QC checks."""
 
-from . import scene
+from . import render, scene
 
-__all__ = ["scene"]
+__all__ = ["render", "scene"]

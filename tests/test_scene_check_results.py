@@ -107,16 +107,38 @@ class FakeMaterial:
         return False
 
 
+class FakeRenderData:
+    def __init__(self, name, params=None):
+        self._name = name
+        self._params = params or {}
+        self._next = None
+
+    def GetName(self):
+        return self._name
+
+    def GetNext(self):
+        return self._next
+
+    def __getitem__(self, key):
+        return self._params.get(key)
+
+
 class FakeDoc:
-    def __init__(self, first_object=None, materials=None):
+    def __init__(self, first_object=None, materials=None, render_data=None):
         self._first_object = first_object
         self._materials = materials or []
+        self._render_data = render_data or []
+        for left, right in zip(self._render_data, self._render_data[1:]):
+            left._next = right
 
     def GetFirstObject(self):
         return self._first_object
 
     def GetMaterials(self):
         return self._materials
+
+    def GetFirstRenderData(self):
+        return self._render_data[0] if self._render_data else None
 
 
 def _c4d():
@@ -233,4 +255,52 @@ def test_migrated_scene_check_wrappers_return_structured_legacy_shape(
 
     assert legacy == structured.to_legacy()
     assert [item.GetName() for item in legacy] == expected_names
+    json.dumps(structured)
+
+
+def test_render_conflicts_structured_identity_reduces_to_legacy_int(sentinel_module):
+    from sentinel.checks import render
+
+    doc = FakeDoc(render_data=[
+        FakeRenderData("render"),
+        FakeRenderData("Render"),
+        FakeRenderData("custom_preview"),
+        FakeRenderData("pre-render"),
+        FakeRenderData("rogue preset"),
+    ])
+    sentinel_module.check_cache.clear()
+
+    structured = render.check_render_conflicts(doc)
+    legacy = sentinel_module.check_render_conflicts(doc)
+
+    assert legacy == 3
+    assert structured.to_legacy() == legacy
+    assert len(structured.violations) == legacy
+    assert sentinel_module.check_cache.get(doc, "rdc") == legacy
+    assert sentinel_module.check_cache.get(doc, "rdc_structured") == structured
+
+    identities = [violation["identity"] for violation in structured.violations]
+    assert identities == [
+        {
+            "type": "parameter",
+            "param": "render_preset",
+            "value": "render",
+            "preset": "render",
+            "field": "duplicate",
+        },
+        {
+            "type": "parameter",
+            "param": "render_preset",
+            "value": "custom_preview",
+            "preset": "custom_preview",
+            "field": "extra",
+        },
+        {
+            "type": "parameter",
+            "param": "render_preset",
+            "value": "rogue_preset",
+            "preset": "rogue_preset",
+            "field": "extra",
+        },
+    ]
     json.dumps(structured)

@@ -6,33 +6,14 @@ import c4d
 from sentinel.common.cache import check_cache
 from sentinel.common.constants import MAX_OBJECTS_PER_CHECK
 from sentinel.common.helpers import _any_ancestor_named, _iter_objs, safe_print
-from sentinel.qc.results import CheckResult, material_identity, object_identity
-
-
-def legacy_items(result):
-    return result.to_legacy()
-
-
-def _structured_cache_key(legacy_key):
-    return f"{legacy_key}_structured"
-
-
-def _cached_result(doc, legacy_key, builder):
-    cached = check_cache.get(doc, legacy_key)
-    if cached is not None:
-        return builder(cached)
-
-    cached_structured = check_cache.get(doc, _structured_cache_key(legacy_key))
-    if cached_structured is not None:
-        return cached_structured
-
-    return None
-
-
-def _store_result(doc, legacy_key, legacy_value, result):
-    check_cache.set(doc, legacy_key, legacy_value)
-    check_cache.set(doc, _structured_cache_key(legacy_key), result)
-    return result
+from sentinel.qc.results import (
+    CheckResult,
+    cached_result as _cached_result,
+    legacy_items,
+    material_identity,
+    object_identity,
+    store_result as _store_result,
+)
 
 
 def _object_result(check_id, legacy_items_value, message, extras_builder=None):

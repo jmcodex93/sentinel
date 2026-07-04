@@ -54,6 +54,12 @@ FIXTURES_DIR = ROOT / "tests" / "fixtures"
 
 
 def _load_sentinel():
+    # Test-harness-only purge: C4D caches the `sentinel` package between runner
+    # executions, so a fresh .pyp load would import stale package modules.
+    # Safe here because the runner owns no live plugin instances; the shipping
+    # plugin's reload policy remains restart-only (no purge in the .pyp).
+    for mod_name in [m for m in sys.modules if m == "sentinel" or m.startswith("sentinel.")]:
+        del sys.modules[mod_name]
     loader = importlib.machinery.SourceFileLoader(
         "sentinel_panel_fixture_runner", str(PLUGIN_PATH)
     )

@@ -33,6 +33,11 @@ FIXTURES_DIR = ROOT / "tests" / "fixtures"
 
 
 def _load_sentinel():
+    # Test-harness-only purge (see run_fixtures.py): avoid stale cached
+    # `sentinel` package modules between C4D-session executions.
+    import sys
+    for mod_name in [m for m in sys.modules if m == "sentinel" or m.startswith("sentinel.")]:
+        del sys.modules[mod_name]
     loader = importlib.machinery.SourceFileLoader(
         "sentinel_panel_fixture_builder", str(PLUGIN_PATH)
     )

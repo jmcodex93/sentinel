@@ -6,7 +6,6 @@ import json
 import time
 import sys
 import webbrowser
-from collections import defaultdict
 
 _ROOT = os.path.dirname(__file__)
 if _ROOT not in sys.path:
@@ -25,6 +24,7 @@ from sentinel.common.constants import (
     SAFE_AREA_OVERLAY_PLUGIN_ID,
     SETTINGS_FILE,
 )
+from sentinel.checks import render as render_checks
 from sentinel.checks import scene as scene_checks
 from sentinel.checks.scene import _is_light_obj
 from sentinel.common.helpers import (
@@ -71,45 +71,9 @@ def check_keys(doc):
 def check_camera_shift(doc):
     return scene_checks.legacy_items(scene_checks.check_camera_shift(doc))
 
-# ---------------- render preset conflicts (optimized) ----------------
+
 def check_render_conflicts(doc):
-    """Check for render setting conflicts - accepts pre_render, pre-render, Pre-Render etc."""
-    cached = check_cache.get(doc, "rdc")
-    if cached is not None:
-        return cached
-
-    allowed = set(PRESETS)
-    name_counts = defaultdict(int)
-    extras = 0
-
-    try:
-        rd = doc.GetFirstRenderData()
-        count = 0
-        max_check = 100  # Limit iterations
-
-        while rd and count < max_check:
-            try:
-                # Normalize the name (lowercase, replace hyphens/spaces with underscores)
-                name = normalize_preset_name(rd.GetName() or "")
-                if name in allowed:
-                    name_counts[name] += 1
-                else:
-                    extras += 1
-            except Exception:
-                pass
-
-            rd = rd.GetNext()
-            count += 1
-
-        dups = sum(max(0, c - 1) for c in name_counts.values())
-        result = extras + dups
-
-    except Exception as e:
-        safe_print(f"Error checking render conflicts: {e}")
-        result = 0
-
-    check_cache.set(doc, "rdc", result)
-    return result
+    return render_checks.legacy_items(render_checks.check_render_conflicts(doc))
 
 def _is_absolute_path(filepath):
     """Check if a file path is absolute (not relative)"""
@@ -129,43 +93,9 @@ def check_unused_materials(doc):
 def check_default_names(doc):
     return scene_checks.legacy_items(scene_checks.check_default_names(doc))
 
-# ---------------- output path validation ----------------
+
 def check_output_paths(doc):
-    """Check render output paths are configured with proper tokens"""
-    cached = check_cache.get(doc, "output")
-    if cached is not None:
-        return cached
-
-    issues = []
-    try:
-        rd = doc.GetFirstRenderData()
-        count = 0
-        while rd and count < 100:
-            name = rd.GetName() or "unnamed"
-            path = rd[c4d.RDATA_PATH] or ""
-
-            if not path.strip():
-                issues.append({"preset": name, "issue": "empty output path"})
-            elif "$prj" not in path and "$take" not in path:
-                issues.append({"preset": name, "issue": f"no tokens in path: {path}"})
-
-            # Check multi-pass path if enabled
-            try:
-                if rd[c4d.RDATA_MULTIPASS_SAVEIMAGE]:
-                    mp_path = rd[c4d.RDATA_MULTIPASS_FILENAME] or ""
-                    if not mp_path.strip():
-                        issues.append({"preset": name, "issue": "empty multi-pass path"})
-            except Exception:
-                pass
-
-            rd = rd.GetNext()
-            count += 1
-
-    except Exception as e:
-        safe_print(f"Error checking output paths: {e}")
-
-    check_cache.set(doc, "output", issues)
-    return issues
+    return render_checks.legacy_items(render_checks.check_output_paths(doc))
 
 # ============================================================
 # Texture scan + repathing helpers (QC #6 + v1.5.7 Repathing Tool)
@@ -1333,200 +1263,11 @@ def force_aov_tier(doc, tier_list):
         safe_print(f"Error forcing AOVs: {e}")
         return 0, f"Error: {e}"
 
-# ---------------- take validation ----------------
 def check_takes(doc):
-    """Validate all takes have camera and output path configured"""
-    cached = check_cache.get(doc, "takes")
-    if cached is not None:
-        return cached
-
-    issues = []
-    try:
-        td = doc.GetTakeData()
-        if not td:
-            check_cache.set(doc, "takes", issues)
-            return issues
-
-        main_take = td.GetMainTake()
-        if not main_take:
-            check_cache.set(doc, "takes", issues)
-            return issues
-
-        # Iterate child takes (skip Main — it's not a renderable shot)
-        take = main_take.GetDown()
-        while take:
-            take_name = take.GetName() or "unnamed"
-
-            # Check camera
-            cam = take.GetCamera(td)
-            if not cam:
-                issues.append({"take": take_name, "issue": "No camera assigned"})
-
-            # Check render data output path
-            rd = take.GetRenderData(td)
-            if rd:
-                path = rd[c4d.RDATA_PATH] or ""
-                if not path.strip():
-                    issues.append({"take": take_name, "issue": "Empty output path"})
-                elif "$take" not in path:
-                    issues.append({"take": take_name, "issue": f"Output path missing $take token"})
-            else:
-                # No override — inherits from main, check main's path
-                main_rd = doc.GetActiveRenderData()
-                if main_rd:
-                    path = main_rd[c4d.RDATA_PATH] or ""
-                    if "$take" not in path:
-                        issues.append({"take": take_name, "issue": "Inherited path missing $take token"})
-
-            take = take.GetNext()
-
-    except Exception as e:
-        safe_print(f"Error checking takes: {e}")
-
-    check_cache.set(doc, "takes", issues)
-    return issues
+    return render_checks.legacy_items(render_checks.check_takes(doc))
 
 def check_fps_range(doc):
-    """Validate FPS, frame range, frame step, and timeline alignment across ALL presets.
-
-    Doc-level FPS is checked once. Each render data is validated independently for
-    FPS, frame step (=1), range start (1001), and mode. Timeline + preview alignment
-    is validated against the ACTIVE preset (since timeline is shared).
-    """
-    cached = check_cache.get(doc, "fps_range")
-    if cached is not None:
-        return cached
-
-    issues = []
-    try:
-        standard_fps = GlobalSettings.get_standard_fps()
-        doc_fps = doc.GetFps()
-
-        # --- Document-level FPS (checked once) ---
-        if doc_fps != standard_fps:
-            issues.append({
-                "issue": f"Document FPS is {doc_fps}, expected {standard_fps}",
-                "type": "doc_fps",
-                "preset": None,
-            })
-
-        active_rd = doc.GetActiveRenderData()
-        if not active_rd:
-            check_cache.set(doc, "fps_range", issues)
-            return issues
-
-        # --- Iterate all render datas ---
-        rd = doc.GetFirstRenderData()
-        while rd:
-            preset_name = rd.GetName()
-            preset_norm = normalize_preset_name(preset_name)
-            is_stills = preset_norm == "stills"
-            is_active = (rd == active_rd)
-            tag = f"[{preset_name}]"
-
-            rd_fps = int(rd[c4d.RDATA_FRAMERATE])
-            if rd_fps != standard_fps:
-                issues.append({
-                    "issue": f"{tag} Render FPS is {rd_fps}, expected {standard_fps}",
-                    "type": "rd_fps",
-                    "preset": preset_name,
-                })
-
-            # Frame step should always be 1 (no skipping)
-            frame_step = int(rd[c4d.RDATA_FRAMESTEP])
-            if frame_step != 1:
-                issues.append({
-                    "issue": f"{tag} Frame step is {frame_step}, expected 1 (frame skipping)",
-                    "type": "frame_step",
-                    "preset": preset_name,
-                })
-
-            frame_start = rd[c4d.RDATA_FRAMEFROM].GetFrame(rd_fps)
-            frame_end = rd[c4d.RDATA_FRAMETO].GetFrame(rd_fps)
-            frame_mode = rd[c4d.RDATA_FRAMESEQUENCE]
-
-            if is_stills:
-                if frame_mode == c4d.RDATA_FRAMESEQUENCE_MANUAL and frame_start != 1001:
-                    issues.append({
-                        "issue": f"{tag} Stills start frame is {frame_start}, expected 1001",
-                        "type": "start_frame",
-                        "preset": preset_name,
-                    })
-                if frame_mode == c4d.RDATA_FRAMESEQUENCE_ALLFRAMES:
-                    issues.append({
-                        "issue": f"{tag} Stills set to 'All Frames' (use Current Frame or 1001)",
-                        "type": "mode",
-                        "preset": preset_name,
-                    })
-            else:
-                if frame_start != 1001:
-                    issues.append({
-                        "issue": f"{tag} Start frame is {frame_start}, expected 1001",
-                        "type": "start_frame",
-                        "preset": preset_name,
-                    })
-                if frame_end <= frame_start:
-                    issues.append({
-                        "issue": f"{tag} Frame range invalid: {frame_start}-{frame_end}",
-                        "type": "range",
-                        "preset": preset_name,
-                    })
-                if frame_mode == c4d.RDATA_FRAMESEQUENCE_CURRENTFRAME:
-                    issues.append({
-                        "issue": f"{tag} Animation set to 'Current Frame' only",
-                        "type": "mode",
-                        "preset": preset_name,
-                    })
-                elif frame_mode == c4d.RDATA_FRAMESEQUENCE_ALLFRAMES:
-                    issues.append({
-                        "issue": f"{tag} Set to 'All Frames' (may render entire timeline)",
-                        "type": "mode",
-                        "preset": preset_name,
-                    })
-                frame_length = frame_end - frame_start + 1
-                if frame_length > 1000 and frame_mode != c4d.RDATA_FRAMESEQUENCE_ALLFRAMES:
-                    issues.append({
-                        "issue": f"{tag} Very long render: {frame_length} frames",
-                        "type": "length",
-                        "preset": preset_name,
-                    })
-
-            # --- Timeline + preview alignment (against ACTIVE preset only) ---
-            if is_active:
-                tl_min = doc[c4d.DOCUMENT_MINTIME].GetFrame(doc_fps)
-                tl_max = doc[c4d.DOCUMENT_MAXTIME].GetFrame(doc_fps)
-                loop_min = doc[c4d.DOCUMENT_LOOPMINTIME].GetFrame(doc_fps)
-                loop_max = doc[c4d.DOCUMENT_LOOPMAXTIME].GetFrame(doc_fps)
-
-                if is_stills:
-                    if not (tl_min <= 1001 <= tl_max):
-                        issues.append({
-                            "issue": f"Timeline ({tl_min}-{tl_max}) doesn't include frame 1001",
-                            "type": "timeline",
-                            "preset": None,
-                        })
-                else:
-                    if frame_end > frame_start:
-                        if tl_min != frame_start or tl_max != frame_end:
-                            issues.append({
-                                "issue": f"Timeline ({tl_min}-{tl_max}) doesn't match active render range ({frame_start}-{frame_end})",
-                                "type": "timeline",
-                                "preset": None,
-                            })
-                        if loop_min != frame_start or loop_max != frame_end:
-                            issues.append({
-                                "issue": f"Preview range ({loop_min}-{loop_max}) doesn't match active render range ({frame_start}-{frame_end})",
-                                "type": "loop",
-                                "preset": None,
-                            })
-
-            rd = rd.GetNext()
-
-    except Exception as e:
-        safe_print(f"Error checking FPS/range: {e}")
-
-    check_cache.set(doc, "fps_range", issues)
-    return issues
+    return render_checks.legacy_items(render_checks.check_fps_range(doc))
 
 def _fix_one_render_data(doc, rd, standard_fps):
     """Fix a single render data. Returns list of human-readable change strings.

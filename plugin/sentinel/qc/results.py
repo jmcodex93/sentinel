@@ -3,6 +3,8 @@
 
 import c4d
 
+from sentinel.common.cache import check_cache
+
 
 def _safe_json(value):
     if value is None or isinstance(value, (str, int, float, bool)):
@@ -130,13 +132,46 @@ def material_identity(material):
     }
 
 
-def param_identity(param_name, offending_value):
+def legacy_items(result):
+    return result.to_legacy()
+
+
+def structured_cache_key(legacy_key):
+    return f"{legacy_key}_structured"
+
+
+def cached_result(doc, legacy_key, builder):
+    cached_structured = check_cache.get(doc, structured_cache_key(legacy_key))
+    if cached_structured is not None:
+        return cached_structured
+
+    cached = check_cache.get(doc, legacy_key)
+    if cached is not None:
+        return builder(cached)
+
+    return None
+
+
+def store_result(doc, legacy_key, legacy_value, result):
+    check_cache.set(doc, legacy_key, legacy_value)
+    check_cache.set(doc, structured_cache_key(legacy_key), result)
+    return result
+
+
+def param_identity(param_name, offending_value, preset=None, take=None, field=None):
     """Return a JSON-safe identity for a parametric violation."""
-    return {
+    data = {
         "type": "parameter",
         "param": str(param_name),
         "value": _safe_json(offending_value),
     }
+    if preset is not None:
+        data["preset"] = str(preset)
+    if take is not None:
+        data["take"] = str(take)
+    if field is not None:
+        data["field"] = str(field)
+    return data
 
 
 class Violation(dict):
