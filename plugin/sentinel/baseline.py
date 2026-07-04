@@ -5,6 +5,7 @@ import getpass
 import json
 import os
 import re
+from datetime import datetime
 
 
 SCHEMA_VERSION = 1
@@ -94,6 +95,42 @@ def remove_acceptance(path, key):
     return _write_entries(path, kept)
 
 
+def remove_acceptances_for_check(path, check_id):
+    """Remove all accepted entries for one registry check id."""
+    entries, status = load_baseline(path)
+    if status == STATUS_INVALID:
+        return False
+
+    kept = [entry for entry in entries if entry.get("check_id") != check_id]
+    return _write_entries(path, kept)
+
+
+def entry_from_violation(violation, author, reason, current_params=None, date=None):
+    """Build a schema-v1 baseline entry for a structured violation."""
+    if not isinstance(violation, dict):
+        return None
+
+    identity = dict(violation.get("identity") or {})
+    identity_type = identity.pop("type", identity.get("kind"))
+    if identity_type == "parameter":
+        identity["kind"] = "param"
+    elif identity_type:
+        identity["kind"] = identity_type
+
+    entry = {
+        "check_id": violation.get("check_id"),
+        "identity": identity,
+        "author": resolve_author(author),
+        "reason": (reason or "").strip(),
+        "date": date or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    if _identity_kind(identity) == "param":
+        snapshot = _current_param_value(identity, current_params or {})
+        if snapshot is not _MISSING:
+            entry["param_snapshot"] = snapshot
+    return entry
+
+
 def find_conflict_copies(path):
     """Return cloud-sync conflict-copy siblings for a baseline path."""
     if not path:
@@ -159,7 +196,7 @@ def merge_conflict_copies(path):
 def match_violations(entries, violations, current_params=None):
     """Split current violations into new, accepted, and stale baseline entries."""
     current_params = current_params or {}
-    result = {"new": [], "accepted": [], "stale_entries": []}
+    result = {"new": [], "accepted": [], "accepted_entries": [], "stale_entries": []}
     stale_keys = set()
 
     baseline_entries = [entry for entry in entries if isinstance(entry, dict)]
@@ -172,6 +209,7 @@ def match_violations(entries, violations, current_params=None):
         match = _find_matching_entry(baseline_entries, violation, current_params, result, stale_keys)
         if match is not None:
             result["accepted"].append(violation)
+            result["accepted_entries"].append(match)
         else:
             result["new"].append(violation)
 
@@ -218,6 +256,14 @@ def _find_matching_entry(entries, violation, current_params, result, stale_keys)
         return _find_object_match(entries, check_id, identity, result, stale_keys)
     if kind == "param":
         return _find_param_match(entries, check_id, identity, current_params, result, stale_keys)
+    return _find_exact_identity_match(entries, violation)
+
+
+def _find_exact_identity_match(entries, violation):
+    target_key = _entry_key(violation)
+    for entry in entries:
+        if _entry_key(entry) == target_key:
+            return entry
     return None
 
 
@@ -316,7 +362,7 @@ def _entry_key(entry):
         )
     if kind == "param":
         return ("param", check_id) + _param_identity_key(identity)
-    return ("unknown", check_id, _stable_value(identity))
+    return ("unknown", check_id, _stable_value(_normalized_identity(identity)))
 
 
 def _identity_kind(identity):
@@ -324,6 +370,16 @@ def _identity_kind(identity):
     if raw == "parameter":
         return "param"
     return raw
+
+
+def _normalized_identity(identity):
+    if not isinstance(identity, dict):
+        return identity
+    normalized = dict(identity)
+    if "type" in normalized and "kind" not in normalized:
+        identity_type = normalized.pop("type")
+        normalized["kind"] = "param" if identity_type == "parameter" else identity_type
+    return normalized
 
 
 def _fmt_id(identity):

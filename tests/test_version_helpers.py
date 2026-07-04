@@ -46,3 +46,18 @@ def test_compute_next_version_ignores_status_tags(sentinel_module, tmp_path):
 
     assert base == "shot"
     assert version == 8
+
+
+def test_history_qc_label_marks_old_schema_entries_legacy(sentinel_module):
+    legacy = {"qc_score": "8/12", "qc_pass": False}
+    current = {
+        "schema": 2,
+        "qc_score": "11/12",
+        "qc_pass": False,
+        "new": 1,
+        "accepted": 4,
+    }
+
+    assert sentinel_module.format_history_qc_label(legacy) == "8/12 (legacy)"
+    assert sentinel_module.format_version_row(legacy)["qc_label"] == "8/12 (legacy)"
+    assert sentinel_module.format_history_qc_label(current) == "11/12 · 1 new · 4 accepted"

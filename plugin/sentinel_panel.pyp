@@ -12,6 +12,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 import sentinel
+from sentinel import baseline
 from sentinel import PLUGIN_NAME, PLUGIN_VERSION
 from sentinel.common.cache import CheckCache, check_cache
 from sentinel.common.constants import (
@@ -83,6 +84,70 @@ def _machine_rule_settings():
 
 def _active_rules_for_doc(doc):
     return get_active_rules(_doc_path_for_rules(doc), _machine_rule_settings())
+
+
+def _doc_full_path(doc):
+    if not doc:
+        return ""
+    try:
+        doc_path = doc.GetDocumentPath() or ""
+        doc_name = doc.GetDocumentName() or ""
+    except Exception:
+        return ""
+    if not doc_path or not doc_name:
+        return ""
+    return os.path.join(doc_path, doc_name)
+
+
+def _baseline_path_for_doc(doc, only_existing=False):
+    path = baseline.get_baseline_path(_doc_full_path(doc))
+    if only_existing and (not path or not os.path.exists(path)):
+        return None
+    return path
+
+
+def _violation_label(violation):
+    if not isinstance(violation, dict):
+        return str(violation)
+    message = violation.get("message")
+    if message:
+        return str(message)
+    identity = violation.get("identity") or {}
+    if isinstance(identity, dict):
+        for key in ("path", "name", "param", "preset", "take", "field"):
+            if identity.get(key) is not None:
+                return str(identity.get(key))
+    return str(violation)
+
+
+def _entry_label(entry):
+    if not isinstance(entry, dict):
+        return str(entry)
+    identity = entry.get("identity") or {}
+    if isinstance(identity, dict):
+        parts = []
+        for key in ("path", "name", "param", "preset", "take", "field"):
+            if identity.get(key) is not None:
+                parts.append(str(identity.get(key)))
+        if parts:
+            return " / ".join(parts)
+    return str(entry.get("check_id", "acceptance"))
+
+
+def _accepted_entry_payload(entry, violation=None):
+    return {
+        "item": _violation_label(violation) if violation is not None else _entry_label(entry),
+        "author": entry.get("author", "") if isinstance(entry, dict) else "",
+        "reason": entry.get("reason", "") if isinstance(entry, dict) else "",
+        "date": entry.get("date", "") if isinstance(entry, dict) else "",
+    }
+
+
+def format_baseline_row_message(new_count, accepted_count, stale_count=0):
+    message = f"{int(new_count or 0)} nuevas ({int(accepted_count or 0)} aceptadas)"
+    if int(stale_count or 0):
+        message += f" · {int(stale_count or 0)} obsoletas"
+    return message
 
 
 def _rules_header_text(rules_context):
@@ -1576,7 +1641,50 @@ def fix_unused_materials(doc, unused_mats):
     c4d.EventAdd()
     return deleted
 
-def export_qc_report(doc, results, artist_name):
+_REPORT_KEY_BY_CHECK_ID = {
+    "lights": "lights",
+    "vis": "visibility",
+    "keys": "keyframes",
+    "cam": "camera_shift",
+    "rdc": "render_presets",
+    "textures": "textures",
+    "unused_mats": "unused_materials",
+    "names": "default_names",
+    "output": "output_paths",
+    "takes": "takes",
+    "fps_range": "fps_range",
+    "cross_aspect": "cross_aspect",
+}
+
+
+def build_baseline_artifact_details(qc_summary):
+    """Return JSON-safe baseline split details for reports/manifests."""
+    if not isinstance(qc_summary, dict) or qc_summary.get("schema") != 2:
+        return {}
+
+    details = {}
+    matches = qc_summary.get("baseline_matches", {}) or {}
+    for check_id, match in matches.items():
+        new_items = [_violation_label(item) for item in (match.get("new") or [])]
+        accepted = []
+        accepted_entries = match.get("accepted_entries") or []
+        accepted_violations = match.get("accepted") or []
+        for index, entry in enumerate(accepted_entries):
+            violation = accepted_violations[index] if index < len(accepted_violations) else None
+            accepted.append(_accepted_entry_payload(entry, violation))
+        stale = [_accepted_entry_payload(entry) for entry in (match.get("stale_entries") or [])]
+        details[check_id] = {
+            "new_count": len(new_items),
+            "accepted_count": len(accepted),
+            "stale_count": len(stale),
+            "new": new_items,
+            "accepted": accepted,
+            "stale": stale,
+        }
+    return details
+
+
+def export_qc_report(doc, results, artist_name, qc_summary=None):
     """Export QC report as JSON to a user-chosen location"""
     from datetime import datetime
 
@@ -1691,6 +1799,35 @@ def export_qc_report(doc, results, artist_name):
         "failed": total - passed,
         "score": f"{passed}/{total}"
     }
+
+    baseline_details = build_baseline_artifact_details(qc_summary)
+    if baseline_details:
+        for check_id, details in baseline_details.items():
+            report_key = _REPORT_KEY_BY_CHECK_ID.get(check_id)
+            if not report_key or report_key not in report["checks"]:
+                continue
+            check = report["checks"][report_key]
+            check["status"] = "PASS" if details["new_count"] == 0 else "FAIL"
+            check["new_count"] = details["new_count"]
+            check["accepted_count"] = details["accepted_count"]
+            check["stale_count"] = details["stale_count"]
+            check["new"] = details["new"]
+            check["accepted"] = details["accepted"]
+            check["stale"] = details["stale"]
+        report["summary"] = {
+            "total_checks": qc_summary.get("total", total),
+            "passed": qc_summary.get("passed", passed),
+            "failed": qc_summary.get("total", total) - qc_summary.get("passed", passed),
+            "score": qc_summary.get("score", f"{passed}/{total}"),
+            "new": qc_summary.get("new", 0),
+            "accepted": qc_summary.get("accepted", 0),
+            "stale": qc_summary.get("stale", 0),
+            "schema": 2,
+        }
+        report["baseline"] = {
+            "path": qc_summary.get("baseline_path", ""),
+            "checks": baseline_details,
+        }
 
     # Always include scene notes section in the report (empty defaults if no
     # sidecar exists yet — keeps the JSON shape consistent for tooling)
@@ -1961,6 +2098,24 @@ def filter_versions_by_status(versions, status_filter):
     return out
 
 
+def format_history_qc_label(entry):
+    """Return the QC label for a history entry, marking old score schema."""
+    if not isinstance(entry, dict):
+        return ""
+    score = entry.get("qc_score", "") or ""
+    if not score:
+        return ""
+    if entry.get("schema") != 2:
+        return f"{score} (legacy)"
+
+    new_count = int(entry.get("new", 0) or 0)
+    accepted_count = int(entry.get("accepted", 0) or 0)
+    parts = [score, f"{new_count} new"]
+    if accepted_count:
+        parts.append(f"{accepted_count} accepted")
+    return " · ".join(parts)
+
+
 def format_version_row(entry):
     """Build display strings for one version entry. Returns a dict of pre-formatted parts.
 
@@ -1987,7 +2142,7 @@ def format_version_row(entry):
         "status_label":  status if status else "WIP",
         "time_label":    _humanize_time_diff(entry.get("timestamp", "")),
         "comment":       entry.get("comment", "") or "",
-        "qc_label":      entry.get("qc_score", "") or "",
+        "qc_label":      format_history_qc_label(entry),
         "qc_pass":       entry.get("qc_pass"),
         "filename":      entry.get("filename", "") or "",
         "path":          entry.get("path", "") or "",
@@ -2025,7 +2180,16 @@ def _current_module():
 def _build_qc_summary(doc):
     """Run all QC checks (using cache) and return a compact summary dict."""
     rules_context = _active_rules_for_doc(doc)
-    return compute_score(run_all_checks(doc, _current_module(), rules_context), rules_context)
+    registry_results = run_all_checks(doc, _current_module(), rules_context)
+    baseline_path = _baseline_path_for_doc(doc, only_existing=True)
+    if baseline_path:
+        return compute_score(
+            registry_results,
+            rules_context,
+            baseline_path=baseline_path,
+            current_params=rules_context.params,
+        )
+    return compute_score(registry_results, rules_context)
 
 
 def preview_next_filename(doc, status=None):
@@ -2208,6 +2372,108 @@ class SaveVersionDialog(gui.GeDialog):
         return True
 
 
+class BaselineActionDialog(gui.GeDialog):
+    """Modal row action dialog for accepting or removing QC baseline entries."""
+
+    EDT_REASON = 1001
+    TXT_ITEMS = 1002
+    BTN_ACCEPT = 1003
+    BTN_RETIRE = 1004
+    BTN_CANCEL = 1005
+
+    def __init__(self, row_label, new_items, accepted_count, stale_count):
+        super().__init__()
+        self.row_label = row_label or "QC check"
+        self.new_items = list(new_items or [])
+        self.accepted_count = int(accepted_count or 0)
+        self.stale_count = int(stale_count or 0)
+        self.action = None
+        self.reason = ""
+
+    def _items_text(self):
+        if not self.new_items:
+            return "No hay violaciones nuevas para aceptar."
+        lines = [f"Se aceptaran {len(self.new_items)} violacion(es) nueva(s):", ""]
+        for index, item in enumerate(self.new_items[:20], 1):
+            lines.append(f"{index}. {_violation_label(item)}")
+        if len(self.new_items) > 20:
+            lines.append(f"... y {len(self.new_items) - 20} mas")
+        if self.accepted_count or self.stale_count:
+            lines.append("")
+            lines.append(f"Aceptadas actuales: {self.accepted_count}")
+            lines.append(f"Obsoletas: {self.stale_count}")
+        return "\n".join(lines)
+
+    def CreateLayout(self):
+        self.SetTitle(f"Baseline - {self.row_label}")
+        self.GroupBegin(0, c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT, 1, 0)
+        self.GroupBorderSpace(10, 10, 10, 10)
+        try:
+            multiline_flags = c4d.DR_MULTILINE_WORDWRAP
+        except AttributeError:
+            multiline_flags = 0
+        self.AddMultiLineEditText(
+            self.TXT_ITEMS,
+            c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT,
+            460,
+            140,
+            multiline_flags,
+        )
+        self.AddSeparatorH(6)
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Reason (required for Aceptar):", 0)
+        self.AddEditText(self.EDT_REASON, c4d.BFH_SCALEFIT, 0, 0)
+        self.AddSeparatorH(8)
+        self.GroupBegin(0, c4d.BFH_RIGHT, 3, 0)
+        self.GroupSpace(6, 0)
+        self.AddButton(self.BTN_CANCEL, c4d.BFH_RIGHT, 90, 0, "Cancel")
+        self.AddButton(self.BTN_RETIRE, c4d.BFH_RIGHT, 150, 0, "Retirar aceptaciones")
+        self.AddButton(self.BTN_ACCEPT, c4d.BFH_RIGHT, 100, 0, "Aceptar")
+        self.GroupEnd()
+        self.GroupEnd()
+        return True
+
+    def InitValues(self):
+        self.SetString(self.TXT_ITEMS, self._items_text())
+        try:
+            self.Enable(self.TXT_ITEMS, False)
+        except Exception:
+            pass
+        try:
+            self.Enable(self.BTN_ACCEPT, bool(self.new_items))
+            self.Enable(self.BTN_RETIRE, bool(self.accepted_count or self.stale_count))
+        except Exception:
+            pass
+        return True
+
+    def Command(self, cid, msg):
+        if cid == self.BTN_CANCEL:
+            self.action = None
+            self.Close()
+            return True
+        if cid == self.BTN_ACCEPT:
+            reason = (self.GetString(self.EDT_REASON) or "").strip()
+            if not reason:
+                c4d.gui.MessageDialog("Reason is required before accepting baseline violations.")
+                return True
+            confirm = self._items_text() + f"\n\nReason:\n{reason}\n\nAceptar estas violaciones?"
+            if not c4d.gui.QuestionDialog(confirm):
+                return True
+            self.reason = reason
+            self.action = "accept"
+            self.Close()
+            return True
+        if cid == self.BTN_RETIRE:
+            if not c4d.gui.QuestionDialog(
+                f"Retirar todas las aceptaciones de {self.row_label}?\n\n"
+                "El check volvera a contar esas violaciones como nuevas."
+            ):
+                return True
+            self.action = "retire"
+            self.Close()
+            return True
+        return True
+
+
 def smart_save_version(doc, comment, run_qc=True, artist_name="", status=None):
     """Save the document as a numbered version + append metadata to sidecar history.
 
@@ -2344,6 +2610,13 @@ def smart_save_version(doc, comment, run_qc=True, artist_name="", status=None):
         entry["qc_score"] = qc_summary["score"]
         entry["qc_pass"] = qc_summary["pass"]
         entry["qc_counts"] = qc_summary["counts"]
+        if qc_summary.get("schema") == 2:
+            entry["schema"] = 2
+            entry["passed"] = qc_summary["passed"]
+            entry["total"] = qc_summary["total"]
+            entry["new"] = qc_summary.get("new", sum(qc_summary.get("counts", {}).values()))
+            entry["accepted"] = qc_summary.get("accepted", 0)
+            entry["qc_baseline"] = build_baseline_artifact_details(qc_summary)
 
     appended = append_history_entry(history_path, entry)
 
@@ -5586,12 +5859,31 @@ def collect_scene(doc, artist_name):
         except Exception as e:
             safe_print(f"Scene Collector: Could not pre-load notes: {e}")
 
+    original_baseline_path = _baseline_path_for_doc(doc, only_existing=True)
+    original_baseline_entries = []
+    if original_baseline_path:
+        entries, status = baseline.load_baseline(original_baseline_path)
+        if status == baseline.STATUS_OK:
+            original_baseline_entries = entries
+        else:
+            safe_print(f"Scene Collector: baseline sidecar not loaded ({status})")
+
     # ── Phase 1: Pre-flight QC ──
     safe_print("Scene Collector: Running pre-flight checks...")
 
     issues = []
     rules_context = _active_rules_for_doc(doc)
     registry_results = run_all_checks(doc, _current_module(), rules_context)
+    baseline_path = _baseline_path_for_doc(doc, only_existing=True)
+    if baseline_path:
+        preflight_score = compute_score(
+            registry_results,
+            rules_context,
+            baseline_path=baseline_path,
+            current_params=rules_context.params,
+        )
+    else:
+        preflight_score = compute_score(registry_results, rules_context)
     legacy_by_id = {
         check_id: pair.get("legacy_result")
         for check_id, pair in registry_results.items()
@@ -5605,7 +5897,7 @@ def collect_scene(doc, artist_name):
         ),
     )
     for _idx, entry in preflight_entries:
-        count = count_violations(entry.check_id, legacy_by_id.get(entry.check_id))
+        count = preflight_score["counts"].get(entry.check_id, 0)
         if count:
             issues.append(entry.preflight_template.format(n=count))
 
@@ -5727,6 +6019,25 @@ def collect_scene(doc, artist_name):
         "missing_list": [],
         "pre_flight_issues": issues,
     }
+    baseline_collection_active = bool(original_baseline_path)
+    if baseline_collection_active:
+        manifest["ruleset"] = {
+            "source": rules_context.source,
+            "path": rules_context.rules_path or "",
+            "identity": list(rules_context.identity or (None, None)),
+            "shadowed_paths": list(rules_context.shadowed_paths or []),
+            "warnings": list(rules_context.warnings or []),
+        }
+        manifest["qc"] = {
+            "score": preflight_score.get("score", ""),
+            "passed": preflight_score.get("passed", 0),
+            "total": preflight_score.get("total", 0),
+            "new": preflight_score.get("new", sum(preflight_score.get("counts", {}).values())),
+            "accepted": preflight_score.get("accepted", 0),
+            "stale": preflight_score.get("stale", 0),
+            "schema": preflight_score.get("schema", 2),
+            "checks": build_baseline_artifact_details(preflight_score),
+        }
 
     # Get shot ID
     try:
@@ -5776,6 +6087,35 @@ def collect_scene(doc, artist_name):
                 safe_print(f"Scene Collector: Could not copy notes sidecar: {e}")
     else:
         manifest["notes"] = {"summary": "Notes: empty", "text": "", "todos": [], "pending_count": 0}
+
+    if baseline_collection_active and original_baseline_entries:
+        manifest["baseline"] = {
+            "sidecar": os.path.basename(original_baseline_path),
+            "acceptances": [
+                _accepted_entry_payload(entry)
+                for entry in original_baseline_entries
+            ],
+        }
+        try:
+            import shutil
+            shutil.copy2(original_baseline_path, target_dir)
+            safe_print(f"Scene Collector: Baseline sidecar copied to delivery: {os.path.basename(original_baseline_path)}")
+        except Exception as e:
+            safe_print(f"Scene Collector: Could not copy baseline sidecar: {e}")
+    else:
+        if baseline_collection_active:
+            manifest["baseline"] = {"sidecar": os.path.basename(original_baseline_path or ""), "acceptances": []}
+
+    if baseline_collection_active and rules_context.rules_path:
+        try:
+            import shutil
+            copied_rules_path = os.path.join(target_dir, "sentinel_rules.json")
+            shutil.copy2(rules_context.rules_path, copied_rules_path)
+            manifest["ruleset"]["copied_to"] = copied_rules_path
+            safe_print("Scene Collector: effective sentinel_rules.json copied to delivery")
+        except Exception as e:
+            manifest["ruleset"]["copy_error"] = str(e)
+            safe_print(f"Scene Collector: Could not copy sentinel_rules.json: {e}")
 
     # Save manifest
     manifest_path = os.path.join(target_dir, "sentinel_manifest.json")
@@ -6048,6 +6388,11 @@ class StatusArea(gui.GeUserArea):
                 severity, ok_msg, fail_tpl, name_key = cfg
                 severity = self.data.get("_severity_by_id", {}).get(key, severity)
                 disabled = key in set(self.data.get("_disabled_checks", []))
+                baseline_counts = {}
+                if self.data.get("_baseline_active"):
+                    baseline_counts = self.data.get("_baseline_counts", {}).get(key, {}) or {}
+                accepted_count = int(baseline_counts.get("accepted", 0) or 0)
+                stale_count = int(baseline_counts.get("stale", 0) or 0)
 
                 if disabled:
                     status = "[OFF ]"
@@ -6060,14 +6405,21 @@ class StatusArea(gui.GeUserArea):
                     if name_key:
                         names = self.data.get(name_key, [])
                         first = names[0] if names else "object"
-                    message = fail_tpl.format(n=val, first=first)
-                    if name_key and val > 1:
+                    if accepted_count:
+                        message = format_baseline_row_message(val, accepted_count, stale_count)
+                    else:
+                        message = fail_tpl.format(n=val, first=first)
+                    if name_key and val > 1 and not accepted_count:
                         message += f" (+{val-1} more)"
+                    if stale_count and not accepted_count:
+                        message += f" · {stale_count} obsoletas"
                     text_col = _COL_RED if severity == "FAIL" else _COL_YELLOW
                     bg = _COL_BG_FAIL if severity == "FAIL" else _COL_BG_WARN
                 else:
-                    status = "[ OK ]"
-                    message = ok_msg
+                    status = "[OK*]" if accepted_count else "[ OK ]"
+                    message = format_baseline_row_message(0, accepted_count, stale_count) if accepted_count else ok_msg
+                    if stale_count and not accepted_count:
+                        message += f" · {stale_count} obsoletas"
                     text_col = _COL_GREEN
                     bg = _COL_BG_OK
 
@@ -6882,6 +7234,9 @@ class YSPanel(gui.GeDialog):
         self._fps_range_bad = []
         self._cross_aspect_bad = []
         self._scene_stats = {}
+        self._registry_results = None
+        self._qc_summary = None
+        self._rules_context = None
 
         # Cycling indices for one-by-one selection
         self._unused_mats_idx = 0
@@ -7240,7 +7595,9 @@ class YSPanel(gui.GeDialog):
         rel = _humanize_time_diff(ts)
         status_str = status if status else "WIP"
         rel_part = f"  ·  {rel}" if rel else ""
-        self.SetString(G.LABEL_LAST_VERSION, f"Last version: v{ver:03d} {status_str}{rel_part}")
+        qc_label = format_history_qc_label(info)
+        qc_part = f"  ·  QC {qc_label}" if qc_label else ""
+        self.SetString(G.LABEL_LAST_VERSION, f"Last version: v{ver:03d} {status_str}{rel_part}{qc_part}")
 
     def _update_notes_summary(self, doc=None):
         """Refresh the Notes summary caption above the Edit Notes button."""
@@ -7424,7 +7781,16 @@ class YSPanel(gui.GeDialog):
             # registry kwargs in auto-refresh; click "Info" still upgrades to
             # full keyframe sampling for a complete timeline analysis.
             registry_results = run_all_checks(doc, _current_module(), rules_context)
-            score_summary = compute_score(registry_results, rules_context)
+            baseline_path = _baseline_path_for_doc(doc, only_existing=True)
+            if baseline_path:
+                score_summary = compute_score(
+                    registry_results,
+                    rules_context,
+                    baseline_path=baseline_path,
+                    current_params=rules_context.params,
+                )
+            else:
+                score_summary = compute_score(registry_results, rules_context)
             counts_by_id = score_summary["counts"]
             legacy_by_id = {
                 check_id: pair.get("legacy_result")
@@ -7464,8 +7830,17 @@ class YSPanel(gui.GeDialog):
             if self.ua is not None:
                 state = dict(counts_by_id)
                 state["_disabled_checks"] = score_summary.get("disabled", [])
+                state["_baseline_active"] = bool(score_summary.get("baseline_status"))
                 state["_severity_by_id"] = {
                     entry.check_id: entry_severity(entry, rules_context)
+                    for entry in CHECK_REGISTRY
+                }
+                state["_baseline_counts"] = {
+                    entry.check_id: {
+                        "new": score_summary.get("new_counts", counts_by_id).get(entry.check_id, counts_by_id.get(entry.check_id, 0)),
+                        "accepted": score_summary.get("accepted_counts", {}).get(entry.check_id, 0),
+                        "stale": score_summary.get("stale_counts", {}).get(entry.check_id, 0),
+                    }
                     for entry in CHECK_REGISTRY
                 }
                 for entry in CHECK_REGISTRY:
@@ -7514,6 +7889,9 @@ class YSPanel(gui.GeDialog):
             self._takes_bad = takes_bad
             self._fps_range_bad = fps_range_bad
             self._cross_aspect_bad = cross_aspect_bad
+            self._registry_results = registry_results
+            self._qc_summary = score_summary
+            self._rules_context = rules_context
 
             # Refresh header captions + Recent Versions list (all cheap reads)
             self._update_filename_label(doc)
@@ -7621,9 +7999,108 @@ class YSPanel(gui.GeDialog):
         self._last_doc = doc
         return True
 
+    def _new_violations_for_row(self, row_key):
+        if self._qc_summary and self._qc_summary.get("baseline_matches"):
+            match = self._qc_summary.get("baseline_matches", {}).get(row_key, {}) or {}
+            return list(match.get("new") or [])
+
+        result_pair = (self._registry_results or {}).get(row_key, {}) if self._registry_results else {}
+        structured = result_pair.get("structured_result")
+        raw = []
+        if isinstance(structured, dict):
+            raw = structured.get("violations") or []
+        elif structured is not None:
+            raw = getattr(structured, "violations", []) or []
+        items = []
+        for violation in raw:
+            if isinstance(violation, dict):
+                item = dict(violation)
+                item["check_id"] = row_key
+                items.append(item)
+        return items
+
+    def _baseline_counts_for_row(self, row_key):
+        summary = self._qc_summary or {}
+        return {
+            "new": summary.get("new_counts", summary.get("counts", {})).get(row_key, 0),
+            "accepted": summary.get("accepted_counts", {}).get(row_key, 0),
+            "stale": summary.get("stale_counts", {}).get(row_key, 0),
+        }
+
+    def _row_entry(self, row_key):
+        for entry in CHECK_REGISTRY:
+            if entry.check_id == row_key:
+                return entry
+        return None
+
+    def _show_baseline_actions(self, row_key):
+        doc = c4d.documents.GetActiveDocument()
+        if not doc:
+            return False
+
+        new_items = self._new_violations_for_row(row_key)
+        counts = self._baseline_counts_for_row(row_key)
+        if not new_items and not counts.get("accepted") and not counts.get("stale"):
+            return False
+
+        baseline_path = _baseline_path_for_doc(doc, only_existing=False)
+        if not baseline_path:
+            c4d.gui.MessageDialog("Save the scene before accepting QC baseline violations.")
+            return True
+
+        entry = self._row_entry(row_key)
+        row_label = entry.row_label if entry else row_key
+        dlg = BaselineActionDialog(
+            row_label,
+            new_items,
+            counts.get("accepted", 0),
+            counts.get("stale", 0),
+        )
+        try:
+            dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=520, defaulth=320)
+        except Exception as e:
+            safe_print(f"BaselineActionDialog open error: {e}")
+            return True
+
+        if dlg.action == "accept":
+            author = baseline.resolve_author(self._artist_name)
+            rules_context = self._rules_context or _active_rules_for_doc(doc)
+            written = 0
+            for item in new_items:
+                acceptance = baseline.entry_from_violation(
+                    item,
+                    author=author,
+                    reason=dlg.reason,
+                    current_params=getattr(rules_context, "params", {}),
+                )
+                if acceptance and baseline.add_acceptance(baseline_path, acceptance):
+                    written += 1
+            check_cache.clear()
+            self._last_check_time = 0
+            self._dirty = True
+            self._refresh()
+            c4d.gui.MessageDialog(f"Aceptadas {written} violacion(es) para {row_label}.")
+            return True
+
+        if dlg.action == "retire":
+            ok = baseline.remove_acceptances_for_check(baseline_path, row_key)
+            check_cache.clear()
+            self._last_check_time = 0
+            self._dirty = True
+            self._refresh()
+            if ok:
+                c4d.gui.MessageDialog(f"Aceptaciones retiradas para {row_label}.")
+            else:
+                c4d.gui.MessageDialog("Could not update the baseline sidecar.")
+            return True
+
+        return True
+
     def _on_qc_row_click(self, row_key):
         """Called by StatusArea when the user clicks a QC row.
         Routes to the same handler as the primary button (Select or Info)."""
+        if self._show_baseline_actions(row_key):
+            return
         primary = {
             "lights":      G.BTN_SEL_LIGHTS,
             "vis":         G.BTN_SEL_VIS,
@@ -8285,7 +8762,7 @@ class YSPanel(gui.GeDialog):
                 "output_count": len(self._output_bad) if self._output_bad else 0,
                 "scene_stats": self._scene_stats,
             }
-            save_path = export_qc_report(doc, results, self._artist_name)
+            save_path = export_qc_report(doc, results, self._artist_name, self._qc_summary)
             if save_path:
                 safe_print(f"QC report saved to: {save_path}")
                 c4d.gui.MessageDialog(f"QC Report saved!\n\n{save_path}")

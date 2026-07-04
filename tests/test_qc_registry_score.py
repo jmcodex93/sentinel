@@ -128,3 +128,65 @@ def test_disabled_check_is_removed_from_score_denominator(sentinel_module):
     assert summary["total"] == len(CHECK_REGISTRY) - 1
     assert summary["passed"] == len(CHECK_REGISTRY) - 1
     assert summary["score"] == f"{len(CHECK_REGISTRY) - 1}/{len(CHECK_REGISTRY) - 1}"
+
+
+def _object_violation(check_id, index):
+    return {
+        "check_id": check_id,
+        "identity": {
+            "type": "object",
+            "path": f"/Root/Cube[{index}]",
+            "sibling_index": index,
+            "guid": f"guid-{index}",
+        },
+        "message": f"Cube[{index}] uses a default name",
+    }
+
+
+def test_compute_score_with_baseline_counts_only_new_violations(sentinel_module):
+    from sentinel import baseline
+    from sentinel.qc.registry import CHECK_REGISTRY
+    from sentinel.qc.score import compute_score
+
+    violations = [_object_violation("names", index) for index in range(5)]
+    entries = [
+        baseline.entry_from_violation(violation, "Javier", "legacy shot")
+        for violation in violations
+    ]
+    results = _empty_results(CHECK_REGISTRY)
+    results["names"] = {
+        "legacy_result": ["Cube"] * 5,
+        "structured_result": {"violations": violations},
+    }
+
+    summary = compute_score(results, baseline_entries=entries, current_params={})
+
+    assert summary["counts"]["names"] == 0
+    assert summary["accepted_counts"]["names"] == 5
+    assert summary["new"] == 0
+    assert summary["accepted"] == 5
+    assert summary["passed"] == len(CHECK_REGISTRY)
+    assert summary["score"] == f"{len(CHECK_REGISTRY)}/{len(CHECK_REGISTRY)}"
+
+
+def test_mixed_baseline_score_and_row_rendering_semantics(sentinel_module):
+    from sentinel import baseline
+    from sentinel.qc.registry import CHECK_REGISTRY
+    from sentinel.qc.score import compute_score
+
+    violations = [_object_violation("names", index) for index in range(3)]
+    entries = [
+        baseline.entry_from_violation(violation, "Javier", "known client scene")
+        for violation in violations[:2]
+    ]
+    results = _empty_results(CHECK_REGISTRY)
+    results["names"] = {
+        "legacy_result": ["Cube"] * 3,
+        "structured_result": {"violations": violations},
+    }
+
+    summary = compute_score(results, baseline_entries=entries, current_params={})
+
+    assert summary["counts"]["names"] == 1
+    assert summary["accepted_counts"]["names"] == 2
+    assert sentinel_module.format_baseline_row_message(1, 2) == "1 nuevas (2 aceptadas)"

@@ -3,6 +3,7 @@
 
 from collections import OrderedDict
 
+from sentinel import baseline
 from sentinel.qc.registry import CHECK_REGISTRY, is_check_enabled, resolve_function
 
 
@@ -60,8 +61,7 @@ def count_violations(check_id, legacy_result):
     return len(legacy_result or [])
 
 
-def compute_score(results, rules_context=None):
-    """Reproduce the legacy pass/fail score semantics exactly."""
+def _legacy_score(results, rules_context=None):
     counts = OrderedDict()
     disabled = []
     for entry in CHECK_REGISTRY:
@@ -84,3 +84,101 @@ def compute_score(results, rules_context=None):
         "disabled": disabled,
         "disabled_count": len(disabled),
     }
+
+
+def _structured_violations_for(entry, result_pair):
+    structured = result_pair.get("structured_result") if result_pair else None
+    if not structured:
+        return []
+    raw = []
+    if isinstance(structured, dict):
+        raw = structured.get("violations") or []
+    else:
+        raw = getattr(structured, "violations", []) or []
+
+    normalized = []
+    for violation in raw:
+        if isinstance(violation, dict):
+            item = dict(violation)
+            item["check_id"] = entry.check_id
+            normalized.append(item)
+    return normalized
+
+
+def _load_baseline_entries(baseline_path, baseline_entries):
+    if baseline_entries is not None:
+        return list(baseline_entries), baseline.STATUS_OK
+    if not baseline_path:
+        return [], baseline.STATUS_MISSING
+    entries, status = baseline.load_baseline(baseline_path)
+    return entries, status
+
+
+def _baseline_score(results, rules_context, baseline_path, current_params, baseline_entries):
+    entries, status = _load_baseline_entries(baseline_path, baseline_entries)
+    if status != baseline.STATUS_OK:
+        return None
+
+    current_params = current_params or getattr(rules_context, "params", {}) or {}
+    counts = OrderedDict()
+    accepted_counts = OrderedDict()
+    stale_counts = OrderedDict()
+    disabled = []
+    baseline_matches = OrderedDict()
+
+    for entry in CHECK_REGISTRY:
+        result_pair = results.get(entry.check_id, {}) if results else {}
+        if result_pair.get("disabled") or not is_check_enabled(entry, rules_context):
+            disabled.append(entry.check_id)
+            continue
+
+        violations = _structured_violations_for(entry, result_pair)
+        matched = baseline.match_violations(entries, violations, current_params)
+        baseline_matches[entry.check_id] = matched
+        counts[entry.check_id] = len(matched.get("new") or [])
+        accepted_counts[entry.check_id] = len(matched.get("accepted") or [])
+        stale_counts[entry.check_id] = len(matched.get("stale_entries") or [])
+
+    total = len(counts)
+    passed = sum(1 for value in counts.values() if value == 0)
+    return {
+        "score": f"{passed}/{total}",
+        "pass": passed == total,
+        "passed": passed,
+        "total": total,
+        "counts": counts,
+        "new_counts": counts,
+        "accepted_counts": accepted_counts,
+        "stale_counts": stale_counts,
+        "baseline_matches": baseline_matches,
+        "baseline_status": status,
+        "baseline_path": baseline_path,
+        "disabled": disabled,
+        "disabled_count": len(disabled),
+        "schema": 2,
+        "new": sum(counts.values()),
+        "accepted": sum(accepted_counts.values()),
+        "stale": sum(stale_counts.values()),
+    }
+
+
+def compute_score(
+    results,
+    rules_context=None,
+    baseline_path=None,
+    current_params=None,
+    baseline_entries=None,
+):
+    """Return QC score, using accepted baselines only when explicitly present."""
+    if baseline_path or baseline_entries is not None:
+        summary = _baseline_score(
+            results,
+            rules_context,
+            baseline_path,
+            current_params,
+            baseline_entries,
+        )
+        if summary is not None:
+            return summary
+
+    return _legacy_score(results, rules_context)
