@@ -7,82 +7,25 @@ import copy
 import json
 import os
 from dataclasses import dataclass
-from numbers import Real
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
+
+from sentinel.common.constants import DEFAULT_OBJECT_NAMES, PRESETS
+from sentinel.qc.registry import CHECK_REGISTRY
 
 RULES_FILENAME = "sentinel_rules.json"
 SEVERITIES = {"FAIL", "WARN"}
 MAP_MERGE_KEYS = {"safe_area_insets", "check_severity", "checks_enabled"}
 
-# Mirrored from sentinel.common.constants.PRESETS. Duplicated here so this
-# module remains importable without importing c4d-dependent package modules.
-APPROVED_PRESETS_DEFAULT = ["previz", "pre_render", "render", "stills"]
-
-# Mirrored from sentinel.qc.registry.CHECK_REGISTRY for the same import-purity
-# reason. U7 can replace this duplication once the package bootstrap is pure.
-CHECK_DEFAULT_SEVERITY = {
-    "lights": "FAIL",
-    "vis": "WARN",
-    "keys": "WARN",
-    "cam": "FAIL",
-    "rdc": "FAIL",
-    "textures": "FAIL",
-    "unused_mats": "WARN",
-    "names": "WARN",
-    "output": "FAIL",
-    "takes": "FAIL",
-    "fps_range": "FAIL",
-    "cross_aspect": "WARN",
-}
+CHECK_DEFAULT_SEVERITY = {entry.check_id: entry.severity for entry in CHECK_REGISTRY}
 CHECK_IDS = set(CHECK_DEFAULT_SEVERITY)
 
 DEFAULTS = {
     "standard_fps": 25,
     "start_frame": 1001,
-    "approved_presets": list(APPROVED_PRESETS_DEFAULT),
-    "default_names": [
-        "null",
-        "cube",
-        "sphere",
-        "cylinder",
-        "cone",
-        "plane",
-        "disc",
-        "torus",
-        "capsule",
-        "oil tank",
-        "platonic",
-        "pyramid",
-        "gem",
-        "tube",
-        "landscape",
-        "figure",
-        "spline",
-        "circle",
-        "rectangle",
-        "n-side",
-        "arc",
-        "helix",
-        "sweep",
-        "extrude",
-        "lathe",
-        "loft",
-        "boole",
-        "symmetry",
-        "instance",
-        "cloner",
-        "fracture",
-        "voronoi fracture",
-        "matrix",
-        "mograph",
-        "camera",
-        "light",
-        "floor",
-        "sky",
-        "environment",
-        "physical sky",
-    ],
+    "approved_presets": list(PRESETS),
+    "default_names": list(DEFAULT_OBJECT_NAMES),
     "safe_area_insets": {
         "16x9": {"top": 0.05, "bottom": 0.05, "left": 0.05, "right": 0.05},
         "9x16": {"top": 0.08, "bottom": 0.15, "left": 0.05, "right": 0.10},
@@ -346,14 +289,16 @@ def _primary_source(field_sources: dict[str, str]) -> str:
 
 def _validate_key(key: str, value: Any) -> tuple[bool, Any, str | None]:
     if key == "standard_fps":
-        if _is_number(value):
-            return True, value, None
-        return False, None, "expected a number"
+        if _is_int_like(value):
+            fps = int(value)
+            if 1 <= fps <= 240:
+                return True, fps, None
+        return False, None, "expected a number that is an integer in range 1..240"
 
     if key == "start_frame":
-        if isinstance(value, int) and not isinstance(value, bool):
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             return True, value, None
-        return False, None, "expected an int"
+        return False, None, "expected an int >= 0"
 
     if key in {"approved_presets", "default_names"}:
         if _is_str_list(value):
@@ -422,6 +367,17 @@ def _validate_checks_enabled(value: Any) -> tuple[bool, Any, str | None]:
 
 def _is_number(value: Any) -> bool:
     return isinstance(value, Real) and not isinstance(value, bool)
+
+
+def _is_int_like(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return False
+    if isinstance(value, Integral):
+        return True
+    try:
+        return float(value).is_integer()
+    except Exception:
+        return False
 
 
 def _is_str_list(value: Any) -> bool:

@@ -11,6 +11,11 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_PATH = ROOT / "plugin" / "sentinel_panel.pyp"
 
+# Make the sentinel package importable in every test without PYTHONPATH.
+_PLUGIN_DIR = str(ROOT / "plugin")
+if _PLUGIN_DIR not in sys.path:
+    sys.path.insert(0, _PLUGIN_DIR)
+
 
 class _PermissiveModule(types.ModuleType):
     """Tiny attribute-permissive module for importing Sentinel outside C4D."""

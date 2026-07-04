@@ -1,10 +1,16 @@
 # -*- coding: utf-8 -*-
 """QC registry runner and score semantics."""
 
+import copy
+import os
 from collections import OrderedDict
 
 from sentinel import baseline
+from sentinel.common.helpers import safe_print
 from sentinel.qc.registry import CHECK_REGISTRY, is_check_enabled, resolve_function
+
+
+_BASELINE_LOAD_CACHE = {}
 
 
 def _call(fn, doc, kwargs, rules_context=None):
@@ -110,13 +116,58 @@ def _load_baseline_entries(baseline_path, baseline_entries):
         return list(baseline_entries), baseline.STATUS_OK
     if not baseline_path:
         return [], baseline.STATUS_MISSING
+
+    entries, status = _cached_load_baseline(baseline_path)
+    if status == baseline.STATUS_INVALID:
+        conflict_paths = baseline.find_conflict_copies(baseline_path)
+        if conflict_paths:
+            merged_count, _copy_paths = baseline.merge_conflict_copies(baseline_path)
+            _BASELINE_LOAD_CACHE.pop(baseline_path, None)
+            entries, status = _cached_load_baseline(baseline_path)
+            if status == baseline.STATUS_OK:
+                safe_print(
+                    f"Recovered baseline sidecar from {len(conflict_paths)} conflict copy/copies "
+                    f"({merged_count} entries merged): {baseline_path}"
+                )
+        if status == baseline.STATUS_INVALID:
+            safe_print(
+                "Baseline sidecar is invalid; using legacy QC totals only "
+                f"until it is repaired: {baseline_path}"
+            )
+    return entries, status
+
+
+def _cached_load_baseline(baseline_path):
+    try:
+        mtime = os.path.getmtime(baseline_path)
+    except OSError:
+        mtime = None
+    cache_key = (baseline_path, mtime)
+    cached = _BASELINE_LOAD_CACHE.get(baseline_path)
+    if cached and cached.get("key") == cache_key:
+        return copy.deepcopy(cached["entries"]), cached["status"]
     entries, status = baseline.load_baseline(baseline_path)
+    _BASELINE_LOAD_CACHE[baseline_path] = {
+        "key": cache_key,
+        "entries": copy.deepcopy(entries),
+        "status": status,
+    }
     return entries, status
 
 
 def _baseline_score(results, rules_context, baseline_path, current_params, baseline_entries):
     entries, status = _load_baseline_entries(baseline_path, baseline_entries)
     if status != baseline.STATUS_OK:
+        if status == baseline.STATUS_INVALID:
+            summary = _legacy_score(results, rules_context)
+            summary.update(
+                {
+                    "baseline_status": status,
+                    "baseline_path": baseline_path,
+                    "baseline_warning": "baseline ilegible - solo se muestran totales",
+                }
+            )
+            return summary
         return None
 
     current_params = current_params or getattr(rules_context, "params", {}) or {}

@@ -112,10 +112,10 @@ def _normalize(value):
     if isinstance(value, dict):
         out = {}
         for key in sorted(value.keys(), key=str):
-            if key == "object":
-                continue
             normalized_key = str(key)
             item = value[key]
+            if key == "object" and hasattr(item, "GetName") and not isinstance(item, dict):
+                continue
             if key in ("path", "resolved") and isinstance(item, str):
                 item = _normalize_path(item)
             out[normalized_key] = _normalize(item)

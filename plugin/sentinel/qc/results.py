@@ -33,6 +33,35 @@ def _safe_guid(item):
     return _safe_json(guid)
 
 
+def _same_atom(left, right):
+    if left is right:
+        return True
+    left_guid = _safe_guid(left)
+    right_guid = _safe_guid(right)
+    if left_guid is not None and right_guid is not None:
+        return left_guid == right_guid
+    try:
+        return left == right
+    except Exception:
+        return False
+
+
+def _parent_key(obj):
+    try:
+        parent = obj.GetUp()
+    except Exception:
+        parent = None
+    if parent is None:
+        return ("root",)
+    guid = _safe_guid(parent)
+    if guid is not None:
+        return ("guid", guid)
+    try:
+        return ("path", _safe_name(parent), id(parent))
+    except Exception:
+        return ("parent", id(parent))
+
+
 def _siblings_for(obj):
     siblings = []
     try:
@@ -70,31 +99,38 @@ def _siblings_for(obj):
     return siblings or [obj]
 
 
-def _sibling_position(obj):
+def _sibling_position(obj, sibling_scan_cache=None):
     name = _safe_name(obj)
-    same_name = []
-    for sibling in _siblings_for(obj):
-        if _safe_name(sibling) == name:
-            same_name.append(sibling)
+    cache_key = (_parent_key(obj), name)
+    same_name = None
+    if sibling_scan_cache is not None:
+        same_name = sibling_scan_cache.get(cache_key)
+    if same_name is None:
+        same_name = []
+        for sibling in _siblings_for(obj):
+            if _safe_name(sibling) == name:
+                same_name.append(sibling)
+        if sibling_scan_cache is not None:
+            sibling_scan_cache[cache_key] = same_name
 
     index = 0
     for i, sibling in enumerate(same_name):
-        if sibling is obj:
+        if _same_atom(sibling, obj):
             index = i
             break
 
     return index, len(same_name)
 
 
-def _path_component(obj):
+def _path_component(obj, sibling_scan_cache=None):
     name = _safe_name(obj)
-    sibling_index, sibling_count = _sibling_position(obj)
+    sibling_index, sibling_count = _sibling_position(obj, sibling_scan_cache)
     if sibling_count > 1:
         return f"{name}[{sibling_index}]", sibling_index
     return name, sibling_index
 
 
-def object_identity(obj):
+def object_identity(obj, sibling_scan_cache=None):
     """Return a JSON-safe identity for a C4D object."""
     hierarchy = []
     current = obj
@@ -111,7 +147,7 @@ def object_identity(obj):
     components = []
     sibling_index = 0
     for item in hierarchy:
-        component, sibling_index = _path_component(item)
+        component, sibling_index = _path_component(item, sibling_scan_cache)
         components.append(component)
 
     path = "/" + "/".join(components) if components else "/unknown"

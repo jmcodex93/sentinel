@@ -10,13 +10,14 @@ def _cross_aspect_safe_area_result(violations):
         metadata={"legacy_count": len(violations)},
         legacy_items=violations,
     )
+    sibling_scan_cache = {}
     for item in violations:
         obj = item.get("object")
         fmt_id = item.get("fmt_id")
         result.add_violation(
             {
                 "type": "cross_aspect_safe_area",
-                "object": object_identity(obj),
+                "object": object_identity(obj, sibling_scan_cache),
                 "fmt_id": fmt_id,
             },
             f"Safe-area subject violates {fmt_id} format",
@@ -47,4 +48,3 @@ def check_cross_aspect_safe_area(doc, sample_strategy="keyframes", rules_context
     return check_cross_aspect_safe_area_structured(
         doc, sample_strategy=sample_strategy, rules_context=rules_context
     ).to_legacy()
-

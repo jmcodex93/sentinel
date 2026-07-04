@@ -30,6 +30,23 @@ def object_violation(check_id, path, sibling_index=0, guid="guid-a", fmt_id=None
     return {"check_id": check_id, "identity": identity, "message": path}
 
 
+def cross_aspect_violation(path, sibling_index=0, guid="guid-a", fmt_id="9x16"):
+    return {
+        "check_id": "cross_aspect",
+        "identity": {
+            "type": "cross_aspect_safe_area",
+            "object": {
+                "type": "object",
+                "path": path,
+                "sibling_index": sibling_index,
+                "guid": guid,
+            },
+            "fmt_id": fmt_id,
+        },
+        "message": f"{path} violates {fmt_id}",
+    }
+
+
 def param_violation(check_id, param, value, preset=None, take=None, field=None):
     identity = {
         "type": "parameter",
@@ -141,6 +158,20 @@ def test_guid_mismatch_delete_shift_rearms_and_marks_stale(tmp_path):
     assert matched["stale_entries"] == [entry_from_violation(original)]
 
 
+def test_missing_current_guid_at_same_location_rearms_and_marks_stale(tmp_path):
+    path = tmp_path / "shot_baseline.json"
+    original = object_violation("default_names", "/Root/Cube[0]", 0, "guid-old")
+    no_guid = object_violation("default_names", "/Root/Cube[0]", 0, None)
+    baseline.add_acceptance(str(path), entry_from_violation(original))
+
+    entries, _status = baseline.load_baseline(str(path))
+    matched = baseline.match_violations(entries, [no_guid])
+
+    assert matched["new"] == [no_guid]
+    assert matched["accepted"] == []
+    assert matched["stale_entries"] == [entry_from_violation(original)]
+
+
 def test_param_snapshot_mismatch_rearms_and_marks_stale(tmp_path):
     path = tmp_path / "shot_baseline.json"
     violation = param_violation("fps_range", "standard_fps", 25)
@@ -169,9 +200,9 @@ def test_param_snapshot_match_accepts_violation(tmp_path):
 
 def test_cross_aspect_uses_format_not_frame_for_identity(tmp_path):
     path = tmp_path / "shot_baseline.json"
-    accepted = object_violation("cross_aspect", "/Root/Logo", 0, "guid-logo", fmt_id="9x16", frame=1001)
-    later_frame = object_violation("cross_aspect", "/Root/Logo", 0, "guid-logo", fmt_id="9x16", frame=1040)
-    other_format = object_violation("cross_aspect", "/Root/Logo", 0, "guid-logo", fmt_id="1x1", frame=1040)
+    accepted = cross_aspect_violation("/Root/Logo", 0, "guid-logo", fmt_id="9x16")
+    later_frame = cross_aspect_violation("/Root/Logo", 0, "guid-logo", fmt_id="9x16")
+    other_format = cross_aspect_violation("/Root/Logo", 0, "guid-logo", fmt_id="1x1")
     baseline.add_acceptance(str(path), entry_from_violation(accepted))
 
     entries, _status = baseline.load_baseline(str(path))
@@ -179,6 +210,20 @@ def test_cross_aspect_uses_format_not_frame_for_identity(tmp_path):
 
     assert matched["accepted"] == [later_frame]
     assert matched["new"] == [other_format]
+
+
+def test_cross_aspect_rename_rearms_and_marks_old_entry_stale(tmp_path):
+    path = tmp_path / "shot_baseline.json"
+    original = cross_aspect_violation("/Root/Logo", 0, "guid-logo", fmt_id="9x16")
+    renamed = cross_aspect_violation("/Root/LogoRenamed", 0, "guid-logo", fmt_id="9x16")
+    baseline.add_acceptance(str(path), entry_from_violation(original))
+
+    entries, _status = baseline.load_baseline(str(path))
+    matched = baseline.match_violations(entries, [renamed])
+
+    assert matched["new"] == [renamed]
+    assert matched["accepted"] == []
+    assert matched["stale_entries"] == [entry_from_violation(original)]
 
 
 def test_add_acceptance_rereads_existing_file_so_both_entries_survive(tmp_path):
@@ -240,6 +285,24 @@ def test_conflict_copy_merge_unions_entries_and_keeps_copies(tmp_path):
     assert first_copy.exists()
     assert second_copy.exists()
     assert read_payload(path)["schema"] == 1
+
+
+def test_conflict_copy_merge_can_repair_invalid_main_baseline(tmp_path):
+    path = tmp_path / "shot_baseline.json"
+    path.write_text("{not valid json", encoding="utf-8")
+    copy_violation = object_violation("visibility", "/Root/Sphere", 0, "guid-b")
+    conflict_copy = tmp_path / "shot_baseline SynologyDrive-conflict copy.json"
+    write_payload(conflict_copy, [entry_from_violation(copy_violation)])
+
+    merged_count, copy_paths = baseline.merge_conflict_copies(str(path))
+
+    entries, status = baseline.load_baseline(str(path))
+    matched = baseline.match_violations(entries, [copy_violation])
+    assert status == "ok"
+    assert merged_count == 1
+    assert copy_paths == [str(conflict_copy)]
+    assert matched["accepted"] == [copy_violation]
+    assert conflict_copy.exists()
 
 
 def test_remove_acceptance_writes_schema_and_rearms_violation(tmp_path):

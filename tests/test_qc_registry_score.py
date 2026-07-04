@@ -190,3 +190,20 @@ def test_mixed_baseline_score_and_row_rendering_semantics(sentinel_module):
     assert summary["counts"]["names"] == 1
     assert summary["accepted_counts"]["names"] == 2
     assert sentinel_module.format_baseline_row_message(1, 2) == "1 nuevas (2 aceptadas)"
+
+
+def test_invalid_baseline_sidecar_uses_legacy_score_with_visible_status(sentinel_module, tmp_path):
+    from sentinel.qc.registry import CHECK_REGISTRY
+    from sentinel.qc.score import compute_score
+
+    baseline_path = tmp_path / "shot_baseline.json"
+    baseline_path.write_text("{not valid json", encoding="utf-8")
+    results = _empty_results(CHECK_REGISTRY)
+    results["names"] = {"legacy_result": ["Cube"]}
+
+    summary = compute_score(results, baseline_path=str(baseline_path), current_params={})
+
+    assert summary["counts"]["names"] == 1
+    assert summary["baseline_status"] == "invalid"
+    assert summary["baseline_path"] == str(baseline_path)
+    assert "baseline ilegible" in summary["baseline_warning"]

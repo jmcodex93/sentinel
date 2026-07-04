@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 """Plugin-wide constants with no UI widget IDs."""
 
-from sentinel import PLUGIN_NAME, PLUGIN_VERSION
-
 # Plugin ID - change if ID collision
 PLUGIN_ID = 2099069
 
@@ -32,6 +30,49 @@ SAFE_AREA_OVERLAY_PLUGIN_ID = 2099072  # dev-range; replace with
 # Preset names - normalized to lowercase with underscores
 # The system accepts both "pre_render" and "pre-render" (case-insensitive)
 PRESETS = ["previz", "pre_render", "render", "stills"]
+
+DEFAULT_OBJECT_NAMES = (
+    "null",
+    "cube",
+    "sphere",
+    "cylinder",
+    "cone",
+    "plane",
+    "disc",
+    "torus",
+    "capsule",
+    "oil tank",
+    "platonic",
+    "pyramid",
+    "gem",
+    "tube",
+    "landscape",
+    "figure",
+    "spline",
+    "circle",
+    "rectangle",
+    "n-side",
+    "arc",
+    "helix",
+    "sweep",
+    "extrude",
+    "lathe",
+    "loft",
+    "boole",
+    "symmetry",
+    "instance",
+    "cloner",
+    "fracture",
+    "voronoi fracture",
+    "matrix",
+    "mograph",
+    "camera",
+    "light",
+    "floor",
+    "sky",
+    "environment",
+    "physical sky",
+)
 
 # Performance settings for watcher
 MAX_OBJECTS_PER_CHECK = 1000  # Process in chunks

@@ -41,6 +41,12 @@
         },
         "identity": {
           "fmt_id": "4x5",
+          "object": {
+            "guid": "<guid>",
+            "path": "/safe_area_subject_too_far_right",
+            "sibling_index": 0,
+            "type": "object"
+          },
           "type": "cross_aspect_safe_area"
         },
         "message": "Safe-area subject violates 4x5 format"
@@ -59,6 +65,12 @@
         },
         "identity": {
           "fmt_id": "1x1",
+          "object": {
+            "guid": "<guid>",
+            "path": "/safe_area_subject_too_far_right",
+            "sibling_index": 0,
+            "type": "object"
+          },
           "type": "cross_aspect_safe_area"
         },
         "message": "Safe-area subject violates 1x1 format"
@@ -77,6 +89,12 @@
         },
         "identity": {
           "fmt_id": "9x16",
+          "object": {
+            "guid": "<guid>",
+            "path": "/safe_area_subject_too_far_right",
+            "sibling_index": 0,
+            "type": "object"
+          },
           "type": "cross_aspect_safe_area"
         },
         "message": "Safe-area subject violates 9x16 format"

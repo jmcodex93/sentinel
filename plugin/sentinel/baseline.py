@@ -25,6 +25,7 @@ STATUS_MISSING = "missing"
 STATUS_INVALID = "invalid"
 
 _MISSING = object()
+_CROSS_ASPECT_IDENTITY_TYPE = "cross_aspect_safe_area"
 
 
 def get_baseline_path(doc_path):
@@ -161,8 +162,9 @@ def merge_conflict_copies(path):
     """Union valid conflict-copy entries into the main baseline without deleting copies."""
     copy_paths = find_conflict_copies(path)
     entries, status = load_baseline(path)
-    if status == STATUS_INVALID:
-        return 0, copy_paths
+    main_invalid = status == STATUS_INVALID
+    if main_invalid:
+        entries = []
 
     merged = {}
     for entry in entries:
@@ -179,7 +181,7 @@ def merge_conflict_copies(path):
                 merged_count += 1
             merged[key] = entry
 
-    if copy_paths:
+    if copy_paths and (merged_count or not main_invalid):
         if not _write_entries(path, list(merged.values())):
             return 0, copy_paths
     return merged_count, copy_paths
@@ -263,6 +265,7 @@ def _find_object_match(entries, check_id, identity, result, stale_keys):
     exact_without_guid = []
     guid_mismatches = []
     moved_or_renamed = []
+    target_identity = _object_identity_fields(identity)
 
     for entry in entries:
         if entry.get("check_id") != check_id:
@@ -270,20 +273,23 @@ def _find_object_match(entries, check_id, identity, result, stale_keys):
         entry_identity = entry.get("identity") or {}
         if _identity_kind(entry_identity) != "object":
             continue
+        entry_object_identity = _object_identity_fields(entry_identity)
         if _fmt_id(entry_identity) != _fmt_id(identity):
             continue
 
         same_location = (
-            entry_identity.get("path") == identity.get("path")
-            and entry_identity.get("sibling_index") == identity.get("sibling_index")
+            entry_object_identity.get("path") == target_identity.get("path")
+            and entry_object_identity.get("sibling_index") == target_identity.get("sibling_index")
         )
-        entry_guid = entry_identity.get("guid")
-        violation_guid = identity.get("guid")
+        entry_guid = entry_object_identity.get("guid")
+        violation_guid = target_identity.get("guid")
 
         if same_location:
             if not entry_guid or entry_guid == violation_guid:
                 exact_without_guid.append(entry)
             elif violation_guid:
+                guid_mismatches.append(entry)
+            else:
                 guid_mismatches.append(entry)
         elif entry_guid and violation_guid and entry_guid == violation_guid:
             moved_or_renamed.append(entry)
@@ -344,12 +350,13 @@ def _entry_key(entry):
 
     kind = _identity_kind(identity)
     if kind == "object":
+        object_identity = _object_identity_fields(identity)
         return (
             "object",
             check_id,
-            identity.get("path"),
-            identity.get("sibling_index"),
-            identity.get("guid"),
+            object_identity.get("path"),
+            object_identity.get("sibling_index"),
+            object_identity.get("guid"),
             _fmt_id(identity),
         )
     if kind == "param":
@@ -361,6 +368,8 @@ def _identity_kind(identity):
     raw = identity.get("kind", identity.get("type")) if isinstance(identity, dict) else None
     if raw == "parameter":
         return "param"
+    if raw == _CROSS_ASPECT_IDENTITY_TYPE and isinstance(identity.get("object"), dict):
+        return "object"
     return raw
 
 
@@ -372,6 +381,15 @@ def _normalized_identity(identity):
         identity_type = normalized.pop("type")
         normalized["kind"] = "param" if identity_type == "parameter" else identity_type
     return normalized
+
+
+def _object_identity_fields(identity):
+    if not isinstance(identity, dict):
+        return {}
+    raw = identity.get("kind", identity.get("type"))
+    if raw == _CROSS_ASPECT_IDENTITY_TYPE and isinstance(identity.get("object"), dict):
+        return identity.get("object") or {}
+    return identity
 
 
 def _fmt_id(identity):

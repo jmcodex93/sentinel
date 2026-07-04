@@ -82,6 +82,49 @@ def test_bad_key_type_is_rejected_but_other_file_keys_apply(tmp_path):
     assert any("standard_fps" in warning and "expected a number" in warning for warning in context.warnings)
 
 
+def test_standard_fps_and_start_frame_validate_ranges(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(
+        scene_dir,
+        {
+            "standard_fps": 23.976,
+            "start_frame": -1,
+        },
+    )
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert context.params["standard_fps"] == rules.DEFAULTS["standard_fps"]
+    assert context.params["start_frame"] == rules.DEFAULTS["start_frame"]
+    assert any("standard_fps" in warning and "integer in range 1..240" in warning for warning in context.warnings)
+    assert any("start_frame" in warning and "int >= 0" in warning for warning in context.warnings)
+
+
+def test_integral_float_standard_fps_is_normalized(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(scene_dir, {"standard_fps": 24.0})
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert context.params["standard_fps"] == 24
+    assert isinstance(context.params["standard_fps"], int)
+
+
+def test_default_rules_are_sourced_from_registry_and_constants(sentinel_module):
+    from sentinel.common.constants import DEFAULT_OBJECT_NAMES, PRESETS
+    from sentinel.qc.registry import CHECK_REGISTRY
+
+    assert rules.DEFAULTS["approved_presets"] == list(PRESETS)
+    assert rules.DEFAULTS["default_names"] == list(DEFAULT_OBJECT_NAMES)
+    assert rules.CHECK_DEFAULT_SEVERITY == {
+        entry.check_id: entry.severity for entry in CHECK_REGISTRY
+    }
+
+
 def test_no_rules_file_and_no_machine_settings_returns_embedded_defaults(tmp_path):
     scene_dir = tmp_path / "project"
     scene_dir.mkdir()

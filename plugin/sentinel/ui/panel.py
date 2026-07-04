@@ -630,6 +630,16 @@ def export_qc_report(doc, results, artist_name, qc_summary=None):
         ],
     }
 
+    disabled_checks = []
+    if isinstance(qc_summary, dict):
+        disabled_checks = list(qc_summary.get("disabled", []) or [])
+    for check_id in disabled_checks:
+        report_key = _REPORT_KEY_BY_CHECK_ID.get(check_id)
+        if report_key and report_key in report["checks"]:
+            report["checks"][report_key]["status"] = "DISABLED"
+            report["checks"][report_key]["disabled"] = True
+            report["checks"][report_key]["count"] = 0
+
     # Summary
     total = len(report["checks"])
     passed = sum(1 for c in report["checks"].values() if c["status"] == "PASS")
@@ -640,9 +650,14 @@ def export_qc_report(doc, results, artist_name, qc_summary=None):
         "score": f"{passed}/{total}"
     }
 
+    if disabled_checks:
+        report["disabled_checks"] = disabled_checks
+
     baseline_details = build_baseline_artifact_details(qc_summary)
     if baseline_details:
         for check_id, details in baseline_details.items():
+            if check_id in disabled_checks:
+                continue
             report_key = _REPORT_KEY_BY_CHECK_ID.get(check_id)
             if not report_key or report_key not in report["checks"]:
                 continue
@@ -654,6 +669,12 @@ def export_qc_report(doc, results, artist_name, qc_summary=None):
             check["new"] = details["new"]
             check["accepted"] = details["accepted"]
             check["stale"] = details["stale"]
+        report["baseline"] = {
+            "path": qc_summary.get("baseline_path", ""),
+            "checks": baseline_details,
+        }
+
+    if isinstance(qc_summary, dict):
         report["summary"] = {
             "total_checks": qc_summary.get("total", total),
             "passed": qc_summary.get("passed", passed),
@@ -662,11 +683,8 @@ def export_qc_report(doc, results, artist_name, qc_summary=None):
             "new": qc_summary.get("new", 0),
             "accepted": qc_summary.get("accepted", 0),
             "stale": qc_summary.get("stale", 0),
-            "schema": 2,
-        }
-        report["baseline"] = {
-            "path": qc_summary.get("baseline_path", ""),
-            "checks": baseline_details,
+            "schema": qc_summary.get("schema", 1),
+            "disabled_count": qc_summary.get("disabled_count", len(disabled_checks)),
         }
 
     # Always include scene notes section in the report (empty defaults if no
@@ -900,6 +918,7 @@ def smart_save_version(doc, comment, run_qc=True, artist_name="", status=None):
             entry["new"] = qc_summary.get("new", sum(qc_summary.get("counts", {}).values()))
             entry["accepted"] = qc_summary.get("accepted", 0)
             entry["qc_baseline"] = build_baseline_artifact_details(qc_summary)
+        entry["disabled_checks"] = list(qc_summary.get("disabled", []) or [])
 
     appended = append_history_entry(history_path, entry)
 
@@ -1194,7 +1213,8 @@ def collect_scene(doc, artist_name):
         "pre_flight_issues": issues,
     }
     baseline_collection_active = bool(original_baseline_path)
-    if baseline_collection_active:
+    rules_collection_active = bool(rules_context.rules_path)
+    if rules_collection_active:
         manifest["ruleset"] = {
             "source": rules_context.source,
             "path": rules_context.rules_path or "",
@@ -1210,6 +1230,8 @@ def collect_scene(doc, artist_name):
             "accepted": preflight_score.get("accepted", 0),
             "stale": preflight_score.get("stale", 0),
             "schema": preflight_score.get("schema", 2),
+            "disabled_checks": list(preflight_score.get("disabled", []) or []),
+            "disabled_count": preflight_score.get("disabled_count", 0),
             "checks": build_baseline_artifact_details(preflight_score),
         }
 
@@ -1280,7 +1302,7 @@ def collect_scene(doc, artist_name):
         if baseline_collection_active:
             manifest["baseline"] = {"sidecar": os.path.basename(original_baseline_path or ""), "acceptances": []}
 
-    if baseline_collection_active and rules_context.rules_path:
+    if rules_collection_active:
         try:
             import shutil
             copied_rules_path = os.path.join(target_dir, "sentinel_rules.json")
@@ -2048,11 +2070,10 @@ class YSPanel(gui.GeDialog):
 
         # Check cooldown
         now = time.time()
+        if now - self._last_check_time < CHECK_COOLDOWN:
+            return
         rules_context = _active_rules_for_doc(doc)
         rules_identity = rules_context.identity
-        rules_changed = self._last_rules_identity != rules_identity
-        if now - self._last_check_time < CHECK_COOLDOWN and not rules_changed:
-            return
         self._last_check_time = now
         self._last_rules_identity = rules_identity
 
@@ -2146,6 +2167,9 @@ class YSPanel(gui.GeDialog):
                 else:
                     poly_str = f"{polys} polys"
                 stats_str = f"{poly_str}  ·  {scene_stats.get('materials', 0)} mats  ·  {scene_stats.get('lights', 0)} lights"
+            baseline_warning = score_summary.get("baseline_warning")
+            if baseline_warning:
+                stats_str = f"{stats_str}  ·  {baseline_warning}" if stats_str else baseline_warning
             if self.score_ua is not None:
                 self.score_ua.set_state(passed, total_checks, stats_str)
             try:
@@ -2328,8 +2352,7 @@ class YSPanel(gui.GeDialog):
 
         baseline_path = _baseline_path_for_doc(doc, only_existing=False)
         if not baseline_path:
-            c4d.gui.MessageDialog("Save the scene before accepting QC baseline violations.")
-            return True
+            return False
 
         entry = self._row_entry(row_key)
         row_label = entry.row_label if entry else row_key

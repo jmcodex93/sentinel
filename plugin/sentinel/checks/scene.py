@@ -4,7 +4,7 @@
 import c4d
 
 from sentinel.common.cache import check_cache
-from sentinel.common.constants import MAX_OBJECTS_PER_CHECK
+from sentinel.common.constants import DEFAULT_OBJECT_NAMES, MAX_OBJECTS_PER_CHECK
 from sentinel.common.helpers import _any_ancestor_named, _iter_objs, safe_print
 from sentinel.qc.results import (
     CheckResult,
@@ -23,9 +23,10 @@ def _object_result(check_id, legacy_items_value, message, extras_builder=None):
         metadata={"legacy_count": len(legacy_items_value)},
         legacy_items=legacy_items_value,
     )
+    sibling_scan_cache = {}
     for item in legacy_items_value:
         extras = extras_builder(item) if extras_builder else None
-        result.add_violation(object_identity(item), message, extras)
+        result.add_violation(object_identity(item, sibling_scan_cache), message, extras)
     return result
 
 
@@ -430,15 +431,7 @@ def check_unused_materials(doc):
 
 
 # ---------------- default naming ----------------
-# Common default object names that indicate unorganized scenes
-_DEFAULT_NAMES = {
-    "null", "cube", "sphere", "cylinder", "cone", "plane", "disc", "torus",
-    "capsule", "oil tank", "platonic", "pyramid", "gem", "tube", "landscape",
-    "figure", "spline", "circle", "rectangle", "n-side", "arc", "helix",
-    "sweep", "extrude", "lathe", "loft", "boole", "symmetry", "instance",
-    "cloner", "fracture", "voronoi fracture", "matrix", "mograph",
-    "camera", "light", "floor", "sky", "environment", "physical sky",
-}
+_DEFAULT_NAMES = set(DEFAULT_OBJECT_NAMES)
 
 
 def _doc_path_for_rules(doc):
