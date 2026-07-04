@@ -20,11 +20,20 @@ The plugin performs **12 quality checks** in real-time:
 Additional features: RS AOV management (Essentials/Production/Light Groups), Scene Collector, QC Report export, Render Presets with aspect ratio toggle, Texture Repathing tool (multi-renderer bulk find/replace + smart-fix), and a full suite of scene tools.
 
 ## Core Files (DO NOT DELETE)
-- `plugin/sentinel_panel.pyp` - Main plugin file (~10,400 lines, originally `ys_guardian_panel.pyp`)
+- `plugin/sentinel_panel.pyp` - Cinema 4D bootstrap only: inserts the plugin root on `sys.path`, imports the `sentinel/` package, keeps all `Register*` calls, and preserves the `__main__` guard.
+- `plugin/sentinel/` - Sentinel Python package. Current layout:
+  - `common/` - settings, cache, constants, shared helpers
+  - `checks/` and `qc/` - QC check implementations, registry, result adapters, scoring
+  - `aovs.py`, `baseline.py`, `multiformat.py`, `notes.py`, `rules.py`, `safe_areas.py`, `textures.py`, `versioning.py` - extracted workflow engines
+  - `ui/ids.py`, `ui/user_areas.py`, `ui/dialogs.py`, `ui/overlay.py`, `ui/panel.py` - widget IDs, custom UserAreas, dialogs, ObjectData overlay, main GeDialog panel and CommandData
 - `plugin/res/` - Resource descriptions required by C4D for plugins that need a `description` parameter (e.g. SafeAreaOverlayObject in v1.5.6). Contains `c4d_symbols.h`, `description/safearea_overlay.res|.h`, `strings_us/description/safearea_overlay.str`. Adding new ObjectData/TagData plugins needs new `.res|.h|.str` triplets here.
 - `plugin/exr_converter_external.py` - Cross-platform EXR→PNG with ACES pipeline
 - `plugin/abc_retime/` - Bundled ABC Retime plugin (by axisfx2)
 - `plugin/legacy/` - Archived snapshot files (kept for reference)
+
+## Development Flow
+- After changing package structure or classes registered with Cinema 4D, restart Cinema 4D. Do not rely on "Reload Python Plugins" for package reloads: live ObjectData/GeDialog instances can keep references to old module objects and create split-brain state.
+- Install/copy the full plugin folder contents together: `sentinel_panel.pyp`, `sentinel/`, `res/`, `abc_retime/`, and support scripts. The `.pyp` alone is not a complete plugin anymore.
 
 ## Development Rules
 
