@@ -24,6 +24,7 @@ CHECK_IDS = set(CHECK_DEFAULT_SEVERITY)
 DEFAULTS = {
     "standard_fps": 25,
     "start_frame": 1001,
+    "gates_enabled": False,
     "approved_presets": list(PRESETS),
     "default_names": list(DEFAULT_OBJECT_NAMES),
     "safe_area_insets": {
@@ -299,6 +300,11 @@ def _validate_key(key: str, value: Any) -> tuple[bool, Any, str | None]:
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             return True, value, None
         return False, None, "expected an int >= 0"
+
+    if key == "gates_enabled":
+        if isinstance(value, bool):
+            return True, value, None
+        return False, None, "expected a bool"
 
     if key in {"approved_presets", "default_names"}:
         if _is_str_list(value):

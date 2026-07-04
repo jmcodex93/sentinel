@@ -102,6 +102,54 @@ def test_standard_fps_and_start_frame_validate_ranges(tmp_path):
     assert any("start_frame" in warning and "int >= 0" in warning for warning in context.warnings)
 
 
+def test_gates_enabled_true_in_project_rules(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(scene_dir, {"gates_enabled": True})
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert context.params["gates_enabled"] is True
+    assert context.field_sources["gates_enabled"] == "project"
+
+
+def test_gates_enabled_defaults_to_false_when_absent(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert context.params["gates_enabled"] is False
+    assert context.field_sources["gates_enabled"] == "defaults"
+
+
+def test_invalid_gates_enabled_is_rejected_but_rest_of_file_applies(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(scene_dir, {"gates_enabled": "yes", "start_frame": 1000})
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert context.params["gates_enabled"] is False
+    assert context.params["start_frame"] == 1000
+    assert any("gates_enabled" in warning and "expected a bool" in warning for warning in context.warnings)
+
+
+def test_project_gates_enabled_false_wins_over_machine_true(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(scene_dir, {"gates_enabled": False})
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {"gates_enabled": True})
+
+    assert context.params["gates_enabled"] is False
+    assert context.field_sources["gates_enabled"] == "project"
+
+
 def test_integral_float_standard_fps_is_normalized(tmp_path):
     scene_dir = tmp_path / "project"
     scene_dir.mkdir()
