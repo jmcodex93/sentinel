@@ -262,6 +262,8 @@ The installer handles:
 2. For snapshot features: install Python dependencies (`pip3 install Pillow numpy OpenEXR`)
 3. Restart Cinema 4D
 
+Sentinel is a bootstrap-plus-package plugin: `sentinel_panel.pyp` registers the C4D plugins and imports the `sentinel/` package. Keep `sentinel_panel.pyp`, `sentinel/`, `res/`, and `abc_retime/` together when installing or updating.
+
 ### Redshift Configuration
 
 For snapshot features to function properly:

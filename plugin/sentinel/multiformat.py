@@ -1,0 +1,548 @@
+# -*- coding: utf-8 -*-
+"""Multi-format render setup engine."""
+
+import math as _math
+
+import c4d
+
+# ---------------- Multi-Format Render Setup ----------------
+# Generates C4D Takes for each delivery aspect ratio (16:9, 9:16, 1:1, 4:5,
+# 21:9). Each Take overrides the render data resolution + output path, and
+# optionally adjusts the camera FOV to maintain the vertical visible extent
+# (so the subject stays consistent across formats — the "Social Frame" pattern).
+
+
+# Standard mograph delivery formats. Order matters: this is the order shown
+# in the Multi-Format dialog and applied left-to-right when generating Takes.
+MULTIFORMAT_DEFS = [
+    {
+        "id": "16x9",
+        "label": "16:9 Landscape",
+        "description": "YouTube, TV, default",
+        "width": 1920,
+        "height": 1080,
+    },
+    {
+        "id": "9x16",
+        "label": "9:16 Vertical",
+        "description": "Reels, Stories, TikTok",
+        "width": 1080,
+        "height": 1920,
+    },
+    {
+        "id": "1x1",
+        "label": "1:1 Square",
+        "description": "IG Square, Twitter",
+        "width": 1080,
+        "height": 1080,
+    },
+    {
+        "id": "4x5",
+        "label": "4:5 Portrait",
+        "description": "IG Feed",
+        "width": 1080,
+        "height": 1350,
+    },
+    {
+        "id": "21x9",
+        "label": "21:9 Cinema",
+        "description": "Wide banner, cinema",
+        "width": 2560,
+        "height": 1080,
+    },
+]
+
+
+def get_multiformat_def(fmt_id):
+    """Return the format definition dict for a given id, or None."""
+    for f in MULTIFORMAT_DEFS:
+        if f["id"] == fmt_id:
+            return f
+    return None
+
+
+def format_aspect(fmt_def):
+    """Aspect ratio (width / height) for a format definition."""
+    if not fmt_def:
+        return 1.0
+    h = fmt_def.get("height", 1) or 1
+    return float(fmt_def.get("width", 1)) / float(h)
+
+
+def compute_target_horizontal_fov(source_h_fov_rad, source_aspect, target_aspect):
+    """Compute horizontal FOV that maintains vertical FOV constant across aspect change.
+
+    NOTE (v1.5.5): kept for reference / potential future use. Sentinel's
+    Multi-Format Setup no longer uses "vertical FOV constant" by default —
+    user research showed this behavior is rarely the desired one (it
+    forces a heavy lens-character change per format). The default
+    Composition Mode is now "None" (camera unchanged), with optional
+    "Resize Canvas" mode that changes sensor size proportionally to the
+    width ratio (matches the AR_ResizeCanvas community script convention).
+
+    Math:
+        vertical_fov is constant; horizontal_fov = 2 * atan(aspect * tan(vertical_fov / 2))
+        target_h_fov = 2 * atan((target_aspect / source_aspect) * tan(source_h_fov / 2))
+    """
+    if source_aspect <= 0 or target_aspect <= 0:
+        return source_h_fov_rad
+    return 2.0 * _math.atan(
+        (target_aspect / source_aspect) * _math.tan(source_h_fov_rad / 2.0)
+    )
+
+
+# ---- Composition modes for Multi-Format Setup ----
+# How the orchestrator handles the camera when generating per-format Takes.
+COMPOSITION_MODE_NONE = "none"
+# "none" — Camera UNCHANGED across formats. Each Take only overrides
+#   resolution + output path. Default C4D behavior: vertical formats see
+#   MORE vertical content (camera frustum extends), wider formats see less.
+#   Matches Greyscalegorilla "Social Frame" plugin behavior — the artist is
+#   expected to compose for the intersection of all delivery formats.
+
+COMPOSITION_MODE_RESIZE_CANVAS = "resize_canvas"
+# "resize_canvas" — Mimics Arttu Rautio's AR_ResizeCanvas community script:
+#   change SENSOR SIZE proportionally to width ratio so the camera "rotates"
+#   its angular field as if you'd physically swapped to a different sensor.
+#   We use sensor (CAMERAOBJECT_APERTURE) instead of focal length because:
+#     - Focal-length animations / zoom keyframes stay intact (user's habitual
+#       workflow with AR script also picks the sensor method for this reason)
+#     - Renderer DOF calculations keyed on focal length stay stable
+#     - C4D physical/RS cameras don't clamp aperture overrides (FOV is the
+#       derived value), so this works in both directions (wider AND narrower)
+
+
+def compute_target_aperture(source_aperture, source_width, target_width):
+    """AR_ResizeCanvas formula for sensor-size resize.
+
+    Returns the aperture (sensor width in mm) that — combined with the
+    camera's current focal length — produces the same world-space view at
+    the new render width that the original aperture produced at the old
+    render width. Effectively rotates the angular field across aspects.
+
+    Math (from AR_ResizeCanvas, Arttu Rautio):
+        new_aperture = source_aperture * (target_width / source_width)
+
+    Note that this does NOT preserve any specific FOV axis — instead it
+    makes `(world_units_visible) / (rendered_pixels)` constant at the new
+    aspect. For 16:9 (1920) → 9:16 (1080):
+        new_aperture = 36 * 1080/1920 = 20.25mm
+        new_h_fov = 2*atan(20.25/2 / focal) — narrower than source
+        new_v_fov (derived from aspect) = matches old h_fov approximately
+    """
+    if source_width <= 0 or source_aperture <= 0:
+        return source_aperture
+    return float(source_aperture) * (float(target_width) / float(source_width))
+
+
+def compute_format_output_path(source_path, fmt_id, mode="subfolder"):
+    """Generate output path for a format variant.
+
+    Args:
+        source_path: original render output path. May contain C4D tokens
+            ($prj, $take, $frame, $camera). Empty string allowed.
+        fmt_id: format identifier (e.g., "16x9", "9x16").
+        mode: "subfolder" (insert /<fmt>/ before filename) or
+              "suffix" (append _<fmt> to filename).
+
+    Returns:
+        Modified output path. Forward-slash style on all platforms (C4D's
+        token system handles slash conversion at render time).
+
+    Examples:
+        ("output/$prj_$frame", "16x9", "subfolder") -> "output/16x9/$prj_$frame"
+        ("output/$prj_$frame", "16x9", "suffix")    -> "output/$prj_$frame_16x9"
+        ("$prj_$frame", "9x16", "subfolder")        -> "9x16/$prj_$frame"
+        ("", "1x1", "subfolder")                    -> "1x1/$prj_$frame"
+    """
+    if not fmt_id:
+        return source_path or ""
+    if not source_path:
+        # Reasonable default for an unset path
+        return f"{fmt_id}/$prj_$frame" if mode == "subfolder" else f"$prj_{fmt_id}_$frame"
+
+    # Use posix-style splitting to keep token-friendly forward slashes
+    # (C4D handles platform-specific separators internally at render time).
+    norm = source_path.replace("\\", "/")
+    if "/" in norm:
+        head, tail = norm.rsplit("/", 1)
+    else:
+        head, tail = "", norm
+
+    if mode == "suffix":
+        # Append _<fmt> to filename portion
+        new_tail = f"{tail}_{fmt_id}" if tail else f"_{fmt_id}"
+        return f"{head}/{new_tail}" if head else new_tail
+
+    # default: subfolder mode — insert /<fmt>/ between head and tail
+    if head and tail:
+        return f"{head}/{fmt_id}/{tail}"
+    if head and not tail:
+        return f"{head}/{fmt_id}"
+    if tail and not head:
+        return f"{fmt_id}/{tail}"
+    return fmt_id
+
+
+def take_name_for_format(fmt_def, source_take_name=""):
+    """Compose the Take name for a format variant.
+
+    For most cases, the format id is enough ("16x9", "9x16"). If the source
+    take is something other than Main, prefix with it ("shot_010_16x9") so
+    multi-shot scenes stay organized.
+    """
+    if not fmt_def:
+        return ""
+    fid = fmt_def.get("id", "")
+    base = (source_take_name or "").strip()
+    if base and base.lower() not in ("main", ""):
+        return f"{base}_{fid}"
+    return fid
+
+
+def _find_take_by_name(takeData, name):
+    """Walk all takes (depth-first) and return the first with matching name."""
+    if not takeData or not name:
+        return None
+    main = takeData.GetMainTake()
+    if not main:
+        return None
+
+    def _walk(node):
+        while node:
+            try:
+                if node.GetName() == name:
+                    return node
+            except Exception:
+                pass
+            child = node.GetDown()
+            if child:
+                found = _walk(child)
+                if found:
+                    return found
+            node = node.GetNext()
+        return None
+
+    return _walk(main.GetDown())
+
+
+def _resolve_source_render_data(source_take, takeData, doc):
+    """Get the effective render data for the source take.
+
+    `BaseTake.GetEffectiveRenderData` may return a tuple (rdata, fromTake) on
+    some C4D versions, or just the RenderData. We normalize.
+    """
+    rd = None
+    if source_take is not None:
+        try:
+            res = source_take.GetEffectiveRenderData(takeData)
+            if isinstance(res, tuple) and res:
+                rd = res[0]
+            else:
+                rd = res
+        except Exception:
+            rd = None
+    if rd is None:
+        rd = doc.GetActiveRenderData()
+    return rd
+
+
+def _resolve_source_camera(source_take, takeData, doc):
+    """Best-effort lookup of the camera that the source take uses."""
+    cam = None
+    if source_take is not None:
+        try:
+            cam = source_take.GetCamera(takeData)
+        except Exception:
+            cam = None
+    if cam is None:
+        try:
+            bd = doc.GetActiveBaseDraw()
+            if bd:
+                cam = bd.GetSceneCamera(doc)
+        except Exception:
+            cam = None
+    return cam
+
+
+def _reset_camera_dimensions_to_native(take, takeData, cam):
+    """Reset any FOV / focal-length / aperture overrides on `cam` within
+    `take` to the camera's NATIVE (unaltered) values.
+
+    Used by Mode "none" so re-running Multi-Format on takes that previously
+    had Auto-FOV / focal-length overrides (early v1.5.5 dev iterations)
+    produces a clean state — the camera renders identically across all
+    generated takes. Defensive: silent on any per-parameter failure.
+
+    Why "set to native" instead of "remove the override":
+        `BaseOverride.RemoveOverrideParam` isn't reliably exposed in
+        the C4D 2026 Python API across versions. Setting the override to
+        the native value achieves the same visual effect (no-op render)
+        and is portable.
+    """
+    if take is None or takeData is None or cam is None:
+        return
+    try:
+        ovr = take.FindOverride(takeData, cam)
+    except Exception:
+        return
+    if ovr is None:
+        return
+
+    # Parameters Sentinel may have touched in any prior version
+    targets = [
+        (c4d.CAMERAOBJECT_FOV, c4d.CAMERAOBJECT_FOV),
+        (c4d.CAMERA_FOCUS, c4d.CAMERA_FOCUS),
+        (c4d.CAMERAOBJECT_APERTURE, c4d.CAMERAOBJECT_APERTURE),
+    ]
+    for param_id, native_attr in targets:
+        try:
+            descid = c4d.DescID(c4d.DescLevel(param_id, c4d.DTYPE_REAL, 0))
+            if not ovr.IsOverriddenParam(descid):
+                continue
+            try:
+                native = float(cam[native_attr])
+            except Exception:
+                continue
+            ovr.SetParameter(descid, native, c4d.DESCFLAGS_SET_0)
+            ovr.UpdateSceneNode(takeData, descid)
+        except Exception:
+            continue
+
+
+def generate_multiformat_takes(doc, options):
+    """Generate child Takes for the selected delivery formats.
+
+    Each Take always gets:
+      - cloned Render Data with format-specific resolution + output path
+      - explicit camera assignment (`take.SetCamera`) so it doesn't fall
+        back to the scene's active camera
+
+    Camera dimension overrides depend on `composition_mode`:
+      - "none" (default): camera is UNCHANGED. Each Take just renders the
+        source camera at the new aspect — vertical formats see more
+        vertical content, wider formats see less. Matches Greyscalegorilla
+        Social Frame plugin behavior. The artist composes for the
+        intersection of delivery formats. Any stale dimension overrides
+        from prior runs are reset to the camera's native values.
+      - "resize_canvas": overrides CAMERAOBJECT_APERTURE per format using
+        AR_ResizeCanvas's formula (`new_aperture = src_aperture *
+        target_width / src_width`). Effectively rotates the angular field
+        between formats — narrower aspect = narrower horizontal angular
+        coverage but wider vertical. Sensor-based (not focal) so existing
+        focal-length animations / DOF setups stay intact.
+
+    Args:
+        doc: active BaseDocument.
+        options: dict with keys:
+            - formats: list of fmt_id strings (e.g., ['16x9', '9x16'])
+            - output_mode: 'subfolder' or 'suffix'
+            - composition_mode: 'none' | 'resize_canvas' (default: 'none')
+            - update_existing: bool — reuse takes with same name if present
+            - source_take: BaseTake (optional, defaults to current take)
+
+    Returns:
+        dict report:
+            success: bool
+            created: list[str] — take names that were freshly created
+            updated: list[str] — take names that were updated in place
+            skipped: list[str] — takes that existed and update_existing was False
+            errors: list[str] — non-fatal issues encountered
+            source_take_name, source_resolution, composition_mode
+    """
+    report = {
+        "success": False,
+        "created": [],
+        "updated": [],
+        "skipped": [],
+        "errors": [],
+        "source_take_name": "",
+        "source_resolution": None,
+    }
+
+    if not doc:
+        report["errors"].append("No active document")
+        return report
+
+    td = doc.GetTakeData()
+    if not td:
+        report["errors"].append("Document has no take data")
+        return report
+
+    source_take = options.get("source_take") or td.GetCurrentTake() or td.GetMainTake()
+    if not source_take:
+        report["errors"].append("Could not resolve source take")
+        return report
+
+    report["source_take_name"] = source_take.GetName() or "Main"
+
+    source_rd = _resolve_source_render_data(source_take, td, doc)
+    if not source_rd:
+        report["errors"].append("No render data found for source take")
+        return report
+
+    src_w = int(source_rd[c4d.RDATA_XRES] or 1920)
+    src_h = int(source_rd[c4d.RDATA_YRES] or 1080)
+    src_path = source_rd[c4d.RDATA_PATH] or ""
+    src_aspect = float(src_w) / float(src_h) if src_h > 0 else 1.0
+    report["source_resolution"] = (src_w, src_h)
+
+    source_cam = _resolve_source_camera(source_take, td, doc)
+    # Source aperture (sensor width in mm) — used by Resize Canvas mode.
+    # Standard 35mm-equivalent default = 36mm.
+    src_aperture = 36.0
+    if source_cam:
+        try:
+            ap = float(source_cam[c4d.CAMERAOBJECT_APERTURE])
+            if ap > 0:
+                src_aperture = ap
+        except Exception:
+            pass
+
+    composition_mode = options.get("composition_mode", COMPOSITION_MODE_NONE)
+    update_existing = bool(options.get("update_existing", True))
+    output_mode = options.get("output_mode", "subfolder")
+    formats = options.get("formats") or []
+    report["composition_mode"] = composition_mode
+
+    doc.StartUndo()
+    try:
+        for fmt_id in formats:
+            fmt_def = get_multiformat_def(fmt_id)
+            if not fmt_def:
+                report["errors"].append(f"Unknown format: {fmt_id}")
+                continue
+
+            take_name = take_name_for_format(fmt_def, report["source_take_name"])
+
+            existing = _find_take_by_name(td, take_name)
+            if existing and not update_existing:
+                report["skipped"].append(take_name)
+                continue
+
+            # Create or reuse take
+            if existing:
+                take = existing
+                is_update = True
+            else:
+                try:
+                    take = td.AddTake(take_name, source_take, None)
+                except Exception as e:
+                    report["errors"].append(f"AddTake({take_name}) failed: {e}")
+                    continue
+                if not take:
+                    report["errors"].append(f"AddTake({take_name}) returned None")
+                    continue
+                try:
+                    doc.AddUndo(c4d.UNDOTYPE_NEW, take)
+                except Exception:
+                    pass
+                is_update = False
+
+            # Resolve / create render data for this take
+            new_rd = None
+            if is_update:
+                try:
+                    existing_rd = take.GetRenderData(td)
+                    if existing_rd:
+                        new_rd = existing_rd
+                        try:
+                            doc.AddUndo(c4d.UNDOTYPE_CHANGE, new_rd)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            if new_rd is None:
+                try:
+                    new_rd = source_rd.GetClone(c4d.COPYFLAGS_0)
+                    new_rd.SetName(f"{source_rd.GetName()}_{fmt_id}")
+                    doc.InsertRenderDataLast(new_rd)
+                    take.SetRenderData(td, new_rd)
+                    try:
+                        doc.AddUndo(c4d.UNDOTYPE_NEW, new_rd)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    report["errors"].append(f"Render data clone failed for {take_name}: {e}")
+                    continue
+
+            # Bug fix (v1.5.5): explicitly assign the camera to the Take so
+            # `take.GetCamera(td)` returns it. Without this, even though the
+            # FOV override targets `source_cam`, the Take has no camera
+            # assignment and renders fall back to scene defaults — and our
+            # QC #12 cross-aspect check has no camera to project from.
+            # `BaseTake.SetCamera` is the official Maxon SDK pattern
+            # (see takesystem_cameras_r17.py).
+            if source_cam is not None:
+                try:
+                    take.SetCamera(td, source_cam)
+                except Exception as e:
+                    report["errors"].append(f"SetCamera failed for {take_name}: {e}")
+
+            # Apply format-specific overrides on render data
+            try:
+                new_rd[c4d.RDATA_XRES] = float(fmt_def["width"])
+                new_rd[c4d.RDATA_YRES] = float(fmt_def["height"])
+                new_path = compute_format_output_path(src_path, fmt_id, output_mode)
+                new_rd[c4d.RDATA_PATH] = new_path
+            except Exception as e:
+                report["errors"].append(f"Render data setup failed for {take_name}: {e}")
+                continue
+
+            # Camera dimension overrides — depends on composition_mode.
+            #
+            # Mode "none": no camera changes; clear any stale FOV/focal/
+            #   aperture overrides from prior runs (early v1.5.5 dev iterations
+            #   wrote focal-length overrides as "Auto-FOV" — those produce
+            #   weird per-format framing under the new default). We "clear"
+            #   defensively by setting overrides back to the camera's native
+            #   values, since RemoveOverrideParam isn't reliably exposed in
+            #   Python across C4D versions.
+            #
+            # Mode "resize_canvas": override CAMERAOBJECT_APERTURE per format
+            #   using AR_ResizeCanvas math: `new_aperture = src_aperture *
+            #   target_width / src_width`. We use the SENSOR (aperture)
+            #   instead of focal length because:
+            #     - Doesn't break focal-length animations (zooms / lens pulls)
+            #     - Doesn't disturb DOF calculations (DOF reads focal+f-stop)
+            #     - Aperture overrides aren't clamped by C4D physical
+            #       cameras (FOV is the derived value, aperture and focal
+            #       are the masters)
+            if source_cam:
+                try:
+                    if composition_mode == COMPOSITION_MODE_NONE:
+                        _reset_camera_dimensions_to_native(take, td, source_cam)
+                    elif composition_mode == COMPOSITION_MODE_RESIZE_CANVAS:
+                        target_w = int(fmt_def["width"])
+                        new_aperture = compute_target_aperture(
+                            src_aperture, src_w, target_w)
+                        ap_id = c4d.DescID(c4d.DescLevel(
+                            c4d.CAMERAOBJECT_APERTURE, c4d.DTYPE_REAL, 0))
+                        ovr = take.FindOrAddOverrideParam(td, source_cam,
+                                                         ap_id, new_aperture)
+                        if ovr:
+                            # Force the value (FindOrAddOverrideParam is
+                            # find-OR-add, not find-and-update — explicit
+                            # SetParameter ensures the value is written).
+                            ovr.SetParameter(ap_id, new_aperture,
+                                             c4d.DESCFLAGS_SET_0)
+                            ovr.UpdateSceneNode(td, ap_id)
+                except Exception as e:
+                    report["errors"].append(
+                        f"Camera dimension setup failed for {take_name}: {e}")
+
+            if is_update:
+                report["updated"].append(take_name)
+            else:
+                report["created"].append(take_name)
+
+        report["success"] = True
+    except Exception as e:
+        report["errors"].append(f"Orchestrator error: {e}")
+    finally:
+        doc.EndUndo()
+        c4d.EventAdd()
+
+    return report
+

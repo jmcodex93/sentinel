@@ -1,0 +1,189 @@
+{
+  "camera_shift": [
+    "shifted_camera"
+  ],
+  "cross_aspect_safe_area": [
+    {
+      "fmt_id": "4x5",
+      "frames": [
+        0
+      ],
+      "object_name": "safe_area_subject_too_far_right",
+      "sides": [
+        "right"
+      ]
+    },
+    {
+      "fmt_id": "1x1",
+      "frames": [
+        0
+      ],
+      "object_name": "safe_area_subject_too_far_right",
+      "sides": [
+        "right"
+      ]
+    },
+    {
+      "fmt_id": "9x16",
+      "frames": [
+        0
+      ],
+      "object_name": "safe_area_subject_too_far_right",
+      "sides": [
+        "right"
+      ]
+    }
+  ],
+  "default_names": [
+    "Null",
+    "Cube"
+  ],
+  "fps_range": [
+    {
+      "issue": "Document FPS is 30, expected 25",
+      "preset": null,
+      "type": "doc_fps"
+    },
+    {
+      "issue": "[custom_preview] Render FPS is 30, expected 25",
+      "preset": "custom_preview",
+      "type": "rd_fps"
+    },
+    {
+      "issue": "[custom_preview] Start frame is 0, expected 1001",
+      "preset": "custom_preview",
+      "type": "start_frame"
+    },
+    {
+      "issue": "[custom_preview_16x9] Render FPS is 30, expected 25",
+      "preset": "custom_preview_16x9",
+      "type": "rd_fps"
+    },
+    {
+      "issue": "[custom_preview_16x9] Start frame is 0, expected 1001",
+      "preset": "custom_preview_16x9",
+      "type": "start_frame"
+    },
+    {
+      "issue": "[custom_preview_9x16] Render FPS is 30, expected 25",
+      "preset": "custom_preview_9x16",
+      "type": "rd_fps"
+    },
+    {
+      "issue": "[custom_preview_9x16] Start frame is 0, expected 1001",
+      "preset": "custom_preview_9x16",
+      "type": "start_frame"
+    },
+    {
+      "issue": "[custom_preview_1x1] Render FPS is 30, expected 25",
+      "preset": "custom_preview_1x1",
+      "type": "rd_fps"
+    },
+    {
+      "issue": "[custom_preview_1x1] Start frame is 0, expected 1001",
+      "preset": "custom_preview_1x1",
+      "type": "start_frame"
+    },
+    {
+      "issue": "[custom_preview_4x5] Render FPS is 30, expected 25",
+      "preset": "custom_preview_4x5",
+      "type": "rd_fps"
+    },
+    {
+      "issue": "[custom_preview_4x5] Start frame is 0, expected 1001",
+      "preset": "custom_preview_4x5",
+      "type": "start_frame"
+    },
+    {
+      "issue": "[custom_preview_21x9] Render FPS is 30, expected 25",
+      "preset": "custom_preview_21x9",
+      "type": "rd_fps"
+    },
+    {
+      "issue": "[custom_preview_21x9] Start frame is 0, expected 1001",
+      "preset": "custom_preview_21x9",
+      "type": "start_frame"
+    }
+  ],
+  "keys": [
+    "animated_multi_axis"
+  ],
+  "lights": [
+    "stray_key_light"
+  ],
+  "output_paths": [
+    {
+      "issue": "empty output path",
+      "preset": "custom_preview"
+    },
+    {
+      "issue": "empty multi-pass path",
+      "preset": "custom_preview"
+    },
+    {
+      "issue": "empty multi-pass path",
+      "preset": "custom_preview_16x9"
+    },
+    {
+      "issue": "empty multi-pass path",
+      "preset": "custom_preview_9x16"
+    },
+    {
+      "issue": "empty multi-pass path",
+      "preset": "custom_preview_1x1"
+    },
+    {
+      "issue": "empty multi-pass path",
+      "preset": "custom_preview_4x5"
+    },
+    {
+      "issue": "empty multi-pass path",
+      "preset": "custom_preview_21x9"
+    }
+  ],
+  "render_conflicts": 6,
+  "takes": [
+    {
+      "issue": "Output path missing $take token",
+      "take": "21x9"
+    },
+    {
+      "issue": "Output path missing $take token",
+      "take": "4x5"
+    },
+    {
+      "issue": "Output path missing $take token",
+      "take": "1x1"
+    },
+    {
+      "issue": "Output path missing $take token",
+      "take": "9x16"
+    },
+    {
+      "issue": "Output path missing $take token",
+      "take": "16x9"
+    },
+    {
+      "issue": "No camera assigned",
+      "take": "take_without_camera"
+    },
+    {
+      "issue": "Inherited path missing $take token",
+      "take": "take_without_camera"
+    }
+  ],
+  "textures": [
+    {
+      "issue": "absolute",
+      "path": "/__sentinel_fixture_missing__/missing_albedo.exr",
+      "resolved": "/__sentinel_fixture_missing__/missing_albedo.exr",
+      "source": "Shader in 'missing_absolute_texture_mat'"
+    }
+  ],
+  "unused_materials": [
+    "missing_absolute_texture_mat"
+  ],
+  "visibility_traps": [
+    "hidden_in_editor_only"
+  ]
+}

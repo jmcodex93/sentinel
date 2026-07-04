@@ -1,0 +1,86 @@
+{
+  "camera_shift": {
+    "check_id": "camera_shift",
+    "metadata": {
+      "legacy_count": 0
+    },
+    "violations": []
+  },
+  "cross_aspect_safe_area": {
+    "check_id": "cross_aspect_safe_area",
+    "metadata": {
+      "legacy_count": 0
+    },
+    "violations": []
+  },
+  "default_names": {
+    "check_id": "default_names",
+    "metadata": {
+      "legacy_count": 0
+    },
+    "violations": []
+  },
+  "fps_range": {
+    "check_id": "fps_range",
+    "metadata": {
+      "legacy_count": 0
+    },
+    "violations": []
+  },
+  "keys": {
+    "check_id": "keys",
+    "metadata": {
+      "legacy_count": 0
+    },
+    "violations": []
+  },
+  "lights": {
+    "check_id": "lights",
+    "metadata": {
+      "legacy_count": 0
+    },
+    "violations": []
+  },
+  "output_paths": {
+    "check_id": "output_paths",
+    "metadata": {
+      "legacy_count": 0
+    },
+    "violations": []
+  },
+  "render_conflicts": {
+    "check_id": "render_conflicts",
+    "metadata": {
+      "legacy_count": 0
+    },
+    "violations": []
+  },
+  "takes": {
+    "check_id": "takes",
+    "metadata": {
+      "legacy_count": 0
+    },
+    "violations": []
+  },
+  "textures": {
+    "check_id": "textures",
+    "metadata": {
+      "legacy_count": 0
+    },
+    "violations": []
+  },
+  "unused_materials": {
+    "check_id": "unused_materials",
+    "metadata": {
+      "legacy_count": 0
+    },
+    "violations": []
+  },
+  "visibility_traps": {
+    "check_id": "visibility_traps",
+    "metadata": {
+      "legacy_count": 0
+    },
+    "violations": []
+  }
+}
