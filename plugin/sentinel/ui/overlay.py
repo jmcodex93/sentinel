@@ -90,14 +90,25 @@ class _SafeAreaOverlayState:
 
     def __init__(self):
         self.enabled = False
+        self.suppressed_by_tag = False
         self.master_aspect = 16.0 / 9.0
         # list of (fmt_id, c4d.Vector color, dict safe_box_in_master_ndc)
         self.format_rects = []
+
+    def update_suppression_from_doc(self, doc):
+        """Refresh the cached legacy-overlay suppression flag.
+
+        Draw never scans the scene. The panel refresh and Sentinel Frame tag
+        Message path call this when document/tag state can affect which visual
+        overlay is authoritative.
+        """
+        self.suppressed_by_tag = document_has_active_frame_tag(doc)
 
     def update_from_doc(self, doc):
         """Recompute cached per-format master-NDC rectangles from the
         current document state."""
         self.format_rects = []
+        self.update_suppression_from_doc(doc)
         if doc is None:
             return
         try:
@@ -143,6 +154,66 @@ class _SafeAreaOverlayState:
 _overlay_state = _SafeAreaOverlayState()
 
 
+def document_has_active_frame_tag(doc):
+    """Return True when the document has a Sentinel Frame tag drawing guides.
+
+    This is intentionally called from refresh/Message paths, never from
+    SafeAreaOverlayObject.Draw, so the legacy overlay keeps a cheap draw path.
+    """
+    if doc is None:
+        return False
+    try:
+        from sentinel.ui import frame_tag
+    except Exception:
+        return False
+
+    def _tag_draws_guides(tag):
+        try:
+            if tag.GetType() != frame_tag.SENTINEL_FRAME_TAG_PLUGIN_ID:
+                return False
+        except Exception:
+            return False
+        if not bool(frame_tag._get_node_value(tag, frame_tag.ID_ENABLED, True)):
+            return False
+        if not bool(frame_tag._get_node_value(tag, frame_tag.ID_SHOW_GUIDES, True)):
+            return False
+        for index, _fmt in enumerate(frame_tag._format_defs()):
+            ids = frame_tag._format_ids(index)
+            if bool(frame_tag._get_node_value(tag, ids["enabled"], True)):
+                return True
+        return False
+
+    def _walk(op):
+        while op is not None:
+            try:
+                tag = op.GetFirstTag()
+            except Exception:
+                tag = None
+            while tag is not None:
+                if _tag_draws_guides(tag):
+                    return True
+                try:
+                    tag = tag.GetNext()
+                except Exception:
+                    tag = None
+            try:
+                child = op.GetDown()
+            except Exception:
+                child = None
+            if child is not None and _walk(child):
+                return True
+            try:
+                op = op.GetNext()
+            except Exception:
+                op = None
+        return False
+
+    try:
+        return _walk(doc.GetFirstObject())
+    except Exception:
+        return False
+
+
 # Defensive check: confirm ObjectData + the draw constants we rely on
 # exist before defining the class. Falls back to `object` so the
 # module still parses if any of these is missing (panel still works,
@@ -184,6 +255,8 @@ class SafeAreaOverlayObject(_ObjectDataBase):
 
         try:
             if not _overlay_state.enabled:
+                return c4d.DRAWRESULT_SKIP
+            if _overlay_state.suppressed_by_tag:
                 return c4d.DRAWRESULT_SKIP
             rects = _overlay_state.format_rects
             if not rects:
