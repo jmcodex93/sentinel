@@ -22,6 +22,19 @@ from sentinel.ui import user_areas as _user_areas
 from sentinel.ui.overlay import SafeAreaOverlayObject, _SAFE_AREA_OBJECT_AVAILABLE
 from sentinel.ui.panel import YSPanelCmd
 
+try:
+    from sentinel.ui.frame_tag import (
+        SENTINEL_FRAME_TAG_PLUGIN_ID,
+        SentinelFrameTag,
+        _SENTINEL_FRAME_TAG_AVAILABLE,
+    )
+    _FRAME_TAG_IMPORT_ERROR = None
+except Exception as _exc:
+    SENTINEL_FRAME_TAG_PLUGIN_ID = 2099073
+    SentinelFrameTag = None
+    _SENTINEL_FRAME_TAG_AVAILABLE = False
+    _FRAME_TAG_IMPORT_ERROR = _exc
+
 # Compatibility surface for tests, fixture runner, and C4D scripts that import
 # sentinel_panel.pyp directly. Keep private helpers too.
 for _module in (_panel, _dialogs, _ids, _overlay, _user_areas):
@@ -100,6 +113,36 @@ def Register():
                        "overlay disabled, panel still works")
     else:
         safe_print("ObjectData API unavailable in this C4D — overlay disabled")
+
+    # Sentinel Frame camera tag (TagData) for the per-camera multi-format
+    # workflow. Failure is non-fatal — the core panel and legacy flows still
+    # work without the tag.
+    if _SENTINEL_FRAME_TAG_AVAILABLE and SentinelFrameTag is not None:
+        try:
+            tag_info = (
+                c4d.TAG_VISIBLE
+                | c4d.TAG_EXPRESSION
+                | c4d.TAG_IMPLEMENTS_DRAW_FUNCTION
+            )
+            frame_tag_ok = plugins.RegisterTagPlugin(
+                id=SENTINEL_FRAME_TAG_PLUGIN_ID,
+                str="Sentinel Frame",
+                info=tag_info,
+                g=SentinelFrameTag,
+                description="Tsentinelframe",
+                icon=None,
+            )
+            if frame_tag_ok:
+                safe_print("Sentinel Frame (TagData) registered")
+            else:
+                safe_print("Failed to register Sentinel Frame TagData — "
+                           "tag workflow disabled, panel still works")
+        except Exception as e:
+            safe_print(f"Sentinel Frame registration crashed: {e} — "
+                       "tag workflow disabled, panel still works")
+    else:
+        reason = f" ({_FRAME_TAG_IMPORT_ERROR})" if _FRAME_TAG_IMPORT_ERROR else ""
+        safe_print(f"TagData API unavailable{reason} — Sentinel Frame tag disabled")
 
     return ok
 
