@@ -407,7 +407,7 @@ class GateTriageDialog(gui.GeDialog):
         if disabled:
             self.GroupBegin(0, c4d.BFH_SCALEFIT, 3, 0)
             self.GroupSpace(8, 0)
-            self.AddStaticText(0, c4d.BFH_LEFT, 70, 0, "", 0)
+            self.AddStaticText(0, c4d.BFH_LEFT, 90, 0, check_id, 0)
             self.AddStaticText(
                 0,
                 c4d.BFH_SCALEFIT,
@@ -420,7 +420,7 @@ class GateTriageDialog(gui.GeDialog):
         if item.get("blocks"):
             self.GroupBegin(0, c4d.BFH_SCALEFIT, 4, 0)
             self.GroupSpace(8, 0)
-            self.AddStaticText(0, c4d.BFH_LEFT, 70, 0, "", 0)
+            self.AddStaticText(0, c4d.BFH_LEFT, 90, 0, check_id, 0)
             self.AddCheckbox(self._override_id(index), c4d.BFH_LEFT, 90, 0, "Anular")
             self.AddCheckbox(self._baseline_id(index), c4d.BFH_LEFT, 150, 0, "Aceptar en baseline")
             self.GroupEnd()
