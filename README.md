@@ -1,4 +1,4 @@
-# Sentinel v1.5.7
+# Sentinel v1.6.0
 
 Quality control, render management, and workflow automation plugin for Cinema 4D production environments — keeping the watchdog spirit of YS Guardian.
 
@@ -405,6 +405,21 @@ The snapshot system uses external Python with Pillow for color-accurate conversi
 - Ensure abc_retime plugin is installed in Cinema 4D plugins folder
 
 ## Changelog
+
+### v1.6.0 | 04.07.2026
+
+**New: Motor QC 2.0 — check registry, per-project rules & baseline**
+
+Sentinel's monolithic plugin file becomes a modular `sentinel/` package (the `.pyp` drops from 11,067 lines to a 115-line bootstrap), and the QC engine gains three capabilities that turn it from a fixed watchdog into a configurable platform:
+
+- **Declarative check registry** — the 12 checks are now entries in a registry; the panel, QC Report, Save Version summary and Scene Collector preflight all read the same list, so they can never drift apart. Adding a check is one entry, not edits in four places.
+- **Per-project rules** (`sentinel_rules.json`) — FPS, start frame, approved presets, default names, safe-area insets and per-check severity/on-off, publishable to a shared folder so a whole team validates against the same ruleset. Rules are discovered from the scene folder upward (nearest wins), override the per-machine settings, and take effect without restarting C4D.
+- **Baseline of accepted violations** — accept a known issue on an inherited scene with a required author and reason; the QC score then counts only *new* violations, so a legacy scene stuck at 7/12 stops training the artist to ignore the panel. Acceptances are stored in a per-scene `<base>_baseline.json` sidecar and travel with Scene Collector.
+
+**Architecture & verification**
+
+- The `.pyp` is now a bootstrap; engine and UI live in `sentinel/`. Install the whole folder (`sentinel_panel.pyp` + `sentinel/` + `res/`), not a single file.
+- New verification ladder: 70 pytest tests on the pure engines plus a frozen fixture oracle run in Cinema 4D 2026.3, so the refactor is provably behavior-preserving on all 12 checks.
 
 ### v1.5.7 | 14.05.2026
 

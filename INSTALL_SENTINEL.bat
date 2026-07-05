@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableDelayedExpansion EnableExtensions
 
-REM Sentinel Professional Installer v1.5.7
+REM Sentinel Professional Installer v1.6.0
 REM This installer must be run as Administrator
 
 REM Keep window open after execution
@@ -14,7 +14,7 @@ REM =========================================================
 REM INITIALIZATION
 REM =========================================================
 
-set "VERSION=1.5.7"
+set "VERSION=1.6.0"
 set "INSTALL_DIR=%~dp0"
 set "LOG_FILE=%TEMP%\sentinel_install.log"
 set "PLUGIN_DIR=%INSTALL_DIR%plugin"
@@ -339,13 +339,14 @@ echo 3. Use the Preset dropdown to switch between render presets
 echo 4. Click "Force" to apply template settings to active preset
 echo 5. Click "Force All" to reset all 4 presets from template
 echo.
-echo NEW IN v1.5.7:
+echo NEW IN v1.6.0:
 echo --------------
-echo - 12 real-time quality checks
-echo - Tabbed UI (QC / Render / Versions / Tools)
-echo - Smart Save Versions
-echo - Multi-Format Render Setup + Safe-Area overlay
-echo - Texture Repathing, RS AOV management, Scene Collector
+echo - Motor QC 2.0: declarative check registry + per-project rules
+echo - sentinel_rules.json (FPS, presets, severity, on/off per project)
+echo - Baseline: accept known violations, score counts only new ones
+echo - Modular sentinel/ package (installer copies the whole folder)
+echo - 12 real-time quality checks, Tabbed UI, Smart Save Versions
+echo - Multi-Format Render Setup + Safe-Area overlay, Texture Repathing
 echo.
 echo REDSHIFT SETUP (REQUIRED FOR SNAPSHOTS):
 echo -----------------------------------------

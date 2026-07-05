@@ -34,7 +34,46 @@ from sentinel.textures import (
 )
 from sentinel.rules import get_active_rules
 
+from .ids import GateTriageIds
 from .user_areas import TextureListArea, TodoArea, _violation_label
+
+
+def gate_dialog_can_proceed(blocking_items, fixable_items, decisions, reason):
+    """Return whether the gate dialog state has resolved every FAIL row.
+
+    ``decisions`` maps check_id to one of: fix, override, baseline, acknowledge.
+    Advisory rows never block; WARN fixables may proceed without a decision.
+    """
+    decisions = decisions or {}
+    reason = (reason or "").strip()
+
+    def _decision(check_id):
+        value = decisions.get(check_id)
+        if isinstance(value, dict):
+            return value.get("action")
+        return value
+
+    for item in blocking_items or []:
+        action = _decision(item.get("check_id"))
+        if action == "baseline":
+            continue
+        if action == "override" and reason:
+            continue
+        return False
+
+    for item in fixable_items or []:
+        if not item.get("blocks"):
+            continue
+        action = _decision(item.get("check_id"))
+        if action == "fix":
+            continue
+        if action == "baseline":
+            continue
+        if action == "override" and reason:
+            continue
+        return False
+
+    return True
 
 
 def _doc_path_for_rules(doc):
@@ -309,6 +348,276 @@ class BaselineActionDialog(gui.GeDialog):
             self.Close()
             return True
         return True
+
+
+class GateTriageDialog(gui.GeDialog):
+    """Modal quality-gate triage dialog.
+
+    After Open(c4d.DLG_TYPE_MODAL), read `proceed`, `fixes`,
+    `baseline_accepts`, `overrides`, and `reason`.
+    """
+
+    def __init__(self, buckets, sidecar_invalid=False, disabled_fix_ids=None):
+        super().__init__()
+        buckets = buckets or {}
+        self.blocking_items = list(buckets.get("blocking") or [])
+        self.fixable_items = list(buckets.get("fixable") or [])
+        self.advisory_items = list(buckets.get("advisory") or [])
+        self.sidecar_invalid = bool(sidecar_invalid)
+        self.disabled_fix_ids = set(disabled_fix_ids or [])
+        self.proceed = False
+        self.fixes = []
+        self.baseline_accepts = []
+        self.overrides = []
+        self.reason = ""
+        self._row_order = []
+
+    def _label_for_item(self, item):
+        check_id = item.get("check_id") or "check"
+        count = int(item.get("new_count") or 0)
+        lines = [f"{check_id}: {count} new violation(s)"]
+        for violation in list(item.get("violations") or [])[:3]:
+            lines.append(f"  - {_violation_label(violation)}")
+        extra = count - min(count, 3)
+        if extra > 0:
+            lines.append(f"  - ... and {extra} more")
+        return "\n".join(lines)
+
+    def _fix_id(self, index):
+        return GateTriageIds.FIX_BASE + index
+
+    def _override_id(self, index):
+        return GateTriageIds.OVERRIDE_BASE + index
+
+    def _baseline_id(self, index):
+        return GateTriageIds.BASELINE_BASE + index
+
+    def _add_section_header(self, text):
+        self.AddSeparatorH(6)
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, text, 0)
+
+    def _add_fixable_row(self, item, index):
+        check_id = item.get("check_id")
+        disabled = check_id in self.disabled_fix_ids
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
+        self.GroupSpace(8, 0)
+        self.AddCheckbox(self._fix_id(index), c4d.BFH_LEFT, 70, 0, "Fix")
+        self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0, self._label_for_item(item), 0)
+        self.GroupEnd()
+        if disabled:
+            self.GroupBegin(0, c4d.BFH_SCALEFIT, 3, 0)
+            self.GroupSpace(8, 0)
+            self.AddStaticText(0, c4d.BFH_LEFT, 90, 0, check_id, 0)
+            self.AddStaticText(
+                0,
+                c4d.BFH_SCALEFIT,
+                0,
+                0,
+                "Fix no resolvio esta violacion - requiere anular o aceptar en baseline",
+                0,
+            )
+            self.GroupEnd()
+        if item.get("blocks"):
+            self.GroupBegin(0, c4d.BFH_SCALEFIT, 4, 0)
+            self.GroupSpace(8, 0)
+            self.AddStaticText(0, c4d.BFH_LEFT, 90, 0, check_id, 0)
+            self.AddCheckbox(self._override_id(index), c4d.BFH_LEFT, 90, 0, "Anular")
+            self.AddCheckbox(self._baseline_id(index), c4d.BFH_LEFT, 150, 0, "Aceptar en baseline")
+            self.GroupEnd()
+
+    def _add_blocking_row(self, item, index):
+        self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0, self._label_for_item(item), 0)
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
+        self.GroupSpace(8, 0)
+        self.AddCheckbox(self._override_id(index), c4d.BFH_LEFT, 90, 0, "Anular")
+        self.AddCheckbox(self._baseline_id(index), c4d.BFH_LEFT, 170, 0, "Aceptar en baseline")
+        self.GroupEnd()
+
+    def _add_advisory_row(self, item):
+        self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0, self._label_for_item(item), 0)
+
+    def CreateLayout(self):
+        self.SetTitle("Quality Gate")
+        self.GroupBegin(0, c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT, 1, 0)
+        self.GroupBorderSpace(10, 10, 10, 10)
+        self.GroupSpace(0, 5)
+        self.AddStaticText(
+            GateTriageIds.TXT_SUMMARY,
+            c4d.BFH_SCALEFIT,
+            0,
+            0,
+            "Resolve new QC violations before continuing.",
+            0,
+        )
+
+        row_index = 0
+        if self.fixable_items:
+            self._add_section_header("Corregible")
+            for item in self.fixable_items:
+                self._row_order.append((row_index, item))
+                self._add_fixable_row(item, row_index)
+                row_index += 1
+
+        if self.blocking_items:
+            self._add_section_header("Bloqueante")
+            for item in self.blocking_items:
+                self._row_order.append((row_index, item))
+                self._add_blocking_row(item, row_index)
+                row_index += 1
+
+        if self.advisory_items:
+            self._add_section_header("Aviso")
+            for item in self.advisory_items:
+                self._add_advisory_row(item)
+
+        self.AddSeparatorH(6)
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Motivo compartido para anulaciones:", 0)
+        self.AddEditText(GateTriageIds.EDT_REASON, c4d.BFH_SCALEFIT, 0, 0)
+
+        self.AddSeparatorH(8)
+        self.GroupBegin(0, c4d.BFH_RIGHT, 2, 0)
+        self.GroupSpace(6, 0)
+        self.AddButton(GateTriageIds.BTN_CANCEL, c4d.BFH_RIGHT, 90, 0, "Cancel")
+        self.AddButton(GateTriageIds.BTN_PROCEED, c4d.BFH_RIGHT, 100, 0, "Proceed")
+        self.GroupEnd()
+        self.GroupEnd()
+        return True
+
+    def InitValues(self):
+        for index, item in self._row_order:
+            check_id = item.get("check_id")
+            if item in self.fixable_items:
+                fix_enabled = check_id not in self.disabled_fix_ids
+                self.SetBool(self._fix_id(index), fix_enabled)
+                try:
+                    self.Enable(self._fix_id(index), fix_enabled)
+                except Exception:
+                    pass
+            if item.get("blocks"):
+                self.SetBool(self._override_id(index), False)
+                self.SetBool(self._baseline_id(index), False)
+                try:
+                    self.Enable(self._baseline_id(index), not self.sidecar_invalid)
+                except Exception:
+                    pass
+        self.SetString(GateTriageIds.EDT_REASON, "")
+        self._refresh_proceed()
+        return True
+
+    def _decisions(self):
+        decisions = {}
+        for index, item in self._row_order:
+            check_id = item.get("check_id")
+            if not check_id:
+                continue
+            if item in self.fixable_items:
+                try:
+                    if self.GetBool(self._fix_id(index)) and check_id not in self.disabled_fix_ids:
+                        decisions[check_id] = "fix"
+                        continue
+                except Exception:
+                    pass
+            if item.get("blocks"):
+                try:
+                    if self.GetBool(self._baseline_id(index)) and not self.sidecar_invalid:
+                        decisions[check_id] = "baseline"
+                        continue
+                except Exception:
+                    pass
+                try:
+                    if self.GetBool(self._override_id(index)):
+                        decisions[check_id] = "override"
+                        continue
+                except Exception:
+                    pass
+        return decisions
+
+    def _refresh_proceed(self):
+        can = gate_dialog_can_proceed(
+            self.blocking_items,
+            self.fixable_items,
+            self._decisions(),
+            self.GetString(GateTriageIds.EDT_REASON) or "",
+        )
+        try:
+            self.Enable(GateTriageIds.BTN_PROCEED, can)
+        except Exception:
+            pass
+        return can
+
+    def _set_exclusive(self, cid):
+        for index, item in self._row_order:
+            override_id = self._override_id(index)
+            baseline_id = self._baseline_id(index)
+            fix_id = self._fix_id(index)
+            if cid == override_id:
+                self.SetBool(override_id, True)
+                self.SetBool(baseline_id, False)
+                if item in self.fixable_items:
+                    self.SetBool(fix_id, False)
+                return True
+            if cid == baseline_id:
+                if self.sidecar_invalid:
+                    self.SetBool(baseline_id, False)
+                    return True
+                self.SetBool(baseline_id, True)
+                self.SetBool(override_id, False)
+                if item in self.fixable_items:
+                    self.SetBool(fix_id, False)
+                return True
+            if cid == fix_id and item in self.fixable_items:
+                if item.get("check_id") in self.disabled_fix_ids:
+                    self.SetBool(fix_id, False)
+                    return True
+                if self.GetBool(fix_id):
+                    if item.get("blocks"):
+                        self.SetBool(override_id, False)
+                        self.SetBool(baseline_id, False)
+                return True
+        return False
+
+    def _capture_results(self):
+        self.reason = (self.GetString(GateTriageIds.EDT_REASON) or "").strip()
+        decisions = self._decisions()
+        self.fixes = []
+        self.baseline_accepts = []
+        self.overrides = []
+        for item in self.fixable_items:
+            check_id = item.get("check_id")
+            if decisions.get(check_id) == "fix":
+                self.fixes.append(check_id)
+            elif decisions.get(check_id) == "baseline":
+                self.baseline_accepts.append(check_id)
+            elif decisions.get(check_id) == "override":
+                self.overrides.append(check_id)
+        for item in self.blocking_items:
+            check_id = item.get("check_id")
+            if decisions.get(check_id) == "baseline":
+                self.baseline_accepts.append(check_id)
+            elif decisions.get(check_id) == "override":
+                self.overrides.append(check_id)
+
+    def Command(self, cid, msg):
+        if cid == GateTriageIds.BTN_CANCEL:
+            self.proceed = False
+            self.Close()
+            return True
+        if cid == GateTriageIds.BTN_PROCEED:
+            if not self._refresh_proceed():
+                c4d.gui.MessageDialog(
+                    "Resolve every blocking FAIL row before proceeding.\n\n"
+                    "Overrides require a non-empty reason."
+                )
+                return True
+            self._capture_results()
+            self.proceed = True
+            self.Close()
+            return True
+        if cid == GateTriageIds.EDT_REASON or self._set_exclusive(cid):
+            self._refresh_proceed()
+            return True
+        return True
+
 
 class NotesDialog(gui.GeDialog):
     """Modal dialog for editing per-scene notes and TODOs.

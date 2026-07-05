@@ -94,6 +94,30 @@ class BaseContainer(dict):
         return self.get(key)
 
 
+class BaseDocument(dict):
+    def __init__(self, render_datas=None):
+        super().__init__()
+        self.render_datas = list(render_datas or [])
+        self.start_undo_count = 0
+        self.end_undo_count = 0
+        self.undo_operations = []
+
+    def StartUndo(self):
+        self.start_undo_count += 1
+
+    def EndUndo(self):
+        self.end_undo_count += 1
+
+    def AddUndo(self, undo_type, target):
+        self.undo_operations.append((undo_type, target))
+
+    def GetFirstRenderData(self):
+        return self.render_datas[0] if self.render_datas else None
+
+    def GetActiveRenderData(self):
+        return self.GetFirstRenderData()
+
+
 class _BaseGui:
     def __getattr__(self, name):
         def _noop(*args, **kwargs):
@@ -144,6 +168,7 @@ def _install_fake_c4d():
     plugins.RegisterObjectPlugin = lambda *args, **kwargs: True
 
     documents = _PermissiveModule("c4d.documents")
+    documents.BaseDocument = BaseDocument
     documents.GetActiveDocument = lambda: None
 
     storage = _PermissiveModule("c4d.storage")
