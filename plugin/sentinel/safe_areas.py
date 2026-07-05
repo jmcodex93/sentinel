@@ -73,7 +73,7 @@ def safe_area_ndc_box(fmt_id, rules_context=None):
     }
 
 
-def format_safe_area_in_master_ndc(fmt_id, master_aspect, rules_context=None):
+def format_safe_area_in_master_ndc(fmt_id, master_aspect, rules_context=None, offset=None):
     """Return the format's safe-area rectangle expressed in MASTER NDC.
 
     This is the "crop interpretation" of cross-aspect safe area —
@@ -94,6 +94,8 @@ def format_safe_area_in_master_ndc(fmt_id, master_aspect, rules_context=None):
     Args:
         fmt_id: format id ('16x9', '9x16', '1x1', '4x5', '21x9')
         master_aspect: master frame aspect (W / H), e.g. 1.778 for 16:9
+        offset: optional (x, y) nudge as fractional travel within the master
+            crop frame. None/(0, 0) preserves the previous centered behavior.
 
     Returns:
         dict {left, right, bottom, top} — bounds expressed in master
@@ -118,12 +120,26 @@ def format_safe_area_in_master_ndc(fmt_id, master_aspect, rules_context=None):
         crop_x = 1.0
         crop_y = master_aspect / f_aspect  # half-height in master NDC
 
+    shift_x = 0.0
+    shift_y = 0.0
+    if offset is not None:
+        try:
+            offset_x, offset_y = offset
+            offset_x = max(-1.0, min(1.0, float(offset_x)))
+            offset_y = max(-1.0, min(1.0, float(offset_y)))
+            shift_x = (1.0 - crop_x) * offset_x
+            # Positive C4DMultiFrame Y nudge moves down; master NDC Y grows up.
+            shift_y = -(1.0 - crop_y) * offset_y
+        except Exception:
+            shift_x = 0.0
+            shift_y = 0.0
+
     # Apply per-side insets within the crop region.
     return {
-        "left":   -crop_x + (2.0 * crop_x) * insets["left"],
-        "right":   crop_x - (2.0 * crop_x) * insets["right"],
-        "bottom": -crop_y + (2.0 * crop_y) * insets["bottom"],
-        "top":     crop_y - (2.0 * crop_y) * insets["top"],
+        "left":   -crop_x + shift_x + (2.0 * crop_x) * insets["left"],
+        "right":   crop_x + shift_x - (2.0 * crop_x) * insets["right"],
+        "bottom": -crop_y + shift_y + (2.0 * crop_y) * insets["bottom"],
+        "top":     crop_y + shift_y - (2.0 * crop_y) * insets["top"],
     }
 
 
@@ -861,4 +877,3 @@ def _scan_cross_aspect_safe_area(doc, sample_strategy="keyframes", rules_context
         c4d.EventAdd()
 
     return violations
-
