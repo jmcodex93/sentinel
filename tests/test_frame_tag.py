@@ -106,6 +106,57 @@ def test_is_stale_from_signature_tracks_param_drift(sentinel_module):
     assert frame_tag._is_stale_from_signature(tag) is True
 
 
+def test_current_take_is_own_format_gates_guides_in_format_takes(sentinel_module):
+    frame_tag = importlib.import_module("sentinel.ui.frame_tag")
+
+    class FakeTake:
+        def __init__(self, name):
+            self._n = name
+
+        def GetName(self):
+            return self._n
+
+    class FakeTD:
+        def __init__(self, cur, main):
+            self._cur = cur
+            self._main = main
+
+        def GetCurrentTake(self):
+            return self._cur
+
+        def GetMainTake(self):
+            return self._main
+
+    class FakeCam:
+        def GetName(self):
+            return "Hero"
+
+    class FakeDoc:
+        def __init__(self, cur, main):
+            self._td = FakeTD(cur, main)
+
+        def GetTakeData(self):
+            return self._td
+
+    class FakeTag:
+        def GetObject(self):
+            return FakeCam()
+
+    tag = FakeTag()
+    main = FakeTake("Main")
+    fmt_id = frame_tag._format_defs()[0].get("id")
+    fmt_take = FakeTake(f"Hero_{fmt_id}")
+
+    # Main take -> guides DO draw (composition view).
+    assert frame_tag._current_take_is_own_format(tag, FakeDoc(main, main)) is False
+    # Our own format take -> guides suppressed (camera already cropped).
+    assert frame_tag._current_take_is_own_format(tag, FakeDoc(fmt_take, main)) is True
+    # A non-Sentinel take -> guides draw.
+    assert frame_tag._current_take_is_own_format(tag, FakeDoc(FakeTake("Whatever"), main)) is False
+    # Right prefix but unknown suffix -> not one of ours, guides draw.
+    assert frame_tag._current_take_is_own_format(tag, FakeDoc(FakeTake("Hero_foo"), main)) is False
+
+
 def test_selected_output_format_uses_first_enabled_format(sentinel_module):
     frame_tag = importlib.import_module("sentinel.ui.frame_tag")
 

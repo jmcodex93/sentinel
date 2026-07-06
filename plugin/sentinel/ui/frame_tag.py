@@ -1019,6 +1019,42 @@ def _report_summary_text(report):
     return "\n".join(lines)
 
 
+def _current_take_is_own_format(tag, doc):
+    """Return True when the active take is one of THIS tag's generated format
+    takes (named ``<host camera>_<fmt>``).
+
+    In such a take the host camera is already cropped/zoomed to the format, so
+    drawing the multi-format guides would draw a crop-of-a-crop and mislead the
+    artist (the guide would no longer align with the framing). Guides belong to
+    the master (Main) view where you compose; a format take should show the
+    clean final crop. Pure + read-only — safe on the draw thread (only reads
+    take names).
+    """
+    getter = getattr(doc, "GetTakeData", None)
+    if not callable(getter):
+        return False
+    try:
+        td = getter()
+        current = td.GetCurrentTake()
+        main = td.GetMainTake()
+    except Exception:
+        return False
+    if current is None or main is None or current == main:
+        return False
+    prefix = _safe_node_name(_tag_host(tag), "")
+    if not prefix:
+        return False
+    try:
+        name = current.GetName() or ""
+    except Exception:
+        return False
+    marker = prefix + "_"
+    if not name.startswith(marker):
+        return False
+    suffix = name[len(marker):]
+    return any(d.get("id") == suffix for d in _format_defs())
+
+
 try:
     _TagDataBase = plugins.TagData
     if not isinstance(_TagDataBase, type):
@@ -1466,6 +1502,13 @@ class SentinelFrameTag(_TagDataBase):
             if bd.GetSceneCamera(doc) != op:
                 return True
         except Exception:
+            return True
+
+        # Don't draw guides when viewing one of our own format takes: the camera
+        # is already cropped to that format, so the guides would draw a
+        # crop-of-a-crop. Guides live in the master (Main) view; format takes
+        # show the clean final crop.
+        if _current_take_is_own_format(tag, doc):
             return True
 
         if not _as_bool(_get_node_value(tag, ID_ENABLED, True), True):
