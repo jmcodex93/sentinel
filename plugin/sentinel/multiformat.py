@@ -693,46 +693,30 @@ def generate_multiformat_takes(doc, options):
 
                     if composition_mode == COMPOSITION_MODE_CROP:
                         _reset_camera_dimensions_to_native(take, td, source_cam)
-                        aperture, film_x, film_y = framing.format_crop_values(
-                            src_aperture, src_w, src_h, tw, th,
+                        # TRUE inscribed crop via FOCAL LENGTH. Focal is the
+                        # universal lever — it crops cleanly on standard AND
+                        # Redshift cameras (verified live), unlike aperture which
+                        # Redshift ignores. For a narrower target the focal is
+                        # zoomed in; for wider/equal it comes back == src_focal
+                        # and we skip the override (the resolution change alone
+                        # crops top/bottom, which works on every camera).
+                        focal, film_x, film_y = framing.format_crop_values(
+                            src_focal, src_w, src_h, tw, th,
                             nudge, src_film_x, src_film_y)
-                        ta = float(tw) / float(th) if th else 0.0
-                        sa = float(src_w) / float(src_h) if src_h else 0.0
-                        narrower = ta > 0.0 and sa > 0.0 and ta < sa - 1e-9
-                        # Only STANDARD cameras crop horizontally via aperture.
-                        # Redshift (Orscamera) and other non-standard cameras do
-                        # NOT track CAMERAOBJECT_APERTURE cleanly — overriding it
-                        # snaps their framing to a wrong FOV base. For wider/equal
-                        # targets no aperture change is needed anyway (the
-                        # resolution change alone crops top/bottom), so those work
-                        # on every camera; only a NARROWER-than-master crop needs
-                        # the aperture, and that is limited to standard cameras.
-                        try:
-                            is_standard = source_cam.GetType() == c4d.Ocamera
-                        except Exception:
-                            is_standard = False
-                        if narrower and not is_standard:
-                            report.setdefault("notes", []).append(
-                                f"{take_name}: a narrower-than-master crop cannot "
-                                f"be applied on a non-standard (e.g. Redshift) "
-                                f"camera — rendered as EXTEND, not crop.")
-                        else:
-                            # Aperture only when it truly crops (narrower target);
-                            # never re-write the native value (it disturbs RS).
-                            if aperture < src_aperture - 1e-6:
-                                _set_camera_override(
-                                    take, td, source_cam,
-                                    framing.CAMERAOBJECT_APERTURE, aperture)
-                            # Film offset (pan) only when there is an actual
-                            # offset — a spurious 0 override also disturbs RS.
-                            if (abs(film_x - src_film_x) > 1e-9
-                                    or abs(film_y - src_film_y) > 1e-9):
-                                _set_camera_override(
-                                    take, td, source_cam,
-                                    framing.CAMERAOBJECT_FILM_OFFSET_X, float(film_x))
-                                _set_camera_override(
-                                    take, td, source_cam,
-                                    framing.CAMERAOBJECT_FILM_OFFSET_Y, float(film_y))
+                        if focal > src_focal + 1e-6:
+                            _set_camera_override(
+                                take, td, source_cam,
+                                framing.CAMERA_FOCUS, focal)
+                        # Film offset (pan) only when there is an actual offset —
+                        # a spurious 0 override can disturb some cameras.
+                        if (abs(film_x - src_film_x) > 1e-9
+                                or abs(film_y - src_film_y) > 1e-9):
+                            _set_camera_override(
+                                take, td, source_cam,
+                                framing.CAMERAOBJECT_FILM_OFFSET_X, float(film_x))
+                            _set_camera_override(
+                                take, td, source_cam,
+                                framing.CAMERAOBJECT_FILM_OFFSET_Y, float(film_y))
                     elif composition_mode == COMPOSITION_MODE_RESIZE_CANVAS:
                         new_aperture = compute_target_aperture(
                             src_aperture, src_w, tw)

@@ -332,12 +332,13 @@ def test_existing_take_resolver_is_rename_safe_and_avoids_duplicates(sentinel_mo
     assert links["16x9"].GetName() == "CamB_16x9"
 
 
-def test_crop_mode_overrides_aperture_and_gate_relative_film_offset(sentinel_module):
-    # The default "crop" mode must scale the film gate (aperture) to the
-    # inscribed crop and pan with a gate-relative film offset — matching the
-    # viewport guide (WYSIWYG), leaving focal length untouched.
+def test_crop_mode_narrower_zooms_focal_and_pans_gate_relative(sentinel_module):
+    # The default "crop" mode zooms the FOCAL to the inscribed crop for a
+    # narrower target and pans with a gate-relative film offset — matching the
+    # viewport guide (WYSIWYG). Focal is used (not aperture) so it works on
+    # Redshift too; aperture is left alone.
     mf = sentinel_module.multiformat
-    doc = FakeDocument(sentinel_module.c4d)  # source 1920x1080, aperture 36
+    doc = FakeDocument(sentinel_module.c4d)  # source 1920x1080, focal 36
 
     mf.generate_multiformat_takes(
         doc,
@@ -351,20 +352,20 @@ def test_crop_mode_overrides_aperture_and_gate_relative_film_offset(sentinel_mod
 
     take = _child_by_name(doc.take_data.main, "CamA_1x1")
     override = take.FindOverride(doc.take_data, doc.camera)
-    exp_ap, exp_fx, exp_fy = framing.format_crop_values(
+    exp_focal, exp_fx, exp_fy = framing.format_crop_values(
         36.0, 1920, 1080, 1080, 1080, (1.0, 0.0), 0.0, 0.0)
 
-    assert override.params[framing.CAMERAOBJECT_APERTURE] == pytest.approx(exp_ap)
-    assert override.params[framing.CAMERAOBJECT_APERTURE] == pytest.approx(20.25)
+    assert override.params[framing.CAMERA_FOCUS] == pytest.approx(exp_focal)
+    assert override.params[framing.CAMERA_FOCUS] == pytest.approx(36.0 * (1920.0 / 1080.0))
     assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] == pytest.approx(exp_fx)
     assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_Y] == pytest.approx(exp_fy)
-    # Focal length is NOT overridden in crop mode (DOF/zoom preserved).
-    assert framing.CAMERA_FOCUS not in override.params
+    # Aperture is NOT overridden (Redshift ignores it; focal is the lever).
+    assert framing.CAMERAOBJECT_APERTURE not in override.params
 
 
-def test_crop_mode_wider_target_needs_no_aperture_override(sentinel_module):
+def test_crop_mode_wider_target_needs_no_focal_override(sentinel_module):
     # A wider-or-equal target crops via the resolution change alone (C4D keeps
-    # horizontal FOV, aspect crops top/bottom). No aperture override is written,
+    # horizontal FOV, aspect crops top/bottom). No focal override is written,
     # so it works identically on any camera, including Redshift.
     mf = sentinel_module.multiformat
     doc = FakeDocument(sentinel_module.c4d)  # 16:9 master
@@ -373,13 +374,13 @@ def test_crop_mode_wider_target_needs_no_aperture_override(sentinel_module):
 
     take = _child_by_name(doc.take_data.main, "CamA_21x9")
     override = take.FindOverride(doc.take_data, doc.camera)
-    assert override is None or framing.CAMERAOBJECT_APERTURE not in override.params
+    assert override is None or framing.CAMERA_FOCUS not in override.params
 
 
-def test_crop_mode_on_redshift_camera_skips_aperture_for_narrower_target(sentinel_module):
-    # A narrower-than-master crop needs a horizontal aperture change, which
-    # Redshift cameras don't track cleanly — the engine skips it (falls back to
-    # EXTEND) and records a note instead of producing a wrong, snapped crop.
+def test_crop_mode_on_redshift_camera_zooms_focal_for_narrower_target(sentinel_module):
+    # A narrower-than-master crop uses a FOCAL zoom, which works on Redshift
+    # (Orscamera) — verified live. No aperture override (RS ignores it), and no
+    # extend fallback.
     mf = sentinel_module.multiformat
     doc = FakeDocument(sentinel_module.c4d)
 
@@ -405,8 +406,10 @@ def test_crop_mode_on_redshift_camera_skips_aperture_for_narrower_target(sentine
 
     take = _child_by_name(doc.take_data.main, "CamA_9x16")
     override = take.FindOverride(doc.take_data, rs)
-    assert override is None or framing.CAMERAOBJECT_APERTURE not in override.params
-    assert any("narrower" in n.lower() for n in report.get("notes", []))
+    exp_focal, _fx, _fy = framing.format_crop_values(36.0, 1920, 1080, 1080, 1920, None, 0.0, 0.0)
+    assert override.params[framing.CAMERA_FOCUS] == pytest.approx(exp_focal)
+    assert framing.CAMERAOBJECT_APERTURE not in override.params
+    assert not report.get("notes")  # no extend-fallback note anymore
 
 
 def test_external_undo_skips_engine_undo_block(sentinel_module):
