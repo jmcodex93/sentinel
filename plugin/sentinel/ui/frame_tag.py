@@ -1006,6 +1006,11 @@ def _report_summary_text(report):
             lines.append(f"{label}: {len(values)} ({', '.join(str(v) for v in values)})")
         else:
             lines.append(f"{label}: 0")
+    notes = report.get("notes") or []
+    if notes:
+        lines.append("")
+        lines.append("Notes:")
+        lines.extend(f"- {note}" for note in notes)
     errors = report.get("errors") or []
     if errors:
         lines.append("")

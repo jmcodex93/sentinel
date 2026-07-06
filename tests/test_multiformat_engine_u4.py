@@ -45,6 +45,9 @@ class FakeCamera(dict):
     def __bool__(self):
         return True
 
+    def GetType(self):
+        return 5103  # c4d.Ocamera — a standard camera (aperture crop supported)
+
     __hash__ = object.__hash__
 
 
@@ -357,6 +360,53 @@ def test_crop_mode_overrides_aperture_and_gate_relative_film_offset(sentinel_mod
     assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_Y] == pytest.approx(exp_fy)
     # Focal length is NOT overridden in crop mode (DOF/zoom preserved).
     assert framing.CAMERA_FOCUS not in override.params
+
+
+def test_crop_mode_wider_target_needs_no_aperture_override(sentinel_module):
+    # A wider-or-equal target crops via the resolution change alone (C4D keeps
+    # horizontal FOV, aspect crops top/bottom). No aperture override is written,
+    # so it works identically on any camera, including Redshift.
+    mf = sentinel_module.multiformat
+    doc = FakeDocument(sentinel_module.c4d)  # 16:9 master
+    mf.generate_multiformat_takes(
+        doc, {"formats": ["21x9"], "name_prefix": "CamA", "composition_mode": "crop"})
+
+    take = _child_by_name(doc.take_data.main, "CamA_21x9")
+    override = take.FindOverride(doc.take_data, doc.camera)
+    assert override is None or framing.CAMERAOBJECT_APERTURE not in override.params
+
+
+def test_crop_mode_on_redshift_camera_skips_aperture_for_narrower_target(sentinel_module):
+    # A narrower-than-master crop needs a horizontal aperture change, which
+    # Redshift cameras don't track cleanly — the engine skips it (falls back to
+    # EXTEND) and records a note instead of producing a wrong, snapped crop.
+    mf = sentinel_module.multiformat
+    doc = FakeDocument(sentinel_module.c4d)
+
+    class RSCam(FakeCamera):
+        def GetType(self):
+            return 1057516  # Orscamera
+
+    rs = RSCam()
+    rs[framing.CAMERA_FOCUS] = 36.0
+    rs[framing.CAMERAOBJECT_APERTURE] = 36.0
+    rs[framing.CAMERAOBJECT_FILM_OFFSET_X] = 0.0
+    rs[framing.CAMERAOBJECT_FILM_OFFSET_Y] = 0.0
+
+    report = mf.generate_multiformat_takes(
+        doc,
+        {
+            "formats": ["9x16"],  # narrower than the 16:9 master
+            "name_prefix": "CamA",
+            "composition_mode": "crop",
+            "source_cam": rs,
+        },
+    )
+
+    take = _child_by_name(doc.take_data.main, "CamA_9x16")
+    override = take.FindOverride(doc.take_data, rs)
+    assert override is None or framing.CAMERAOBJECT_APERTURE not in override.params
+    assert any("narrower" in n.lower() for n in report.get("notes", []))
 
 
 def test_external_undo_skips_engine_undo_block(sentinel_module):
