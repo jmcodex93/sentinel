@@ -1,14 +1,29 @@
 # -*- coding: utf-8 -*-
 """Sentinel Frame camera tag registration and viewport drawing surface."""
 
+import hashlib
+import json
+
 import c4d
 from c4d import plugins
 
 from sentinel import framing
 from sentinel.common.settings import GlobalSettings
-from sentinel.multiformat import MULTIFORMAT_DEFS, get_multiformat_def
+from sentinel.multiformat import (
+    MULTIFORMAT_DEFS,
+    compute_format_output_path,
+    generate_multiformat_takes,
+    get_multiformat_def,
+)
 from sentinel.rules import get_active_rules
-from sentinel.safe_areas import SAFE_AREA_INSETS, format_safe_area_in_master_ndc, resolve_take_projection_params
+from sentinel.safe_areas import (
+    SAFE_AREA_INSETS,
+    format_safe_area_in_master_ndc,
+    is_object_marked_safe_area,
+    mark_object_safe_area,
+    resolve_take_projection_params,
+    unmark_object_safe_area,
+)
 from sentinel.ui.overlay import _SAFE_AREA_COLORS
 
 
@@ -39,6 +54,12 @@ ID_FORMAT_STRIDE = 20
 ID_PLATFORM_INSET_BASE = 2000
 ID_PLATFORM_INSET_STRIDE = 10
 
+# Private tag-owned state. These are intentionally not in the dynamic AM
+# description: they are implementation details for U5 tracking/staleness.
+ID_PRIVATE_TAKE_LINK_BASE = 2400
+ID_PRIVATE_TAKE_LINK_STRIDE = 1
+ID_PRIVATE_TAKES_SIGNATURE = 2500
+
 # Actions: 3000s. Declared only in U2; command logic is U5.
 ID_GROUP_ACTIONS = 3000
 ID_CREATE_UPDATE_TAKES = 3001
@@ -61,7 +82,7 @@ COMPOSITION_CYCLE = (
 )
 
 COMPOSITION_MODE_TO_FRAMING = {
-    COMPOSITION_OFF: framing.COMPENSATE_OFF,
+    COMPOSITION_OFF: "none",
     COMPOSITION_PRESERVE_VERTICAL: framing.COMPENSATE_PRESERVE_VERTICAL,
     COMPOSITION_PRESERVE_HORIZONTAL: framing.COMPENSATE_PRESERVE_HORIZONTAL,
     COMPOSITION_CROP: framing.COMPENSATE_CROP,
@@ -124,6 +145,7 @@ _ACTION_IDS = {
     ID_REMOVE_STALE,
     ID_MARK_SUBJECT,
 }
+
 
 def _node_type(obj):
     if obj is None:
@@ -271,6 +293,13 @@ def _active_rules_for_doc(doc):
 
 
 def _is_main_thread():
+    threading_module = getattr(c4d, "threading", None)
+    checker = getattr(threading_module, "GeIsMainThread", None)
+    if callable(checker):
+        try:
+            return bool(checker())
+        except Exception:
+            return False
     checker = getattr(c4d, "GeIsMainThread", None)
     if callable(checker):
         try:
@@ -327,6 +356,86 @@ def _format_inset_ids(index):
     }
 
 
+def _format_take_link_id(index):
+    return ID_PRIVATE_TAKE_LINK_BASE + (index * ID_PRIVATE_TAKE_LINK_STRIDE)
+
+
+def _format_index_for_id(fmt_id):
+    for index, fmt in enumerate(_format_defs()):
+        if fmt.get("id") == fmt_id:
+            return index
+    return None
+
+
+def composition_mode_for_engine(composition_id):
+    """Map the tag LONG cycle value to the multiformat engine mode string."""
+    try:
+        mode_id = int(composition_id)
+    except Exception:
+        mode_id = COMPOSITION_OFF
+    return COMPOSITION_MODE_TO_FRAMING.get(mode_id, "none")
+
+
+def _enabled_format_ids_from_params(node):
+    """Return enabled format ids in canonical UI order."""
+    enabled = []
+    for index, fmt in enumerate(_format_defs()):
+        ids = _format_ids(index)
+        if _as_bool(_get_node_value(node, ids["enabled"], True), True):
+            enabled.append(fmt.get("id"))
+    return enabled
+
+
+def _film_offsets_from_params(node):
+    """Build the engine film_offsets dict from enabled per-format nudges."""
+    offsets = {}
+    for index, fmt in enumerate(_format_defs()):
+        ids = _format_ids(index)
+        if not _as_bool(_get_node_value(node, ids["enabled"], True), True):
+            continue
+        offsets[fmt.get("id")] = (
+            _as_float(_get_node_value(node, ids["nudge_x"], 0.0), 0.0),
+            _as_float(_get_node_value(node, ids["nudge_y"], 0.0), 0.0),
+        )
+    return offsets
+
+
+def _params_payload_for_takes(node):
+    """Return the stable, pure payload that defines generated take freshness."""
+    formats = []
+    for index, fmt in enumerate(_format_defs()):
+        ids = _format_ids(index)
+        if not _as_bool(_get_node_value(node, ids["enabled"], True), True):
+            continue
+        formats.append(
+            {
+                "id": fmt.get("id"),
+                "nudge": [
+                    round(_as_float(_get_node_value(node, ids["nudge_x"], 0.0), 0.0), 8),
+                    round(_as_float(_get_node_value(node, ids["nudge_y"], 0.0), 0.0), 8),
+                ],
+            }
+        )
+    return {
+        "composition_mode": composition_mode_for_engine(
+            _get_node_value(node, ID_COMPOSITION, COMPOSITION_OFF)
+        ),
+        "formats": formats,
+    }
+
+
+def _params_signature_for_takes(node):
+    """Hash enabled formats, nudges and composition mode for staleness checks."""
+    raw = json.dumps(_params_payload_for_takes(node), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _selected_output_format_id(node):
+    """Return the v1 Set Output target: the first enabled format."""
+    enabled = _enabled_format_ids_from_params(node)
+    return enabled[0] if enabled else None
+
+
 def _node_data_container(node):
     getter = getattr(node, "GetDataInstance", None)
     if callable(getter):
@@ -350,6 +459,36 @@ def _bc_get_data(bc, key):
         return bc[key] if key in bc else None
     except Exception:
         return None
+
+
+def _bc_set_data(bc, key, value):
+    if bc is None:
+        return False
+    setter = getattr(bc, "SetData", None)
+    if callable(setter):
+        try:
+            setter(key, value)
+            return True
+        except Exception:
+            pass
+    try:
+        bc[key] = value
+        return True
+    except Exception:
+        return False
+
+
+def _bc_set_string(bc, key, value):
+    if bc is None:
+        return False
+    setter = getattr(bc, "SetString", None)
+    if callable(setter):
+        try:
+            setter(key, str(value))
+            return True
+        except Exception:
+            pass
+    return _bc_set_data(bc, key, str(value))
 
 
 def _bc_set_float(bc, key, value):
@@ -651,6 +790,226 @@ def _notify_overlay_suppression_changed(node):
         pass
 
 
+def _safe_node_name(node, fallback=""):
+    getter = getattr(node, "GetName", None)
+    if callable(getter):
+        try:
+            name = getter()
+            if name:
+                return str(name)
+        except Exception:
+            pass
+    return str(fallback or "")
+
+
+def _show_message(text):
+    try:
+        c4d.gui.MessageDialog(str(text))
+    except Exception:
+        pass
+
+
+def _ask_question(text):
+    try:
+        return bool(c4d.gui.QuestionDialog(str(text)))
+    except Exception:
+        return False
+
+
+def _event_add():
+    try:
+        c4d.EventAdd()
+    except Exception:
+        pass
+
+
+def _undo_type_change():
+    return getattr(c4d, "UNDOTYPE_CHANGE", 0)
+
+
+def _undo_type_delete():
+    return getattr(c4d, "UNDOTYPE_DELETE", getattr(c4d, "UNDOTYPE_DELETEOBJ", 0))
+
+
+def _write_take_link(node, fmt_id, take):
+    index = _format_index_for_id(fmt_id)
+    if index is None:
+        return False
+    bc = _node_data_container(node)
+    if bc is None:
+        return False
+    value = take
+    base_link_factory = getattr(c4d, "BaseLink", None)
+    if callable(base_link_factory) and take is not None:
+        try:
+            link = base_link_factory()
+            link.SetLink(take)
+            value = link
+        except Exception:
+            value = take
+    return _bc_set_data(bc, _format_take_link_id(index), value)
+
+
+def _read_take_link(node, fmt_id, doc=None):
+    index = _format_index_for_id(fmt_id)
+    if index is None:
+        return None
+    bc = _node_data_container(node)
+    key = _format_take_link_id(index)
+    getter = getattr(bc, "GetLink", None)
+    if callable(getter):
+        try:
+            linked = getter(key, doc)
+            if linked is not None:
+                return linked
+        except Exception:
+            pass
+    value = _bc_get_data(bc, key)
+    link_getter = getattr(value, "GetLink", None)
+    if callable(link_getter):
+        try:
+            return link_getter(doc)
+        except Exception:
+            return None
+    return value
+
+
+def _write_takes_signature(node, signature):
+    return _bc_set_string(_node_data_container(node), ID_PRIVATE_TAKES_SIGNATURE, signature)
+
+
+def _read_takes_signature(node):
+    value = _bc_get_data(_node_data_container(node), ID_PRIVATE_TAKES_SIGNATURE)
+    return str(value) if value else ""
+
+
+def _is_stale_from_signature(node):
+    """Return True when the tag params drifted from the last generated Takes.
+
+    Pure + read-only: both the saved signature (BaseContainer) and the current
+    params signature survive the draw-thread document clone, so this is safe to
+    call from Draw. A transient Python attribute would not — attributes set via
+    ``setattr`` do not survive C4D's C++ node clone (only BaseContainer data
+    does), which is the same failure mode that broke the guide cache in U3.
+    """
+    saved = _read_takes_signature(node)
+    if not saved:
+        return False
+    return _params_signature_for_takes(node) != saved
+
+
+def _command_id_from_data(data):
+    try:
+        cid = data["id"]
+    except Exception:
+        cid = None
+    return _desc_level_id(cid)
+
+
+def _walk_child_takes(take_data):
+    if take_data is None:
+        return
+    try:
+        main = take_data.GetMainTake()
+        node = main.GetDown() if main is not None else None
+    except Exception:
+        node = None
+
+    def _walk(first):
+        current = first
+        while current:
+            yield current
+            child = current.GetDown()
+            if child:
+                for nested in _walk(child):
+                    yield nested
+            current = current.GetNext()
+
+    for take in _walk(node):
+        yield take
+
+
+def _find_orphaned_takes_for_tag(node, doc):
+    """Find disabled-format takes owned by this tag, never deleting them."""
+    host = _tag_host(node)
+    prefix = _safe_node_name(host, "")
+    enabled = set(_enabled_format_ids_from_params(node))
+    disabled_ids = {fmt.get("id") for fmt in _format_defs()} - enabled
+    found = []
+    seen = set()
+
+    def _add(fmt_id, take):
+        if take is None or fmt_id not in disabled_ids:
+            return
+        # Dedup by take name, not id(): the same take is reached by two paths
+        # (stored BaseLink + name walk) and C4D hands out a fresh Python wrapper
+        # per access, so id() would list — and then double-Remove() — one take
+        # twice. Distinct takes keep distinct names, so this stays correct.
+        try:
+            marker = take.GetName()
+        except Exception:
+            marker = id(take)
+        if marker in seen:
+            return
+        seen.add(marker)
+        found.append((fmt_id, take))
+
+    for fmt_id in disabled_ids:
+        _add(fmt_id, _read_take_link(node, fmt_id, doc))
+
+    try:
+        take_data = doc.GetTakeData()
+    except Exception:
+        take_data = None
+    name_to_id = {f"{prefix}_{fmt_id}": fmt_id for fmt_id in disabled_ids if prefix}
+    for take in _walk_child_takes(take_data):
+        try:
+            _add(name_to_id.get(take.GetName()), take)
+        except Exception:
+            pass
+    return found
+
+
+def _renderdata_path(render_data):
+    try:
+        return render_data[c4d.RDATA_PATH] or ""
+    except Exception:
+        return ""
+
+
+def _set_renderdata_for_format(render_data, fmt_id):
+    fmt = get_multiformat_def(fmt_id)
+    if not fmt:
+        return False
+    source_path = _renderdata_path(render_data)
+    render_data[c4d.RDATA_XRES] = float(fmt["width"])
+    render_data[c4d.RDATA_YRES] = float(fmt["height"])
+    render_data[c4d.RDATA_PATH] = compute_format_output_path(source_path, fmt_id, "subfolder")
+    return True
+
+
+def _report_summary_text(report):
+    lines = ["Sentinel Frame Takes"]
+    for key, label in (
+        ("created", "Created"),
+        ("updated", "Updated"),
+        ("adopted", "Adopted"),
+        ("skipped", "Skipped"),
+        ("orphaned", "Orphaned"),
+    ):
+        values = report.get(key) or []
+        if values:
+            lines.append(f"{label}: {len(values)} ({', '.join(str(v) for v in values)})")
+        else:
+            lines.append(f"{label}: 0")
+    errors = report.get("errors") or []
+    if errors:
+        lines.append("")
+        lines.append("Errors:")
+        lines.extend(f"- {err}" for err in errors)
+    return "\n".join(lines)
+
+
 try:
     _TagDataBase = plugins.TagData
     if not isinstance(_TagDataBase, type):
@@ -845,6 +1204,195 @@ class SentinelFrameTag(_TagDataBase):
             return _host_is_valid_camera(node)
         return True
 
+    def _handle_create_update_takes(self, node, doc):
+        host = _tag_host(node)
+        if not is_valid_camera_host(_node_type(host)):
+            _show_message("Sentinel Frame must be placed on a supported Camera.")
+            return True
+
+        formats = _enabled_format_ids_from_params(node)
+        if not formats:
+            _show_message("Enable at least one format before creating Takes.")
+            return True
+
+        prefix = _safe_node_name(host, "Camera")
+        signature = _params_signature_for_takes(node)
+        undo_added = [False]
+
+        def _tag_link_writer(fmt_id, take):
+            if not undo_added[0]:
+                try:
+                    doc.AddUndo(_undo_type_change(), node)
+                except Exception:
+                    pass
+                undo_added[0] = True
+            _write_take_link(node, fmt_id, take)
+
+        options = {
+            "formats": formats,
+            "update_existing": True,
+            "name_prefix": prefix,
+            "composition_mode": composition_mode_for_engine(
+                _get_node_value(node, ID_COMPOSITION, COMPOSITION_OFF)
+            ),
+            "film_offsets": _film_offsets_from_params(node),
+            "tag_link_writer": _tag_link_writer,
+        }
+
+        doc.StartUndo()
+        try:
+            report = generate_multiformat_takes(doc, options)
+            if not undo_added[0]:
+                try:
+                    doc.AddUndo(_undo_type_change(), node)
+                except Exception:
+                    pass
+            _write_takes_signature(node, signature)
+        finally:
+            doc.EndUndo()
+            _event_add()
+
+        _show_message(_report_summary_text(report))
+        return True
+
+    def _handle_set_output(self, node, doc):
+        fmt_id = _selected_output_format_id(node)
+        if not fmt_id:
+            _show_message("Enable at least one format before setting output.")
+            return True
+
+        render_data = None
+        try:
+            render_data = doc.GetActiveRenderData()
+        except Exception:
+            render_data = None
+        if render_data is None:
+            _show_message("No active Render Settings found.")
+            return True
+
+        # v1 escape hatch: apply the first enabled format only, without Takes.
+        doc.StartUndo()
+        try:
+            try:
+                doc.AddUndo(_undo_type_change(), render_data)
+            except Exception:
+                pass
+            _set_renderdata_for_format(render_data, fmt_id)
+        finally:
+            doc.EndUndo()
+            _event_add()
+
+        fmt = get_multiformat_def(fmt_id) or {}
+        _show_message(
+            "Set Output applied:\n"
+            f"{fmt_id}  {int(fmt.get('width', 0))}x{int(fmt.get('height', 0))}"
+        )
+        return True
+
+    def _handle_remove_stale(self, node, doc):
+        orphans = _find_orphaned_takes_for_tag(node, doc)
+        if not orphans:
+            _show_message("No stale Sentinel Frame Takes found for this camera.")
+            return True
+
+        lines = [
+            "Remove these stale Takes?",
+            "",
+        ]
+        for fmt_id, take in orphans:
+            lines.append(f"- {_safe_node_name(take, fmt_id)}")
+        lines.extend(["", "This cannot be done without confirmation."])
+        if not _ask_question("\n".join(lines)):
+            return True
+
+        doc.StartUndo()
+        removed = 0
+        try:
+            try:
+                doc.AddUndo(_undo_type_change(), node)
+            except Exception:
+                pass
+            for fmt_id, take in orphans:
+                try:
+                    doc.AddUndo(_undo_type_delete(), take)
+                except Exception:
+                    pass
+                remover = getattr(take, "Remove", None)
+                if callable(remover):
+                    try:
+                        remover()
+                    except Exception:
+                        continue
+                    removed += 1
+                    _write_take_link(node, fmt_id, None)
+        finally:
+            doc.EndUndo()
+            _event_add()
+
+        _show_message(f"Removed {removed} stale Take(s).")
+        return True
+
+    def _handle_mark_subject(self, node, doc):
+        try:
+            flags = getattr(c4d, "GETACTIVEOBJECTFLAGS_CHILDREN", 0)
+            selection = doc.GetActiveObjects(flags) or []
+        except Exception:
+            selection = []
+
+        if not selection:
+            _show_message(
+                "Select one or more objects first, then click Mark Subject again."
+            )
+            return True
+
+        target_state = not all(is_object_marked_safe_area(obj) for obj in selection)
+        changed = 0
+        failed = 0
+
+        doc.StartUndo()
+        try:
+            for obj in selection:
+                if target_state:
+                    ok = mark_object_safe_area(obj, True, doc)
+                else:
+                    ok = unmark_object_safe_area(obj, doc)
+                if ok:
+                    changed += 1
+                else:
+                    failed += 1
+        finally:
+            doc.EndUndo()
+            _event_add()
+
+        verb = "Marked" if target_state else "Unmarked"
+        message = f"{verb} {changed} Safe Area Subject(s)."
+        if failed:
+            message += f"\n{failed} object(s) failed."
+        _show_message(message)
+        return True
+
+    def _handle_command(self, node, data):
+        if not _is_main_thread():
+            return True
+        doc = _doc_from_node(node)
+        if doc is None:
+            _show_message("No active document.")
+            return True
+
+        command_id = _command_id_from_data(data)
+        if command_id in _ACTION_IDS and not _host_is_valid_camera(node):
+            _show_message("Sentinel Frame must be placed on a supported Camera.")
+            return True
+        if command_id == ID_CREATE_UPDATE_TAKES:
+            return self._handle_create_update_takes(node, doc)
+        if command_id == ID_SET_OUTPUT:
+            return self._handle_set_output(node, doc)
+        if command_id == ID_REMOVE_STALE:
+            return self._handle_remove_stale(node, doc)
+        if command_id == ID_MARK_SUBJECT:
+            return self._handle_mark_subject(node, doc)
+        return True
+
     def Draw(self, tag, op, bd, bh):
         global _DRAW_CALLS
 
@@ -936,13 +1484,17 @@ class SentinelFrameTag(_TagDataBase):
             for entry, guide_px in pixel_guides:
                 text = f"{entry['id']}  {entry['width']}x{entry['height']}"
                 _draw_hud_text(bd, guide_px[0] + 5, guide_px[1] + 5, text)
-            if bool(getattr(tag, "_stale", False)):
+            if _is_stale_from_signature(tag):
                 _draw_hud_text(bd, safe_frame[0] + 8, safe_frame[1] + 26, "Takes out of date")
 
         _DRAW_CALLS += 1
         return True
 
     def Message(self, node, mid, data):
+        description_command = getattr(c4d, "MSG_DESCRIPTION_COMMAND", None)
+        if description_command is not None and mid == description_command:
+            return self._handle_command(node, data)
+
         force_refresh = False
         post_set = getattr(c4d, "MSG_DESCRIPTION_POSTSETPARAMETER", None)
         if post_set is not None and mid == post_set:
