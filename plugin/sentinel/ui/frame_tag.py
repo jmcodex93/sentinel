@@ -1232,11 +1232,17 @@ class SentinelFrameTag(_TagDataBase):
             "formats": formats,
             "update_existing": True,
             "name_prefix": prefix,
+            # Bind the generated Takes to THIS tag's host camera, not whatever
+            # the viewport/Main take resolves to — the tag is per-camera.
+            "source_cam": host,
             "composition_mode": composition_mode_for_engine(
                 _get_node_value(node, ID_COMPOSITION, COMPOSITION_OFF)
             ),
             "film_offsets": _film_offsets_from_params(node),
             "tag_link_writer": _tag_link_writer,
+            # Rename-safe re-run: re-find our own Takes by stored BaseLink even
+            # if the take or the host camera was renamed (KTD4).
+            "existing_take_resolver": lambda fmt_id: _read_take_link(node, fmt_id, doc),
         }
 
         doc.StartUndo()

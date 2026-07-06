@@ -494,7 +494,12 @@ def generate_multiformat_takes(doc, options):
     src_aspect = float(src_w) / float(src_h) if src_h > 0 else 1.0
     report["source_resolution"] = (src_w, src_h)
 
-    source_cam = _resolve_source_camera(source_take, td, doc)
+    # An explicit source_cam (passed by the Sentinel Frame tag = its host
+    # camera) wins over viewport/Main-take resolution. Without it a tag on
+    # CamA would bind its Takes to whatever camera the viewport happens to
+    # show — the multi-camera bug the per-camera tag is meant to fix. Absent
+    # the option, behaviour is unchanged (legacy dialog path).
+    source_cam = options.get("source_cam") or _resolve_source_camera(source_take, td, doc)
     # Source aperture (sensor width in mm) — used by Resize Canvas mode.
     # Standard 35mm-equivalent default = 36mm.
     src_aperture = 36.0
@@ -512,6 +517,12 @@ def generate_multiformat_takes(doc, options):
     name_prefix = options.get("name_prefix")
     film_offsets = options.get("film_offsets") or {}
     tag_link_writer = options.get("tag_link_writer")
+    # Optional resolver(fmt_id) -> existing take, consulted BEFORE name lookup.
+    # The Sentinel Frame tag passes a BaseLink-backed resolver so a re-run
+    # re-finds its own Takes even after the take — or the host camera (the
+    # name prefix) — was renamed, instead of orphaning them and creating
+    # duplicates (KTD4 rename-safety). Absent → pure name matching (legacy).
+    existing_take_resolver = options.get("existing_take_resolver")
     report["composition_mode"] = composition_mode
     report["orphaned"] = sorted(
         _existing_prefixed_format_ids(td, name_prefix) - requested_formats
@@ -528,7 +539,25 @@ def generate_multiformat_takes(doc, options):
             take_name = _take_name_for_options(
                 fmt_def, report["source_take_name"], name_prefix)
 
-            existing = _find_take_by_name(td, take_name)
+            # Prefer the tag's tracked Take (rename-safe) over name matching.
+            existing = None
+            if callable(existing_take_resolver):
+                try:
+                    linked = existing_take_resolver(fmt_id)
+                except Exception:
+                    linked = None
+                if linked is not None:
+                    existing = linked
+                    # Re-sync a drifted name back to the canonical camera-scoped
+                    # name so the take (and orphan detection) stays consistent.
+                    try:
+                        if existing.GetName() != take_name:
+                            doc.AddUndo(c4d.UNDOTYPE_CHANGE, existing)
+                            existing.SetName(take_name)
+                    except Exception:
+                        pass
+            if existing is None:
+                existing = _find_take_by_name(td, take_name)
             if existing and not update_existing:
                 report["skipped"].append(take_name)
                 continue

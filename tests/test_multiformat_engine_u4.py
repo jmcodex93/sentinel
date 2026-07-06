@@ -63,6 +63,9 @@ class FakeTake:
     def GetName(self):
         return self._name
 
+    def SetName(self, name):
+        self._name = name
+
     def GetDown(self):
         return self.children[0] if self.children else None
 
@@ -223,6 +226,95 @@ def test_generate_takes_applies_film_offsets_only_for_requested_formats(sentinel
     assert landscape.FindOverride(doc.take_data, doc.camera) is None
     assert vertical_override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] == pytest.approx(0.05)
     assert vertical_override.params[framing.CAMERAOBJECT_FILM_OFFSET_Y] == pytest.approx(-0.03)
+
+
+def test_source_cam_option_binds_takes_and_offsets_to_host_camera(sentinel_module):
+    # A Sentinel Frame tag on CamA must generate Takes bound to CamA even when
+    # the viewport/Main take resolves to a different camera. The engine binds
+    # to options["source_cam"] when given (the tag passes its host camera).
+    mf = sentinel_module.multiformat
+    doc = FakeDocument(sentinel_module.c4d)  # doc.camera = the "wrong" viewport cam
+    host = FakeCamera()
+    host[framing.CAMERA_FOCUS] = 36.0
+    host[framing.CAMERAOBJECT_APERTURE] = 36.0
+    host[framing.CAMERAOBJECT_FILM_OFFSET_X] = 0.0
+    host[framing.CAMERAOBJECT_FILM_OFFSET_Y] = 0.0
+
+    report = mf.generate_multiformat_takes(
+        doc,
+        {
+            "formats": ["9x16"],
+            "name_prefix": "CamA",
+            "source_cam": host,
+            "film_offsets": {"9x16": (0.12, -0.06)},
+        },
+    )
+
+    assert report["errors"] == []
+    take = _child_by_name(doc.take_data.main, "CamA_9x16")
+    assert take.camera is host
+    assert take.camera is not doc.camera
+    # Film offset override lands on the host camera, not the viewport camera.
+    assert take.FindOverride(doc.take_data, doc.camera) is None
+    host_override = take.FindOverride(doc.take_data, host)
+    assert host_override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] == pytest.approx(0.12)
+    assert host_override.params[framing.CAMERAOBJECT_FILM_OFFSET_Y] == pytest.approx(-0.06)
+
+
+def test_generate_takes_without_source_cam_falls_back_to_resolved_camera(sentinel_module):
+    # Regression: legacy dialog path (no source_cam) still binds to the
+    # resolved viewport/Main camera exactly as before.
+    mf = sentinel_module.multiformat
+    doc = FakeDocument(sentinel_module.c4d)
+
+    report = mf.generate_multiformat_takes(
+        doc,
+        {"formats": ["16x9"], "name_prefix": "CamA"},
+    )
+
+    assert report["errors"] == []
+    take = _child_by_name(doc.take_data.main, "CamA_16x9")
+    assert take.camera is doc.camera
+
+
+def test_existing_take_resolver_is_rename_safe_and_avoids_duplicates(sentinel_module):
+    # KTD4: a re-run must re-find its own Takes via the tag's tracked links
+    # even after the take — or the host camera (the name prefix) — is renamed,
+    # instead of orphaning them and creating duplicates.
+    mf = sentinel_module.multiformat
+    doc = FakeDocument(sentinel_module.c4d)
+
+    links = {}
+    first = mf.generate_multiformat_takes(
+        doc,
+        {
+            "formats": ["16x9", "9x16"],
+            "name_prefix": "CamA",
+            "tag_link_writer": lambda fmt_id, take: links.__setitem__(fmt_id, take),
+        },
+    )
+    assert sorted(first["created"]) == ["CamA_16x9", "CamA_9x16"]
+    assert set(links) == {"16x9", "9x16"}
+
+    # Simulate the host camera renamed CamA -> CamB: the prefix changes, but the
+    # resolver still hands back the original takes by link.
+    second = mf.generate_multiformat_takes(
+        doc,
+        {
+            "formats": ["16x9", "9x16"],
+            "name_prefix": "CamB",
+            "existing_take_resolver": lambda fmt_id: links.get(fmt_id),
+            "tag_link_writer": lambda fmt_id, take: links.__setitem__(fmt_id, take),
+        },
+    )
+
+    names = _child_names(doc.take_data.main)
+    # Exactly two takes, renamed to the new prefix — no CamA_* orphans/duplicates.
+    assert sorted(names) == ["CamB_16x9", "CamB_9x16"]
+    assert second["created"] == []
+    assert sorted(second["updated"]) == ["CamB_16x9", "CamB_9x16"]
+    # The very same take objects were adopted, not recreated.
+    assert links["16x9"].GetName() == "CamB_16x9"
 
 
 def test_preserve_vertical_overrides_camera_focus_with_compensated_value(sentinel_module):
