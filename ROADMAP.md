@@ -66,7 +66,7 @@
 
 ---
 
-### v1.8.0 — Sentinel Frame (per-camera multi-format tag) 🚧 ON BRANCH `feat/sentinel-frame`
+### v1.8.0 — Sentinel Frame (per-camera multi-format tag) ✅ SHIPPED (PR #3)
 
 Supersedes the two WIP entries below. A single per-camera `SentinelFrameTag` (TagData, plugin id 2099073) is the one entry point for the whole multi-format workflow: live viewport guides/mask/HUD, one-click **rename-safe** delivery Takes, and true **WYSIWYG crop** that matches the guides.
 
@@ -76,9 +76,10 @@ Supersedes the two WIP entries below. A single per-camera `SentinelFrameTag` (Ta
 - [x] **Crop-first**: `format_crop_values` — inscribed crop via **focal** (universal — works on standard AND Redshift; aperture doesn't), gate-relative film-offset nudge; wider/equal targets crop by resolution alone; guides suppressed when viewing a format take
 - [x] QC #12 nudge-aware (reads the tag's per-format nudge; identical without a tag)
 - [x] Panel entry: Render tab → "Add Sentinel Frame to camera"
-- [x] 130 pytest + live MCP verification (standard + Redshift, all formats)
-- [ ] Merge to main; bump version; full README section on release
-- [ ] Retire the legacy MultiFormatDialog + Tools mark button once validated in production (coexist for now)
+- [x] 129 pytest + live MCP verification (standard + Redshift, all formats)
+- [x] Merged to main (PR #3); version bumped to v1.8.0; README + CLAUDE.md + changelog updated
+- [x] Legacy panel entries retired (Multi-Format dialog + Safe-Area Overlay); overlay ObjectData fully unregistered
+- [ ] Retire the MultiFormatDialog + dead `_open_multiformat_dialog` from the code once no live scene needs them
 
 ### v1.5.8 — Multi-Format polish 🚧 SUPERSEDED by v1.8.0 (Sentinel Frame)
 

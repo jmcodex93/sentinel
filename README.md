@@ -1,4 +1,4 @@
-# Sentinel v1.6.0
+# Sentinel v1.8.0
 
 Quality control, render management, and workflow automation plugin for Cinema 4D production environments — keeping the watchdog spirit of YS Guardian.
 
@@ -53,7 +53,20 @@ Standardized presets with resolution display, one-click switching:
 
 End-to-end workflow for shipping the same animation in multiple delivery aspects (16:9, 9:16, 1:1, 4:5, 21:9) — generation, composition guidance, and validation.
 
-##### Multi-Format Render Setup
+##### Sentinel Frame *(v1.8.0 — recommended)*
+
+**Render tab → Add Sentinel Frame to camera** drops a per-camera `SentinelFrame` tag — the single entry point for the whole multi-format workflow. It replaces the modal dialog, the overlay toggle, and the mark button with one tag on the camera:
+
+- **Live viewport guides** for the enabled formats (toggle guides / dim mask with opacity / platform safe-zones / HUD), computed live as you compose in the master view.
+- **One-click delivery Takes** — the tag's *Create/Update Takes* button generates a camera-scoped Take per format. Re-runs are **rename-safe** (tracked by BaseLink, so renaming a Take or the camera doesn't orphan them) and revert with a single Cmd+Z. A "Takes out of date" HUD warns when you change a setting after generating.
+- **True WYSIWYG crop** — *Crop to Guides* (default) makes each format Take render exactly the region its guide outlines. Narrower-than-master formats crop by a **focal** zoom (works on standard **and Redshift** cameras, keeping DOF); wider formats crop by resolution alone. Guides are suppressed while you view a format Take, so you see the clean crop. *None* leaves the camera untouched (compose-for-intersection).
+- **Per-format framing nudge** — shift each format's crop via camera film offset (preserves lens/parallax; doesn't move the camera).
+- **Platform safe-zones** — per-platform UI-safe insets (Reels/TikTok caption + icon areas) with an "as of &lt;date&gt;" vintage marker, overridable via `sentinel_rules.json`.
+- **Validation** — QC #12 (Cross-Aspect Safe Area) reads the tag's per-format nudge and flags any marked subject that would fall outside a format's safe area.
+
+The legacy dialog + overlay below are superseded by the tag (the overlay ObjectData is retired; the dialog stays in the code so already-generated Takes keep working).
+
+##### Multi-Format Render Setup *(legacy dialog)*
 
 Render tab → **Generate Format Takes...** opens a dialog that creates a child Take per delivery aspect. Each Take has its own cloned Render Data with format-specific resolution + output path (subfolder mode `output/16x9/`, `output/9x16/`, ... or filename suffix mode `file_16x9`, `file_9x16`, ...). Idempotent on re-runs (uses `take.FindOrAddOverrideParam` with explicit value force).
 
@@ -405,6 +418,26 @@ The snapshot system uses external Python with Pillow for color-accurate conversi
 - Ensure abc_retime plugin is installed in Cinema 4D plugins folder
 
 ## Changelog
+
+### v1.8.0 | 06.07.2026
+
+**New: Sentinel Frame — per-camera multi-format tag with WYSIWYG crop**
+
+A single `SentinelFrame` tag on the camera becomes the one entry point for the whole multi-format workflow, replacing the modal dialog + overlay toggle + mark button. Add it from **Render tab → Add Sentinel Frame to camera**.
+
+- **Live viewport guides** (guides / dim mask with opacity / platform safe-zones / HUD) drawn per enabled format as you compose in the master view. Corrects a false v1.5.6 limitation: `TagData.Draw` *does* fire in C4D 2026 with the `TAG_IMPLEMENTS_DRAW_FUNCTION` flag — so the whole feature is a pure tag with no companion drawer.
+- **One-click, rename-safe delivery Takes** — *Create/Update Takes* generates a camera-scoped Take per format; re-runs are tracked by BaseLink (renaming a Take or the camera never orphans them), revert with a single Cmd+Z, and a "Takes out of date" HUD flags stale settings. Plus *Set Output* (single-format escape hatch), *Remove Stale*, and *Mark Subject*.
+- **True WYSIWYG crop** — *Crop to Guides* renders each Take exactly as its guide shows. Narrower formats crop by a **focal** zoom that works on standard **and Redshift** cameras (Redshift ignores aperture overrides; focal is the universal lever), keeping DOF intact; wider formats crop by resolution alone. Guides are suppressed while viewing a format Take so you see the clean crop.
+- **Per-format framing nudge** (camera film offset — preserves lens/parallax), **platform safe-zones** with a vintage marker, and **QC #12 made nudge-aware**.
+- The legacy Multi-Format dialog + Safe-Area Overlay are retired from the panel (the overlay ObjectData is unregistered; the dialog stays in code so already-generated Takes keep working).
+
+*Verification: pytest 129/129 + live MCP in C4D 2026.301 across standard and Redshift cameras.*
+
+### v1.7.0 | 06.07.2026
+
+**New: Quality Gates — block or warn on Save / Collect by check severity**
+
+QC severity (FAIL/WARN, set per check in `sentinel_rules.json`) becomes actionable at the two moments that matter. Smart Save Version and Scene Collector run a gate: a **GateTriageDialog** lists the failing checks with their severity and offers to auto-fix the batchable ones (lights → group, camera shift → reset, unused mats → delete, FPS/range → standard) in a **single undo step**, accept them into the baseline, or proceed anyway. Fallback dialog rows are labelled with their `check_id`. Enabled via a `gates_enabled` flag; off by default so existing scenes are unaffected.
 
 ### v1.6.0 | 04.07.2026
 
