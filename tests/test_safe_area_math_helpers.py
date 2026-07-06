@@ -1,6 +1,51 @@
+import importlib
 import math
 
 import pytest
+
+
+def test_frame_tag_nudge_for_format_reads_tag_or_none(sentinel_module):
+    # QC #12 becomes nudge-aware by reading each format's nudge from a Sentinel
+    # Frame tag on the camera. No tag / disabled / zero nudge -> None, which
+    # keeps QC results identical to the pre-tag behaviour.
+    sa = importlib.import_module("sentinel.safe_areas")
+    frame_tag = importlib.import_module("sentinel.ui.frame_tag")
+
+    class FakeTag(dict):
+        def GetType(self):
+            return frame_tag.SENTINEL_FRAME_TAG_PLUGIN_ID
+
+    class OtherTag:
+        def GetType(self):
+            return 12345
+
+    class FakeCam:
+        def __init__(self, tags):
+            self._tags = tags
+
+        def GetTags(self):
+            return self._tags
+
+    fmt0 = frame_tag._format_defs()[0].get("id")
+    ids0 = frame_tag._format_ids(0)
+    tag = FakeTag()
+    tag[ids0["enabled"]] = True
+    tag[ids0["nudge_x"]] = 0.1
+    tag[ids0["nudge_y"]] = -0.05
+
+    assert sa._frame_tag_nudge_for_format(None, fmt0) is None
+    assert sa._frame_tag_nudge_for_format(FakeCam([OtherTag()]), fmt0) is None
+    assert sa._frame_tag_nudge_for_format(FakeCam([tag]), fmt0) == (0.1, -0.05)
+
+    # Disabled format -> None (that format won't have a delivery take).
+    tag[ids0["enabled"]] = False
+    assert sa._frame_tag_nudge_for_format(FakeCam([tag]), fmt0) is None
+
+    # Zero nudge -> None (no shift, keeps the box identical).
+    tag[ids0["enabled"]] = True
+    tag[ids0["nudge_x"]] = 0.0
+    tag[ids0["nudge_y"]] = 0.0
+    assert sa._frame_tag_nudge_for_format(FakeCam([tag]), fmt0) is None
 
 
 def assert_box_close(actual, expected, abs_tol=1e-9):
