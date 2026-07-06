@@ -24,9 +24,6 @@ from sentinel.safe_areas import (
     resolve_take_projection_params,
     unmark_object_safe_area,
 )
-from sentinel.ui.overlay import _SAFE_AREA_COLORS
-
-
 SENTINEL_FRAME_TAG_PLUGIN_ID = 2099073
 SENTINEL_FRAME_TAG_DESCRIPTION = "Tsentinelframe"
 SCHEMA_VERSION = 1
@@ -340,7 +337,7 @@ def _enabled_format_entries(node):
         if not _as_bool(_get_node_value(node, ids["enabled"], True), True):
             continue
         fmt_id = fmt.get("id")
-        fallback = _SAFE_AREA_COLORS.get(fmt_id, _vector(_FORMAT_COLORS.get(fmt_id, (0.6, 0.6, 0.6))))
+        fallback = _vector(_FORMAT_COLORS.get(fmt_id, (0.6, 0.6, 0.6)))
         color = _color_vector(_get_node_value(node, ids["color"], fallback), fallback)
         nudge = (
             _as_float(_get_node_value(node, ids["nudge_x"], 0.0), 0.0),
@@ -778,18 +775,6 @@ def _draw_mask(bd, safe_frame, guide_rect, color, transparency=MASK_TRANSPARENCY
 def _draw_hud_text(bd, x, y, text):
     try:
         bd.DrawHUDText(int(x), int(y), str(text))
-    except Exception:
-        pass
-
-
-def _notify_overlay_suppression_changed(node):
-    doc = _doc_from_node(node)
-    if doc is None:
-        return
-    try:
-        from sentinel.ui.overlay import _overlay_state
-
-        _overlay_state.update_suppression_from_doc(doc)
     except Exception:
         pass
 
@@ -1582,13 +1567,9 @@ class SentinelFrameTag(_TagDataBase):
         if description_command is not None and mid == description_command:
             return self._handle_command(node, data)
 
-        force_refresh = False
-        post_set = getattr(c4d, "MSG_DESCRIPTION_POSTSETPARAMETER", None)
-        if post_set is not None and mid == post_set:
-            force_refresh = True
-        insets_refreshed = _refresh_platform_insets(node)
-        if force_refresh or insets_refreshed:
-            _notify_overlay_suppression_changed(node)
+        # Keep the pre-resolved platform insets on the tag container fresh so
+        # Draw stays read-only (it never resolves sentinel_rules.json itself).
+        _refresh_platform_insets(node)
         try:
             return super().Message(node, mid, data)
         except AttributeError:

@@ -11,15 +11,13 @@ if _ROOT not in sys.path:
 
 import sentinel
 from sentinel import PLUGIN_NAME
-from sentinel.common.constants import PLUGIN_ID, SAFE_AREA_OVERLAY_PLUGIN_ID
+from sentinel.common.constants import PLUGIN_ID
 from sentinel.common.helpers import safe_print
 from sentinel.common.settings import GlobalSettings
 from sentinel.ui import panel as _panel
 from sentinel.ui import dialogs as _dialogs
 from sentinel.ui import ids as _ids
-from sentinel.ui import overlay as _overlay
 from sentinel.ui import user_areas as _user_areas
-from sentinel.ui.overlay import SafeAreaOverlayObject, _SAFE_AREA_OBJECT_AVAILABLE
 from sentinel.ui.panel import YSPanelCmd
 
 try:
@@ -37,7 +35,7 @@ except Exception as _exc:
 
 # Compatibility surface for tests, fixture runner, and C4D scripts that import
 # sentinel_panel.pyp directly. Keep private helpers too.
-for _module in (_panel, _dialogs, _ids, _overlay, _user_areas):
+for _module in (_panel, _dialogs, _ids, _user_areas):
     globals().update({
         _name: _value
         for _name, _value in vars(_module).items()
@@ -90,29 +88,8 @@ def Register():
     else:
         safe_print("Failed to register Guardian panel")
 
-    # Secondary plugin: SafeAreaOverlayObject (ObjectData) for the
-    # cross-aspect safe-area viewport overlay (v1.5.6).
-    # Failure here is non-fatal — the panel still works, just no overlay.
-    if _SAFE_AREA_OBJECT_AVAILABLE:
-        try:
-            overlay_ok = plugins.RegisterObjectPlugin(
-                id=SAFE_AREA_OVERLAY_PLUGIN_ID,
-                str="Sentinel Safe-Area Overlay",
-                g=SafeAreaOverlayObject,
-                description="safearea_overlay",
-                info=c4d.OBJECT_GENERATOR,
-                icon=None,
-            )
-            if overlay_ok:
-                safe_print("Sentinel Safe-Area Overlay (ObjectData) registered")
-            else:
-                safe_print("Failed to register Safe-Area Overlay ObjectData — "
-                           "overlay disabled, panel still works")
-        except Exception as e:
-            safe_print(f"Safe-Area Overlay registration crashed: {e} — "
-                       "overlay disabled, panel still works")
-    else:
-        safe_print("ObjectData API unavailable in this C4D — overlay disabled")
+    # (The v1.5.6 Safe-Area Overlay ObjectData was retired in v1.8.0 — the
+    # Sentinel Frame per-camera tag draws the viewport guides directly.)
 
     # Sentinel Frame camera tag (TagData) for the per-camera multi-format
     # workflow. Failure is non-fatal — the core panel and legacy flows still

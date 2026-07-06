@@ -24,7 +24,6 @@ from sentinel.common.constants import (
     MAX_OBJECTS_PER_CHECK,
     PLUGIN_ID,
     PRESETS,
-    SAFE_AREA_OVERLAY_PLUGIN_ID,
     SETTINGS_FILE,
 )
 from sentinel.checks import render as render_checks
@@ -69,12 +68,6 @@ from sentinel.ui.dialogs import (
     TextureRepathingDialog,
     load_repath_presets,
     save_repath_preset,
-)
-from sentinel.ui.overlay import (
-    SafeAreaOverlayObject,
-    _SAFE_AREA_OBJECT_AVAILABLE,
-    _overlay_state,
-    find_or_create_safe_area_overlay_object,
 )
 
 # Import maxon for node material access
@@ -1948,11 +1941,11 @@ class YSPanel(gui.GeDialog):
         self.AddButton(G.BTN_ADD_FRAME_TAG, c4d.BFH_SCALEFIT, 0, 0,
                        "Add Sentinel Frame to camera")
         self.GroupEnd()
-        # The legacy Multi-Format Setup dialog + Safe-Area Overlay toggle were
-        # retired from the panel in v1.8.0 (superseded by the Sentinel Frame
-        # tag). The MultiFormatDialog and SafeAreaOverlayObject remain registered
-        # so scenes already set up via the old dialog / with an overlay marker
-        # keep working; they are just no longer surfaced as new-work entry points.
+        # The legacy Multi-Format Setup dialog + Safe-Area Overlay were retired
+        # in v1.8.0 (superseded by the Sentinel Frame tag). The Safe-Area Overlay
+        # ObjectData is no longer registered; the MultiFormatDialog stays in the
+        # code so takes it already generated keep working, but it is no longer
+        # surfaced as a new-work entry point.
 
         # ── Redshift AOVs ──
         # Compositor + Multi-Part are studio-level defaults edited in Settings
@@ -2788,25 +2781,6 @@ class YSPanel(gui.GeDialog):
 
         elif cid == G.BTN_ADD_FRAME_TAG:
             self._add_sentinel_frame_tag(doc)
-
-        elif cid == G.BTN_MULTIFORMAT:
-            self._open_multiformat_dialog(doc)
-
-        elif cid == G.CHK_SAFE_AREA_OVERLAY:
-            # Toggle the safe-area viewport overlay. On enable: ensure
-            # the marker object exists in the scene (auto-create at
-            # root if missing) + refresh the cached format rectangles.
-            # On disable: just flip the flag (Draw becomes a no-op).
-            new_state = bool(self.GetBool(G.CHK_SAFE_AREA_OVERLAY))
-            _overlay_state.enabled = new_state
-            if new_state:
-                if _SAFE_AREA_OBJECT_AVAILABLE:
-                    find_or_create_safe_area_overlay_object(doc)
-                else:
-                    safe_print("Safe-Area Overlay: ObjectData API "
-                               "unavailable in this C4D build.")
-                _overlay_state.update_from_doc(doc)
-            c4d.EventAdd()
 
         elif cid == G.ARTIST:
             # Artist name changed - save to global settings
@@ -4056,14 +4030,6 @@ class YSPanel(gui.GeDialog):
         # Refresh panel state (Take system may have updated the active take)
         try:
             check_cache.clear()
-        except Exception:
-            pass
-
-        # Refresh the safe-area overlay cache — the set of active
-        # multi-format Takes likely changed, so the cached rectangles
-        # need recomputing for the next viewport redraw.
-        try:
-            _overlay_state.update_from_doc(doc)
         except Exception:
             pass
 

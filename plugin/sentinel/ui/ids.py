@@ -46,8 +46,7 @@ class G:
     LABEL_RESOLUTION = 1170
     BTN_FORCE_VERTICAL = 1204  # Force 9:16
     BTN_RESET_ALL = 1206      # Reset all presets from template
-    BTN_MULTIFORMAT = 1207    # Multi-Format Render Setup (generate Takes for 16:9, 9:16, 1:1, 4:5, 21:9)
-    CHK_SAFE_AREA_OVERLAY = 1208  # Viewport overlay toggle (v1.5.6, ObjectData-backed)
+    BTN_MULTIFORMAT = 1207    # Multi-Format Render Setup dialog (legacy; retired from panel v1.8.0)
     BTN_ADD_FRAME_TAG = 1214  # Add Sentinel Frame tag to the active/selected camera (v1.8.0)
 
     # Quick Actions
