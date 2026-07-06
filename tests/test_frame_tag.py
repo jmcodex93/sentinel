@@ -1,5 +1,7 @@
 import importlib
 
+import pytest
+
 
 def test_frame_tag_imports_under_fake_c4d(sentinel_module):
     frame_tag = importlib.import_module("sentinel.ui.frame_tag")
@@ -46,6 +48,60 @@ def test_frame_tag_intersection_uses_all_guides(sentinel_module):
     )
 
     assert rect == {"left": -0.25, "right": 0.25, "bottom": -0.5, "top": 0.5}
+
+
+def test_frame_tag_inline_rects_compute_from_tag_params_without_rect_cache(sentinel_module):
+    frame_tag = importlib.import_module("sentinel.ui.frame_tag")
+
+    tag = {}
+    for index, _fmt in enumerate(frame_tag._format_defs()):
+        tag[frame_tag._format_ids(index)["enabled"]] = False
+
+    vertical_index = 1
+    ids = frame_tag._format_ids(vertical_index)
+    tag[ids["enabled"]] = True
+    tag[ids["nudge_x"]] = 0.25
+    tag[ids["nudge_y"]] = -0.5
+
+    custom_insets = {
+        "9x16": {"top": 0.10, "bottom": 0.20, "left": 0.03, "right": 0.12},
+    }
+    frame_tag._write_platform_insets_to_node(tag, custom_insets)
+
+    rects = frame_tag._compute_inline_rects(tag, 16.0 / 9.0)
+
+    assert not hasattr(frame_tag, "_RECT_CACHE_BY_NODE")
+    assert len(rects) == 1
+    entry = rects[0]
+    assert entry["id"] == "9x16"
+    assert entry["width"] == 1080
+    assert entry["height"] == 1920
+
+    expected_guide = frame_tag.framing.crop_rect_in_master_ndc(
+        1080,
+        1920,
+        16.0 / 9.0,
+        (0.25, -0.5),
+    )
+    assert entry["guide"] == {
+        "left": pytest.approx(expected_guide[0]),
+        "bottom": pytest.approx(expected_guide[1]),
+        "right": pytest.approx(expected_guide[2]),
+        "top": pytest.approx(expected_guide[3]),
+    }
+
+    expected_platform = frame_tag.format_safe_area_in_master_ndc(
+        "9x16",
+        16.0 / 9.0,
+        frame_tag._InlineRulesContext(custom_insets),
+        offset=(0.25, -0.5),
+    )
+    assert entry["platform"] == {
+        "left": pytest.approx(expected_platform["left"]),
+        "right": pytest.approx(expected_platform["right"]),
+        "bottom": pytest.approx(expected_platform["bottom"]),
+        "top": pytest.approx(expected_platform["top"]),
+    }
 
 
 def test_legacy_overlay_suppression_detects_active_frame_tag(sentinel_module):

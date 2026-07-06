@@ -8,7 +8,7 @@ from sentinel import framing
 from sentinel.common.settings import GlobalSettings
 from sentinel.multiformat import MULTIFORMAT_DEFS, get_multiformat_def
 from sentinel.rules import get_active_rules
-from sentinel.safe_areas import format_safe_area_in_master_ndc, resolve_take_projection_params
+from sentinel.safe_areas import SAFE_AREA_INSETS, format_safe_area_in_master_ndc, resolve_take_projection_params
 from sentinel.ui.overlay import _SAFE_AREA_COLORS
 
 
@@ -32,6 +32,11 @@ ID_SCHEMA_VERSION = 1007
 # Per-format params: 1100s+, fixed stride per MULTIFORMAT_DEFS entry.
 ID_FORMAT_BASE = 1100
 ID_FORMAT_STRIDE = 20
+
+# Private per-format platform insets: stored on the tag container so Draw can
+# stay read-only and avoid resolving sentinel_rules.json on the draw thread.
+ID_PLATFORM_INSET_BASE = 2000
+ID_PLATFORM_INSET_STRIDE = 10
 
 # Actions: 3000s. Declared only in U2; command logic is U5.
 ID_GROUP_ACTIONS = 3000
@@ -118,9 +123,6 @@ _ACTION_IDS = {
     ID_REMOVE_STALE,
     ID_MARK_SUBJECT,
 }
-
-_RECT_CACHE_BY_NODE = {}
-
 
 def _node_type(obj):
     if obj is None:
@@ -232,16 +234,6 @@ def _description_parent(param_id, dtype, node):
     return c4d.DescID(c4d.DescLevel(param_id, dtype, _node_creator_type(node)))
 
 
-def _node_cache_key(node):
-    try:
-        guid = node.GetGUID()
-        if guid is not None:
-            return str(guid)
-    except Exception:
-        pass
-    return id(node)
-
-
 def _doc_from_node(node):
     getter = getattr(node, "GetDocument", None)
     if callable(getter):
@@ -320,36 +312,144 @@ def _enabled_format_entries(node):
             _as_float(_get_node_value(node, ids["nudge_x"], 0.0), 0.0),
             _as_float(_get_node_value(node, ids["nudge_y"], 0.0), 0.0),
         )
-        entries.append((fmt, color, nudge))
+        entries.append((index, fmt, color, nudge))
     return entries
 
 
-def _params_signature(node):
-    signature = [
-        bool(_get_node_value(node, ID_ENABLED, True)),
-        bool(_get_node_value(node, ID_SHOW_GUIDES, True)),
-        bool(_get_node_value(node, ID_SHOW_MASK, False)),
-        bool(_get_node_value(node, ID_SHOW_PLATFORM, False)),
-        bool(_get_node_value(node, ID_SHOW_HUD, True)),
-    ]
-    for fmt, color, nudge in _enabled_format_entries(node):
+def _format_inset_ids(index):
+    base = ID_PLATFORM_INSET_BASE + (index * ID_PLATFORM_INSET_STRIDE)
+    return {
+        "top": base,
+        "bottom": base + 1,
+        "left": base + 2,
+        "right": base + 3,
+    }
+
+
+def _node_data_container(node):
+    getter = getattr(node, "GetDataInstance", None)
+    if callable(getter):
         try:
-            color_sig = (
-                round(float(color.x), 4),
-                round(float(color.y), 4),
-                round(float(color.z), 4),
-            )
+            return getter()
         except Exception:
-            color_sig = (0.6, 0.6, 0.6)
-        signature.append((fmt.get("id"), color_sig, round(nudge[0], 4), round(nudge[1], 4)))
-    return tuple(signature)
+            return None
+    return node if isinstance(node, dict) else None
 
 
-def _compute_rect_cache(node, doc):
-    rules_context = _active_rules_for_doc(doc)
-    master_aspect = _master_aspect_for_doc(doc)
+def _bc_get_data(bc, key):
+    if bc is None:
+        return None
+    getter = getattr(bc, "GetData", None)
+    if callable(getter):
+        try:
+            return getter(key)
+        except Exception:
+            return None
+    try:
+        return bc[key] if key in bc else None
+    except Exception:
+        return None
+
+
+def _bc_set_float(bc, key, value):
+    if bc is None:
+        return
+    setter = getattr(bc, "SetFloat", None)
+    if callable(setter):
+        try:
+            setter(key, float(value))
+            return
+        except Exception:
+            pass
+    setter = getattr(bc, "SetData", None)
+    if callable(setter):
+        try:
+            setter(key, float(value))
+            return
+        except Exception:
+            pass
+    try:
+        bc[key] = float(value)
+    except Exception:
+        pass
+
+
+def _coerce_insets(insets, fallback=None):
+    source = insets or fallback or {}
+    return {
+        "top": _as_float(source.get("top"), 0.0),
+        "bottom": _as_float(source.get("bottom"), 0.0),
+        "left": _as_float(source.get("left"), 0.0),
+        "right": _as_float(source.get("right"), 0.0),
+    }
+
+
+def _standard_platform_insets_by_format():
+    return {
+        fmt.get("id"): _coerce_insets(SAFE_AREA_INSETS.get(fmt.get("id")), None)
+        for fmt in _format_defs()
+    }
+
+
+def _resolved_platform_insets_by_format(doc):
+    insets_by_format = _standard_platform_insets_by_format()
+    try:
+        rules_context = _active_rules_for_doc(doc)
+        rule_insets = rules_context.params.get("safe_area_insets", {})
+    except Exception:
+        rule_insets = {}
+    for fmt_id, fallback in list(insets_by_format.items()):
+        insets_by_format[fmt_id] = _coerce_insets(rule_insets.get(fmt_id), fallback)
+    return insets_by_format
+
+
+def _write_platform_insets_to_node(node, insets_by_format):
+    bc = _node_data_container(node)
+    if bc is None:
+        return False
+    changed = False
+    for index, fmt in enumerate(_format_defs()):
+        fmt_id = fmt.get("id")
+        insets = _coerce_insets((insets_by_format or {}).get(fmt_id), SAFE_AREA_INSETS.get(fmt_id))
+        for side, param_id in _format_inset_ids(index).items():
+            value = float(insets[side])
+            old = _bc_get_data(bc, param_id)
+            try:
+                same = old is not None and abs(float(old) - value) <= 1e-9
+            except Exception:
+                same = False
+            if not same:
+                changed = True
+            _bc_set_float(bc, param_id, value)
+    return changed
+
+
+def _refresh_platform_insets(node):
+    if node is None or not _is_main_thread():
+        return False
+    return _write_platform_insets_to_node(node, _resolved_platform_insets_by_format(_doc_from_node(node)))
+
+
+class _InlineRulesContext:
+    def __init__(self, insets_by_format):
+        self.params = {"safe_area_insets": insets_by_format}
+
+
+def _platform_insets_for_entry(node, index, fmt_id):
+    bc = _node_data_container(node)
+    ids = _format_inset_ids(index)
+    values = {}
+    for side, param_id in ids.items():
+        value = _bc_get_data(bc, param_id)
+        if value is None:
+            return _coerce_insets(SAFE_AREA_INSETS.get(fmt_id), None)
+        values[side] = _as_float(value, 0.0)
+    return _coerce_insets(values, SAFE_AREA_INSETS.get(fmt_id))
+
+
+def _compute_inline_rects(node, master_aspect):
     formats = []
-    for fmt, color, nudge in _enabled_format_entries(node):
+    for index, fmt, color, nudge in _enabled_format_entries(node):
         fmt_id = fmt.get("id")
         try:
             guide = framing.crop_rect_in_master_ndc(
@@ -358,10 +458,11 @@ def _compute_rect_cache(node, doc):
                 master_aspect,
                 nudge,
             )
+            insets = _platform_insets_for_entry(node, index, fmt_id)
             safe_rect = format_safe_area_in_master_ndc(
                 fmt_id,
                 master_aspect,
-                rules_context,
+                _InlineRulesContext({fmt_id: insets}),
                 offset=nudge,
             )
         except Exception:
@@ -382,48 +483,19 @@ def _compute_rect_cache(node, doc):
                 "platform": safe_rect,
             }
         )
-    return {
-        "signature": _params_signature(node),
-        "rules_identity": getattr(rules_context, "identity", None),
-        "master_aspect": master_aspect,
-        "formats": formats,
-    }
+    return formats
 
 
-def _invalidate_rect_cache(node):
-    _RECT_CACHE_BY_NODE.pop(_node_cache_key(node), None)
-
-
-def _refresh_rect_cache_if_needed(node, force=False):
-    if node is None or not _is_main_thread():
-        return False
-    doc = _doc_from_node(node)
-    if doc is None:
-        return False
-    key = _node_cache_key(node)
-    current = _RECT_CACHE_BY_NODE.get(key)
-    signature = _params_signature(node)
+def _master_aspect_from_safe_frame(safe_frame):
     try:
-        rules_identity = getattr(_active_rules_for_doc(doc), "identity", None)
+        cl, ct, cr, cb = safe_frame
+        width = float(cr - cl)
+        height = float(cb - ct)
+        if width > 0.0 and height > 0.0:
+            return width / height
     except Exception:
-        rules_identity = None
-    if (
-        not force
-        and current is not None
-        and current.get("signature") == signature
-        and current.get("rules_identity") == rules_identity
-    ):
-        return False
-    cache = _compute_rect_cache(node, doc)
-    _RECT_CACHE_BY_NODE[key] = cache
-    return True
-
-
-def _cached_rects(node):
-    cache = _RECT_CACHE_BY_NODE.get(_node_cache_key(node))
-    if not cache:
-        return []
-    return list(cache.get("formats") or [])
+        pass
+    return None
 
 
 def _safe_frame_rect(bd):
@@ -689,7 +761,7 @@ class SentinelFrameTag(_TagDataBase):
             except Exception:
                 pass
 
-        _invalidate_rect_cache(node)
+        _write_platform_insets_to_node(node, _standard_platform_insets_by_format())
         return True
 
     def GetDDescription(self, node, description, flags):
@@ -806,12 +878,13 @@ class SentinelFrameTag(_TagDataBase):
         if not _as_bool(_get_node_value(tag, ID_ENABLED, True), True):
             return True
 
-        rects = _cached_rects(tag)
-        if not rects:
-            return True
-
         safe_frame = _safe_frame_rect(bd)
         if safe_frame is None:
+            return True
+
+        master_aspect = _master_aspect_from_safe_frame(safe_frame) or _master_aspect_for_doc(doc)
+        rects = _compute_inline_rects(tag, master_aspect)
+        if not rects:
             return True
 
         show_guides = _as_bool(_get_node_value(tag, ID_SHOW_GUIDES, True), True)
@@ -868,9 +941,8 @@ class SentinelFrameTag(_TagDataBase):
         post_set = getattr(c4d, "MSG_DESCRIPTION_POSTSETPARAMETER", None)
         if post_set is not None and mid == post_set:
             force_refresh = True
-            _invalidate_rect_cache(node)
-        cache_refreshed = _refresh_rect_cache_if_needed(node, force=force_refresh)
-        if force_refresh or cache_refreshed:
+        insets_refreshed = _refresh_platform_insets(node)
+        if force_refresh or insets_refreshed:
             _notify_overlay_suppression_changed(node)
         try:
             return super().Message(node, mid, data)
