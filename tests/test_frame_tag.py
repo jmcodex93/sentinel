@@ -27,13 +27,15 @@ def test_is_valid_camera_host_rejects_non_cameras(sentinel_module):
 def test_composition_mode_maps_tag_cycle_to_engine_string(sentinel_module):
     frame_tag = importlib.import_module("sentinel.ui.frame_tag")
 
+    assert frame_tag.composition_mode_for_engine(frame_tag.COMPOSITION_CROP) == "crop"
     assert frame_tag.composition_mode_for_engine(frame_tag.COMPOSITION_OFF) == "none"
     assert frame_tag.composition_mode_for_engine(frame_tag.COMPOSITION_RESIZE_CANVAS) == "resize_canvas"
     assert (
         frame_tag.composition_mode_for_engine(frame_tag.COMPOSITION_PRESERVE_VERTICAL)
         == frame_tag.framing.COMPENSATE_PRESERVE_VERTICAL
     )
-    assert frame_tag.composition_mode_for_engine(99999) == "none"
+    # Unknown -> the default mode (crop), not "none".
+    assert frame_tag.composition_mode_for_engine(99999) == "crop"
 
 
 def test_film_offsets_include_only_enabled_formats(sentinel_module):

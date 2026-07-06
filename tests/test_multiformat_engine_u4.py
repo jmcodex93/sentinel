@@ -329,6 +329,36 @@ def test_existing_take_resolver_is_rename_safe_and_avoids_duplicates(sentinel_mo
     assert links["16x9"].GetName() == "CamB_16x9"
 
 
+def test_crop_mode_overrides_aperture_and_gate_relative_film_offset(sentinel_module):
+    # The default "crop" mode must scale the film gate (aperture) to the
+    # inscribed crop and pan with a gate-relative film offset — matching the
+    # viewport guide (WYSIWYG), leaving focal length untouched.
+    mf = sentinel_module.multiformat
+    doc = FakeDocument(sentinel_module.c4d)  # source 1920x1080, aperture 36
+
+    mf.generate_multiformat_takes(
+        doc,
+        {
+            "formats": ["1x1"],
+            "name_prefix": "CamA",
+            "composition_mode": "crop",
+            "film_offsets": {"1x1": (1.0, 0.0)},  # full-right nudge
+        },
+    )
+
+    take = _child_by_name(doc.take_data.main, "CamA_1x1")
+    override = take.FindOverride(doc.take_data, doc.camera)
+    exp_ap, exp_fx, exp_fy = framing.format_crop_values(
+        36.0, 1920, 1080, 1080, 1080, (1.0, 0.0), 0.0, 0.0)
+
+    assert override.params[framing.CAMERAOBJECT_APERTURE] == pytest.approx(exp_ap)
+    assert override.params[framing.CAMERAOBJECT_APERTURE] == pytest.approx(20.25)
+    assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] == pytest.approx(exp_fx)
+    assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_Y] == pytest.approx(exp_fy)
+    # Focal length is NOT overridden in crop mode (DOF/zoom preserved).
+    assert framing.CAMERA_FOCUS not in override.params
+
+
 def test_external_undo_skips_engine_undo_block(sentinel_module):
     # The tag owns the undo block (so a single Cmd+Z reverts takes + its
     # BaseLink/signature writes); the engine must not open a nested one.

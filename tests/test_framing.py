@@ -122,6 +122,44 @@ def test_format_camera_framing_values_off_does_not_override_focus():
     assert film_y == pytest.approx(0.0)
 
 
+def test_format_crop_values_narrower_target_crops_aperture_and_pans_gate_relative():
+    # 1:1 from 16:9 (1280x720 master): aperture scales by target/source aspect,
+    # and a full nudge pans by the GATE-relative travel (source/target - 1)/2.
+    src_ap = 36.0
+    src_w, src_h = 1280.0, 720.0
+    tw, th = 1080.0, 1080.0
+    sa = src_w / src_h
+    ta = tw / th
+
+    ap, fx, fy = framing.format_crop_values(src_ap, src_w, src_h, tw, th, nudge=(1.0, 0.0))
+    assert ap == pytest.approx(src_ap * (ta / sa))          # 36 * (1/1.777) = 20.25
+    assert ap == pytest.approx(20.25)
+    assert fx == pytest.approx((sa / ta - 1.0) * 0.5)       # 0.389 (full right)
+    assert fy == pytest.approx(0.0)                          # 1:1 has no vertical travel
+
+    # Centered (no nudge) leaves film offset at the source value.
+    ap0, fx0, fy0 = framing.format_crop_values(src_ap, src_w, src_h, tw, th, nudge=(0.0, 0.0),
+                                               source_film_x=0.02, source_film_y=-0.01)
+    assert ap0 == pytest.approx(20.25)
+    assert fx0 == pytest.approx(0.02)
+    assert fy0 == pytest.approx(-0.01)
+
+
+def test_format_crop_values_wider_target_keeps_aperture_and_pans_vertically():
+    # 21:9 from 16:9: wider than source -> aperture unchanged, aspect crops
+    # top/bottom, and the nudge pans VERTICALLY.
+    src_ap = 36.0
+    src_w, src_h = 1920.0, 1080.0
+    tw, th = 2560.0, 1080.0
+    sa = src_w / src_h
+    ta = tw / th
+
+    ap, fx, fy = framing.format_crop_values(src_ap, src_w, src_h, tw, th, nudge=(1.0, 1.0))
+    assert ap == pytest.approx(src_ap)                       # min(1, ta/sa)=1 -> unchanged
+    assert fx == pytest.approx(0.0)                          # no horizontal travel
+    assert fy == pytest.approx((ta / sa - 1.0) * 0.5)        # vertical travel
+
+
 def test_crop_rect_in_master_ndc_uses_camera_ndc_convention():
     rect = framing.crop_rect_in_master_ndc(1080, 1920, 16.0 / 9.0)
     crop_x = (9.0 / 16.0) / (16.0 / 9.0)

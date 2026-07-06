@@ -113,13 +113,18 @@ COMPOSITION_MODE_RESIZE_CANVAS = "resize_canvas"
 #     - C4D physical/RS cameras don't clamp aperture overrides (FOV is the
 #       derived value), so this works in both directions (wider AND narrower)
 
+# "crop" — TRUE inscribed crop that matches the viewport guides (WYSIWYG),
+#   implemented by scaling the film gate (aperture) to the inscribed rect and
+#   panning with a gate-relative film offset. Focal length is untouched so DOF
+#   and zoom animations stay intact. This is the Sentinel Frame default.
+COMPOSITION_MODE_CROP = "crop"
+
+# Legacy focal-compensation modes kept for the old Multi-Format dialog path.
 COMPOSITION_MODE_PRESERVE_VERTICAL = framing.COMPENSATE_PRESERVE_VERTICAL
 COMPOSITION_MODE_PRESERVE_HORIZONTAL = framing.COMPENSATE_PRESERVE_HORIZONTAL
-COMPOSITION_MODE_CROP = framing.COMPENSATE_CROP
 FOCAL_COMPOSITION_MODES = (
     COMPOSITION_MODE_PRESERVE_VERTICAL,
     COMPOSITION_MODE_PRESERVE_HORIZONTAL,
-    COMPOSITION_MODE_CROP,
 )
 
 
@@ -657,76 +662,67 @@ def generate_multiformat_takes(doc, options):
                 report["errors"].append(f"Render data setup failed for {take_name}: {e}")
                 continue
 
-            # Camera dimension overrides — depends on composition_mode.
+            # Camera overrides — depend on composition_mode.
             #
-            # Mode "none": no camera changes; clear any stale FOV/focal/
-            #   aperture overrides from prior runs (early v1.5.5 dev iterations
-            #   wrote focal-length overrides as "Auto-FOV" — those produce
-            #   weird per-format framing under the new default). We "clear"
-            #   defensively by setting overrides back to the camera's native
-            #   values, since RemoveOverrideParam isn't reliably exposed in
-            #   Python across C4D versions.
-            #
-            # Mode "resize_canvas": override CAMERAOBJECT_APERTURE per format
-            #   using AR_ResizeCanvas math: `new_aperture = src_aperture *
-            #   target_width / src_width`. We use the SENSOR (aperture)
-            #   instead of focal length because:
-            #     - Doesn't break focal-length animations (zooms / lens pulls)
-            #     - Doesn't disturb DOF calculations (DOF reads focal+f-stop)
-            #     - Aperture overrides aren't clamped by C4D physical
-            #       cameras (FOV is the derived value, aperture and focal
-            #       are the masters)
+            # "crop" (Sentinel Frame default): a TRUE inscribed crop that
+            #   matches the viewport guides exactly (WYSIWYG). Scales the film
+            #   gate (aperture) to the inscribed rect and pans with a gate-
+            #   relative film offset, leaving focal length untouched so DOF and
+            #   zoom animations are preserved. See framing.format_crop_values.
+            # "none": camera unchanged (C4D keeps horizontal FOV, aspect changes
+            #   vertical extent — wider formats crop, narrower ones EXTEND, so
+            #   this does NOT match the crop guides for narrower formats). The
+            #   nudge, if any, pans via a master-relative film offset.
+            # "resize_canvas" / focal modes: legacy Multi-Format dialog paths.
             if source_cam:
                 try:
-                    if composition_mode == COMPOSITION_MODE_NONE:
+                    try:
+                        src_film_x = float(
+                            source_cam[framing.CAMERAOBJECT_FILM_OFFSET_X])
+                    except Exception:
+                        src_film_x = 0.0
+                    try:
+                        src_film_y = float(
+                            source_cam[framing.CAMERAOBJECT_FILM_OFFSET_Y])
+                    except Exception:
+                        src_film_y = 0.0
+                    nudge = film_offsets.get(fmt_id)
+                    tw = int(fmt_def["width"])
+                    th = int(fmt_def["height"])
+
+                    if composition_mode == COMPOSITION_MODE_CROP:
+                        aperture, film_x, film_y = framing.format_crop_values(
+                            src_aperture, src_w, src_h, tw, th,
+                            nudge, src_film_x, src_film_y)
                         _reset_camera_dimensions_to_native(take, td, source_cam)
+                        # Redshift Orscamera shares these ids (verified live).
+                        _set_camera_override(
+                            take, td, source_cam,
+                            framing.CAMERAOBJECT_APERTURE, aperture)
+                        _set_camera_override(
+                            take, td, source_cam,
+                            framing.CAMERAOBJECT_FILM_OFFSET_X, float(film_x))
+                        _set_camera_override(
+                            take, td, source_cam,
+                            framing.CAMERAOBJECT_FILM_OFFSET_Y, float(film_y))
                     elif composition_mode == COMPOSITION_MODE_RESIZE_CANVAS:
-                        target_w = int(fmt_def["width"])
                         new_aperture = compute_target_aperture(
-                            src_aperture, src_w, target_w)
+                            src_aperture, src_w, tw)
                         _set_camera_override(
                             take, td, source_cam,
                             framing.CAMERAOBJECT_APERTURE, new_aperture)
                     elif composition_mode in FOCAL_COMPOSITION_MODES:
                         _reset_camera_dimensions_to_native(take, td, source_cam)
                         new_focal = framing.compensated_focus(
-                            src_focal,
-                            src_w,
-                            src_h,
-                            int(fmt_def["width"]),
-                            int(fmt_def["height"]),
-                            composition_mode,
-                        )
+                            src_focal, src_w, src_h, tw, th, composition_mode)
                         _set_camera_override(
                             take, td, source_cam, framing.CAMERA_FOCUS, new_focal)
-
-                    # Per-format framing nudge -> film offset. The nudge is a
-                    # FRACTION of available travel (same value the viewport
-                    # guide uses); it must be scaled by the per-format film
-                    # travel so the generated Take matches the guide exactly
-                    # (WYSIWYG). Writing the raw nudge would shift the render
-                    # far more than the guide shows. This mirrors framing.
-                    # crop_rect_in_master_ndc and the C4DMultiFrame reference.
-                    # The nudge reframes in EVERY mode (including "none"), which
-                    # is its purpose — it is independent of the lens/sensor
-                    # compensation handled above.
-                    if fmt_id in film_offsets:
-                        try:
-                            try:
-                                src_film_x = float(
-                                    source_cam[framing.CAMERAOBJECT_FILM_OFFSET_X])
-                            except Exception:
-                                src_film_x = 0.0
-                            try:
-                                src_film_y = float(
-                                    source_cam[framing.CAMERAOBJECT_FILM_OFFSET_Y])
-                            except Exception:
-                                src_film_y = 0.0
-                            # Redshift Orscamera shares these ids (verified live).
-                            _focus, film_x, film_y = framing.format_camera_framing_values(
-                                src_focal, src_w, src_h,
-                                int(fmt_def["width"]), int(fmt_def["height"]),
-                                framing.COMPENSATE_OFF, film_offsets[fmt_id],
+                    else:  # "none" — camera unchanged; nudge pans (master-relative)
+                        _reset_camera_dimensions_to_native(take, td, source_cam)
+                        if nudge is not None:
+                            _f, film_x, film_y = framing.format_camera_framing_values(
+                                src_focal, src_w, src_h, tw, th,
+                                framing.COMPENSATE_OFF, nudge,
                                 src_film_x, src_film_y)
                             _set_camera_override(
                                 take, td, source_cam,
@@ -734,9 +730,6 @@ def generate_multiformat_takes(doc, options):
                             _set_camera_override(
                                 take, td, source_cam,
                                 framing.CAMERAOBJECT_FILM_OFFSET_Y, float(film_y))
-                        except Exception as e:
-                            report["errors"].append(
-                                f"Film offset setup failed for {take_name}: {e}")
                 except Exception as e:
                     report["errors"].append(
                         f"Camera dimension setup failed for {take_name}: {e}")

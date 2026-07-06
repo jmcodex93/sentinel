@@ -67,29 +67,29 @@ ID_SET_OUTPUT = 3002
 ID_REMOVE_STALE = 3003
 ID_MARK_SUBJECT = 3004
 
-COMPOSITION_OFF = 0
-COMPOSITION_PRESERVE_VERTICAL = 1
-COMPOSITION_PRESERVE_HORIZONTAL = 2
-COMPOSITION_CROP = 3
+# Crop is the default: a true inscribed crop that matches the viewport guides
+# exactly (WYSIWYG) by scaling the film gate (aperture) and panning with a
+# gate-relative film offset — focal length untouched, so DOF/zoom are intact.
+# "None" leaves the camera alone (C4D keeps horizontal FOV; narrower formats
+# EXTEND vertically rather than crop, so guides are only a reference there).
+# The legacy focal/resize modes are kept as constants for back-compat mapping
+# but are intentionally NOT offered in the cycle (they broke WYSIWYG).
+COMPOSITION_CROP = 0
+COMPOSITION_OFF = 1
+COMPOSITION_PRESERVE_VERTICAL = 2
+COMPOSITION_PRESERVE_HORIZONTAL = 3
 COMPOSITION_RESIZE_CANVAS = 4
 
-# Labels lead with what happens to the CAMERA so an artist can choose without
-# reading docs. "Preserve Horizontal" is intentionally NOT offered: its focal
-# math is a no-op (same in the C4DMultiFrame reference), so it would behave
-# identically to "None" and only confuse. The constant + mapping below stay for
-# forward-compat but the cycle does not expose it.
 COMPOSITION_CYCLE = (
+    (COMPOSITION_CROP, "Crop to Guides (default)"),
     (COMPOSITION_OFF, "None (camera unchanged)"),
-    (COMPOSITION_PRESERVE_VERTICAL, "Preserve Vertical FOV (adjust lens)"),
-    (COMPOSITION_CROP, "Fill / Zoom to Cover (adjust lens)"),
-    (COMPOSITION_RESIZE_CANVAS, "Resize Sensor (keep lens & DOF)"),
 )
 
 COMPOSITION_MODE_TO_FRAMING = {
+    COMPOSITION_CROP: "crop",
     COMPOSITION_OFF: "none",
     COMPOSITION_PRESERVE_VERTICAL: framing.COMPENSATE_PRESERVE_VERTICAL,
     COMPOSITION_PRESERVE_HORIZONTAL: framing.COMPENSATE_PRESERVE_HORIZONTAL,
-    COMPOSITION_CROP: framing.COMPENSATE_CROP,
     COMPOSITION_RESIZE_CANVAS: "resize_canvas",
 }
 
@@ -376,8 +376,8 @@ def composition_mode_for_engine(composition_id):
     try:
         mode_id = int(composition_id)
     except Exception:
-        mode_id = COMPOSITION_OFF
-    return COMPOSITION_MODE_TO_FRAMING.get(mode_id, "none")
+        mode_id = COMPOSITION_CROP
+    return COMPOSITION_MODE_TO_FRAMING.get(mode_id, "crop")
 
 
 def _enabled_format_ids_from_params(node):
@@ -422,7 +422,7 @@ def _params_payload_for_takes(node):
         )
     return {
         "composition_mode": composition_mode_for_engine(
-            _get_node_value(node, ID_COMPOSITION, COMPOSITION_OFF)
+            _get_node_value(node, ID_COMPOSITION, COMPOSITION_CROP)
         ),
         "formats": formats,
     }
@@ -1106,7 +1106,7 @@ class SentinelFrameTag(_TagDataBase):
         self._init_attr(node, float, ID_MASK_OPACITY)
 
         _set_node_value(node, ID_ENABLED, True)
-        _set_node_value(node, ID_COMPOSITION, COMPOSITION_OFF)
+        _set_node_value(node, ID_COMPOSITION, COMPOSITION_CROP)
         _set_node_value(node, ID_SHOW_GUIDES, True)
         _set_node_value(node, ID_SHOW_MASK, False)
         _set_node_value(node, ID_MASK_OPACITY, 0.5)
@@ -1255,7 +1255,7 @@ class SentinelFrameTag(_TagDataBase):
             # the viewport/Main take resolves to — the tag is per-camera.
             "source_cam": host,
             "composition_mode": composition_mode_for_engine(
-                _get_node_value(node, ID_COMPOSITION, COMPOSITION_OFF)
+                _get_node_value(node, ID_COMPOSITION, COMPOSITION_CROP)
             ),
             "film_offsets": _film_offsets_from_params(node),
             "tag_link_writer": _tag_link_writer,

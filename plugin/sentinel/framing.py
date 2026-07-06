@@ -199,6 +199,45 @@ def compensated_focus(
     return focus
 
 
+def format_crop_values(
+    source_aperture: float,
+    src_w: float,
+    src_h: float,
+    tgt_w: float,
+    tgt_h: float,
+    nudge: Optional[tuple[float, float]] = None,
+    source_film_x: float = 0.0,
+    source_film_y: float = 0.0,
+) -> tuple[float, float, float]:
+    """Return ``(aperture, film_x, film_y)`` for a TRUE inscribed crop.
+
+    This is the WYSIWYG crop that matches the viewport guide exactly while
+    preserving focal length (so DOF and zoom animations are untouched):
+
+    * The film gate (aperture) is scaled to the inscribed crop.  For a target
+      NARROWER than the source it shrinks by ``target_aspect / source_aspect``
+      (crops the sides); for a WIDER target the aperture is unchanged and the
+      taller-vs-wider aspect crops the top/bottom on its own.
+    * The nudge pans the crop within the master.  C4D's film offset is
+      GATE-relative (an offset of 1.0 shifts by a full frame width), so the
+      per-full-nudge travel is ``(source_aspect/target_aspect - 1)/2`` on the
+      axis that actually has room.  (Using the master-relative travel here
+      would under-pan a cropped gate.)
+    """
+    sa = _aspect(src_w, src_h, fallback=0.0)
+    ta = _aspect(tgt_w, tgt_h, fallback=0.0)
+    if sa <= 0.0 or ta <= 0.0:
+        return (float(source_aperture), float(source_film_x), float(source_film_y))
+
+    offset_x, offset_y = _coerce_nudge(nudge)
+    aperture = float(source_aperture) * min(1.0, ta / sa)
+    max_film_x = max(0.0, sa / ta - 1.0) * 0.5  # horizontal travel (narrower targets)
+    max_film_y = max(0.0, ta / sa - 1.0) * 0.5  # vertical travel (wider targets)
+    film_x = float(source_film_x) + max_film_x * offset_x
+    film_y = float(source_film_y) + max_film_y * offset_y
+    return (aperture, film_x, film_y)
+
+
 def format_camera_framing_values(
     source_focal: float,
     src_w: float,
