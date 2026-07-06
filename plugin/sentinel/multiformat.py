@@ -5,6 +5,8 @@ import math as _math
 
 import c4d
 
+from sentinel import framing
+
 # ---------------- Multi-Format Render Setup ----------------
 # Generates C4D Takes for each delivery aspect ratio (16:9, 9:16, 1:1, 4:5,
 # 21:9). Each Take overrides the render data resolution + output path, and
@@ -111,6 +113,15 @@ COMPOSITION_MODE_RESIZE_CANVAS = "resize_canvas"
 #     - C4D physical/RS cameras don't clamp aperture overrides (FOV is the
 #       derived value), so this works in both directions (wider AND narrower)
 
+COMPOSITION_MODE_PRESERVE_VERTICAL = framing.COMPENSATE_PRESERVE_VERTICAL
+COMPOSITION_MODE_PRESERVE_HORIZONTAL = framing.COMPENSATE_PRESERVE_HORIZONTAL
+COMPOSITION_MODE_CROP = framing.COMPENSATE_CROP
+FOCAL_COMPOSITION_MODES = (
+    COMPOSITION_MODE_PRESERVE_VERTICAL,
+    COMPOSITION_MODE_PRESERVE_HORIZONTAL,
+    COMPOSITION_MODE_CROP,
+)
+
 
 def compute_target_aperture(source_aperture, source_width, target_width):
     """AR_ResizeCanvas formula for sensor-size resize.
@@ -200,6 +211,16 @@ def take_name_for_format(fmt_def, source_take_name=""):
     return fid
 
 
+def _take_name_for_options(fmt_def, source_take_name="", name_prefix=None):
+    """Compose the Take name, optionally scoped to a camera/tag prefix."""
+    if not fmt_def:
+        return ""
+    prefix = (name_prefix or "").strip()
+    if prefix:
+        return f"{prefix}_{fmt_def.get('id', '')}"
+    return take_name_for_format(fmt_def, source_take_name)
+
+
 def _find_take_by_name(takeData, name):
     """Walk all takes (depth-first) and return the first with matching name."""
     if not takeData or not name:
@@ -224,6 +245,76 @@ def _find_take_by_name(takeData, name):
         return None
 
     return _walk(main.GetDown())
+
+
+def _walk_child_takes(takeData):
+    """Yield every non-main take depth-first."""
+    if not takeData:
+        return
+    try:
+        main = takeData.GetMainTake()
+    except Exception:
+        main = None
+    if not main:
+        return
+
+    def _walk(node):
+        while node:
+            yield node
+            child = node.GetDown()
+            if child:
+                for found in _walk(child):
+                    yield found
+            node = node.GetNext()
+
+    for take in _walk(main.GetDown()):
+        yield take
+
+
+def _existing_prefixed_format_ids(takeData, name_prefix):
+    """Return fmt ids for existing takes named '<prefix>_<fmt_id>'."""
+    prefix = (name_prefix or "").strip()
+    if not prefix:
+        return set()
+    name_to_id = {
+        f"{prefix}_{fmt_def['id']}": fmt_def["id"]
+        for fmt_def in MULTIFORMAT_DEFS
+    }
+    found = set()
+    for take in _walk_child_takes(takeData):
+        try:
+            fmt_id = name_to_id.get(take.GetName())
+        except Exception:
+            fmt_id = None
+        if fmt_id:
+            found.add(fmt_id)
+    return found
+
+
+def _real_descid(param_id):
+    """Build a REAL parameter DescID."""
+    return c4d.DescID(c4d.DescLevel(param_id, c4d.DTYPE_REAL, 0))
+
+
+def _read_real_param(node, param_id, fallback):
+    try:
+        value = float(node[param_id])
+        if value > 0 or fallback <= 0:
+            return value
+    except Exception:
+        pass
+    return fallback
+
+
+def _set_camera_override(take, takeData, cam, param_id, value):
+    """Find-or-add and explicitly set a camera override parameter."""
+    descid = _real_descid(param_id)
+    ovr = take.FindOrAddOverrideParam(takeData, cam, descid, value)
+    if ovr:
+        # C4D's API is find-OR-add; SetParameter makes re-runs idempotent.
+        ovr.SetParameter(descid, value, c4d.DESCFLAGS_SET_0)
+        ovr.UpdateSceneNode(takeData, descid)
+    return ovr
 
 
 def _resolve_source_render_data(source_take, takeData, doc):
@@ -292,12 +383,14 @@ def _reset_camera_dimensions_to_native(take, takeData, cam):
     # Parameters Sentinel may have touched in any prior version
     targets = [
         (c4d.CAMERAOBJECT_FOV, c4d.CAMERAOBJECT_FOV),
-        (c4d.CAMERA_FOCUS, c4d.CAMERA_FOCUS),
-        (c4d.CAMERAOBJECT_APERTURE, c4d.CAMERAOBJECT_APERTURE),
+        (framing.CAMERA_FOCUS, framing.CAMERA_FOCUS),
+        (framing.CAMERAOBJECT_APERTURE, framing.CAMERAOBJECT_APERTURE),
+        (framing.CAMERAOBJECT_FILM_OFFSET_X, framing.CAMERAOBJECT_FILM_OFFSET_X),
+        (framing.CAMERAOBJECT_FILM_OFFSET_Y, framing.CAMERAOBJECT_FILM_OFFSET_Y),
     ]
     for param_id, native_attr in targets:
         try:
-            descid = c4d.DescID(c4d.DescLevel(param_id, c4d.DTYPE_REAL, 0))
+            descid = _real_descid(param_id)
             if not ovr.IsOverriddenParam(descid):
                 continue
             try:
@@ -337,9 +430,19 @@ def generate_multiformat_takes(doc, options):
         options: dict with keys:
             - formats: list of fmt_id strings (e.g., ['16x9', '9x16'])
             - output_mode: 'subfolder' or 'suffix'
-            - composition_mode: 'none' | 'resize_canvas' (default: 'none')
+            - composition_mode: 'none' | 'resize_canvas' |
+              'preserve_vertical' | 'preserve_horizontal' | 'crop'
+              (default: 'none')
             - update_existing: bool — reuse takes with same name if present
             - source_take: BaseTake (optional, defaults to current take)
+            - name_prefix: optional camera/tag prefix. When present, takes
+              are named '<name_prefix>_<fmt_id>' and existing prefixed takes
+              outside the requested formats are reported as orphaned.
+            - film_offsets: optional dict fmt_id -> (x, y) camera film offset
+              override values.
+            - tag_link_writer: optional callback(fmt_id, take). This keeps
+              BaseLink tracking owned by the tag/UI layer while letting the
+              engine expose the created/adopted take objects at the right time.
 
     Returns:
         dict report:
@@ -347,6 +450,8 @@ def generate_multiformat_takes(doc, options):
             created: list[str] — take names that were freshly created
             updated: list[str] — take names that were updated in place
             skipped: list[str] — takes that existed and update_existing was False
+            orphaned: list[str] — prefixed fmt ids that exist but were not requested
+            adopted: list[str] — existing prefixed takes updated in place
             errors: list[str] — non-fatal issues encountered
             source_take_name, source_resolution, composition_mode
     """
@@ -355,6 +460,8 @@ def generate_multiformat_takes(doc, options):
         "created": [],
         "updated": [],
         "skipped": [],
+        "orphaned": [],
+        "adopted": [],
         "errors": [],
         "source_take_name": "",
         "source_resolution": None,
@@ -391,19 +498,24 @@ def generate_multiformat_takes(doc, options):
     # Source aperture (sensor width in mm) — used by Resize Canvas mode.
     # Standard 35mm-equivalent default = 36mm.
     src_aperture = 36.0
+    src_focal = 36.0
     if source_cam:
-        try:
-            ap = float(source_cam[c4d.CAMERAOBJECT_APERTURE])
-            if ap > 0:
-                src_aperture = ap
-        except Exception:
-            pass
+        src_aperture = _read_real_param(
+            source_cam, framing.CAMERAOBJECT_APERTURE, src_aperture)
+        src_focal = _read_real_param(source_cam, framing.CAMERA_FOCUS, src_focal)
 
     composition_mode = options.get("composition_mode", COMPOSITION_MODE_NONE)
     update_existing = bool(options.get("update_existing", True))
     output_mode = options.get("output_mode", "subfolder")
     formats = options.get("formats") or []
+    requested_formats = set(formats)
+    name_prefix = options.get("name_prefix")
+    film_offsets = options.get("film_offsets") or {}
+    tag_link_writer = options.get("tag_link_writer")
     report["composition_mode"] = composition_mode
+    report["orphaned"] = sorted(
+        _existing_prefixed_format_ids(td, name_prefix) - requested_formats
+    )
 
     doc.StartUndo()
     try:
@@ -413,7 +525,8 @@ def generate_multiformat_takes(doc, options):
                 report["errors"].append(f"Unknown format: {fmt_id}")
                 continue
 
-            take_name = take_name_for_format(fmt_def, report["source_take_name"])
+            take_name = _take_name_for_options(
+                fmt_def, report["source_take_name"], name_prefix)
 
             existing = _find_take_by_name(td, take_name)
             if existing and not update_existing:
@@ -517,25 +630,54 @@ def generate_multiformat_takes(doc, options):
                         target_w = int(fmt_def["width"])
                         new_aperture = compute_target_aperture(
                             src_aperture, src_w, target_w)
-                        ap_id = c4d.DescID(c4d.DescLevel(
-                            c4d.CAMERAOBJECT_APERTURE, c4d.DTYPE_REAL, 0))
-                        ovr = take.FindOrAddOverrideParam(td, source_cam,
-                                                         ap_id, new_aperture)
-                        if ovr:
-                            # Force the value (FindOrAddOverrideParam is
-                            # find-OR-add, not find-and-update — explicit
-                            # SetParameter ensures the value is written).
-                            ovr.SetParameter(ap_id, new_aperture,
-                                             c4d.DESCFLAGS_SET_0)
-                            ovr.UpdateSceneNode(td, ap_id)
+                        _set_camera_override(
+                            take, td, source_cam,
+                            framing.CAMERAOBJECT_APERTURE, new_aperture)
+                    elif composition_mode in FOCAL_COMPOSITION_MODES:
+                        _reset_camera_dimensions_to_native(take, td, source_cam)
+                        new_focal = framing.compensated_focus(
+                            src_focal,
+                            src_w,
+                            src_h,
+                            int(fmt_def["width"]),
+                            int(fmt_def["height"]),
+                            composition_mode,
+                        )
+                        _set_camera_override(
+                            take, td, source_cam, framing.CAMERA_FOCUS, new_focal)
+
+                    if fmt_id in film_offsets:
+                        try:
+                            film_x, film_y = film_offsets[fmt_id]
+                            # Standard camera ids are verified. Redshift
+                            # Orscamera is expected to share these IDs in C4D
+                            # 2026; verify in Orscamera in C4D vivo.
+                            _set_camera_override(
+                                take, td, source_cam,
+                                framing.CAMERAOBJECT_FILM_OFFSET_X, float(film_x))
+                            _set_camera_override(
+                                take, td, source_cam,
+                                framing.CAMERAOBJECT_FILM_OFFSET_Y, float(film_y))
+                        except Exception as e:
+                            report["errors"].append(
+                                f"Film offset setup failed for {take_name}: {e}")
                 except Exception as e:
                     report["errors"].append(
                         f"Camera dimension setup failed for {take_name}: {e}")
 
             if is_update:
                 report["updated"].append(take_name)
+                if name_prefix:
+                    report["adopted"].append(take_name)
             else:
                 report["created"].append(take_name)
+
+            if callable(tag_link_writer):
+                try:
+                    tag_link_writer(fmt_id, take)
+                except Exception as e:
+                    report["errors"].append(
+                        f"Tag link writer failed for {take_name}: {e}")
 
         report["success"] = True
     except Exception as e:
@@ -545,4 +687,3 @@ def generate_multiformat_takes(doc, options):
         c4d.EventAdd()
 
     return report
-

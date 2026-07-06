@@ -1,0 +1,294 @@
+import pytest
+
+from sentinel import framing
+
+
+class FakeRenderData(dict):
+    def __init__(self, c4d, name="Source", width=1920, height=1080, path="out/$prj_$frame"):
+        super().__init__()
+        self._name = name
+        self[c4d.RDATA_XRES] = float(width)
+        self[c4d.RDATA_YRES] = float(height)
+        self[c4d.RDATA_PATH] = path
+
+    def GetClone(self, flags):
+        clone = FakeRenderData.__new__(FakeRenderData)
+        dict.__init__(clone, self)
+        clone._name = self._name
+        return clone
+
+    def SetName(self, name):
+        self._name = name
+
+    def GetName(self):
+        return self._name
+
+
+class FakeOverride:
+    def __init__(self):
+        self.params = {}
+        self.updated = []
+
+    def IsOverriddenParam(self, descid):
+        return descid[0].id in self.params
+
+    def SetParameter(self, descid, value, flags):
+        self.params[descid[0].id] = value
+        return True
+
+    def UpdateSceneNode(self, take_data, descid):
+        self.updated.append(descid[0].id)
+        return True
+
+
+class FakeCamera(dict):
+    def __bool__(self):
+        return True
+
+    __hash__ = object.__hash__
+
+
+class FakeTake:
+    def __init__(self, name, parent=None):
+        self._name = name
+        self.parent = parent
+        self.children = []
+        self.render_data = None
+        self.camera = None
+        self.overrides = {}
+        self.override_requests = []
+        if parent is not None:
+            parent.children.append(self)
+
+    def GetName(self):
+        return self._name
+
+    def GetDown(self):
+        return self.children[0] if self.children else None
+
+    def GetNext(self):
+        if self.parent is None:
+            return None
+        siblings = self.parent.children
+        try:
+            index = siblings.index(self)
+        except ValueError:
+            return None
+        return siblings[index + 1] if index + 1 < len(siblings) else None
+
+    def GetEffectiveRenderData(self, take_data):
+        return self.render_data or take_data.doc.render_datas[0]
+
+    def GetRenderData(self, take_data):
+        return self.render_data
+
+    def SetRenderData(self, take_data, render_data):
+        self.render_data = render_data
+
+    def GetCamera(self, take_data):
+        return self.camera
+
+    def SetCamera(self, take_data, camera):
+        self.camera = camera
+
+    def FindOverride(self, take_data, camera):
+        return self.overrides.get(camera)
+
+    def FindOrAddOverrideParam(self, take_data, camera, descid, value):
+        self.override_requests.append(descid[0].id)
+        override = self.overrides.setdefault(camera, FakeOverride())
+        override.SetParameter(descid, value, 0)
+        return override
+
+
+class FakeTakeData:
+    def __init__(self, doc):
+        self.doc = doc
+        self.main = FakeTake("Main")
+        self.main.render_data = doc.render_datas[0]
+        self.current = self.main
+
+    def GetMainTake(self):
+        return self.main
+
+    def GetCurrentTake(self):
+        return self.current
+
+    def AddTake(self, name, parent, pred):
+        return FakeTake(name, parent or self.main)
+
+
+class FakeBaseDraw:
+    def __init__(self, camera):
+        self.camera = camera
+
+    def GetSceneCamera(self, doc):
+        return self.camera
+
+
+class FakeDocument:
+    def __init__(self, c4d, camera=None):
+        self.render_datas = [FakeRenderData(c4d)]
+        self.camera = camera or FakeCamera()
+        self.camera[framing.CAMERA_FOCUS] = 36.0
+        self.camera[framing.CAMERAOBJECT_APERTURE] = 36.0
+        self.camera[framing.CAMERAOBJECT_FILM_OFFSET_X] = 0.0
+        self.camera[framing.CAMERAOBJECT_FILM_OFFSET_Y] = 0.0
+        self.take_data = FakeTakeData(self)
+        self.take_data.main.SetCamera(self.take_data, self.camera)
+        self.undo = []
+        self.start_undo_count = 0
+        self.end_undo_count = 0
+
+    def GetTakeData(self):
+        return self.take_data
+
+    def GetActiveRenderData(self):
+        return self.render_datas[0]
+
+    def GetActiveBaseDraw(self):
+        return FakeBaseDraw(self.camera)
+
+    def InsertRenderDataLast(self, render_data):
+        self.render_datas.append(render_data)
+
+    def StartUndo(self):
+        self.start_undo_count += 1
+
+    def EndUndo(self):
+        self.end_undo_count += 1
+
+    def AddUndo(self, undo_type, target):
+        self.undo.append((undo_type, target))
+
+
+def _child_names(take):
+    return [child.GetName() for child in take.children]
+
+
+def _child_by_name(take, name):
+    for child in take.children:
+        if child.GetName() == name:
+            return child
+    raise AssertionError(f"missing child take {name}")
+
+
+def test_generate_takes_uses_name_prefix_and_keeps_legacy_names_without_prefix(sentinel_module):
+    mf = sentinel_module.multiformat
+
+    prefixed_doc = FakeDocument(sentinel_module.c4d)
+    prefixed = mf.generate_multiformat_takes(
+        prefixed_doc,
+        {
+            "formats": ["16x9", "9x16"],
+            "name_prefix": "CamA",
+            "update_existing": True,
+        },
+    )
+
+    assert prefixed["success"] is True
+    assert prefixed["created"] == ["CamA_16x9", "CamA_9x16"]
+    assert _child_names(prefixed_doc.take_data.main) == ["CamA_16x9", "CamA_9x16"]
+
+    legacy_doc = FakeDocument(sentinel_module.c4d)
+    legacy = mf.generate_multiformat_takes(
+        legacy_doc,
+        {"formats": ["16x9"], "update_existing": True},
+    )
+
+    assert legacy["created"] == ["16x9"]
+    assert legacy["orphaned"] == []
+    assert legacy["adopted"] == []
+    assert _child_names(legacy_doc.take_data.main) == ["16x9"]
+
+
+def test_generate_takes_applies_film_offsets_only_for_requested_formats(sentinel_module):
+    mf = sentinel_module.multiformat
+    doc = FakeDocument(sentinel_module.c4d)
+
+    report = mf.generate_multiformat_takes(
+        doc,
+        {
+            "formats": ["16x9", "9x16"],
+            "name_prefix": "CamA",
+            "film_offsets": {"9x16": (0.05, -0.03)},
+        },
+    )
+
+    assert report["errors"] == []
+    landscape = _child_by_name(doc.take_data.main, "CamA_16x9")
+    vertical = _child_by_name(doc.take_data.main, "CamA_9x16")
+    vertical_override = vertical.FindOverride(doc.take_data, doc.camera)
+
+    assert landscape.FindOverride(doc.take_data, doc.camera) is None
+    assert vertical_override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] == pytest.approx(0.05)
+    assert vertical_override.params[framing.CAMERAOBJECT_FILM_OFFSET_Y] == pytest.approx(-0.03)
+
+
+def test_preserve_vertical_overrides_camera_focus_with_compensated_value(sentinel_module):
+    mf = sentinel_module.multiformat
+    doc = FakeDocument(sentinel_module.c4d)
+    doc.camera[framing.CAMERA_FOCUS] = 36.0
+
+    report = mf.generate_multiformat_takes(
+        doc,
+        {
+            "formats": ["9x16"],
+            "name_prefix": "CamA",
+            "composition_mode": mf.COMPOSITION_MODE_PRESERVE_VERTICAL,
+        },
+    )
+
+    take = _child_by_name(doc.take_data.main, "CamA_9x16")
+    override = take.FindOverride(doc.take_data, doc.camera)
+    expected = framing.compensated_focus(
+        36.0,
+        1920,
+        1080,
+        1080,
+        1920,
+        mf.COMPOSITION_MODE_PRESERVE_VERTICAL,
+    )
+
+    assert report["errors"] == []
+    assert override.params[framing.CAMERA_FOCUS] == pytest.approx(expected)
+
+
+def test_reset_camera_dimensions_to_native_clears_film_offset_overrides(sentinel_module):
+    mf = sentinel_module.multiformat
+    doc = FakeDocument(sentinel_module.c4d)
+    take = FakeTake("CamA_9x16", doc.take_data.main)
+    override = take.overrides.setdefault(doc.camera, FakeOverride())
+    override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] = 0.25
+    override.params[framing.CAMERAOBJECT_FILM_OFFSET_Y] = -0.10
+
+    mf._reset_camera_dimensions_to_native(take, doc.take_data, doc.camera)
+
+    assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] == pytest.approx(0.0)
+    assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_Y] == pytest.approx(0.0)
+    assert framing.CAMERAOBJECT_FILM_OFFSET_X in override.updated
+    assert framing.CAMERAOBJECT_FILM_OFFSET_Y in override.updated
+
+
+def test_prefixed_existing_takes_report_orphaned_and_adopted_without_deleting(sentinel_module):
+    mf = sentinel_module.multiformat
+    doc = FakeDocument(sentinel_module.c4d)
+    existing = FakeTake("CamA_16x9", doc.take_data.main)
+    orphan = FakeTake("CamA_1x1", doc.take_data.main)
+
+    links = []
+    report = mf.generate_multiformat_takes(
+        doc,
+        {
+            "formats": ["16x9"],
+            "name_prefix": "CamA",
+            "tag_link_writer": lambda fmt_id, take: links.append((fmt_id, take)),
+        },
+    )
+
+    assert report["updated"] == ["CamA_16x9"]
+    assert report["adopted"] == ["CamA_16x9"]
+    assert report["orphaned"] == ["1x1"]
+    assert orphan in doc.take_data.main.children
+    assert existing in doc.take_data.main.children
+    assert links == [("16x9", existing)]
