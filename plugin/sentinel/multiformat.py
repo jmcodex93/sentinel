@@ -181,9 +181,20 @@ def compute_format_output_path(source_path, fmt_id, mode="subfolder"):
         head, tail = "", norm
 
     if mode == "suffix":
+        # Idempotency guard: don't stack _<fmt> if it's already there (Set
+        # Output can re-run on an already-formatted path).
+        if tail.endswith(f"_{fmt_id}"):
+            return norm
         # Append _<fmt> to filename portion
         new_tail = f"{tail}_{fmt_id}" if tail else f"_{fmt_id}"
         return f"{head}/{new_tail}" if head else new_tail
+
+    # Idempotency guard: if the fmt subfolder is already the immediate parent
+    # of the filename, don't nest it again (avoids output/16x9/16x9/... when
+    # Set Output re-applies to an already-formatted path).
+    head_parts = head.split("/") if head else []
+    if head_parts and head_parts[-1] == fmt_id:
+        return norm
 
     # default: subfolder mode — insert /<fmt>/ between head and tail
     if head and tail:
@@ -523,12 +534,19 @@ def generate_multiformat_takes(doc, options):
     # name prefix) — was renamed, instead of orphaning them and creating
     # duplicates (KTD4 rename-safety). Absent → pure name matching (legacy).
     existing_take_resolver = options.get("existing_take_resolver")
+    # When the caller already owns the undo block (the Sentinel Frame tag wraps
+    # take generation + its own BaseLink/signature writes in one step so a
+    # single Cmd+Z reverts everything), it passes external_undo=True and we must
+    # NOT open a second nested StartUndo/EndUndo/EventAdd. Legacy dialog caller
+    # omits it → the engine self-manages exactly as before.
+    external_undo = bool(options.get("external_undo", False))
     report["composition_mode"] = composition_mode
     report["orphaned"] = sorted(
         _existing_prefixed_format_ids(td, name_prefix) - requested_formats
     )
 
-    doc.StartUndo()
+    if not external_undo:
+        doc.StartUndo()
     try:
         for fmt_id in formats:
             fmt_def = get_multiformat_def(fmt_id)
@@ -581,12 +599,19 @@ def generate_multiformat_takes(doc, options):
                     pass
                 is_update = False
 
-            # Resolve / create render data for this take
+            # Resolve / create render data for this take.
+            # Only reuse the take's existing render data if it is an
+            # engine-owned per-format clone (named "<source>_<fmt>"). A take
+            # adopted via existing_take_resolver could point at the SHARED
+            # source render data (or a foreign one); writing this format's
+            # resolution/path onto that would corrupt the base settings. In
+            # that case we fall through and clone a fresh dedicated render data.
+            expected_rd_name = f"{source_rd.GetName()}_{fmt_id}"
             new_rd = None
             if is_update:
                 try:
                     existing_rd = take.GetRenderData(td)
-                    if existing_rd:
+                    if existing_rd and existing_rd.GetName() == expected_rd_name:
                         new_rd = existing_rd
                         try:
                             doc.AddUndo(c4d.UNDOTYPE_CHANGE, new_rd)
@@ -675,12 +700,34 @@ def generate_multiformat_takes(doc, options):
                         _set_camera_override(
                             take, td, source_cam, framing.CAMERA_FOCUS, new_focal)
 
+                    # Per-format framing nudge -> film offset. The nudge is a
+                    # FRACTION of available travel (same value the viewport
+                    # guide uses); it must be scaled by the per-format film
+                    # travel so the generated Take matches the guide exactly
+                    # (WYSIWYG). Writing the raw nudge would shift the render
+                    # far more than the guide shows. This mirrors framing.
+                    # crop_rect_in_master_ndc and the C4DMultiFrame reference.
+                    # The nudge reframes in EVERY mode (including "none"), which
+                    # is its purpose — it is independent of the lens/sensor
+                    # compensation handled above.
                     if fmt_id in film_offsets:
                         try:
-                            film_x, film_y = film_offsets[fmt_id]
-                            # Standard camera ids are verified. Redshift
-                            # Orscamera is expected to share these IDs in C4D
-                            # 2026; verify in Orscamera in C4D vivo.
+                            try:
+                                src_film_x = float(
+                                    source_cam[framing.CAMERAOBJECT_FILM_OFFSET_X])
+                            except Exception:
+                                src_film_x = 0.0
+                            try:
+                                src_film_y = float(
+                                    source_cam[framing.CAMERAOBJECT_FILM_OFFSET_Y])
+                            except Exception:
+                                src_film_y = 0.0
+                            # Redshift Orscamera shares these ids (verified live).
+                            _focus, film_x, film_y = framing.format_camera_framing_values(
+                                src_focal, src_w, src_h,
+                                int(fmt_def["width"]), int(fmt_def["height"]),
+                                framing.COMPENSATE_OFF, film_offsets[fmt_id],
+                                src_film_x, src_film_y)
                             _set_camera_override(
                                 take, td, source_cam,
                                 framing.CAMERAOBJECT_FILM_OFFSET_X, float(film_x))
@@ -712,7 +759,8 @@ def generate_multiformat_takes(doc, options):
     except Exception as e:
         report["errors"].append(f"Orchestrator error: {e}")
     finally:
-        doc.EndUndo()
-        c4d.EventAdd()
+        if not external_undo:
+            doc.EndUndo()
+            c4d.EventAdd()
 
     return report

@@ -223,9 +223,18 @@ def test_generate_takes_applies_film_offsets_only_for_requested_formats(sentinel
     vertical = _child_by_name(doc.take_data.main, "CamA_9x16")
     vertical_override = vertical.FindOverride(doc.take_data, doc.camera)
 
-    assert landscape.FindOverride(doc.take_data, doc.camera) is None
-    assert vertical_override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] == pytest.approx(0.05)
-    assert vertical_override.params[framing.CAMERAOBJECT_FILM_OFFSET_Y] == pytest.approx(-0.03)
+    # 16x9 requested with (0,0) nudge -> its override, if any, is a zero offset.
+    landscape_override = landscape.FindOverride(doc.take_data, doc.camera)
+    if landscape_override is not None:
+        assert landscape_override.params.get(framing.CAMERAOBJECT_FILM_OFFSET_X, 0.0) == pytest.approx(0.0)
+    # The nudge is a fraction of available travel: the engine must scale it by
+    # the per-format film travel (same math the viewport guide uses), NOT write
+    # the raw nudge. Expected values come straight from framing.
+    _f, exp_x, exp_y = framing.format_camera_framing_values(
+        36.0, 1920, 1080, 1080, 1920, framing.COMPENSATE_OFF, (0.05, -0.03), 0.0, 0.0)
+    assert exp_x == pytest.approx(0.05 * (0.5 * (1.0 - (1080.0 / 1920.0) / (1920.0 / 1080.0))))
+    assert vertical_override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] == pytest.approx(exp_x)
+    assert vertical_override.params[framing.CAMERAOBJECT_FILM_OFFSET_Y] == pytest.approx(exp_y)
 
 
 def test_source_cam_option_binds_takes_and_offsets_to_host_camera(sentinel_module):
@@ -254,11 +263,14 @@ def test_source_cam_option_binds_takes_and_offsets_to_host_camera(sentinel_modul
     take = _child_by_name(doc.take_data.main, "CamA_9x16")
     assert take.camera is host
     assert take.camera is not doc.camera
-    # Film offset override lands on the host camera, not the viewport camera.
+    # Film offset override lands on the host camera, not the viewport camera,
+    # and is travel-scaled (matches the guide), not the raw nudge.
     assert take.FindOverride(doc.take_data, doc.camera) is None
     host_override = take.FindOverride(doc.take_data, host)
-    assert host_override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] == pytest.approx(0.12)
-    assert host_override.params[framing.CAMERAOBJECT_FILM_OFFSET_Y] == pytest.approx(-0.06)
+    _f, exp_x, exp_y = framing.format_camera_framing_values(
+        36.0, 1920, 1080, 1080, 1920, framing.COMPENSATE_OFF, (0.12, -0.06), 0.0, 0.0)
+    assert host_override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] == pytest.approx(exp_x)
+    assert host_override.params[framing.CAMERAOBJECT_FILM_OFFSET_Y] == pytest.approx(exp_y)
 
 
 def test_generate_takes_without_source_cam_falls_back_to_resolved_camera(sentinel_module):
@@ -315,6 +327,51 @@ def test_existing_take_resolver_is_rename_safe_and_avoids_duplicates(sentinel_mo
     assert sorted(second["updated"]) == ["CamB_16x9", "CamB_9x16"]
     # The very same take objects were adopted, not recreated.
     assert links["16x9"].GetName() == "CamB_16x9"
+
+
+def test_external_undo_skips_engine_undo_block(sentinel_module):
+    # The tag owns the undo block (so a single Cmd+Z reverts takes + its
+    # BaseLink/signature writes); the engine must not open a nested one.
+    mf = sentinel_module.multiformat
+
+    managed = FakeDocument(sentinel_module.c4d)
+    mf.generate_multiformat_takes(managed, {"formats": ["16x9"], "name_prefix": "CamA"})
+    assert managed.start_undo_count == 1
+    assert managed.end_undo_count == 1
+
+    external = FakeDocument(sentinel_module.c4d)
+    mf.generate_multiformat_takes(
+        external, {"formats": ["16x9"], "name_prefix": "CamA", "external_undo": True})
+    assert external.start_undo_count == 0
+    assert external.end_undo_count == 0
+
+
+def test_adopted_take_with_shared_render_data_gets_a_fresh_clone(sentinel_module):
+    # A take adopted via existing_take_resolver may point at the SHARED source
+    # render data; the engine must clone a dedicated one instead of writing this
+    # format's resolution/path onto the source (which would corrupt base output).
+    mf = sentinel_module.multiformat
+    doc = FakeDocument(sentinel_module.c4d)
+    source_rd = doc.render_datas[0]
+
+    # Pre-existing take whose render data IS the shared source render data.
+    victim = FakeTake("CamA_16x9", doc.take_data.main)
+    victim.SetRenderData(doc.take_data, source_rd)
+
+    mf.generate_multiformat_takes(
+        doc,
+        {
+            "formats": ["16x9"],
+            "name_prefix": "CamA",
+            "existing_take_resolver": lambda fmt_id: victim,
+        },
+    )
+
+    # The take now owns a dedicated clone, and the source render data is intact.
+    assert victim.render_data is not source_rd
+    assert victim.render_data.GetName() == "Source_16x9"
+    assert source_rd[sentinel_module.c4d.RDATA_XRES] == pytest.approx(1920.0)
+    assert source_rd[sentinel_module.c4d.RDATA_YRES] == pytest.approx(1080.0)
 
 
 def test_preserve_vertical_overrides_camera_focus_with_compensated_value(sentinel_module):

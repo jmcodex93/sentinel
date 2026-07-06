@@ -46,6 +46,24 @@ def test_format_output_path_modes(sentinel_module):
     assert compute("output/$prj", "", "subfolder") == "output/$prj"
 
 
+def test_format_output_path_is_idempotent(sentinel_module):
+    # Set Output reads back the active render-data path and re-applies the
+    # format, so re-application must NOT stack the format segment.
+    compute = sentinel_module.compute_format_output_path
+
+    once = compute("output/$prj_$frame", "16x9", "subfolder")
+    assert once == "output/16x9/$prj_$frame"
+    assert compute(once, "16x9", "subfolder") == once  # no output/16x9/16x9/...
+    assert compute(compute(once, "16x9", "subfolder"), "16x9", "subfolder") == once
+
+    once_sfx = compute("output/$prj_$frame", "16x9", "suffix")
+    assert once_sfx == "output/$prj_$frame_16x9"
+    assert compute(once_sfx, "16x9", "suffix") == once_sfx  # no _16x9_16x9
+
+    # A different format still nests normally after the first.
+    assert compute(once, "9x16", "subfolder") == "output/16x9/9x16/$prj_$frame"
+
+
 def test_take_name_for_format(sentinel_module):
     fmt = sentinel_module.get_multiformat_def("9x16")
 

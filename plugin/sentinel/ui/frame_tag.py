@@ -73,12 +73,16 @@ COMPOSITION_PRESERVE_HORIZONTAL = 2
 COMPOSITION_CROP = 3
 COMPOSITION_RESIZE_CANVAS = 4
 
+# Labels lead with what happens to the CAMERA so an artist can choose without
+# reading docs. "Preserve Horizontal" is intentionally NOT offered: its focal
+# math is a no-op (same in the C4DMultiFrame reference), so it would behave
+# identically to "None" and only confuse. The constant + mapping below stay for
+# forward-compat but the cycle does not expose it.
 COMPOSITION_CYCLE = (
-    (COMPOSITION_OFF, "Off"),
-    (COMPOSITION_PRESERVE_VERTICAL, "Preserve Vertical"),
-    (COMPOSITION_PRESERVE_HORIZONTAL, "Preserve Horizontal"),
-    (COMPOSITION_CROP, "Crop"),
-    (COMPOSITION_RESIZE_CANVAS, "Resize Canvas"),
+    (COMPOSITION_OFF, "None (camera unchanged)"),
+    (COMPOSITION_PRESERVE_VERTICAL, "Preserve Vertical FOV (adjust lens)"),
+    (COMPOSITION_CROP, "Fill / Zoom to Cover (adjust lens)"),
+    (COMPOSITION_RESIZE_CANVAS, "Resize Sensor (keep lens & DOF)"),
 )
 
 COMPOSITION_MODE_TO_FRAMING = {
@@ -1059,6 +1063,13 @@ class SentinelFrameTag(_TagDataBase):
             _set_bc_value(bc, "SetFloat", c4d.DESC_STEP, float(step))
         if dtype == c4d.DTYPE_REAL:
             _set_bc_value(bc, "SetInt32", c4d.DESC_UNIT, c4d.DESC_UNIT_PERCENT)
+        if dtype == c4d.DTYPE_BUTTON:
+            # A DTYPE_BUTTON only renders as a clickable button when its
+            # customgui is CUSTOMGUI_BUTTON; without this the Actions group
+            # shows up empty in the Attribute Manager.
+            button_gui = getattr(c4d, "CUSTOMGUI_BUTTON", None)
+            if button_gui is not None:
+                _set_bc_value(bc, "SetInt32", c4d.DESC_CUSTOMGUI, button_gui)
         if cycle is not None:
             cycle_bc = c4d.BaseContainer()
             for value, label in cycle:
@@ -1147,7 +1158,8 @@ class SentinelFrameTag(_TagDataBase):
             (ID_MASK_OPACITY, c4d.DTYPE_REAL, "Mask Opacity", 0.0, 1.0, 0.01, None),
             (ID_SHOW_PLATFORM, c4d.DTYPE_BOOL, "Show Platform Zones", None, None, None, None),
             (ID_SHOW_HUD, c4d.DTYPE_BOOL, "Show HUD", None, None, None, None),
-            (ID_SCHEMA_VERSION, c4d.DTYPE_LONG, "Schema Version", None, None, None, None),
+            # ID_SCHEMA_VERSION is internal migration state — kept in the tag
+            # container (set in Init) but intentionally NOT exposed in the AM.
         )
         for parameter_id, dtype, name, minimum, maximum, step, cycle in core_params:
             if not self._set_description_parameter(
@@ -1170,12 +1182,15 @@ class SentinelFrameTag(_TagDataBase):
                 node, description, ids["color"], color_dtype, "Color", format_group
             ):
                 return False
+            # Nudge is a film-offset FRACTION (percent unit: raw 1.0 == 100%),
+            # so the clamp is -1.0..1.0 (=-100%..100%), step 0.01 (=1%). Using
+            # -100..100 here would read as +/-10000% under the percent unit.
             if not self._set_description_parameter(
-                node, description, ids["nudge_x"], c4d.DTYPE_REAL, "Nudge X %", format_group, -100.0, 100.0, 1.0
+                node, description, ids["nudge_x"], c4d.DTYPE_REAL, "Nudge X %", format_group, -1.0, 1.0, 0.01
             ):
                 return False
             if not self._set_description_parameter(
-                node, description, ids["nudge_y"], c4d.DTYPE_REAL, "Nudge Y %", format_group, -100.0, 100.0, 1.0
+                node, description, ids["nudge_y"], c4d.DTYPE_REAL, "Nudge Y %", format_group, -1.0, 1.0, 0.01
             ):
                 return False
 
@@ -1232,6 +1247,10 @@ class SentinelFrameTag(_TagDataBase):
             "formats": formats,
             "update_existing": True,
             "name_prefix": prefix,
+            # This handler owns the undo block (StartUndo/EndUndo below) so the
+            # take generation + BaseLink/signature writes revert as ONE Cmd+Z;
+            # the engine must not open its own nested block.
+            "external_undo": True,
             # Bind the generated Takes to THIS tag's host camera, not whatever
             # the viewport/Main take resolves to — the tag is per-camera.
             "source_cam": host,
@@ -1386,6 +1405,17 @@ class SentinelFrameTag(_TagDataBase):
             return True
 
         command_id = _command_id_from_data(data)
+        # Halt the viewport draw / expression threads before mutating the
+        # document — MSG_DESCRIPTION_COMMAND can fire while Draw is running, and
+        # Take/RenderData mutation is not safe against a live draw thread. Only
+        # for the mutating actions (the selection-only paths still guard below).
+        if command_id in _ACTION_IDS:
+            stop_all = getattr(c4d, "StopAllThreads", None)
+            if callable(stop_all):
+                try:
+                    stop_all()
+                except Exception:
+                    pass
         if command_id in _ACTION_IDS and not _host_is_valid_camera(node):
             _show_message("Sentinel Frame must be placed on a supported Camera.")
             return True
