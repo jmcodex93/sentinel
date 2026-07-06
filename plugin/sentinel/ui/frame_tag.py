@@ -28,6 +28,7 @@ ID_SHOW_MASK = 1004
 ID_SHOW_PLATFORM = 1005
 ID_SHOW_HUD = 1006
 ID_SCHEMA_VERSION = 1007
+ID_MASK_OPACITY = 1008
 
 # Per-format params: 1100s+, fixed stride per MULTIFORMAT_DEFS entry.
 ID_FORMAT_BASE = 1100
@@ -600,7 +601,7 @@ def _draw_dashed_line(bd, p1, p2, width=1, dash=8.0, gap=5.0):
         pos += step
 
 
-def _draw_mask(bd, safe_frame, guide_rect, color):
+def _draw_mask(bd, safe_frame, guide_rect, color, transparency=MASK_TRANSPARENCY):
     left, top, right, bottom = safe_frame
     gl, gt, gr, gb = guide_rect
     strips = (
@@ -620,7 +621,7 @@ def _draw_mask(bd, safe_frame, guide_rect, color):
                 c4d.Vector(sl, sb, 0),
             )
             bd.SetPen(color)
-            bd.SetTransparency(MASK_TRANSPARENCY)
+            bd.SetTransparency(transparency)
             bd.DrawPolygon(pts, (color, color, color, color))
     except Exception:
         pass
@@ -732,11 +733,13 @@ class SentinelFrameTag(_TagDataBase):
             self._init_attr(node, bool, param_id)
         for param_id in (ID_COMPOSITION, ID_SCHEMA_VERSION):
             self._init_attr(node, int, param_id)
+        self._init_attr(node, float, ID_MASK_OPACITY)
 
         _set_node_value(node, ID_ENABLED, True)
         _set_node_value(node, ID_COMPOSITION, COMPOSITION_OFF)
         _set_node_value(node, ID_SHOW_GUIDES, True)
         _set_node_value(node, ID_SHOW_MASK, False)
+        _set_node_value(node, ID_MASK_OPACITY, 0.5)
         _set_node_value(node, ID_SHOW_PLATFORM, False)
         _set_node_value(node, ID_SHOW_HUD, True)
         _set_node_value(node, ID_SCHEMA_VERSION, SCHEMA_VERSION)
@@ -782,6 +785,7 @@ class SentinelFrameTag(_TagDataBase):
             (ID_COMPOSITION, c4d.DTYPE_LONG, "Composition Mode", None, None, None, COMPOSITION_CYCLE),
             (ID_SHOW_GUIDES, c4d.DTYPE_BOOL, "Show Guides", None, None, None, None),
             (ID_SHOW_MASK, c4d.DTYPE_BOOL, "Show Mask", None, None, None, None),
+            (ID_MASK_OPACITY, c4d.DTYPE_REAL, "Mask Opacity", 0.0, 1.0, 0.01, None),
             (ID_SHOW_PLATFORM, c4d.DTYPE_BOOL, "Show Platform Zones", None, None, None, None),
             (ID_SHOW_HUD, c4d.DTYPE_BOOL, "Show HUD", None, None, None, None),
             (ID_SCHEMA_VERSION, c4d.DTYPE_LONG, "Schema Version", None, None, None, None),
@@ -908,7 +912,9 @@ class SentinelFrameTag(_TagDataBase):
             intersection = _intersect_ndc_rects(entry["guide"] for entry, _guide_px in pixel_guides)
             if intersection is not None:
                 mask_px = _ndc_rect_to_pixels(intersection, safe_frame)
-                _draw_mask(bd, safe_frame, mask_px, c4d.Vector(0.0, 0.0, 0.0))
+                opacity = max(0.0, min(1.0, _as_float(_get_node_value(tag, ID_MASK_OPACITY, 0.5), 0.5)))
+                mask_transparency = -int(round(255.0 * (1.0 - opacity)))
+                _draw_mask(bd, safe_frame, mask_px, c4d.Vector(0.0, 0.0, 0.0), mask_transparency)
 
         if show_guides:
             for entry, guide_px in pixel_guides:
