@@ -1552,17 +1552,20 @@ class SentinelFrameTag(_TagDataBase):
             for entry, guide_px in pixel_guides:
                 _draw_rect(bd, guide_px, entry["color"], width=2)
 
-        if show_platform:
+        if show_platform and pixel_guides:
             for entry, _guide_px in pixel_guides:
                 platform_px = _ndc_rect_to_pixels(entry["platform"], safe_frame)
                 platform_color = _dim_color(entry["color"], 0.62)
                 _draw_rect(bd, platform_px, platform_color, width=1, dashed=True)
-                _draw_hud_text(
-                    bd,
-                    platform_px[0] + 4,
-                    max(safe_frame[1] + 4, platform_px[1] + 18),
-                    f"as of {PLATFORM_SAFE_AREA_AS_OF}",
-                )
+            # ONE vintage footnote for all zones (platform UI specs change over
+            # time) at the bottom-left — not repeated on every rectangle, which
+            # cluttered the viewport.
+            _draw_hud_text(
+                bd,
+                safe_frame[0] + 8,
+                safe_frame[3] - 18,
+                f"Platform safe zones · as of {PLATFORM_SAFE_AREA_AS_OF}",
+            )
 
         if show_hud:
             for entry, guide_px in pixel_guides:

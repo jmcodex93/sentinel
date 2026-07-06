@@ -1948,29 +1948,11 @@ class YSPanel(gui.GeDialog):
         self.AddButton(G.BTN_ADD_FRAME_TAG, c4d.BFH_SCALEFIT, 0, 0,
                        "Add Sentinel Frame to camera")
         self.GroupEnd()
-
-        # ── Multi-Format Setup (legacy) ──
-        # Generates a Take per delivery aspect (16:9, 9:16, 1:1, 4:5, 21:9) with
-        # cloned RenderData (resolution + output path overrides) and optional
-        # camera composition adjustments. Superseded by the Sentinel Frame tag;
-        # kept for compatibility with scenes set up via the dialog.
-        self._add_section_label("Multi-Format Setup (legacy)")
-        self.GroupBegin(81, c4d.BFH_SCALEFIT, 1, 0)
-        self.AddButton(G.BTN_MULTIFORMAT, c4d.BFH_SCALEFIT, 0, 0,
-                       "Generate Format Takes...")
-        # Viewport overlay toggle (v1.5.6) — auto-creates a marker
-        # ObjectData object in the scene when enabled. The object's
-        # Draw renders each active multi-format Take's safe-area
-        # rectangle in the active camera viewport. Persists with the
-        # .c4d save; survives panel reopens.
-        self.AddCheckbox(G.CHK_SAFE_AREA_OVERLAY, c4d.BFH_LEFT, 0, 0,
-                         "Show Safe-Area Overlay in viewport")
-        # Reflect current session state (singleton survives tab rebuild)
-        try:
-            self.SetBool(G.CHK_SAFE_AREA_OVERLAY, bool(_overlay_state.enabled))
-        except Exception:
-            pass
-        self.GroupEnd()
+        # The legacy Multi-Format Setup dialog + Safe-Area Overlay toggle were
+        # retired from the panel in v1.8.0 (superseded by the Sentinel Frame
+        # tag). The MultiFormatDialog and SafeAreaOverlayObject remain registered
+        # so scenes already set up via the old dialog / with an overlay marker
+        # keep working; they are just no longer surfaced as new-work entry points.
 
         # ── Redshift AOVs ──
         # Compositor + Multi-Part are studio-level defaults edited in Settings
