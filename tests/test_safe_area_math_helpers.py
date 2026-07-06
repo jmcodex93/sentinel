@@ -1,6 +1,51 @@
+import importlib
 import math
 
 import pytest
+
+
+def test_frame_tag_nudge_for_format_reads_tag_or_none(sentinel_module):
+    # QC #12 becomes nudge-aware by reading each format's nudge from a Sentinel
+    # Frame tag on the camera. No tag / disabled / zero nudge -> None, which
+    # keeps QC results identical to the pre-tag behaviour.
+    sa = importlib.import_module("sentinel.safe_areas")
+    frame_tag = importlib.import_module("sentinel.ui.frame_tag")
+
+    class FakeTag(dict):
+        def GetType(self):
+            return frame_tag.SENTINEL_FRAME_TAG_PLUGIN_ID
+
+    class OtherTag:
+        def GetType(self):
+            return 12345
+
+    class FakeCam:
+        def __init__(self, tags):
+            self._tags = tags
+
+        def GetTags(self):
+            return self._tags
+
+    fmt0 = frame_tag._format_defs()[0].get("id")
+    ids0 = frame_tag._format_ids(0)
+    tag = FakeTag()
+    tag[ids0["enabled"]] = True
+    tag[ids0["nudge_x"]] = 0.1
+    tag[ids0["nudge_y"]] = -0.05
+
+    assert sa._frame_tag_nudge_for_format(None, fmt0) is None
+    assert sa._frame_tag_nudge_for_format(FakeCam([OtherTag()]), fmt0) is None
+    assert sa._frame_tag_nudge_for_format(FakeCam([tag]), fmt0) == (0.1, -0.05)
+
+    # Disabled format -> None (that format won't have a delivery take).
+    tag[ids0["enabled"]] = False
+    assert sa._frame_tag_nudge_for_format(FakeCam([tag]), fmt0) is None
+
+    # Zero nudge -> None (no shift, keeps the box identical).
+    tag[ids0["enabled"]] = True
+    tag[ids0["nudge_x"]] = 0.0
+    tag[ids0["nudge_y"]] = 0.0
+    assert sa._frame_tag_nudge_for_format(FakeCam([tag]), fmt0) is None
 
 
 def assert_box_close(actual, expected, abs_tol=1e-9):
@@ -44,6 +89,24 @@ def test_format_output_path_modes(sentinel_module):
     assert compute("", "1x1", "subfolder") == "1x1/$prj_$frame"
     assert compute("", "1x1", "suffix") == "$prj_1x1_$frame"
     assert compute("output/$prj", "", "subfolder") == "output/$prj"
+
+
+def test_format_output_path_is_idempotent(sentinel_module):
+    # Set Output reads back the active render-data path and re-applies the
+    # format, so re-application must NOT stack the format segment.
+    compute = sentinel_module.compute_format_output_path
+
+    once = compute("output/$prj_$frame", "16x9", "subfolder")
+    assert once == "output/16x9/$prj_$frame"
+    assert compute(once, "16x9", "subfolder") == once  # no output/16x9/16x9/...
+    assert compute(compute(once, "16x9", "subfolder"), "16x9", "subfolder") == once
+
+    once_sfx = compute("output/$prj_$frame", "16x9", "suffix")
+    assert once_sfx == "output/$prj_$frame_16x9"
+    assert compute(once_sfx, "16x9", "suffix") == once_sfx  # no _16x9_16x9
+
+    # A different format still nests normally after the first.
+    assert compute(once, "9x16", "subfolder") == "output/16x9/9x16/$prj_$frame"
 
 
 def test_take_name_for_format(sentinel_module):

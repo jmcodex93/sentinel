@@ -24,7 +24,6 @@ from sentinel.common.constants import (
     MAX_OBJECTS_PER_CHECK,
     PLUGIN_ID,
     PRESETS,
-    SAFE_AREA_OVERLAY_PLUGIN_ID,
     SETTINGS_FILE,
 )
 from sentinel.checks import render as render_checks
@@ -69,12 +68,6 @@ from sentinel.ui.dialogs import (
     TextureRepathingDialog,
     load_repath_presets,
     save_repath_preset,
-)
-from sentinel.ui.overlay import (
-    SafeAreaOverlayObject,
-    _SAFE_AREA_OBJECT_AVAILABLE,
-    _overlay_state,
-    find_or_create_safe_area_overlay_object,
 )
 
 # Import maxon for node material access
@@ -1940,27 +1933,19 @@ class YSPanel(gui.GeDialog):
         self.AddChild(G.PRESET_DROPDOWN, 2, "Render")
         self.AddChild(G.PRESET_DROPDOWN, 3, "Stills")
 
-        # ── Multi-Format Setup ──
-        # Generates a Take per delivery aspect (16:9, 9:16, 1:1, 4:5, 21:9) with
-        # cloned RenderData (resolution + output path overrides) and optional
-        # camera composition adjustments.
-        self._add_section_label("Multi-Format Setup")
-        self.GroupBegin(81, c4d.BFH_SCALEFIT, 1, 0)
-        self.AddButton(G.BTN_MULTIFORMAT, c4d.BFH_SCALEFIT, 0, 0,
-                       "Generate Format Takes...")
-        # Viewport overlay toggle (v1.5.6) — auto-creates a marker
-        # ObjectData object in the scene when enabled. The object's
-        # Draw renders each active multi-format Take's safe-area
-        # rectangle in the active camera viewport. Persists with the
-        # .c4d save; survives panel reopens.
-        self.AddCheckbox(G.CHK_SAFE_AREA_OVERLAY, c4d.BFH_LEFT, 0, 0,
-                         "Show Safe-Area Overlay in viewport")
-        # Reflect current session state (singleton survives tab rebuild)
-        try:
-            self.SetBool(G.CHK_SAFE_AREA_OVERLAY, bool(_overlay_state.enabled))
-        except Exception:
-            pass
+        # ── Sentinel Frame (v1.8.0) ──
+        # The per-camera tag is the recommended entry point: live viewport
+        # guides + one-click, rename-safe delivery Takes with true WYSIWYG crop.
+        self._add_section_label("Sentinel Frame")
+        self.GroupBegin(80, c4d.BFH_SCALEFIT, 1, 0)
+        self.AddButton(G.BTN_ADD_FRAME_TAG, c4d.BFH_SCALEFIT, 0, 0,
+                       "Add Sentinel Frame to camera")
         self.GroupEnd()
+        # The legacy Multi-Format Setup dialog + Safe-Area Overlay were retired
+        # in v1.8.0 (superseded by the Sentinel Frame tag). The Safe-Area Overlay
+        # ObjectData is no longer registered; the MultiFormatDialog stays in the
+        # code so takes it already generated keep working, but it is no longer
+        # surfaced as a new-work entry point.
 
         # ── Redshift AOVs ──
         # Compositor + Multi-Part are studio-level defaults edited in Settings
@@ -2794,24 +2779,8 @@ class YSPanel(gui.GeDialog):
         elif cid == G.BTN_RESET_ALL:
             self._force_render_settings(doc)
 
-        elif cid == G.BTN_MULTIFORMAT:
-            self._open_multiformat_dialog(doc)
-
-        elif cid == G.CHK_SAFE_AREA_OVERLAY:
-            # Toggle the safe-area viewport overlay. On enable: ensure
-            # the marker object exists in the scene (auto-create at
-            # root if missing) + refresh the cached format rectangles.
-            # On disable: just flip the flag (Draw becomes a no-op).
-            new_state = bool(self.GetBool(G.CHK_SAFE_AREA_OVERLAY))
-            _overlay_state.enabled = new_state
-            if new_state:
-                if _SAFE_AREA_OBJECT_AVAILABLE:
-                    find_or_create_safe_area_overlay_object(doc)
-                else:
-                    safe_print("Safe-Area Overlay: ObjectData API "
-                               "unavailable in this C4D build.")
-                _overlay_state.update_from_doc(doc)
-            c4d.EventAdd()
+        elif cid == G.BTN_ADD_FRAME_TAG:
+            self._add_sentinel_frame_tag(doc)
 
         elif cid == G.ARTIST:
             # Artist name changed - save to global settings
@@ -3877,6 +3846,75 @@ class YSPanel(gui.GeDialog):
         except Exception as e:
             safe_print(f"Error toggling aspect: {e}")
 
+    def _add_sentinel_frame_tag(self, doc):
+        """Add a Sentinel Frame tag to the active/selected camera, or select the
+        existing one. The tag is the recommended per-camera multi-format entry
+        point (live guides + one-click, rename-safe WYSIWYG-crop delivery Takes).
+        """
+        if doc is None:
+            return
+        try:
+            from sentinel.ui.frame_tag import (
+                SENTINEL_FRAME_TAG_PLUGIN_ID, is_valid_camera_host)
+        except Exception as e:
+            c4d.gui.MessageDialog(f"Sentinel Frame tag unavailable: {e}")
+            return
+
+        # Resolve a camera: the active selected object if it's a camera, else
+        # the camera the viewport is looking through.
+        cam = None
+        active = doc.GetActiveObject()
+        if active is not None and is_valid_camera_host(active.GetType()):
+            cam = active
+        if cam is None:
+            try:
+                bd = doc.GetActiveBaseDraw()
+                scene_cam = bd.GetSceneCamera(doc) if bd else None
+                if scene_cam is not None and is_valid_camera_host(scene_cam.GetType()):
+                    cam = scene_cam
+            except Exception:
+                cam = None
+        if cam is None:
+            c4d.gui.MessageDialog(
+                "Select a camera (standard or Redshift), or look through one, "
+                "then click 'Add Sentinel Frame to camera'.")
+            return
+
+        existing = None
+        for t in cam.GetTags():
+            if t.GetType() == SENTINEL_FRAME_TAG_PLUGIN_ID:
+                existing = t
+                break
+        if existing is not None:
+            try:
+                doc.SetActiveTag(existing, c4d.SELECTION_NEW)
+                c4d.EventAdd()
+            except Exception:
+                pass
+            c4d.gui.MessageDialog(
+                f"'{cam.GetName()}' already has a Sentinel Frame tag — "
+                "selected it in the Attribute Manager.")
+            return
+
+        tag = None
+        doc.StartUndo()
+        try:
+            tag = cam.MakeTag(SENTINEL_FRAME_TAG_PLUGIN_ID)
+            if tag is not None:
+                doc.AddUndo(c4d.UNDOTYPE_NEW, tag)
+                try:
+                    doc.SetActiveTag(tag, c4d.SELECTION_NEW)
+                except Exception:
+                    pass
+        finally:
+            doc.EndUndo()
+            c4d.EventAdd()
+
+        if tag is None:
+            c4d.gui.MessageDialog("Could not create the Sentinel Frame tag.")
+            return
+        safe_print(f"Sentinel Frame tag added to '{cam.GetName()}'")
+
     def _open_multiformat_dialog(self, doc):
         """Open Multi-Format Render Setup dialog and dispatch to orchestrator.
 
@@ -3992,14 +4030,6 @@ class YSPanel(gui.GeDialog):
         # Refresh panel state (Take system may have updated the active take)
         try:
             check_cache.clear()
-        except Exception:
-            pass
-
-        # Refresh the safe-area overlay cache — the set of active
-        # multi-format Takes likely changed, so the cached rectangles
-        # need recomputing for the next viewport redraw.
-        try:
-            _overlay_state.update_from_doc(doc)
         except Exception:
             pass
 

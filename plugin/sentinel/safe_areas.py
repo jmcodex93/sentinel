@@ -73,7 +73,7 @@ def safe_area_ndc_box(fmt_id, rules_context=None):
     }
 
 
-def format_safe_area_in_master_ndc(fmt_id, master_aspect, rules_context=None):
+def format_safe_area_in_master_ndc(fmt_id, master_aspect, rules_context=None, offset=None):
     """Return the format's safe-area rectangle expressed in MASTER NDC.
 
     This is the "crop interpretation" of cross-aspect safe area —
@@ -94,6 +94,8 @@ def format_safe_area_in_master_ndc(fmt_id, master_aspect, rules_context=None):
     Args:
         fmt_id: format id ('16x9', '9x16', '1x1', '4x5', '21x9')
         master_aspect: master frame aspect (W / H), e.g. 1.778 for 16:9
+        offset: optional (x, y) nudge as fractional travel within the master
+            crop frame. None/(0, 0) preserves the previous centered behavior.
 
     Returns:
         dict {left, right, bottom, top} — bounds expressed in master
@@ -118,12 +120,26 @@ def format_safe_area_in_master_ndc(fmt_id, master_aspect, rules_context=None):
         crop_x = 1.0
         crop_y = master_aspect / f_aspect  # half-height in master NDC
 
+    shift_x = 0.0
+    shift_y = 0.0
+    if offset is not None:
+        try:
+            offset_x, offset_y = offset
+            offset_x = max(-1.0, min(1.0, float(offset_x)))
+            offset_y = max(-1.0, min(1.0, float(offset_y)))
+            shift_x = (1.0 - crop_x) * offset_x
+            # Positive C4DMultiFrame Y nudge moves down; master NDC Y grows up.
+            shift_y = -(1.0 - crop_y) * offset_y
+        except Exception:
+            shift_x = 0.0
+            shift_y = 0.0
+
     # Apply per-side insets within the crop region.
     return {
-        "left":   -crop_x + (2.0 * crop_x) * insets["left"],
-        "right":   crop_x - (2.0 * crop_x) * insets["right"],
-        "bottom": -crop_y + (2.0 * crop_y) * insets["bottom"],
-        "top":     crop_y - (2.0 * crop_y) * insets["top"],
+        "left":   -crop_x + shift_x + (2.0 * crop_x) * insets["left"],
+        "right":   crop_x + shift_x - (2.0 * crop_x) * insets["right"],
+        "bottom": -crop_y + shift_y + (2.0 * crop_y) * insets["bottom"],
+        "top":     crop_y + shift_y - (2.0 * crop_y) * insets["top"],
     }
 
 
@@ -697,6 +713,45 @@ def _evaluate_object_at_frame(doc, frame, fps):
         pass
 
 
+def _frame_tag_nudge_for_format(cam, fmt_id):
+    """Return a Sentinel Frame tag's per-format nudge ``(x, y)`` on ``cam``.
+
+    Returns ``None`` when there is no tag, the format is disabled, or the nudge
+    is unreadable — so a scene without the tag keeps identical QC results (the
+    ``offset=None`` path of ``format_safe_area_in_master_ndc`` is byte-identical
+    to the pre-tag behaviour). ``frame_tag`` is imported lazily to avoid a
+    circular import (``frame_tag`` imports this module at load time).
+    """
+    if cam is None:
+        return None
+    try:
+        from sentinel.ui import frame_tag as _ft
+    except Exception:
+        return None
+    try:
+        tag = None
+        for t in cam.GetTags():
+            if t.GetType() == _ft.SENTINEL_FRAME_TAG_PLUGIN_ID:
+                tag = t
+                break
+        if tag is None:
+            return None
+        for index, fmt in enumerate(_ft._format_defs()):
+            if fmt.get("id") != fmt_id:
+                continue
+            ids = _ft._format_ids(index)
+            if not _ft._as_bool(_ft._get_node_value(tag, ids["enabled"], True), True):
+                return None
+            nudge_x = _ft._as_float(_ft._get_node_value(tag, ids["nudge_x"], 0.0), 0.0)
+            nudge_y = _ft._as_float(_ft._get_node_value(tag, ids["nudge_y"], 0.0), 0.0)
+            if nudge_x == 0.0 and nudge_y == 0.0:
+                return None
+            return (nudge_x, nudge_y)
+    except Exception:
+        return None
+    return None
+
+
 def _scan_cross_aspect_safe_area(doc, sample_strategy="keyframes", rules_context=None):
     """QC #12 — verify Safe Area subjects stay within per-format safe
     areas across all active Multi-Format delivery Takes.
@@ -780,10 +835,15 @@ def _scan_cross_aspect_safe_area(doc, sample_strategy="keyframes", rules_context
     # Pre-compute each format's safe rectangle in MASTER NDC space.
     # This is the crop region (centered, fitted to format aspect) with
     # the format's per-side insets applied within it.
+    # If the delivery Takes come from a Sentinel Frame tag, each format may
+    # carry a per-format framing nudge — the safe area must shift with it (a
+    # nudged crop moves the region we validate against). Without a tag the nudge
+    # is None and the box is unchanged, so QC results are identical to before.
     format_safe_boxes = {}
     for fmt_id, _take in mf_takes:
+        nudge = _frame_tag_nudge_for_format(master_cam, fmt_id)
         format_safe_boxes[fmt_id] = format_safe_area_in_master_ndc(
-            fmt_id, master_aspect, rules_context)
+            fmt_id, master_aspect, rules_context, offset=nudge)
 
     fps = doc.GetFps()
     original_time = doc.GetTime()
@@ -861,4 +921,3 @@ def _scan_cross_aspect_safe_area(doc, sample_strategy="keyframes", rules_context
         c4d.EventAdd()
 
     return violations
-

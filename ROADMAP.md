@@ -66,7 +66,23 @@
 
 ---
 
-### v1.5.8 — Multi-Format polish 🚧 IN PROGRESS
+### v1.8.0 — Sentinel Frame (per-camera multi-format tag) 🚧 ON BRANCH `feat/sentinel-frame`
+
+Supersedes the two WIP entries below. A single per-camera `SentinelFrameTag` (TagData, plugin id 2099073) is the one entry point for the whole multi-format workflow: live viewport guides/mask/HUD, one-click **rename-safe** delivery Takes, and true **WYSIWYG crop** that matches the guides.
+
+- [x] `TagData.Draw` **works** with `TAG_VISIBLE | TAG_EXPRESSION | TAG_IMPLEMENTS_DRAW_FUNCTION` — no ObjectData companion drawer needed (corrects the v1.5.6/v1.6.0 hybrid assumption; CLAUDE.md fixed)
+- [x] Draw computes guides inline from the BaseContainer (clone-safe, no cross-context cache); mask with opacity; per-format nudge; HUD + "Takes out of date" staleness
+- [x] Engine extensions (additive): camera-scoped take naming, host-camera binding, rename-safe re-run via BaseLink resolver, single-undo, idempotent Set Output
+- [x] **Crop-first**: `format_crop_values` — inscribed crop via **focal** (universal — works on standard AND Redshift; aperture doesn't), gate-relative film-offset nudge; wider/equal targets crop by resolution alone; guides suppressed when viewing a format take
+- [x] QC #12 nudge-aware (reads the tag's per-format nudge; identical without a tag)
+- [x] Panel entry: Render tab → "Add Sentinel Frame to camera"
+- [x] 130 pytest + live MCP verification (standard + Redshift, all formats)
+- [ ] Merge to main; bump version; full README section on release
+- [ ] Retire the legacy MultiFormatDialog + Tools mark button once validated in production (coexist for now)
+
+### v1.5.8 — Multi-Format polish 🚧 SUPERSEDED by v1.8.0 (Sentinel Frame)
+
+> Harvested into Sentinel Frame: Preserve-Vertical focal math (now the universal crop lever), the dim intersection mask (→ tag mask + opacity), and `format_crop_in_master_ndc` (→ `crop_rect_in_master_ndc` for the guides). Branch closes after the harvest.
 
 Refinements to the Safe-Area Overlay + Multi-Format suite, in the working tree alongside v1.6.0.
 
@@ -76,7 +92,9 @@ Refinements to the Safe-Area Overlay + Multi-Format suite, in the working tree a
 - [x] `format_crop_in_master_ndc(fmt_id, master_aspect)` helper
 - [ ] Verify in C4D: HUD labels, dim mask toggle, Preserve Vertical focal override per take
 
-### v1.6.0 — Camera Frame per-camera overlay 🚧 IN PROGRESS
+### v1.6.0 — Camera Frame per-camera overlay 🚧 SUPERSEDED by v1.8.0 (Sentinel Frame)
+
+> This hybrid tag+drawer prototype was built on the (incorrect) assumption that `TagData.Draw` never fires in C4D 2026. Sentinel Frame proved `TagData.Draw` works with `TAG_IMPLEMENTS_DRAW_FUNCTION`, so the ObjectData companion drawer is unnecessary — the whole feature is a pure tag. Superseded; the `CameraFrameTag`/`CameraFrameDrawer` prototype is not shipped.
 
 Per-camera multi-format framing config (vs the scene-global v1.5.6 overlay). Benchmark parity with the mariosundays "C4D Frame" tag plugin.
 

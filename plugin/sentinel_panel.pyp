@@ -11,20 +11,31 @@ if _ROOT not in sys.path:
 
 import sentinel
 from sentinel import PLUGIN_NAME
-from sentinel.common.constants import PLUGIN_ID, SAFE_AREA_OVERLAY_PLUGIN_ID
+from sentinel.common.constants import PLUGIN_ID
 from sentinel.common.helpers import safe_print
 from sentinel.common.settings import GlobalSettings
 from sentinel.ui import panel as _panel
 from sentinel.ui import dialogs as _dialogs
 from sentinel.ui import ids as _ids
-from sentinel.ui import overlay as _overlay
 from sentinel.ui import user_areas as _user_areas
-from sentinel.ui.overlay import SafeAreaOverlayObject, _SAFE_AREA_OBJECT_AVAILABLE
 from sentinel.ui.panel import YSPanelCmd
+
+try:
+    from sentinel.ui.frame_tag import (
+        SENTINEL_FRAME_TAG_PLUGIN_ID,
+        SentinelFrameTag,
+        _SENTINEL_FRAME_TAG_AVAILABLE,
+    )
+    _FRAME_TAG_IMPORT_ERROR = None
+except Exception as _exc:
+    SENTINEL_FRAME_TAG_PLUGIN_ID = 2099073
+    SentinelFrameTag = None
+    _SENTINEL_FRAME_TAG_AVAILABLE = False
+    _FRAME_TAG_IMPORT_ERROR = _exc
 
 # Compatibility surface for tests, fixture runner, and C4D scripts that import
 # sentinel_panel.pyp directly. Keep private helpers too.
-for _module in (_panel, _dialogs, _ids, _overlay, _user_areas):
+for _module in (_panel, _dialogs, _ids, _user_areas):
     globals().update({
         _name: _value
         for _name, _value in vars(_module).items()
@@ -77,29 +88,43 @@ def Register():
     else:
         safe_print("Failed to register Guardian panel")
 
-    # Secondary plugin: SafeAreaOverlayObject (ObjectData) for the
-    # cross-aspect safe-area viewport overlay (v1.5.6).
-    # Failure here is non-fatal — the panel still works, just no overlay.
-    if _SAFE_AREA_OBJECT_AVAILABLE:
+    # (The v1.5.6 Safe-Area Overlay ObjectData was retired in v1.8.0 — the
+    # Sentinel Frame per-camera tag draws the viewport guides directly.)
+
+    # Sentinel Frame camera tag (TagData) for the per-camera multi-format
+    # workflow. Failure is non-fatal — the core panel and legacy flows still
+    # work without the tag.
+    if _SENTINEL_FRAME_TAG_AVAILABLE and SentinelFrameTag is not None:
         try:
-            overlay_ok = plugins.RegisterObjectPlugin(
-                id=SAFE_AREA_OVERLAY_PLUGIN_ID,
-                str="Sentinel Safe-Area Overlay",
-                g=SafeAreaOverlayObject,
-                description="safearea_overlay",
-                info=c4d.OBJECT_GENERATOR,
-                icon=None,
+            tag_info = (
+                c4d.TAG_VISIBLE
+                | c4d.TAG_EXPRESSION
+                | c4d.TAG_IMPLEMENTS_DRAW_FUNCTION
             )
-            if overlay_ok:
-                safe_print("Sentinel Safe-Area Overlay (ObjectData) registered")
+            frame_icon = c4d.bitmaps.BaseBitmap()
+            frame_icon_path = os.path.join(_ROOT, "icons", "SentinelFrame_IC.png")
+            if not (os.path.exists(frame_icon_path)
+                    and frame_icon.InitWith(frame_icon_path)[0] == c4d.IMAGERESULT_OK):
+                frame_icon = None
+            frame_tag_ok = plugins.RegisterTagPlugin(
+                id=SENTINEL_FRAME_TAG_PLUGIN_ID,
+                str="Sentinel Frame",
+                info=tag_info,
+                g=SentinelFrameTag,
+                description="Tsentinelframe",
+                icon=frame_icon,
+            )
+            if frame_tag_ok:
+                safe_print("Sentinel Frame (TagData) registered")
             else:
-                safe_print("Failed to register Safe-Area Overlay ObjectData — "
-                           "overlay disabled, panel still works")
+                safe_print("Failed to register Sentinel Frame TagData — "
+                           "tag workflow disabled, panel still works")
         except Exception as e:
-            safe_print(f"Safe-Area Overlay registration crashed: {e} — "
-                       "overlay disabled, panel still works")
+            safe_print(f"Sentinel Frame registration crashed: {e} — "
+                       "tag workflow disabled, panel still works")
     else:
-        safe_print("ObjectData API unavailable in this C4D — overlay disabled")
+        reason = f" ({_FRAME_TAG_IMPORT_ERROR})" if _FRAME_TAG_IMPORT_ERROR else ""
+        safe_print(f"TagData API unavailable{reason} — Sentinel Frame tag disabled")
 
     return ok
 
