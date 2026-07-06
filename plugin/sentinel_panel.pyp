@@ -124,13 +124,18 @@ def Register():
                 | c4d.TAG_EXPRESSION
                 | c4d.TAG_IMPLEMENTS_DRAW_FUNCTION
             )
+            frame_icon = c4d.bitmaps.BaseBitmap()
+            frame_icon_path = os.path.join(_ROOT, "icons", "SentinelFrame_IC.png")
+            if not (os.path.exists(frame_icon_path)
+                    and frame_icon.InitWith(frame_icon_path)[0] == c4d.IMAGERESULT_OK):
+                frame_icon = None
             frame_tag_ok = plugins.RegisterTagPlugin(
                 id=SENTINEL_FRAME_TAG_PLUGIN_ID,
                 str="Sentinel Frame",
                 info=tag_info,
                 g=SentinelFrameTag,
                 description="Tsentinelframe",
-                icon=None,
+                icon=frame_icon,
             )
             if frame_tag_ok:
                 safe_print("Sentinel Frame (TagData) registered")
