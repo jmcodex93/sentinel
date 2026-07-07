@@ -1,4 +1,4 @@
-# Sentinel v1.8.0
+# Sentinel v1.9.0
 
 Quality control, render management, and workflow automation plugin for Cinema 4D production environments — keeping the watchdog spirit of YS Guardian.
 
