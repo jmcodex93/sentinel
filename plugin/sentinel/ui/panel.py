@@ -21,6 +21,7 @@ from sentinel.common.cache import CheckCache, check_cache
 from sentinel.common.constants import (
     CACHE_DURATION,
     CHECK_COOLDOWN,
+    EVMSG_TAKECHANGED,
     LEGACY_SETTINGS_FILE,
     MAX_OBJECTS_PER_CHECK,
     PLUGIN_ID,
@@ -1960,7 +1961,7 @@ class YSPanel(gui.GeDialog):
         self.AddButton(G.BTN_INFO_AOVS, c4d.BFH_SCALEFIT, 0, 0, "Show AOVs")
         self.GroupEnd()
 
-        self.GroupBegin(80, c4d.BFH_SCALEFIT, 3, 0)
+        self.GroupBegin(85, c4d.BFH_SCALEFIT, 3, 0)
         self.AddButton(G.BTN_FORCE_ESSENTIALS, c4d.BFH_SCALEFIT, 0, 0, "Essentials")
         self.AddButton(G.BTN_FORCE_PRODUCTION, c4d.BFH_SCALEFIT, 0, 0, "Production")
         self.AddButton(G.BTN_LIGHT_GROUPS, c4d.BFH_SCALEFIT, 0, 0, "Light Groups")
@@ -2757,7 +2758,7 @@ class YSPanel(gui.GeDialog):
             self._dirty = True  # Don't clear cache or refresh here - let Timer handle it
             return True
 
-        if id == 431000159:  # EVMSG_TAKECHANGED
+        if id == EVMSG_TAKECHANGED:
             doc = c4d.documents.GetActiveDocument()
             if doc:
                 self._sync_from_doc(doc)
@@ -2803,9 +2804,10 @@ class YSPanel(gui.GeDialog):
         elif cid == G.BTN_SNAPSHOT:
             self._take_renderview_snapshot()
 
-        # Note: G.COMP_TARGET and G.CHK_MULTIPART used to live in the Render tab
-        # as editable widgets. They were moved to Settings (single source of
-        # truth) — the Render tab now shows them as info via LABEL_AOV_INFO.
+        # Note: Compositor Target and Multi-Part used to live in the Render tab
+        # as editable widgets (their ids are now retired). They were moved to
+        # Settings (single source of truth) — the Render tab now shows them as
+        # info via LABEL_AOV_INFO.
 
         elif cid == G.BTN_LIGHT_GROUPS:
             self._toggle_light_groups(doc)
@@ -2878,9 +2880,6 @@ class YSPanel(gui.GeDialog):
 
         elif cid == G.BTN_CAM_SHAKEL:
             self._merge_camera_file(doc, "cam_w_shakel.c4d")
-
-        elif cid == G.BTN_CAM_PATH:
-            self._merge_camera_file(doc, "cam_path.c4d")
 
         elif cid == G.BTN_CREATE_HIERARCHY:
             self._create_hierarchy(doc)
@@ -3013,7 +3012,9 @@ class YSPanel(gui.GeDialog):
                 mat.SetBit(c4d.BIT_ACTIVE)
                 c4d.EventAdd()
 
-                safe_print(f"Unused material [{self._unused_mats_idx + 1}/{len(self._unused_mats_bad)}]: '{mat.GetName()}'")
+                msg = f"Unused material [{self._unused_mats_idx + 1}/{len(self._unused_mats_bad)}]: '{mat.GetName()}'"
+                safe_print(msg)
+                c4d.StatusSetText(msg)
                 self._unused_mats_idx += 1
             else:
                 safe_print("No unused materials found")
@@ -3027,7 +3028,9 @@ class YSPanel(gui.GeDialog):
                 obj = self._names_bad[self._names_idx]
                 _select_objects(doc, [obj])
 
-                safe_print(f"Default name [{self._names_idx + 1}/{len(self._names_bad)}]: '{obj.GetName()}'")
+                msg = f"Default name [{self._names_idx + 1}/{len(self._names_bad)}]: '{obj.GetName()}'"
+                safe_print(msg)
+                c4d.StatusSetText(msg)
                 self._names_idx += 1
             else:
                 safe_print("No naming issues found")

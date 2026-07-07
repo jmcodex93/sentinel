@@ -1,10 +1,26 @@
 """Pure post-render validation helpers for Sentinel."""
 
+import importlib.util
 import json
 import os
 import re
 import statistics
 import time
+
+# Single source for the version-stripped render-history sidecar path. Kept
+# standalone-importable (postrender is stdlib-only): prefer the package import,
+# fall back to loading versioning.py by path — same pattern as baseline.py.
+try:
+    from sentinel.versioning import parse_version_filename, render_history_path
+except ModuleNotFoundError:
+    _versioning_path = os.path.join(os.path.dirname(__file__), "versioning.py")
+    _versioning_spec = importlib.util.spec_from_file_location(
+        "sentinel_versioning_fallback", _versioning_path
+    )
+    _versioning_module = importlib.util.module_from_spec(_versioning_spec)
+    _versioning_spec.loader.exec_module(_versioning_module)
+    parse_version_filename = _versioning_module.parse_version_filename
+    render_history_path = _versioning_module.render_history_path
 
 
 # Conservative floor for a viable rendered image header/payload. Zero-byte files
@@ -546,14 +562,8 @@ def _render_history_target(base_or_folder):
     # so splitext is unreliable — use isdir to distinguish an audited folder from a doc file.
     if os.path.isdir(base_or_folder):
         return os.path.join(base_or_folder, "sentinel_render_history.json")
-    try:
-        from sentinel.versioning import render_history_path
-        return render_history_path(base_or_folder)
-    except Exception:
-        folder = os.path.dirname(base_or_folder)
-        root = os.path.splitext(os.path.basename(base_or_folder))[0]
-        base = re.sub(r"_v\d+(?:_[A-Za-z][A-Za-z0-9]*)?$", "", root, flags=re.IGNORECASE)
-        return os.path.join(folder, f"{base}_render_history.json")
+    # Single owner of the per-scene sidecar path lives in versioning.py.
+    return render_history_path(base_or_folder)
 
 
 def append_render_history(base_or_folder, summary):
@@ -588,11 +598,7 @@ def report_path_for_doc(doc_path, audit_folder):
     if doc_path:
         folder = os.path.dirname(doc_path)
         name_no_ext = os.path.splitext(os.path.basename(doc_path))[0]
-        try:
-            from sentinel.versioning import parse_version_filename
-            base, _ver, _status = parse_version_filename(name_no_ext)
-        except Exception:
-            base = re.sub(r"_v\d+(?:_[A-Za-z][A-Za-z0-9]*)?$", "", name_no_ext, flags=re.IGNORECASE)
+        base, _ver, _status = parse_version_filename(name_no_ext)
         return os.path.join(folder, f"{base}_sentinel_render_report.json")
     return os.path.join(audit_folder, "sentinel_render_report.json")
 
