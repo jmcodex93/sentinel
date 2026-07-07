@@ -164,7 +164,7 @@ def _baseline_score(results, rules_context, baseline_path, current_params, basel
                 {
                     "baseline_status": status,
                     "baseline_path": baseline_path,
-                    "baseline_warning": "baseline ilegible - solo se muestran totales",
+                    "baseline_warning": "baseline unreadable - showing totals only",
                 }
             )
             return summary

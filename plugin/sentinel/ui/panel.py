@@ -2624,7 +2624,7 @@ class YSPanel(gui.GeDialog):
             self._last_check_time = 0
             self._dirty = True
             self._refresh()
-            c4d.gui.MessageDialog(f"Aceptadas {written} violacion(es) para {row_label}.")
+            c4d.gui.MessageDialog(f"Accepted {written} violation(s) for {row_label}.")
             return True
 
         if dlg.action == "retire":
@@ -2634,7 +2634,7 @@ class YSPanel(gui.GeDialog):
             self._dirty = True
             self._refresh()
             if ok:
-                c4d.gui.MessageDialog(f"Aceptaciones retiradas para {row_label}.")
+                c4d.gui.MessageDialog(f"Acceptances retired for {row_label}.")
             else:
                 c4d.gui.MessageDialog("Could not update the baseline sidecar.")
             return True

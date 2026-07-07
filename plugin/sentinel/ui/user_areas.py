@@ -47,9 +47,9 @@ def _accepted_entry_payload(entry, violation=None):
 
 
 def format_baseline_row_message(new_count, accepted_count, stale_count=0):
-    message = f"{int(new_count or 0)} nuevas ({int(accepted_count or 0)} aceptadas)"
+    message = f"{int(new_count or 0)} new ({int(accepted_count or 0)} accepted)"
     if int(stale_count or 0):
-        message += f" · {int(stale_count or 0)} obsoletas"
+        message += f" · {int(stale_count or 0)} stale"
     return message
 
 # ---------------- TodoArea (GeUserArea for the TODO list) ----------------
@@ -482,14 +482,14 @@ class StatusArea(gui.GeUserArea):
                     if name_key and val > 1 and not accepted_count:
                         message += f" (+{val-1} more)"
                     if stale_count and not accepted_count:
-                        message += f" · {stale_count} obsoletas"
+                        message += f" · {stale_count} stale"
                     text_col = _COL_RED if severity == "FAIL" else _COL_YELLOW
                     bg = _COL_BG_FAIL if severity == "FAIL" else _COL_BG_WARN
                 else:
                     status = "[OK*]" if accepted_count else "[ OK ]"
                     message = format_baseline_row_message(0, accepted_count, stale_count) if accepted_count else ok_msg
                     if stale_count and not accepted_count:
-                        message += f" · {stale_count} obsoletas"
+                        message += f" · {stale_count} stale"
                     text_col = _COL_GREEN
                     bg = _COL_BG_OK
 
