@@ -1,6 +1,37 @@
 # -*- coding: utf-8 -*-
 """Sentinel UI widget IDs."""
 
+# Deterministic per-check QC action button IDs, derived from the registry index.
+# id = QC_ACTION_BASE + index*4 + slot. Slots: select=0, info=1, fix=2 (slot 3
+# reserved/unused). With 12 checks this spans 1400..1446 — verified collision-free
+# against every G / GateTriageIds id below.
+QC_ACTION_BASE = 1400
+_QC_ACTION_SLOTS = {"select": 0, "info": 1, "fix": 2}
+_QC_SLOT_ACTIONS = {slot: action for action, slot in _QC_ACTION_SLOTS.items()}
+
+
+def qc_action_id(index, action):
+    """Return the widget id for the (row index, action) QC button."""
+    slot = _QC_ACTION_SLOTS.get(action)
+    if slot is None:
+        raise ValueError(f"Unknown QC action: {action}")
+    return QC_ACTION_BASE + index * 4 + slot
+
+
+def decode_qc_action(cid):
+    """Inverse of qc_action_id: (index, action) or None for non-QC-action ids."""
+    if not isinstance(cid, int) or isinstance(cid, bool):
+        return None
+    offset = cid - QC_ACTION_BASE
+    if offset < 0:
+        return None
+    index, slot = divmod(offset, 4)
+    action = _QC_SLOT_ACTIONS.get(slot)
+    if action is None:
+        return None
+    return (index, action)
+
+
 class G:
     # Scene info
     SHOT = 1001
@@ -18,25 +49,8 @@ class G:
     TAB_GROUP_VERSIONS = 1212 # Inner group ID for Versions content
     TAB_GROUP_TOOLS = 1213    # Inner group ID for Tools content
 
-    # Per-check action buttons (1 click to select/info)
-    BTN_SEL_LIGHTS = 1130
-    BTN_SEL_VIS = 1131
-    BTN_SEL_KEYS = 1132
-    BTN_SEL_CAMS = 1133
-    BTN_INFO_PRESET = 1134
-    BTN_INFO_TEXTURES = 1135
-    BTN_SEL_UNUSED_MATS = 1136
-    BTN_SEL_NAMES = 1137
-    BTN_INFO_OUTPUT = 1138
-    BTN_INFO_FPS = 1139
-    BTN_SEL_CROSS_ASPECT = 1144  # Select objects with cross-aspect violations
-    BTN_INFO_CROSS_ASPECT = 1145  # Detailed cross-aspect safe-area report
-
-    # Auto-fix buttons
-    BTN_FIX_LIGHTS = 1140
-    BTN_FIX_CAMS = 1141
-    BTN_FIX_UNUSED_MATS = 1142
-    BTN_FIX_FPS = 1143
+    # Per-check QC action buttons are no longer hand-numbered — they are
+    # generated from the registry via qc_action_id()/decode_qc_action() above.
 
     # Export
     BTN_EXPORT_QC = 1150
@@ -70,7 +84,6 @@ class G:
     COMBO_HISTORY_FILTER = 1182
     LABEL_NOTES_SUMMARY = 1190
     BTN_EDIT_NOTES = 1191
-    BTN_INFO_TAKES = 1152
     BTN_INFO_AOVS = 1155
     BTN_LIGHT_GROUPS = 1158
     BTN_FORCE_ESSENTIALS = 1156

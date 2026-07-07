@@ -45,10 +45,10 @@ from sentinel.qc.results import (
     structured_cache_key,
 )
 from sentinel.qc.registry import CHECK_REGISTRY, CheckDisplayView, RowKeysView
-from sentinel.qc.registry import entry_severity
+from sentinel.qc.registry import entry_severity, resolve_function
 from sentinel.qc.score import compute_score, count_violations, run_all_checks
 from sentinel.rules import get_active_rules
-from sentinel.ui.ids import G
+from sentinel.ui.ids import G, decode_qc_action, qc_action_id
 from sentinel.ui.user_areas import (
     HistoryArea,
     ScoreHeader,
@@ -399,22 +399,33 @@ def _apply_fps_range(doc):
     return fixes
 
 
-def fix_fps_range(doc):
-    """Auto-fix FPS/range across ALL render presets. Aligns timeline to active preset."""
+def fix_fps_range(doc, manage_undo=True):
+    """Auto-fix FPS/range across ALL render presets. Aligns timeline to active preset.
+
+    ``manage_undo=False`` lets a caller (e.g. batched ``apply_fixes``) own the
+    single StartUndo/EndUndo + cache/EventAdd so the whole batch is one undo step.
+    """
     fixes = []
     if not doc.GetFirstRenderData():
         return fixes
 
-    doc.StartUndo()
+    if manage_undo:
+        doc.StartUndo()
     try:
         fixes = _apply_fps_range(doc)
     except Exception as e:
+        # Standalone (button) path degrades gracefully; a batching caller
+        # (apply_fixes / gate) must see the failure, not a silent empty result.
+        if not manage_undo:
+            raise
         safe_print(f"Error fixing FPS/range: {e}")
     finally:
-        doc.EndUndo()
+        if manage_undo:
+            doc.EndUndo()
 
-    check_cache.clear()
-    c4d.EventAdd()
+    if manage_undo:
+        check_cache.clear()
+        c4d.EventAdd()
     return fixes
 
 # ---------------- auto-fix functions ----------------
@@ -445,16 +456,18 @@ def _apply_lights(doc, lights_bad):
     return moved
 
 
-def fix_lights(doc, lights_bad):
+def fix_lights(doc, lights_bad, manage_undo=True):
     """Move stray lights into a 'lights' group null"""
     if not lights_bad:
         return 0
 
-    doc.StartUndo()
+    if manage_undo:
+        doc.StartUndo()
     moved = _apply_lights(doc, lights_bad)
-    doc.EndUndo()
-    check_cache.clear()
-    c4d.EventAdd()
+    if manage_undo:
+        doc.EndUndo()
+        check_cache.clear()
+        c4d.EventAdd()
     return moved
 
 
@@ -473,16 +486,18 @@ def _apply_camera_shift(doc, cam_bad):
     return fixed
 
 
-def fix_camera_shift(doc, cam_bad):
+def fix_camera_shift(doc, cam_bad, manage_undo=True):
     """Reset camera shift to 0 on all flagged cameras"""
     if not cam_bad:
         return 0
 
-    doc.StartUndo()
+    if manage_undo:
+        doc.StartUndo()
     fixed = _apply_camera_shift(doc, cam_bad)
-    doc.EndUndo()
-    check_cache.clear()
-    c4d.EventAdd()
+    if manage_undo:
+        doc.EndUndo()
+        check_cache.clear()
+        c4d.EventAdd()
     return fixed
 
 
@@ -497,16 +512,18 @@ def _apply_unused_materials(doc, unused_mats):
     return deleted
 
 
-def fix_unused_materials(doc, unused_mats):
+def fix_unused_materials(doc, unused_mats, manage_undo=True):
     """Delete unused materials from the scene"""
     if not unused_mats:
         return 0
 
-    doc.StartUndo()
+    if manage_undo:
+        doc.StartUndo()
     deleted = _apply_unused_materials(doc, unused_mats)
-    doc.EndUndo()
-    check_cache.clear()
-    c4d.EventAdd()
+    if manage_undo:
+        doc.EndUndo()
+        check_cache.clear()
+        c4d.EventAdd()
     return deleted
 
 
@@ -516,13 +533,13 @@ def apply_fixes(doc, fixes):
     ``fixes`` items have shape {"check_id": str, "objects": list}. The caller
     is responsible for passing only live objects/materials filtered to new
     violations. ``fps_range`` ignores ``objects`` and normalizes all presets.
+
+    Which check_ids are fixable, and the fix function for each, come from the
+    registry (``entry.has_fix`` + ``entry.fix_fn``). The public fix_* functions
+    are invoked with ``manage_undo=False`` so the whole batch is a single undo
+    step owned here.
     """
-    dispatch = {
-        "lights": _apply_lights,
-        "cam": _apply_camera_shift,
-        "unused_mats": _apply_unused_materials,
-        "fps_range": lambda active_doc, _objects: _apply_fps_range(active_doc),
-    }
+    entries_by_id = {entry.check_id: entry for entry in CHECK_REGISTRY}
     results = []
 
     try:
@@ -530,13 +547,18 @@ def apply_fixes(doc, fixes):
         try:
             for item in fixes or []:
                 check_id = item.get("check_id")
-                apply_one = dispatch.get(check_id)
-                if not apply_one:
+                entry = entries_by_id.get(check_id)
+                if not entry or not entry.has_fix:
                     continue
+                fix_fn = resolve_function(entry.fix_fn, _current_module())
                 objects = item.get("objects") or []
-                if check_id != "fps_range" and not objects:
-                    continue
-                results.append({"check_id": check_id, "result": apply_one(doc, objects)})
+                if entry.fix_scope == "document":
+                    result = fix_fn(doc, manage_undo=False)
+                else:
+                    if not objects:
+                        continue
+                    result = fix_fn(doc, objects, manage_undo=False)
+                results.append({"check_id": check_id, "result": result})
         finally:
             doc.EndUndo()
     finally:
@@ -544,20 +566,13 @@ def apply_fixes(doc, fixes):
         c4d.EventAdd()
     return results
 
-_REPORT_KEY_BY_CHECK_ID = {
-    "lights": "lights",
-    "vis": "visibility",
-    "keys": "keyframes",
-    "cam": "camera_shift",
-    "rdc": "render_presets",
-    "textures": "textures",
-    "unused_mats": "unused_materials",
-    "names": "default_names",
-    "output": "output_paths",
-    "takes": "takes",
-    "fps_range": "fps_range",
-    "cross_aspect": "cross_aspect",
-}
+# Button label per QC action; drives the generated QC button matrix.
+_QC_ACTION_LABELS = {"select": "Select", "info": "Info", "fix": "Fix"}
+
+
+def _report_key_by_check_id():
+    """check_id -> report section key, derived from the registry."""
+    return {entry.check_id: entry.report_key for entry in CHECK_REGISTRY}
 
 
 def build_baseline_artifact_details(qc_summary):
@@ -693,11 +708,13 @@ def export_qc_report(doc, results, artist_name, qc_summary=None):
         ],
     }
 
+    report_key_by_id = _report_key_by_check_id()
+
     disabled_checks = []
     if isinstance(qc_summary, dict):
         disabled_checks = list(qc_summary.get("disabled", []) or [])
     for check_id in disabled_checks:
-        report_key = _REPORT_KEY_BY_CHECK_ID.get(check_id)
+        report_key = report_key_by_id.get(check_id)
         if report_key and report_key in report["checks"]:
             report["checks"][report_key]["status"] = "DISABLED"
             report["checks"][report_key]["disabled"] = True
@@ -721,7 +738,7 @@ def export_qc_report(doc, results, artist_name, qc_summary=None):
         for check_id, details in baseline_details.items():
             if check_id in disabled_checks:
                 continue
-            report_key = _REPORT_KEY_BY_CHECK_ID.get(check_id)
+            report_key = report_key_by_id.get(check_id)
             if not report_key or report_key not in report["checks"]:
                 continue
             check = report["checks"][report_key]
@@ -876,7 +893,8 @@ def _gate_new_counts(gate_result):
 
 
 def _gate_fix_payload(check_id, registry_results, gate_result):
-    if check_id == "fps_range":
+    entry = next((e for e in CHECK_REGISTRY if e.check_id == check_id), None)
+    if entry is not None and entry.fix_scope == "document":
         return {"check_id": check_id, "objects": []}
 
     new_keys = {
@@ -1318,10 +1336,6 @@ def collect_scene(doc, artist_name):
         if count:
             issues.append(entry.preflight_template.format(n=count))
 
-    lights = legacy_by_id.get("lights") or []
-    cam_bad = legacy_by_id.get("cam") or []
-    unused = legacy_by_id.get("unused_mats") or []
-
     # Show pre-flight results
     if issues:
         msg = f"PRE-FLIGHT: {len(issues)} issue(s) found\n\n"
@@ -1336,14 +1350,18 @@ def collect_scene(doc, artist_name):
             safe_print("Scene Collector: Cancelled")
             return
         if result == c4d.GEMB_R_YES:
-            # Auto-fix what we can
+            # Auto-fix what we can — object-scoped fixable checks resolved through
+            # the registry. Document-scoped fixes (fps_range) take no object list
+            # and were never auto-fixed by the collector.
             fixed = 0
-            if lights:
-                fixed += fix_lights(doc, lights)
-            if unused:
-                fixed += fix_unused_materials(doc, unused)
-            if cam_bad:
-                fixed += fix_camera_shift(doc, cam_bad)
+            for entry in CHECK_REGISTRY:
+                if not entry.has_fix or entry.fix_scope != "objects":
+                    continue
+                objs = legacy_by_id.get(entry.check_id) or []
+                if not objs:
+                    continue
+                fix_fn = resolve_function(entry.fix_fn, _current_module())
+                fixed += fix_fn(doc, objs)
             safe_print(f"Scene Collector: Auto-fixed {fixed} issues")
     else:
         if not c4d.gui.QuestionDialog("Pre-flight: All checks passed!\n\nProceed with Save Project with Assets?"):
@@ -1887,30 +1905,19 @@ class YSPanel(gui.GeDialog):
         self.GroupBegin(407, c4d.BFH_RIGHT|c4d.BFV_SCALEFIT, 2, 12)
         self.GroupBorderSpace(0, 3, 0, 3)
         self.GroupSpace(2, 3)
-        self.AddButton(G.BTN_SEL_LIGHTS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
-        self.AddButton(G.BTN_FIX_LIGHTS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "Fix")
-        self.AddButton(G.BTN_SEL_VIS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
-        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
-        self.AddButton(G.BTN_SEL_KEYS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
-        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
-        self.AddButton(G.BTN_SEL_CAMS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
-        self.AddButton(G.BTN_FIX_CAMS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "Fix")
-        self.AddButton(G.BTN_INFO_PRESET, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Info")
-        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
-        self.AddButton(G.BTN_INFO_TEXTURES, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Info")
-        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
-        self.AddButton(G.BTN_SEL_UNUSED_MATS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
-        self.AddButton(G.BTN_FIX_UNUSED_MATS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "Fix")
-        self.AddButton(G.BTN_SEL_NAMES, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
-        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
-        self.AddButton(G.BTN_INFO_OUTPUT, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Info")
-        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
-        self.AddButton(G.BTN_INFO_TAKES, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Info")
-        self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "", 0)
-        self.AddButton(G.BTN_INFO_FPS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Info")
-        self.AddButton(G.BTN_FIX_FPS, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "Fix")
-        self.AddButton(G.BTN_SEL_CROSS_ASPECT, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 50, 0, "Select")
-        self.AddButton(G.BTN_INFO_CROSS_ASPECT, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 35, 0, "Info")
+        # Generated from the registry: primary action button (width 50) in the
+        # left column, secondary action button (width 35) or a filler in the
+        # right column — same 2×12 visual layout as before.
+        flags = c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT
+        for index, entry in enumerate(CHECK_REGISTRY):
+            actions = entry.actions
+            self.AddButton(qc_action_id(index, actions[0]), flags, 50, 0,
+                           _QC_ACTION_LABELS[actions[0]])
+            if len(actions) > 1:
+                self.AddButton(qc_action_id(index, actions[1]), flags, 35, 0,
+                               _QC_ACTION_LABELS[actions[1]])
+            else:
+                self.AddStaticText(0, flags, 35, 0, "", 0)
         self.GroupEnd()
 
         self.GroupEnd()  # status row
@@ -2644,29 +2651,22 @@ class YSPanel(gui.GeDialog):
 
     def _on_qc_row_click(self, row_key):
         """Called by StatusArea when the user clicks a QC row.
-        Routes to the same handler as the primary button (Select or Info)."""
+        Routes to the entry's row_click_action (defaults to its first action)
+        by synthesizing that button's command id."""
         if self._show_baseline_actions(row_key):
             return
-        primary = {
-            "lights":      G.BTN_SEL_LIGHTS,
-            "vis":         G.BTN_SEL_VIS,
-            "keys":        G.BTN_SEL_KEYS,
-            "cam":         G.BTN_SEL_CAMS,
-            "rdc":         G.BTN_INFO_PRESET,
-            "textures":    G.BTN_INFO_TEXTURES,
-            "unused_mats": G.BTN_SEL_UNUSED_MATS,
-            "names":       G.BTN_SEL_NAMES,
-            "output":       G.BTN_INFO_OUTPUT,
-            "takes":        G.BTN_INFO_TAKES,
-            "fps_range":    G.BTN_INFO_FPS,
-            "cross_aspect": G.BTN_INFO_CROSS_ASPECT,
-        }
-        btn_id = primary.get(row_key)
-        if btn_id is not None:
-            try:
-                self.Command(btn_id, c4d.BaseContainer())
-            except Exception as e:
-                safe_print(f"Row click dispatch error: {e}")
+        index = next(
+            (i for i, entry in enumerate(CHECK_REGISTRY) if entry.check_id == row_key),
+            None,
+        )
+        if index is None:
+            return
+        entry = CHECK_REGISTRY[index]
+        primary_action = entry.row_click_action or entry.actions[0]
+        try:
+            self.Command(qc_action_id(index, primary_action), c4d.BaseContainer())
+        except Exception as e:
+            safe_print(f"Row click dispatch error: {e}")
 
     def _on_history_row_click(self, entry):
         """Called by HistoryArea when the user clicks a version row.
@@ -2767,10 +2767,375 @@ class YSPanel(gui.GeDialog):
 
         return gui.GeDialog.CoreMessage(self, id, msg)
 
+    # ── Per-check QC action handlers (dispatched by naming convention from
+    # Command via decode_qc_action → _qc_{action}_{check_id}). Bodies moved
+    # verbatim from the former per-check Command elif branches. ──
+    def _qc_select_lights(self, doc):
+        if self._lights_bad:
+            _select_objects(doc, self._lights_bad)
+            safe_print(f"Selected {len(self._lights_bad)} lights outside group")
+        else:
+            safe_print("No light issues found")
+
+    def _qc_select_vis(self, doc):
+        if self._vis_bad:
+            _select_objects(doc, self._vis_bad)
+            safe_print(f"Selected {len(self._vis_bad)} objects with visibility mismatch")
+        else:
+            safe_print("No visibility issues found")
+
+    def _qc_select_keys(self, doc):
+        if self._keys_bad:
+            _select_objects(doc, self._keys_bad)
+            safe_print(f"Selected {len(self._keys_bad)} objects with multi-axis keyframes")
+        else:
+            safe_print("No keyframe issues found")
+
+    def _qc_select_cam(self, doc):
+        if self._cam_bad:
+            _select_objects(doc, self._cam_bad)
+            safe_print(f"Selected {len(self._cam_bad)} cameras with non-zero shift")
+        else:
+            safe_print("No camera shift issues found")
+
+    def _qc_info_rdc(self, doc):
+        rules_context = _active_rules_for_doc(doc)
+        approved_presets = list(rules_context.params.get("approved_presets", PRESETS))
+        approved_set = {normalize_preset_name(name) for name in approved_presets}
+        info_msg = "RENDER PRESETS:\n\n"
+        info_msg += f"Standard presets: {', '.join(approved_presets)}\n\n"
+        rd = doc.GetFirstRenderData()
+        while rd:
+            name = rd.GetName()
+            normalized = normalize_preset_name(name)
+            status = "OK" if normalized in approved_set else "NON-STANDARD"
+            info_msg += f"  [{status}] {name}\n"
+            rd = rd.GetNext()
+        c4d.gui.MessageDialog(info_msg)
+
+    def _qc_info_textures(self, doc):
+        if self._textures_bad:
+            absolute = [t for t in self._textures_bad if t["issue"] == "absolute"]
+            missing = [t for t in self._textures_bad if t["issue"] == "missing"]
+            info_msg = f"ASSET ISSUES: {len(self._textures_bad)}\n\n"
+            if absolute:
+                info_msg += f"ABSOLUTE PATHS ({len(absolute)}):\n"
+                for i, t in enumerate(absolute[:10], 1):
+                    info_msg += f"  {i}. {t['source']}\n     {t['path']}\n"
+                info_msg += "\n"
+            if missing:
+                info_msg += f"MISSING FILES ({len(missing)}):\n"
+                for i, t in enumerate(missing[:10], 1):
+                    info_msg += f"  {i}. {t['source']}\n     {t['path']}\n"
+                info_msg += "\n"
+            info_msg += ("Open the Texture Repathing tool to fix these "
+                         "in bulk (find/replace, make relative, "
+                         "auto-find missing)?")
+            if c4d.gui.QuestionDialog(info_msg):
+                self._open_texture_repathing(doc)
+        else:
+            c4d.gui.MessageDialog(
+                "All assets OK. No absolute paths or missing files.")
+
+    def _qc_select_unused_mats(self, doc):
+        if self._unused_mats_bad:
+            # Cycle through unused materials one by one
+            if self._unused_mats_idx >= len(self._unused_mats_bad):
+                self._unused_mats_idx = 0
+
+            mat = self._unused_mats_bad[self._unused_mats_idx]
+            # Deselect all materials first
+            for m in doc.GetMaterials():
+                m.DelBit(c4d.BIT_ACTIVE)
+            # Select this one
+            mat.SetBit(c4d.BIT_ACTIVE)
+            c4d.EventAdd()
+
+            msg = f"Unused material [{self._unused_mats_idx + 1}/{len(self._unused_mats_bad)}]: '{mat.GetName()}'"
+            safe_print(msg)
+            c4d.StatusSetText(msg)
+            self._unused_mats_idx += 1
+        else:
+            safe_print("No unused materials found")
+
+    def _qc_select_names(self, doc):
+        if self._names_bad:
+            # Cycle through default-named objects one by one
+            if self._names_idx >= len(self._names_bad):
+                self._names_idx = 0
+
+            obj = self._names_bad[self._names_idx]
+            _select_objects(doc, [obj])
+
+            msg = f"Default name [{self._names_idx + 1}/{len(self._names_bad)}]: '{obj.GetName()}'"
+            safe_print(msg)
+            c4d.StatusSetText(msg)
+            self._names_idx += 1
+        else:
+            safe_print("No naming issues found")
+
+    def _qc_info_output(self, doc):
+        if hasattr(self, '_output_bad') and self._output_bad:
+            info_msg = f"OUTPUT PATH ISSUES: {len(self._output_bad)}\n\n"
+            for i, issue in enumerate(self._output_bad[:10], 1):
+                info_msg += f"{i}. [{issue['preset']}] {issue['issue']}\n"
+            info_msg += "\nUse $prj and $take tokens in output paths."
+        else:
+            info_msg = "All output paths are properly configured."
+        c4d.gui.MessageDialog(info_msg)
+
+    def _qc_info_takes(self, doc):
+        if self._takes_bad:
+            info_msg = f"TAKE ISSUES: {len(self._takes_bad)}\n\n"
+            for i, t in enumerate(self._takes_bad[:20], 1):
+                info_msg += f"{i}. [{t['take']}] {t['issue']}\n"
+        else:
+            # Check if there are any takes at all
+            td = doc.GetTakeData()
+            has_takes = td and td.GetMainTake() and td.GetMainTake().GetDown()
+            if has_takes:
+                info_msg = "All takes properly configured."
+            else:
+                info_msg = "No takes found (only Main Take)."
+        c4d.gui.MessageDialog(info_msg)
+
+    def _qc_info_fps_range(self, doc):
+        rules_context = _active_rules_for_doc(doc)
+        standard_fps = int(rules_context.params.get("standard_fps", GlobalSettings.get_standard_fps()))
+        start_frame = int(rules_context.params.get("start_frame", 1001))
+        doc_fps = doc.GetFps()
+        rd = doc.GetActiveRenderData()
+        info_msg = f"FPS & FRAME RANGE\n\n"
+        info_msg += f"Document FPS: {doc_fps} (standard: {standard_fps})\n"
+        if rd:
+            preset_name = rd.GetName()
+            preset_norm = normalize_preset_name(preset_name)
+            is_stills = preset_norm == "stills"
+            rd_fps = int(rd[c4d.RDATA_FRAMERATE])
+            frame_start = rd[c4d.RDATA_FRAMEFROM].GetFrame(rd_fps)
+            frame_end = rd[c4d.RDATA_FRAMETO].GetFrame(rd_fps)
+            frame_mode = rd[c4d.RDATA_FRAMESEQUENCE]
+            mode_names = {
+                c4d.RDATA_FRAMESEQUENCE_ALLFRAMES: "All Frames",
+                c4d.RDATA_FRAMESEQUENCE_CURRENTFRAME: "Current Frame",
+                c4d.RDATA_FRAMESEQUENCE_MANUAL: "Manual",
+            }
+            mode_str = mode_names.get(frame_mode, f"Unknown ({frame_mode})")
+            info_msg += f"Active preset: {preset_name}"
+            info_msg += " (stills mode)\n" if is_stills else "\n"
+            info_msg += f"Render FPS: {rd_fps}\n"
+            info_msg += f"Render range: {frame_start} - {frame_end} ({frame_end - frame_start + 1} frames)\n"
+            info_msg += f"Frame mode: {mode_str}\n"
+
+            # Timeline + loop range + playhead
+            tl_min = doc[c4d.DOCUMENT_MINTIME].GetFrame(doc_fps)
+            tl_max = doc[c4d.DOCUMENT_MAXTIME].GetFrame(doc_fps)
+            loop_min = doc[c4d.DOCUMENT_LOOPMINTIME].GetFrame(doc_fps)
+            loop_max = doc[c4d.DOCUMENT_LOOPMAXTIME].GetFrame(doc_fps)
+            playhead = doc.GetTime().GetFrame(doc_fps)
+            info_msg += f"Timeline: {tl_min} - {tl_max}\n"
+            info_msg += f"Preview/loop: {loop_min} - {loop_max}\n"
+            info_msg += f"Playhead: frame {playhead}\n"
+
+            if is_stills:
+                info_msg += f"\nStills: 'Current Frame' is OK; range start expected at {start_frame}."
+            else:
+                info_msg += f"\nAnimation: timeline + preview must match render range."
+        if self._fps_range_bad:
+            info_msg += f"\n\nISSUES ({len(self._fps_range_bad)}):\n"
+            for i, issue in enumerate(self._fps_range_bad, 1):
+                info_msg += f"  {i}. {issue['issue']}\n"
+        else:
+            info_msg += "\n\nAll OK."
+        info_msg += f"\n\nTo change standard FPS, edit sentinel_settings.json."
+        c4d.gui.MessageDialog(info_msg)
+
+    def _qc_fix_lights(self, doc):
+        if self._lights_bad:
+            count = fix_lights(doc, self._lights_bad)
+            safe_print(f"Moved {count} lights into 'lights' group")
+            c4d.gui.MessageDialog(f"Moved {count} light(s) into 'lights' group.\n\nUndo available (Ctrl+Z).")
+        else:
+            safe_print("No light issues to fix")
+
+    def _qc_fix_cam(self, doc):
+        if self._cam_bad:
+            count = fix_camera_shift(doc, self._cam_bad)
+            safe_print(f"Reset shift on {count} cameras")
+            c4d.gui.MessageDialog(f"Reset shift to 0 on {count} camera(s).\n\nUndo available (Ctrl+Z).")
+        else:
+            safe_print("No camera shift issues to fix")
+
+    def _qc_fix_unused_mats(self, doc):
+        if self._unused_mats_bad:
+            count = len(self._unused_mats_bad)
+            if c4d.gui.QuestionDialog(f"Delete {count} unused material(s)?\n\nThis can be undone (Ctrl+Z)."):
+                deleted = fix_unused_materials(doc, self._unused_mats_bad)
+                safe_print(f"Deleted {deleted} unused materials")
+                self._unused_mats_idx = 0
+        else:
+            safe_print("No unused materials to delete")
+
+    def _qc_fix_fps_range(self, doc):
+        if self._fps_range_bad:
+            rules_context = _active_rules_for_doc(doc)
+            standard_fps = int(rules_context.params.get("standard_fps", GlobalSettings.get_standard_fps()))
+            start_frame = int(rules_context.params.get("start_frame", 1001))
+            # Build confirmation listing what will change
+            count = len(self._fps_range_bad)
+            preview = f"FIX FPS / FRAME RANGE\n\n"
+            preview += f"Standard: {standard_fps} fps, start frame {start_frame}\n\n"
+            preview += f"Issues to fix ({count}):\n"
+            for issue in self._fps_range_bad[:15]:
+                preview += f"  - {issue['issue']}\n"
+            if count > 15:
+                preview += f"  ... and {count - 15} more\n"
+            preview += "\nThis will modify ALL render presets, document FPS, "
+            preview += "timeline, and preview range. Undo available (Ctrl+Z).\n\n"
+            preview += "Continue?"
+
+            if c4d.gui.QuestionDialog(preview):
+                fixes = fix_fps_range(doc)
+                if fixes:
+                    fix_msg = f"Applied {len(fixes)} fix(es):\n\n"
+                    for f in fixes[:25]:
+                        fix_msg += f"  - {f}\n"
+                    if len(fixes) > 25:
+                        fix_msg += f"  ... and {len(fixes) - 25} more\n"
+                    c4d.gui.MessageDialog(fix_msg)
+                    self._dirty = True
+                else:
+                    c4d.gui.MessageDialog("No fixes were applied.")
+            else:
+                safe_print("FPS/range fix cancelled by user")
+        else:
+            safe_print("No FPS/range issues to fix")
+
+    def _qc_select_cross_aspect(self, doc):
+        # Select the unique objects that have at least one violation
+        # (across any format). Useful for jumping to "what needs to be
+        # fixed" — once selected, the artist can scrub the timeline +
+        # check the Info dialog to see which formats / frames violate.
+        objs = []
+        seen = set()
+        for v in (self._cross_aspect_bad or []):
+            obj = v.get("object")
+            if obj is None:
+                continue
+            key = id(obj)
+            if key in seen:
+                continue
+            seen.add(key)
+            objs.append(obj)
+        if not objs:
+            c4d.gui.MessageDialog(
+                "No cross-aspect safe-area violations.\n\n"
+                "Either no objects are marked as Safe Area subjects, "
+                "no Multi-Format Takes exist, or all marked subjects "
+                "stay inside their per-format safe areas at the current "
+                "frame.\n\nTip: click 'Info' to run a full keyframe sweep."
+            )
+        else:
+            doc.SetActiveObject(None, c4d.SELECTION_NEW)
+            for obj in objs:
+                try:
+                    doc.SetActiveObject(obj, c4d.SELECTION_ADD)
+                except Exception:
+                    pass
+            c4d.EventAdd()
+            safe_print(f"Selected {len(objs)} cross-aspect violator(s)")
+
+    def _qc_info_cross_aspect(self, doc):
+        # Run a FULL keyframe-sample analysis (more expensive than the
+        # current-frame sweep used by the auto-refresh). This gives the
+        # artist a per-(object × format × frames) breakdown.
+        marked_count = len(find_marked_safe_area_objects(doc) or [])
+        mf_count = len(find_active_multiformat_takes(doc) or [])
+
+        if marked_count == 0:
+            c4d.gui.MessageDialog(
+                "No objects marked as Safe Area subjects.\n\n"
+                "Mark important compositional elements (logo, title, "
+                "character) via Tools tab → 'Mark as Safe Area Subject' "
+                "with the objects selected. Marks persist with the "
+                "scene file (stored as UserData on each object)."
+            )
+        elif mf_count == 0:
+            c4d.gui.MessageDialog(
+                "No Multi-Format delivery Takes detected.\n\n"
+                "Generate them first via Render tab → 'Generate Format "
+                "Takes...'. The check looks at each Take's safe area "
+                "(per-format insets covering platform UI overlays) and "
+                "verifies your marked subjects stay inside."
+            )
+        else:
+            # Run with full sampling. May take a moment on heavy scenes.
+            violations = check_cross_aspect_safe_area(
+                doc, sample_strategy="keyframes")
+            # Update the cached state so subsequent Select uses the
+            # full-sweep results (more accurate than current_frame).
+            self._cross_aspect_bad = violations
+
+            lines = [f"Cross-Aspect Safe-Area Check (full keyframe sweep)",
+                     "",
+                     f"Marked subjects:    {marked_count}",
+                     f"Multi-Format Takes: {mf_count}",
+                     ""]
+
+            if not violations:
+                lines.append(
+                    "✓ All subjects fit within every active format's safe area."
+                )
+            else:
+                # Group violations by object for readability
+                by_obj = {}
+                for v in violations:
+                    by_obj.setdefault(v["object_name"], []).append(v)
+
+                lines.append(f"⚠ {len(violations)} violation(s) "
+                             f"across {len(by_obj)} subject(s):")
+                lines.append("")
+                for obj_name in sorted(by_obj.keys()):
+                    lines.append(f"  • {obj_name}")
+                    for v in by_obj[obj_name]:
+                        sides = ", ".join(sorted(v["sides"]))
+                        frames = v["frames"]
+                        if len(frames) == 1:
+                            fr_str = f"frame {frames[0]}"
+                        elif len(frames) <= 6:
+                            fr_str = f"frames {','.join(str(f) for f in frames)}"
+                        else:
+                            fr_str = (f"frames {frames[0]}–{frames[-1]} "
+                                      f"({len(frames)} samples)")
+                        lines.append(f"      ✗ {v['fmt_id']}: "
+                                     f"out by {sides} @ {fr_str}")
+
+                lines.append("")
+                lines.append("Tip: 'Select' button highlights all violating "
+                             "subjects so you can scrub the timeline.")
+
+            c4d.gui.MessageDialog("\n".join(lines))
+
+
     def Command(self, cid, msg):
         doc = c4d.documents.GetActiveDocument()
         if not doc:
             return True
+
+        # Generic per-check QC action dispatch: decode the registry-derived
+        # button id and route to _qc_{action}_{check_id} by naming convention.
+        # Only ids that map to a real (check, action) pair are consumed here;
+        # anything else in the >=1400 range falls through to the elif chain so
+        # future widget ids are never silently swallowed.
+        decoded = decode_qc_action(cid)
+        if decoded is not None:
+            index, action = decoded
+            if 0 <= index < len(CHECK_REGISTRY) and action in CHECK_REGISTRY[index].actions:
+                entry = CHECK_REGISTRY[index]
+                method = getattr(self, f"_qc_{action}_{entry.check_id}", None)
+                if method is not None:
+                    method(doc)
+                return True
 
         if cid == G.SHOT:
             self._apply_shot(doc)
@@ -2929,355 +3294,6 @@ class YSPanel(gui.GeDialog):
                 self._set_active_tab(self._active_tab)
             else:
                 safe_print("Settings edit cancelled")
-
-        # Per-check Select buttons (1 click to select problematic objects)
-        elif cid == G.BTN_SEL_LIGHTS:
-            if self._lights_bad:
-                _select_objects(doc, self._lights_bad)
-                safe_print(f"Selected {len(self._lights_bad)} lights outside group")
-            else:
-                safe_print("No light issues found")
-
-        elif cid == G.BTN_SEL_VIS:
-            if self._vis_bad:
-                _select_objects(doc, self._vis_bad)
-                safe_print(f"Selected {len(self._vis_bad)} objects with visibility mismatch")
-            else:
-                safe_print("No visibility issues found")
-
-        elif cid == G.BTN_SEL_KEYS:
-            if self._keys_bad:
-                _select_objects(doc, self._keys_bad)
-                safe_print(f"Selected {len(self._keys_bad)} objects with multi-axis keyframes")
-            else:
-                safe_print("No keyframe issues found")
-
-        elif cid == G.BTN_SEL_CAMS:
-            if self._cam_bad:
-                _select_objects(doc, self._cam_bad)
-                safe_print(f"Selected {len(self._cam_bad)} cameras with non-zero shift")
-            else:
-                safe_print("No camera shift issues found")
-
-        elif cid == G.BTN_INFO_PRESET:
-            rules_context = _active_rules_for_doc(doc)
-            approved_presets = list(rules_context.params.get("approved_presets", PRESETS))
-            approved_set = {normalize_preset_name(name) for name in approved_presets}
-            info_msg = "RENDER PRESETS:\n\n"
-            info_msg += f"Standard presets: {', '.join(approved_presets)}\n\n"
-            rd = doc.GetFirstRenderData()
-            while rd:
-                name = rd.GetName()
-                normalized = normalize_preset_name(name)
-                status = "OK" if normalized in approved_set else "NON-STANDARD"
-                info_msg += f"  [{status}] {name}\n"
-                rd = rd.GetNext()
-            c4d.gui.MessageDialog(info_msg)
-
-        elif cid == G.BTN_INFO_TEXTURES:
-            if self._textures_bad:
-                absolute = [t for t in self._textures_bad if t["issue"] == "absolute"]
-                missing = [t for t in self._textures_bad if t["issue"] == "missing"]
-                info_msg = f"ASSET ISSUES: {len(self._textures_bad)}\n\n"
-                if absolute:
-                    info_msg += f"ABSOLUTE PATHS ({len(absolute)}):\n"
-                    for i, t in enumerate(absolute[:10], 1):
-                        info_msg += f"  {i}. {t['source']}\n     {t['path']}\n"
-                    info_msg += "\n"
-                if missing:
-                    info_msg += f"MISSING FILES ({len(missing)}):\n"
-                    for i, t in enumerate(missing[:10], 1):
-                        info_msg += f"  {i}. {t['source']}\n     {t['path']}\n"
-                    info_msg += "\n"
-                info_msg += ("Open the Texture Repathing tool to fix these "
-                             "in bulk (find/replace, make relative, "
-                             "auto-find missing)?")
-                if c4d.gui.QuestionDialog(info_msg):
-                    self._open_texture_repathing(doc)
-            else:
-                c4d.gui.MessageDialog(
-                    "All assets OK. No absolute paths or missing files.")
-
-        elif cid == G.BTN_SEL_UNUSED_MATS:
-            if self._unused_mats_bad:
-                # Cycle through unused materials one by one
-                if self._unused_mats_idx >= len(self._unused_mats_bad):
-                    self._unused_mats_idx = 0
-
-                mat = self._unused_mats_bad[self._unused_mats_idx]
-                # Deselect all materials first
-                for m in doc.GetMaterials():
-                    m.DelBit(c4d.BIT_ACTIVE)
-                # Select this one
-                mat.SetBit(c4d.BIT_ACTIVE)
-                c4d.EventAdd()
-
-                msg = f"Unused material [{self._unused_mats_idx + 1}/{len(self._unused_mats_bad)}]: '{mat.GetName()}'"
-                safe_print(msg)
-                c4d.StatusSetText(msg)
-                self._unused_mats_idx += 1
-            else:
-                safe_print("No unused materials found")
-
-        elif cid == G.BTN_SEL_NAMES:
-            if self._names_bad:
-                # Cycle through default-named objects one by one
-                if self._names_idx >= len(self._names_bad):
-                    self._names_idx = 0
-
-                obj = self._names_bad[self._names_idx]
-                _select_objects(doc, [obj])
-
-                msg = f"Default name [{self._names_idx + 1}/{len(self._names_bad)}]: '{obj.GetName()}'"
-                safe_print(msg)
-                c4d.StatusSetText(msg)
-                self._names_idx += 1
-            else:
-                safe_print("No naming issues found")
-
-        elif cid == G.BTN_INFO_OUTPUT:
-            if hasattr(self, '_output_bad') and self._output_bad:
-                info_msg = f"OUTPUT PATH ISSUES: {len(self._output_bad)}\n\n"
-                for i, issue in enumerate(self._output_bad[:10], 1):
-                    info_msg += f"{i}. [{issue['preset']}] {issue['issue']}\n"
-                info_msg += "\nUse $prj and $take tokens in output paths."
-            else:
-                info_msg = "All output paths are properly configured."
-            c4d.gui.MessageDialog(info_msg)
-
-        elif cid == G.BTN_INFO_TAKES:
-            if self._takes_bad:
-                info_msg = f"TAKE ISSUES: {len(self._takes_bad)}\n\n"
-                for i, t in enumerate(self._takes_bad[:20], 1):
-                    info_msg += f"{i}. [{t['take']}] {t['issue']}\n"
-            else:
-                # Check if there are any takes at all
-                td = doc.GetTakeData()
-                has_takes = td and td.GetMainTake() and td.GetMainTake().GetDown()
-                if has_takes:
-                    info_msg = "All takes properly configured."
-                else:
-                    info_msg = "No takes found (only Main Take)."
-            c4d.gui.MessageDialog(info_msg)
-
-        elif cid == G.BTN_INFO_FPS:
-            rules_context = _active_rules_for_doc(doc)
-            standard_fps = int(rules_context.params.get("standard_fps", GlobalSettings.get_standard_fps()))
-            start_frame = int(rules_context.params.get("start_frame", 1001))
-            doc_fps = doc.GetFps()
-            rd = doc.GetActiveRenderData()
-            info_msg = f"FPS & FRAME RANGE\n\n"
-            info_msg += f"Document FPS: {doc_fps} (standard: {standard_fps})\n"
-            if rd:
-                preset_name = rd.GetName()
-                preset_norm = normalize_preset_name(preset_name)
-                is_stills = preset_norm == "stills"
-                rd_fps = int(rd[c4d.RDATA_FRAMERATE])
-                frame_start = rd[c4d.RDATA_FRAMEFROM].GetFrame(rd_fps)
-                frame_end = rd[c4d.RDATA_FRAMETO].GetFrame(rd_fps)
-                frame_mode = rd[c4d.RDATA_FRAMESEQUENCE]
-                mode_names = {
-                    c4d.RDATA_FRAMESEQUENCE_ALLFRAMES: "All Frames",
-                    c4d.RDATA_FRAMESEQUENCE_CURRENTFRAME: "Current Frame",
-                    c4d.RDATA_FRAMESEQUENCE_MANUAL: "Manual",
-                }
-                mode_str = mode_names.get(frame_mode, f"Unknown ({frame_mode})")
-                info_msg += f"Active preset: {preset_name}"
-                info_msg += " (stills mode)\n" if is_stills else "\n"
-                info_msg += f"Render FPS: {rd_fps}\n"
-                info_msg += f"Render range: {frame_start} - {frame_end} ({frame_end - frame_start + 1} frames)\n"
-                info_msg += f"Frame mode: {mode_str}\n"
-
-                # Timeline + loop range + playhead
-                tl_min = doc[c4d.DOCUMENT_MINTIME].GetFrame(doc_fps)
-                tl_max = doc[c4d.DOCUMENT_MAXTIME].GetFrame(doc_fps)
-                loop_min = doc[c4d.DOCUMENT_LOOPMINTIME].GetFrame(doc_fps)
-                loop_max = doc[c4d.DOCUMENT_LOOPMAXTIME].GetFrame(doc_fps)
-                playhead = doc.GetTime().GetFrame(doc_fps)
-                info_msg += f"Timeline: {tl_min} - {tl_max}\n"
-                info_msg += f"Preview/loop: {loop_min} - {loop_max}\n"
-                info_msg += f"Playhead: frame {playhead}\n"
-
-                if is_stills:
-                    info_msg += f"\nStills: 'Current Frame' is OK; range start expected at {start_frame}."
-                else:
-                    info_msg += f"\nAnimation: timeline + preview must match render range."
-            if self._fps_range_bad:
-                info_msg += f"\n\nISSUES ({len(self._fps_range_bad)}):\n"
-                for i, issue in enumerate(self._fps_range_bad, 1):
-                    info_msg += f"  {i}. {issue['issue']}\n"
-            else:
-                info_msg += "\n\nAll OK."
-            info_msg += f"\n\nTo change standard FPS, edit sentinel_settings.json."
-            c4d.gui.MessageDialog(info_msg)
-
-        # ── Auto-fix handlers ──
-        elif cid == G.BTN_FIX_LIGHTS:
-            if self._lights_bad:
-                count = fix_lights(doc, self._lights_bad)
-                safe_print(f"Moved {count} lights into 'lights' group")
-                c4d.gui.MessageDialog(f"Moved {count} light(s) into 'lights' group.\n\nUndo available (Ctrl+Z).")
-            else:
-                safe_print("No light issues to fix")
-
-        elif cid == G.BTN_FIX_CAMS:
-            if self._cam_bad:
-                count = fix_camera_shift(doc, self._cam_bad)
-                safe_print(f"Reset shift on {count} cameras")
-                c4d.gui.MessageDialog(f"Reset shift to 0 on {count} camera(s).\n\nUndo available (Ctrl+Z).")
-            else:
-                safe_print("No camera shift issues to fix")
-
-        elif cid == G.BTN_FIX_UNUSED_MATS:
-            if self._unused_mats_bad:
-                count = len(self._unused_mats_bad)
-                if c4d.gui.QuestionDialog(f"Delete {count} unused material(s)?\n\nThis can be undone (Ctrl+Z)."):
-                    deleted = fix_unused_materials(doc, self._unused_mats_bad)
-                    safe_print(f"Deleted {deleted} unused materials")
-                    self._unused_mats_idx = 0
-            else:
-                safe_print("No unused materials to delete")
-
-        elif cid == G.BTN_FIX_FPS:
-            if self._fps_range_bad:
-                rules_context = _active_rules_for_doc(doc)
-                standard_fps = int(rules_context.params.get("standard_fps", GlobalSettings.get_standard_fps()))
-                start_frame = int(rules_context.params.get("start_frame", 1001))
-                # Build confirmation listing what will change
-                count = len(self._fps_range_bad)
-                preview = f"FIX FPS / FRAME RANGE\n\n"
-                preview += f"Standard: {standard_fps} fps, start frame {start_frame}\n\n"
-                preview += f"Issues to fix ({count}):\n"
-                for issue in self._fps_range_bad[:15]:
-                    preview += f"  - {issue['issue']}\n"
-                if count > 15:
-                    preview += f"  ... and {count - 15} more\n"
-                preview += "\nThis will modify ALL render presets, document FPS, "
-                preview += "timeline, and preview range. Undo available (Ctrl+Z).\n\n"
-                preview += "Continue?"
-
-                if c4d.gui.QuestionDialog(preview):
-                    fixes = fix_fps_range(doc)
-                    if fixes:
-                        fix_msg = f"Applied {len(fixes)} fix(es):\n\n"
-                        for f in fixes[:25]:
-                            fix_msg += f"  - {f}\n"
-                        if len(fixes) > 25:
-                            fix_msg += f"  ... and {len(fixes) - 25} more\n"
-                        c4d.gui.MessageDialog(fix_msg)
-                        self._dirty = True
-                    else:
-                        c4d.gui.MessageDialog("No fixes were applied.")
-                else:
-                    safe_print("FPS/range fix cancelled by user")
-            else:
-                safe_print("No FPS/range issues to fix")
-
-        # ── QC #12: Cross-Aspect Safe Area ──
-        elif cid == G.BTN_SEL_CROSS_ASPECT:
-            # Select the unique objects that have at least one violation
-            # (across any format). Useful for jumping to "what needs to be
-            # fixed" — once selected, the artist can scrub the timeline +
-            # check the Info dialog to see which formats / frames violate.
-            objs = []
-            seen = set()
-            for v in (self._cross_aspect_bad or []):
-                obj = v.get("object")
-                if obj is None:
-                    continue
-                key = id(obj)
-                if key in seen:
-                    continue
-                seen.add(key)
-                objs.append(obj)
-            if not objs:
-                c4d.gui.MessageDialog(
-                    "No cross-aspect safe-area violations.\n\n"
-                    "Either no objects are marked as Safe Area subjects, "
-                    "no Multi-Format Takes exist, or all marked subjects "
-                    "stay inside their per-format safe areas at the current "
-                    "frame.\n\nTip: click 'Info' to run a full keyframe sweep."
-                )
-            else:
-                doc.SetActiveObject(None, c4d.SELECTION_NEW)
-                for obj in objs:
-                    try:
-                        doc.SetActiveObject(obj, c4d.SELECTION_ADD)
-                    except Exception:
-                        pass
-                c4d.EventAdd()
-                safe_print(f"Selected {len(objs)} cross-aspect violator(s)")
-
-        elif cid == G.BTN_INFO_CROSS_ASPECT:
-            # Run a FULL keyframe-sample analysis (more expensive than the
-            # current-frame sweep used by the auto-refresh). This gives the
-            # artist a per-(object × format × frames) breakdown.
-            marked_count = len(find_marked_safe_area_objects(doc) or [])
-            mf_count = len(find_active_multiformat_takes(doc) or [])
-
-            if marked_count == 0:
-                c4d.gui.MessageDialog(
-                    "No objects marked as Safe Area subjects.\n\n"
-                    "Mark important compositional elements (logo, title, "
-                    "character) via Tools tab → 'Mark as Safe Area Subject' "
-                    "with the objects selected. Marks persist with the "
-                    "scene file (stored as UserData on each object)."
-                )
-            elif mf_count == 0:
-                c4d.gui.MessageDialog(
-                    "No Multi-Format delivery Takes detected.\n\n"
-                    "Generate them first via Render tab → 'Generate Format "
-                    "Takes...'. The check looks at each Take's safe area "
-                    "(per-format insets covering platform UI overlays) and "
-                    "verifies your marked subjects stay inside."
-                )
-            else:
-                # Run with full sampling. May take a moment on heavy scenes.
-                violations = check_cross_aspect_safe_area(
-                    doc, sample_strategy="keyframes")
-                # Update the cached state so subsequent Select uses the
-                # full-sweep results (more accurate than current_frame).
-                self._cross_aspect_bad = violations
-
-                lines = [f"Cross-Aspect Safe-Area Check (full keyframe sweep)",
-                         "",
-                         f"Marked subjects:    {marked_count}",
-                         f"Multi-Format Takes: {mf_count}",
-                         ""]
-
-                if not violations:
-                    lines.append(
-                        "✓ All subjects fit within every active format's safe area."
-                    )
-                else:
-                    # Group violations by object for readability
-                    by_obj = {}
-                    for v in violations:
-                        by_obj.setdefault(v["object_name"], []).append(v)
-
-                    lines.append(f"⚠ {len(violations)} violation(s) "
-                                 f"across {len(by_obj)} subject(s):")
-                    lines.append("")
-                    for obj_name in sorted(by_obj.keys()):
-                        lines.append(f"  • {obj_name}")
-                        for v in by_obj[obj_name]:
-                            sides = ", ".join(sorted(v["sides"]))
-                            frames = v["frames"]
-                            if len(frames) == 1:
-                                fr_str = f"frame {frames[0]}"
-                            elif len(frames) <= 6:
-                                fr_str = f"frames {','.join(str(f) for f in frames)}"
-                            else:
-                                fr_str = (f"frames {frames[0]}–{frames[-1]} "
-                                          f"({len(frames)} samples)")
-                            lines.append(f"      ✗ {v['fmt_id']}: "
-                                         f"out by {sides} @ {fr_str}")
-
-                    lines.append("")
-                    lines.append("Tip: 'Select' button highlights all violating "
-                                 "subjects so you can scrub the timeline.")
-
-                c4d.gui.MessageDialog("\n".join(lines))
 
         # ── Export QC Report ──
         elif cid == G.BTN_EXPORT_QC:

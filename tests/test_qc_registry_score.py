@@ -16,6 +16,8 @@ def _entry(CheckEntry, check_id):
         structured_fn="scene.check_lights",
         legacy_fn="scene.check_lights",
         preflight_template="  {n} fake issues",
+        report_key=check_id,
+        actions=("select",),
     )
 
 
