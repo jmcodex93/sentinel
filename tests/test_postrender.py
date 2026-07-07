@@ -323,6 +323,48 @@ def test_detect_stale_cluster_direct_cases():
     assert postrender.detect_stale_cluster({1001: BASE, 1002: BASE + 60}) == []
 
 
+def test_detect_stale_cluster_ignores_sub_second_jitter():
+    t = 1_000_000.0
+    mtimes = {
+        0: t,
+        1: t + 0.001,
+        2: t + 0.5,
+        3: t + 0.501,
+        4: t + 0.502,
+        5: t + 0.503,
+    }
+
+    assert postrender.detect_stale_cluster(mtimes) == []
+
+
+def test_detect_stale_cluster_ignores_few_second_pause():
+    t = 1_000_000.0
+    mtimes = {
+        0: t,
+        1: t + 0.1,
+        2: t + 0.2,
+        3: t + 2.2,
+        4: t + 2.3,
+        5: t + 2.4,
+    }
+
+    assert postrender.detect_stale_cluster(mtimes) == []
+
+
+def test_detect_stale_cluster_still_flags_large_session_gap():
+    t = 1_000_000.0
+    mtimes = {
+        0: t,
+        1: t + 60,
+        2: t + 120,
+        3: t + 3720,
+        4: t + 3780,
+        5: t + 3840,
+    }
+
+    assert postrender.detect_stale_cluster(mtimes) == [0, 1, 2]
+
+
 def test_size_outliers_flags_black_frame(tmp_path):
     folder = _fixture_black_frame(tmp_path)
     sizes = _sizes(folder, FRAMES)
@@ -385,6 +427,8 @@ def _state(**overrides):
         "current_frame": 1050,
         "fps": 25,
         "frame_step": 1,
+        "resolved_beauty_has_frame_token": True,
+        "multipass_has_frame_token": False,
         "redshift_available": False,
         "aov_multipart": False,
         "aov_global_path": "",
@@ -401,6 +445,14 @@ def _touch_frame(folder, stem, frame, ext="exr", size=2048):
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{stem}{frame:04d}.{ext}"
     path.write_bytes(b"x" * size)
+    return path
+
+
+def _touch_sparse_frame(folder, name, size):
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / name
+    with open(path, "wb") as handle:
+        handle.truncate(size)
     return path
 
 
@@ -599,6 +651,82 @@ def test_separator_qualified_prefix_avoids_common_collision(tmp_path):
     scan = postrender.audit_manifest(manifest, str(folder))["streams"][0]["scan"]
     assert scan["truncated"] == []
     assert scan["found"] == [1001]
+
+
+def test_real_world_aov_collision_keeps_beauty_stream_clean(tmp_path):
+    folder = tmp_path / "real_aov_collision"
+    frames = list(range(0, 6))
+    created_paths = []
+    for frame in frames:
+        created_paths.append(_touch_sparse_frame(
+            folder,
+            f"SHOT_X_010_AOV_{frame:04d}.exr",
+            18_900_000,
+        ))
+        created_paths.append(_touch_sparse_frame(
+            folder,
+            f"SHOT_X_010_AOV__Cryptomatte{frame:04d}.exr",
+            11_800_000,
+        ))
+        created_paths.append(_touch_sparse_frame(
+            folder,
+            f"SHOT_X_010_{frame:04d}.exr",
+            2_400_000,
+        ))
+
+    uniform_mtime = BASE
+    for path in created_paths:
+        os.utime(path, (uniform_mtime, uniform_mtime))
+
+    scan = postrender.scan_sequence(folder, "SHOT_X_010", frames, "exr")
+    paths = postrender._paths_by_frame(folder, "SHOT_X_010", frames, "exr")
+    sizes = {
+        frame: os.path.getsize(path)
+        for frame, path in paths.items()
+    }
+
+    assert scan["found"] == frames
+    assert scan["missing"] == []
+    assert all(Path(path).name == f"SHOT_X_010_{frame:04d}.exr" for frame, path in paths.items())
+    assert set(sizes.values()) == {2_400_000}
+    assert postrender.size_outliers(sizes) == []
+
+
+def test_frame_anchored_scan_rejects_aov_sibling_after_prefix(tmp_path):
+    folder = tmp_path / "anchored_rejection"
+    _touch_sparse_frame(folder, "beauty_AOV__Cryptomatte1001.exr", 11_800_000)
+    _touch_sparse_frame(folder, "beauty_1001.exr", 2_400_000)
+
+    scan = postrender.scan_sequence(folder, "beauty_", [1001], "exr")
+    paths = postrender._paths_by_frame(folder, "beauty_", [1001], "exr")
+    sizes = {
+        frame: os.path.getsize(path)
+        for frame, path in paths.items()
+    }
+
+    assert scan["found"] == [1001]
+    assert Path(paths[1001]).name == "beauty_1001.exr"
+    assert sizes == {1001: 2_400_000}
+
+
+def test_resolve_output_template_uses_explicit_frame_token_signal(tmp_path):
+    with_frame = postrender.resolve_output_template(
+        str(tmp_path / "SHOT_X_010_1001.exr"),
+        "Main",
+        1016606,
+        True,
+        True,
+    )
+    without_frame = postrender.resolve_output_template(
+        str(tmp_path / "SHOT_X_010.exr"),
+        "Main",
+        1016606,
+        True,
+        False,
+    )
+
+    assert with_frame == (str(tmp_path), "SHOT_X_010_", "exr")
+    assert without_frame == (str(tmp_path), "SHOT_X_010", "exr")
 
 
 def test_zfill_fallback_path_without_frame_uses_stem_prefix(tmp_path):

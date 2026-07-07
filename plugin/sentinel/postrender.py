@@ -10,6 +10,7 @@ import time
 # Conservative floor for a viable rendered image header/payload. Zero-byte files
 # are classified separately; 1..1023 bytes are hard-truncated render artifacts.
 MIN_VIABLE_BYTES = 1024
+MIN_STALE_GAP_SECONDS = 300
 REPORT_ITEM_CAP = 50
 
 C4D_BITMAP_EXTENSIONS = {
@@ -93,9 +94,11 @@ def _mode_label(frame_mode):
     return "Manual"
 
 
-def _stem_prefix_for_scan(stem, is_sequence):
-    """Return an exact-enough scan prefix, keeping '_' or '.' before frame digits."""
+def _stem_prefix_for_scan(stem, is_sequence, has_frame_token):
+    """Return the scan prefix from an explicitly-known frame-token context."""
     stem = str(stem or "")
+    if not has_frame_token:
+        return stem
     digit_runs = list(re.finditer(r"\d+", stem))
     if digit_runs:
         last = digit_runs[-1]
@@ -106,7 +109,7 @@ def _stem_prefix_for_scan(stem, is_sequence):
     return stem if is_sequence else stem
 
 
-def resolve_output_template(raw_path, take_name, format_id, is_sequence):
+def resolve_output_template(raw_path, take_name, format_id, is_sequence, has_frame_token=False):
     """Split a token-resolved render path into (folder, frame-prefix, ext)."""
     path = _normalized_path(raw_path)
     if "$take" in path:
@@ -117,8 +120,23 @@ def resolve_output_template(raw_path, take_name, format_id, is_sequence):
         ext_value = ext.lstrip(".").lower()
     else:
         ext_value = _extension_for_format(format_id)
-    prefix = _stem_prefix_for_scan(stem, is_sequence)
+    prefix = _stem_prefix_for_scan(stem, is_sequence, bool(has_frame_token))
     return folder, prefix, ext_value
+
+
+def _frame_from_prefixed_stem(stem, prefix):
+    """Parse only <prefix><optional single sep><digits> stems."""
+    stem = str(stem or "")
+    prefix = str(prefix or "")
+    prefix_lower = prefix.lower()
+    if not stem.lower().startswith(prefix_lower):
+        return None
+    remainder = stem[len(prefix):]
+    if remainder and remainder[0] in "._-":
+        remainder = remainder[1:]
+    if not remainder.isdigit():
+        return None
+    return int(remainder)
 
 
 def _stream_descriptor(entry, kind, prefix, ext, label, aov_name=None):
@@ -145,7 +163,6 @@ def _choose_scan_folder(entry_folder, audit_folder):
 def _paths_by_frame(folder, prefix, frames, ext):
     expected = set(frames)
     ext_lower = "." + str(ext).lower().lstrip(".")
-    prefix_lower = str(prefix).lower()
     found = {}
     try:
         names = os.listdir(folder)
@@ -155,12 +172,9 @@ def _paths_by_frame(folder, prefix, frames, ext):
         if not name.lower().endswith(ext_lower):
             continue
         stem = name[: -len(ext_lower)]
-        if not stem.lower().startswith(prefix_lower):
+        frame = _frame_from_prefixed_stem(stem, prefix)
+        if frame is None:
             continue
-        digit_runs = re.findall(r"\d+", stem)
-        if not digit_runs:
-            continue
-        frame = int(digit_runs[-1])
         if frame in expected and frame not in found:
             found[frame] = os.path.join(folder, name)
     return found
@@ -209,6 +223,7 @@ def build_manifest_from_state(states, audit_folder=None):
             state.get("take_name", ""),
             state.get("format_id"),
             is_sequence,
+            state.get("resolved_beauty_has_frame_token", False),
         )
         if not folder and audit_folder:
             folder = _normalized_path(audit_folder)
@@ -225,6 +240,7 @@ def build_manifest_from_state(states, audit_folder=None):
                     state.get("take_name", ""),
                     1016606,
                     is_sequence,
+                    state.get("resolved_beauty_has_frame_token", False),
                 )
                 multipart = {
                     "prefix": mp_prefix,
@@ -244,6 +260,7 @@ def build_manifest_from_state(states, audit_folder=None):
                         state.get("take_name", ""),
                         aov.get("file_format"),
                         is_sequence,
+                        aov.get("effective_has_frame_token", False),
                     )
                     aov_files.append({
                         "name": aov.get("name", ""),
@@ -257,6 +274,7 @@ def build_manifest_from_state(states, audit_folder=None):
                 state.get("take_name", ""),
                 state.get("multipass_format_id"),
                 is_sequence,
+                state.get("multipass_has_frame_token", False),
             )
             aov_mode = "multipart"
             multipart = {
@@ -638,6 +656,11 @@ def _read_scene_render_state(doc):
         except Exception:
             return path
 
+    def _resolve_path_and_frame_token(path, rd, take, frame):
+        current = _resolve_tokens(path, rd, take, frame)
+        next_path = _resolve_tokens(path, rd, take, frame + 1)
+        return current, _normalized_path(current) != _normalized_path(next_path)
+
     def _is_checked(take, td):
         try:
             return bool(take.IsChecked())
@@ -702,13 +725,32 @@ def _read_scene_render_state(doc):
             aov_global_path = ""
         redshift_available = bool(getattr(aov_engine, "REDSHIFT_AVAILABLE", False)) if aov_engine else False
         take_name = _take_name(take)
+        resolved_beauty_path, resolved_beauty_has_frame_token = _resolve_path_and_frame_token(
+            raw_path, rd, take, frame_from
+        )
+        resolved_multipass_path, multipass_has_frame_token = _resolve_path_and_frame_token(
+            multipass_path, rd, take, frame_from
+        )
+        resolved_aovs = []
+        for aov in aovs or []:
+            if not isinstance(aov, dict):
+                continue
+            aov_data = dict(aov)
+            effective_path = aov_data.get("effective_path") or ""
+            resolved_effective, effective_has_frame_token = _resolve_path_and_frame_token(
+                effective_path, rd, take, frame_from
+            )
+            aov_data["effective_path"] = resolved_effective
+            aov_data["effective_has_frame_token"] = effective_has_frame_token
+            resolved_aovs.append(aov_data)
         return {
             "take_name": take_name,
             "is_main": bool(is_main),
             "is_checked": _is_checked(take, td),
             "raw_path": raw_path,
             "multipass_save": multipass_save,
-            "multipass_path": multipass_path,
+            "multipass_path": resolved_multipass_path,
+            "multipass_has_frame_token": multipass_has_frame_token,
             "xres": int(rd[c4d.RDATA_XRES] or 1920),
             "yres": int(rd[c4d.RDATA_YRES] or 1080),
             "format_id": int(rd[c4d.RDATA_FORMAT]),
@@ -721,11 +763,12 @@ def _read_scene_render_state(doc):
             "current_frame": current_frame,
             "fps": fps,
             "frame_step": frame_step,
-            "resolved_beauty_path": _resolve_tokens(raw_path, rd, take, frame_from),
+            "resolved_beauty_path": resolved_beauty_path,
+            "resolved_beauty_has_frame_token": resolved_beauty_has_frame_token,
             "redshift_available": redshift_available,
             "aov_multipart": bool(aov_engine.get_aov_multipart(doc)) if aov_engine else False,
             "aov_global_path": aov_global_path or "",
-            "aovs": aovs or [],
+            "aovs": resolved_aovs,
             "light_groups": list(light_groups.keys()) if isinstance(light_groups, dict) else [],
             "doc_path": _doc_full_path(),
             "version": _version_from_doc(),
@@ -796,7 +839,7 @@ def detect_stale_cluster(mtimes_by_frame, gap_factor=6.0):
         return []
 
     largest_index, largest_gap = max(enumerate(deltas), key=lambda item: item[1])
-    if largest_gap > gap_factor * median_delta:
+    if largest_gap > gap_factor * median_delta and largest_gap >= MIN_STALE_GAP_SECONDS:
         return sorted(frame for frame, _ in ordered[: largest_index + 1])
     return []
 
@@ -811,28 +854,11 @@ def scan_sequence(folder, prefix, frame_set, ext):
         "truncated": [],
         "stale": [],
     }
-    prefix_lower = str(prefix).lower()
-    ext_lower = "." + str(ext).lower().lstrip(".")
-    paths_by_frame = {}
-
     try:
-        names = os.listdir(folder)
+        paths_by_frame = _paths_by_frame(folder, prefix, expected, ext)
     except OSError:
         result["missing"] = sorted(expected)
         return result
-
-    for name in names:
-        if not name.lower().endswith(ext_lower):
-            continue
-        stem = name[: -len(ext_lower)]
-        if not stem.lower().startswith(prefix_lower):
-            continue
-        digit_runs = re.findall(r"\d+", stem)
-        if not digit_runs:
-            continue
-        frame = int(digit_runs[-1])
-        if frame in expected:
-            paths_by_frame[frame] = os.path.join(folder, name)
 
     valid_mtimes = {}
     candidates = []
