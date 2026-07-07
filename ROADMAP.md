@@ -79,7 +79,7 @@ Supersedes the two WIP entries below. A single per-camera `SentinelFrameTag` (Ta
 - [x] 129 pytest + live MCP verification (standard + Redshift, all formats)
 - [x] Merged to main (PR #3); version bumped to v1.8.0; README + CLAUDE.md + changelog updated
 - [x] Legacy panel entries retired (Multi-Format dialog + Safe-Area Overlay); overlay ObjectData fully unregistered
-- [ ] Retire the MultiFormatDialog + dead `_open_multiformat_dialog` from the code once no live scene needs them
+- [x] `MultiFormatDialog` + dead `_open_multiformat_dialog` removed from the code (−304 lines); the shared engine (`generate_multiformat_takes`) stays, so old Takes keep working
 
 ### v1.5.8 — Multi-Format polish 🚧 SUPERSEDED by v1.8.0 (Sentinel Frame)
 
@@ -555,13 +555,9 @@ After 5 rounds of community-naming exploration (covering watchdog/guardian synon
 
 ## Pending — Next Phases
 
-### v1.5.0 — Production Workflow (Tier A: High impact, easy)
+### Tier A — Production Workflow polish (high impact, easy)
 
-> Note: FPS + Frame Range Validation shipped early as v1.4.1.
-> Note: Smart Incremental Save shipped early as v1.4.2.
-> Note: Status Tags + Continue from review + Last-version pillbox shipped as v1.4.3.
-> Note: Browse Recent Versions inline shipped as v1.4.4.
-> Note: Scene Notes / TODO + clean delivery naming shipped as v1.5.1.
+> Most of this tier already shipped across v1.4.1–v1.5.1 (FPS/Range validation, Smart Save, Status Tags, Browse Versions, Scene Notes). What remains:
 
 #### Review Slate on Snapshots
 Burn metadata into Save Still PNGs:
@@ -576,14 +572,11 @@ Add a dropdown or settings dialog to change the studio standard FPS without edit
 
 **Why**: Currently only configurable via `sentinel_settings.json`. Most artists won't open it.
 
-### v1.6.0 — Asset Health & Validation (Tier B: High impact, medium effort)
+### Tier B — Asset Health & Validation (high impact, medium effort)
 
-> Note: Multi-Format Render Setup shipped early as v1.5.4.
-> Note: Cross-Aspect Safe-Area QC (#12) shipped as v1.5.5.
-> Note: Safe-Area Viewport Overlay shipped as v1.5.6.
-> Note: Texture Repathing Tool shipped as v1.5.7.
+> The multi-format + texture parts of this tier shipped across v1.5.4–v1.8.0 (Multi-Format Setup → Sentinel Frame, Cross-Aspect Safe-Area QC #12, Texture Repathing). What remains:
 
-#### Post-Render Validation
+#### Post-Render Validation *(I1 — top candidate for the next release)*
 Verify render output after completion:
 - Check all expected AOV files exist
 - Detect zero-byte files (failed frames)
@@ -603,6 +596,14 @@ Visual budget meter for scene resources:
 **Why**: Artists don't realize a scene is too heavy until render fails with out-of-memory.
 
 ### Backlog — Consider Later
+
+#### Sentinel Frame follow-ups *(deferred in the v1.8.0 plan)*
+- Format catalog: cinema (2.39 / 1.85 / 2:1) + print (A4 / A3 / Letter) — needs QC-name-matching-compatible ids.
+- User-defined custom formats (ratio/resolution) — cheap given the dynamic description.
+- QC #13 "Take override drift" — verify overrides still apply after save (frail C4D Takes; today mitigated by idempotent re-run + staleness hash).
+- Versioned/updatable platform safe-area presets (per-platform dates, refreshable from a shared ruleset).
+- Slice-takes (tiles) from C4DMultiFrame; stage/ortho cameras; advanced multi-tag (several configs per camera).
+- Confirm whether QC score **severity weighting** (FAIL vs WARN) is still display-only after Quality Gates.
 
 #### MessageData Plugin
 Background monitoring with panel closed. Invasive — reconsider when plugin is mature.
