@@ -871,3 +871,25 @@ def test_malformed_render_sidecar_is_replaced_without_crash(tmp_path):
     })
     history = json.loads(history_path.read_text())
     assert len(history["render_validations"]) == 1
+
+
+def test_scene_read_error_reports_fail_not_false_green():
+    # A catastrophic scene-read failure must surface as FAIL, never a clean pass.
+    report = postrender.build_report(postrender._error_findings("boom while reading takes"))
+    assert report["passed"] is False
+    assert report["checks"]["error"]["status"] == "FAIL"
+    assert report["checks"]["error"]["count"] == 1
+
+
+def test_render_history_target_dotted_folder_not_treated_as_doc(tmp_path):
+    # A real audited folder whose leaf name contains a dot must NOT be version-stripped.
+    dotted = tmp_path / "final.v2"
+    dotted.mkdir()
+    assert postrender._render_history_target(str(dotted)) == str(dotted / "sentinel_render_history.json")
+    # A plain audited folder -> sidecar inside it.
+    plain = tmp_path / "renders"
+    plain.mkdir()
+    assert postrender._render_history_target(str(plain)) == str(plain / "sentinel_render_history.json")
+    # A doc file path (not a dir) -> version-stripped shared sidecar next to it.
+    doc_target = postrender._render_history_target(str(tmp_path / "robot_010_v003_FINAL.c4d"))
+    assert doc_target == str(tmp_path / "robot_010_render_history.json")

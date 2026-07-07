@@ -331,6 +331,7 @@ def audit_manifest(manifest, folder):
             "aov_missing": [],
             "coverage_missing": [],
             "notes": [],
+            "error": [],
         },
     }
     if not manifest:
@@ -454,6 +455,7 @@ def build_report(findings):
         ("size_outliers", "WARN", "Size outliers"),
         ("aov_missing", "WARN", "Missing direct-output AOV frames"),
         ("coverage_missing", "WARN", "Missing Take/format coverage"),
+        ("error", "FAIL", "Scene read error"),
         ("notes", "WARN", "Validation notes"),
     ]
     for key, severity, label in specs:
@@ -540,16 +542,18 @@ def _render_history_target(base_or_folder):
     base_or_folder = _normalized_path(base_or_folder)
     if not base_or_folder:
         return None
-    root, ext = os.path.splitext(base_or_folder)
-    if ext:
-        try:
-            from sentinel.versioning import render_history_path
-            return render_history_path(base_or_folder)
-        except Exception:
-            folder = os.path.dirname(base_or_folder)
-            base = re.sub(r"_v\d+(?:_[A-Za-z][A-Za-z0-9]*)?$", "", os.path.basename(root), flags=re.IGNORECASE)
-            return os.path.join(folder, f"{base}_render_" "history.json")
-    return os.path.join(base_or_folder, "sentinel_render_" "history.json")
+    # A render folder can legitimately contain a dot in its leaf name (e.g. ".../final.v2"),
+    # so splitext is unreliable — use isdir to distinguish an audited folder from a doc file.
+    if os.path.isdir(base_or_folder):
+        return os.path.join(base_or_folder, "sentinel_render_history.json")
+    try:
+        from sentinel.versioning import render_history_path
+        return render_history_path(base_or_folder)
+    except Exception:
+        folder = os.path.dirname(base_or_folder)
+        root = os.path.splitext(os.path.basename(base_or_folder))[0]
+        base = re.sub(r"_v\d+(?:_[A-Za-z][A-Za-z0-9]*)?$", "", root, flags=re.IGNORECASE)
+        return os.path.join(folder, f"{base}_render_history.json")
 
 
 def append_render_history(base_or_folder, summary):
@@ -803,7 +807,9 @@ def _read_scene_render_state(doc):
             take = take.GetNext()
             count += 1
     except Exception:
-        return []
+        # A catastrophic scene-read failure must NOT masquerade as a clean render
+        # (false-GREEN). Propagate so audit_render_folder surfaces it as an error.
+        raise
     return states
 
 
@@ -812,11 +818,22 @@ def build_expected_manifest(doc):
     return build_manifest_from_state(_read_scene_render_state(doc))
 
 
+def _error_findings(message):
+    """Pure findings dict flagging a scene-read failure (scored FAIL, not passed)."""
+    findings = audit_manifest([], "")
+    findings["categories"]["error"].append({"message": str(message)})
+    return findings
+
+
 def audit_render_folder(doc, folder):
     """Read scene state, build a manifest for the chosen folder, and audit it."""
     import c4d  # noqa: F401 - function-local by contract; this function is C4D-bound.
 
-    states = _read_scene_render_state(doc)
+    try:
+        states = _read_scene_render_state(doc)
+    except Exception as exc:
+        # Read failure -> explicit FAIL report, never a false-GREEN "nothing to validate".
+        return _error_findings(exc)
     manifest = build_manifest_from_state(states, folder)
     return audit_manifest(manifest, folder)
 
