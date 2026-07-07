@@ -1,11 +1,16 @@
+import hashlib
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 POSTRENDER_PATH = ROOT / "plugin" / "sentinel" / "postrender.py"
+VERSIONING_PATH = ROOT / "plugin" / "sentinel" / "versioning.py"
 
 spec = importlib.util.spec_from_file_location(
     "sentinel_postrender_under_test", POSTRENDER_PATH
@@ -13,6 +18,13 @@ spec = importlib.util.spec_from_file_location(
 postrender = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = postrender
 spec.loader.exec_module(postrender)
+
+versioning_spec = importlib.util.spec_from_file_location(
+    "sentinel_versioning_under_test", VERSIONING_PATH
+)
+versioning = importlib.util.module_from_spec(versioning_spec)
+sys.modules[versioning_spec.name] = versioning
+versioning_spec.loader.exec_module(versioning)
 
 
 BASE = 2_000_000_000.0
@@ -147,7 +159,7 @@ def _fixture_stale_plus_black(tmp_path):
         if frame == 1020:
             return 200_000
         if frame >= 1050:
-            return 3_000_000 + (frame % 5) * 1000
+            return 200_000 + (frame % 5) * 1000
         return _nominal_size(frame)
 
     _make_seq(
@@ -349,4 +361,385 @@ def test_size_outliers_requires_clean_population_for_stale_plus_black(tmp_path):
 
     assert 1020 in clean_result
     assert contaminated_result != clean_result
-    assert 1020 not in contaminated_result or set(contaminated_result) != set(clean_result)
+    assert 1020 not in contaminated_result
+
+
+def _state(**overrides):
+    data = {
+        "take_name": "Main",
+        "is_main": True,
+        "is_checked": True,
+        "raw_path": "",
+        "resolved_beauty_path": "",
+        "multipass_save": False,
+        "multipass_path": "",
+        "xres": 1920,
+        "yres": 1080,
+        "format_id": 1016606,
+        "multipass_format_id": 1016606,
+        "frame_mode": 0,
+        "frame_from": 1001,
+        "frame_to": 1002,
+        "timeline_min": 1001,
+        "timeline_max": 1100,
+        "current_frame": 1050,
+        "fps": 25,
+        "frame_step": 1,
+        "redshift_available": False,
+        "aov_multipart": False,
+        "aov_global_path": "",
+        "aovs": [],
+        "light_groups": [],
+        "doc_path": "",
+        "version": "v007",
+    }
+    data.update(overrides)
+    return data
+
+
+def _touch_frame(folder, stem, frame, ext="exr", size=2048):
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{stem}{frame:04d}.{ext}"
+    path.write_bytes(b"x" * size)
+    return path
+
+
+def test_render_history_path_strips_version_status():
+    assert versioning.render_history_path("/show/robot_010_v022_FINAL.c4d") == (
+        "/show/robot_010_render_history.json"
+    )
+    assert versioning.render_history_path("/show/robot_010_v001.c4d") == (
+        "/show/robot_010_render_history.json"
+    )
+
+
+def test_audit_manifest_missing_direct_aov_warns_but_multipart_does_not(tmp_path):
+    folder = tmp_path / "missing_aov"
+    for frame in (1001, 1002):
+        _touch_frame(folder, "Beauty_", frame)
+        _touch_frame(folder, "BeautyMultipart_", frame)
+
+    direct_manifest = [{
+        "take_name": "Main",
+        "folder": str(folder),
+        "beauty_prefix": "Beauty_",
+        "ext": "exr",
+        "frame_set": [1001, 1002],
+        "aov_mode": "direct",
+        "aov_files": [{"name": "Denoised", "prefix": "Beauty_Denoised_", "ext": "exr", "folder": str(folder)}],
+        "multipart": None,
+    }]
+    direct_report = postrender.build_report(postrender.audit_manifest(direct_manifest, str(folder)))
+    assert direct_report["checks"]["aov_missing"]["status"] == "WARN"
+    assert direct_report["checks"]["aov_missing"]["count"] == 2
+
+    multipart_manifest = [dict(direct_manifest[0], aov_mode="multipart", aov_files=[], multipart={
+        "prefix": "BeautyMultipart_",
+        "ext": "exr",
+        "folder": str(folder),
+    })]
+    multipart_report = postrender.build_report(postrender.audit_manifest(multipart_manifest, str(folder)))
+    assert multipart_report["checks"]["aov_missing"]["status"] == "OK"
+    assert multipart_report["checks"]["aov_missing"]["count"] == 0
+
+
+def test_direct_aov_partial_gap_warns_without_failing_beauty_missing(tmp_path):
+    folder = tmp_path / "aov_partial_gap"
+    for frame in (1001, 1002):
+        _touch_frame(folder, "Beauty_", frame)
+    _touch_frame(folder, "Beauty_Denoised_", 1001)
+    manifest = [{
+        "take_name": "Main",
+        "folder": str(folder),
+        "beauty_prefix": "Beauty_",
+        "ext": "exr",
+        "frame_set": [1001, 1002],
+        "aov_mode": "direct",
+        "aov_files": [{"name": "Denoised", "prefix": "Beauty_Denoised_", "ext": "exr", "folder": str(folder)}],
+        "multipart": None,
+    }]
+
+    report = postrender.build_report(postrender.audit_manifest(manifest, str(folder)))
+
+    assert report["passed"] is True
+    assert report["checks"]["missing"]["count"] == 0
+    assert report["checks"]["aov_missing"]["count"] >= 1
+
+
+def test_audit_manifest_marks_missing_multitake_format_coverage(tmp_path):
+    root = tmp_path / "multi_take"
+    manifest = []
+    for fmt in ("16x9", "9x16", "1x1", "4x5", "21x9"):
+        folder = root / fmt
+        if fmt != "9x16":
+            _touch_frame(folder, "beauty_", 1001)
+        manifest.append({
+            "take_name": fmt,
+            "folder": str(folder),
+            "beauty_prefix": "beauty_",
+            "ext": "exr",
+            "frame_set": [1001],
+            "xres": 1920,
+            "yres": 1080,
+            "aov_mode": "none",
+            "aov_files": [],
+            "multipart": None,
+        })
+
+    report = postrender.build_report(postrender.audit_manifest(manifest, str(root)))
+
+    assert report["checks"]["coverage_missing"]["status"] == "WARN"
+    assert any(
+        item["take_name"] == "9x16"
+        for item in report["checks"]["coverage_missing"]["items"]
+    )
+
+
+def test_coverage_missing_only_when_beauty_stream_produces_nothing(tmp_path):
+    partial = tmp_path / "partial_gap"
+    empty = tmp_path / "empty_take"
+    frame_set = list(range(1001, 1101))
+    for frame in frame_set:
+        if frame != 1050:
+            _touch_frame(partial, "beauty_", frame)
+    empty.mkdir()
+    manifest = [
+        {
+            "take_name": "Partial",
+            "folder": str(partial),
+            "beauty_prefix": "beauty_",
+            "ext": "exr",
+            "frame_set": frame_set,
+            "xres": 1920,
+            "yres": 1080,
+            "aov_mode": "none",
+            "aov_files": [],
+            "multipart": None,
+        },
+        {
+            "take_name": "Empty",
+            "folder": str(empty),
+            "beauty_prefix": "beauty_",
+            "ext": "exr",
+            "frame_set": frame_set,
+            "xres": 1920,
+            "yres": 1080,
+            "aov_mode": "none",
+            "aov_files": [],
+            "multipart": None,
+        },
+    ]
+
+    report = postrender.build_report(postrender.audit_manifest(manifest, str(tmp_path)))
+    coverage_takes = {
+        item["take_name"]
+        for item in report["checks"]["coverage_missing"]["items"]
+    }
+
+    assert "Partial" not in coverage_takes
+    assert "Empty" in coverage_takes
+
+
+def test_build_manifest_dedups_inherited_child_render_state(tmp_path):
+    path = str(tmp_path / "beauty_1001")
+    states = [
+        _state(take_name="Main", is_main=True, is_checked=True, resolved_beauty_path=path),
+        _state(take_name="Child", is_main=False, is_checked=True, resolved_beauty_path=path),
+    ]
+
+    manifest = postrender.build_manifest_from_state(states, str(tmp_path))
+
+    assert len(manifest) == 1
+    assert manifest[0]["beauty_prefix"] == "beauty_"
+
+
+def test_build_manifest_frame_modes_use_literal_values(tmp_path):
+    manual = postrender.build_manifest_from_state([
+        _state(frame_mode=0, frame_from=1001, frame_to=1005, frame_step=2, resolved_beauty_path=str(tmp_path / "manual_1001"))
+    ])
+    current = postrender.build_manifest_from_state([
+        _state(frame_mode=1, current_frame=1042, resolved_beauty_path=str(tmp_path / "current_1042"))
+    ])
+    allframes = postrender.build_manifest_from_state([
+        _state(frame_mode=2, timeline_min=1010, timeline_max=1012, resolved_beauty_path=str(tmp_path / "all_1010"))
+    ])
+
+    assert manual[0]["frame_set"] == postrender.expected_frames(1001, 1005, 2)
+    assert current[0]["frame_set"] == [1042]
+    assert allframes[0]["frame_set"] == postrender.expected_frames(1010, 1012, 1)
+
+
+def test_build_manifest_single_render_includes_main(tmp_path):
+    manifest = postrender.build_manifest_from_state([
+        _state(is_main=True, is_checked=False, resolved_beauty_path=str(tmp_path / "beauty_1001"))
+    ])
+
+    assert len(manifest) == 1
+    assert manifest[0]["take_name"] == "Main"
+
+
+def test_build_manifest_excludes_unchecked_main_when_children_exist(tmp_path):
+    manifest = postrender.build_manifest_from_state([
+        _state(take_name="Main", is_main=True, is_checked=False, resolved_beauty_path=str(tmp_path / "main_1001")),
+        _state(take_name="9x16", is_main=False, is_checked=True, resolved_beauty_path=str(tmp_path / "9x16_1001")),
+    ])
+
+    assert [entry["take_name"] for entry in manifest] == ["9x16"]
+
+
+def test_separator_qualified_prefix_avoids_common_collision(tmp_path):
+    folder = tmp_path / "collision"
+    _touch_frame(folder, "beauty_", 1001, size=2048)
+    _touch_frame(folder, "beautyMask_", 1001, size=100)
+    manifest = postrender.build_manifest_from_state([
+        _state(resolved_beauty_path=str(folder / "beauty_1001"), frame_from=1001, frame_to=1001)
+    ])
+
+    assert manifest[0]["beauty_prefix"] == "beauty_"
+    scan = postrender.audit_manifest(manifest, str(folder))["streams"][0]["scan"]
+    assert scan["truncated"] == []
+    assert scan["found"] == [1001]
+
+
+def test_zfill_fallback_path_without_frame_uses_stem_prefix(tmp_path):
+    folder = tmp_path / "fallback"
+    _touch_frame(folder, "beauty_", 1001)
+    _touch_frame(folder, "beauty_", 1002)
+
+    manifest = postrender.build_manifest_from_state([
+        _state(resolved_beauty_path=str(folder / "beauty"))
+    ])
+
+    assert manifest[0]["beauty_prefix"] == "beauty"
+    assert postrender.audit_manifest(manifest, str(folder))["streams"][0]["scan"]["found"] == [1001, 1002]
+
+
+def test_unsaved_doc_manifest_uses_audit_folder(tmp_path):
+    manifest = postrender.build_manifest_from_state([
+        _state(raw_path="beauty", resolved_beauty_path="", doc_path="")
+    ], str(tmp_path))
+
+    assert manifest[0]["folder"] == str(tmp_path)
+
+
+def test_low_variance_flat_plane_documents_mad_escape_and_warn_severity():
+    flat_sizes = {frame: 5_000_000 for frame in range(1001, 1101)}
+    flat_sizes[1050] = 200_000
+
+    assert postrender.size_outliers(flat_sizes) == []
+
+    report = postrender.build_report({"categories": {"size_outliers": [{"frame": 1050}]}, "manifest": [], "streams": []})
+    assert report["checks"]["size_outliers"]["status"] == "WARN"
+
+
+def test_u6_complete_report_and_render_history_do_not_touch_versions_history(tmp_path):
+    folder = _fixture_single_complete(tmp_path)
+    manifest = [{
+        "take_name": "Main",
+        "folder": str(folder),
+        "beauty_prefix": "beauty",
+        "ext": "exr",
+        "frame_set": list(FRAMES),
+        "aov_mode": "none",
+        "aov_files": [],
+        "multipart": None,
+        "version": "v007",
+    }]
+    report = postrender.build_report(postrender.audit_manifest(manifest, str(folder)))
+    doc_path = tmp_path / "robot_010_v007_TR.c4d"
+    versions_history = tmp_path / "robot_010_history.json"
+    versions_history.write_text('{"versions":[{"version":7}]}\n')
+    before_hash = hashlib.sha256(versions_history.read_bytes()).hexdigest()
+
+    assert report["passed"] is True
+    assert all(check["status"] == "OK" for check in report["checks"].values())
+    assert postrender.append_render_history(str(doc_path), report) is True
+
+    assert hashlib.sha256(versions_history.read_bytes()).hexdigest() == before_hash
+    render_history = json.loads((tmp_path / "robot_010_render_history.json").read_text())
+    assert render_history["render_validations"][0]["type"] == "render_validation"
+
+
+def test_render_history_shared_across_versions(tmp_path):
+    first = {"passed": True, "checks": {}, "context": {"version": "v007_TR"}}
+    second = {"passed": False, "checks": {"missing": {"count": 1}}, "context": {"version": "v008"}}
+
+    assert postrender.append_render_history(str(tmp_path / "robot_010_v007_TR.c4d"), first)
+    assert postrender.append_render_history(str(tmp_path / "robot_010_v008.c4d"), second)
+
+    history_path = tmp_path / "robot_010_render_history.json"
+    history = json.loads(history_path.read_text())
+    assert len(history["render_validations"]) == 2
+    assert not (tmp_path / "robot_010_v007_TR_render_history.json").exists()
+
+
+def test_write_report_atomic_failure_leaves_prior_intact(tmp_path, monkeypatch):
+    path = tmp_path / "report.json"
+    path.write_text('{"ok": true}\n')
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("dump failed")
+
+    monkeypatch.setattr(postrender.json, "dump", boom)
+
+    assert postrender.write_report_atomic(str(path), {"ok": False}) is False
+    assert path.read_text() == '{"ok": true}\n'
+    assert not list(tmp_path.glob("report.json.tmp.*"))
+
+
+def test_report_single_category_dedup_for_zero_byte(tmp_path):
+    folder = tmp_path / "zero"
+    _touch_frame(folder, "beauty_", 1001, size=0)
+    manifest = [{
+        "take_name": "Main",
+        "folder": str(folder),
+        "beauty_prefix": "beauty_",
+        "ext": "exr",
+        "frame_set": [1001],
+        "aov_mode": "none",
+        "aov_files": [],
+        "multipart": None,
+    }]
+
+    report = postrender.build_report(postrender.audit_manifest(manifest, str(folder)))
+
+    assert report["checks"]["zero_byte"]["count"] == 1
+    assert report["checks"]["truncated"]["count"] == 0
+    assert report["checks"]["size_outliers"]["count"] == 0
+
+
+def test_report_cap_preserves_total_count():
+    findings = {
+        "categories": {"missing": [{"frame": frame} for frame in range(500)]},
+        "manifest": [],
+        "streams": [],
+    }
+
+    report = postrender.build_report(findings)
+
+    assert report["checks"]["missing"]["count"] == 500
+    assert len(report["checks"]["missing"]["items"]) == 50
+
+
+def test_doc_without_path_report_and_history_use_audited_folder(tmp_path):
+    report = {"passed": True, "checks": {}, "context": {}}
+    report_path = postrender.report_path_for_doc("", str(tmp_path))
+
+    assert report_path == str(tmp_path / "sentinel_render_report.json")
+    assert postrender.write_report_atomic(report_path, report)
+    assert postrender.append_render_history(str(tmp_path), report)
+    assert (tmp_path / "sentinel_render_report.json").exists()
+    assert (tmp_path / "sentinel_render_history.json").exists()
+
+
+def test_malformed_render_sidecar_is_replaced_without_crash(tmp_path):
+    history_path = tmp_path / "robot_010_render_history.json"
+    history_path.write_text("{not json")
+
+    assert postrender.append_render_history(str(tmp_path / "robot_010_v001.c4d"), {
+        "passed": True,
+        "checks": {},
+        "context": {"version": "v001"},
+    })
+    history = json.loads(history_path.read_text())
+    assert len(history["render_validations"]) == 1

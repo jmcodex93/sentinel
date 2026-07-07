@@ -15,6 +15,7 @@ if _ROOT not in sys.path:
 import sentinel
 from sentinel import baseline
 from sentinel import gate as quality_gate
+from sentinel import postrender
 from sentinel import PLUGIN_NAME, PLUGIN_VERSION
 from sentinel.common.cache import CheckCache, check_cache
 from sentinel.common.constants import (
@@ -252,6 +253,8 @@ from sentinel.aovs import (
     _build_tier_list,
     _get_rs_videopost,
     _has_volumes_in_scene,
+    _is_lg_active_on_beauty,
+    _scan_light_groups,
     _resolve_aov_type,
     check_rs_aovs,
     force_aov_tier,
@@ -1977,6 +1980,12 @@ class YSPanel(gui.GeDialog):
         self.AddButton(G.BTN_OPEN_FOLDER, c4d.BFH_SCALEFIT, 0, 0, "Open Folder")
         self.GroupEnd()
 
+        # ── Post-Render (U7) ──
+        self._add_section_label("Post-Render")
+        self.GroupBegin(84, c4d.BFH_SCALEFIT, 1, 0)
+        self.AddButton(G.BTN_VALIDATE_RENDER, c4d.BFH_SCALEFIT, 0, 0, "Validate Render Output...")
+        self.GroupEnd()
+
         # Spacer absorbs remaining vertical space
         self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 0, 0, "", 0)
 
@@ -2781,6 +2790,9 @@ class YSPanel(gui.GeDialog):
         elif cid == G.BTN_ADD_FRAME_TAG:
             self._add_sentinel_frame_tag(doc)
 
+        elif cid == G.BTN_VALIDATE_RENDER:
+            self._handle_validate_render(doc)
+
         elif cid == G.ARTIST:
             # Artist name changed - save to global settings
             new_artist_name = self.GetString(G.ARTIST).strip()
@@ -2806,8 +2818,8 @@ class YSPanel(gui.GeDialog):
                 c4d.gui.MessageDialog("No AOVs configured.\n\nUse 'Essentials' or 'Production' to add passes.")
             else:
                 target_name = "Nuke" if int(GlobalSettings.get('comp_target', 0)) == 0 else "After Effects"
-                lg_status = "ON" if self._is_lg_active_on_beauty(doc) else "OFF"
-                groups, _ = self._scan_light_groups(doc)
+                lg_status = "ON" if _is_lg_active_on_beauty(doc) else "OFF"
+                groups, _ = _scan_light_groups(doc)
                 lg_info = f"Light Groups: {lg_status}"
                 if groups and lg_status == "ON":
                     lg_info += f" ({', '.join(sorted(groups.keys()))})"
@@ -3431,49 +3443,6 @@ class YSPanel(gui.GeDialog):
             c4d.gui.MessageDialog(f"Save Version failed:\n\n{result.get('message','unknown error')}")
             safe_print(f"Save Version failed: {result.get('message')}")
 
-    def _scan_light_groups(self, doc):
-        """Scan scene lights and return (groups_dict, ungrouped_list)"""
-        groups = {}
-        ungrouped = []
-        first = doc.GetFirstObject()
-        if first:
-            for obj in _iter_objs(first, MAX_OBJECTS_PER_CHECK):
-                if not obj or not _is_light_obj(obj):
-                    continue
-                light_name = _safe_name(obj)
-                group = ""
-                try:
-                    group = obj[c4d.REDSHIFT_LIGHT_LIGHT_GROUP] or ""
-                except Exception:
-                    pass
-                if not group:
-                    for tag in obj.GetTags():
-                        try:
-                            g = tag[c4d.REDSHIFT_LIGHT_GROUP_LIGHT_GROUP]
-                            if g:
-                                group = g
-                                break
-                        except Exception:
-                            pass
-                if group:
-                    groups.setdefault(group, []).append(light_name)
-                else:
-                    ungrouped.append(light_name)
-        return groups, ungrouped
-
-    def _is_lg_active_on_beauty(self, doc):
-        """Check if All Light Groups is active on Beauty AOV"""
-        vprs = _get_rs_videopost(doc)
-        if not vprs:
-            return False
-        try:
-            for aov in redshift.RendererGetAOVs(vprs):
-                if aov.GetParameter(c4d.REDSHIFT_AOV_NAME) == "Beauty":
-                    return bool(aov.GetParameter(c4d.REDSHIFT_AOV_LIGHTGROUP_ALL))
-        except Exception:
-            pass
-        return False
-
     def _toggle_light_groups(self, doc):
         """Toggle Light Groups on Beauty AOV with diagnostic"""
         if not REDSHIFT_AVAILABLE:
@@ -3485,8 +3454,8 @@ class YSPanel(gui.GeDialog):
             c4d.gui.MessageDialog("Redshift VideoPost not found.")
             return
 
-        groups, ungrouped = self._scan_light_groups(doc)
-        lg_active = self._is_lg_active_on_beauty(doc)
+        groups, ungrouped = _scan_light_groups(doc)
+        lg_active = _is_lg_active_on_beauty(doc)
 
         if not groups and not ungrouped:
             c4d.gui.MessageDialog("No lights found in the scene.")
@@ -3574,6 +3543,57 @@ class YSPanel(gui.GeDialog):
                 else:
                     msg += "Depth: Z Normalized Inverted, Center Sample\nMotion Vectors: Normalized 0-1, Max Motion=64"
                 c4d.gui.MessageDialog(msg)
+
+    def _handle_validate_render(self, doc):
+        """Run on-demand post-render validation for a chosen folder."""
+        folder = c4d.storage.LoadDialog(
+            title="Select Render Output Folder",
+            flags=c4d.FILESELECT_DIRECTORY,
+        )
+        if not folder:
+            return
+        if not os.path.isdir(folder):
+            c4d.gui.MessageDialog("Render validation cancelled:\n\nSelected folder is not valid.")
+            return
+
+        try:
+            findings = postrender.audit_render_folder(doc, folder)
+            report = postrender.build_report(findings)
+        except Exception as exc:
+            safe_print(f"Render validation failed: {exc}")
+            c4d.gui.MessageDialog(f"Render validation failed:\n\n{exc}")
+            return
+
+        doc_path = _doc_full_path(doc)
+        report_path = postrender.report_path_for_doc(doc_path, folder)
+        wrote_report = postrender.write_report_atomic(report_path, report)
+        wrote_history = postrender.append_render_history(doc_path or folder, report)
+
+        context = report.get("context") or {}
+        version = context.get("version") or "current scene"
+        frame_start = context.get("frame_start")
+        frame_end = context.get("frame_end")
+        if frame_start is not None and frame_end is not None:
+            frame_text = f"range {frame_start}-{frame_end}"
+        else:
+            frame_text = "range unavailable"
+        mode = context.get("frame_mode") or "Unknown"
+        status = "PASSED" if report.get("passed") else "ISSUES FOUND"
+        summary = report.get("summary") or {}
+
+        msg = (
+            f"Post-render validation {status}\n\n"
+            f"Validating {version} · {frame_text} · mode {mode}\n"
+            f"Failures: {summary.get('failures', 0)}\n"
+            f"Warnings: {summary.get('warnings', 0)}\n"
+            f"Streams checked: {summary.get('streams', 0)}\n\n"
+        )
+        if not doc_path:
+            msg += "Scene is unsaved; report and render history were written to the render folder.\n"
+        msg += f"Report: {report_path if wrote_report else 'could not write report'}\n"
+        if not wrote_history:
+            msg += "Render history could not be updated.\n"
+        c4d.gui.MessageDialog(msg)
 
     def _open_artist_folder(self):
         """Open the artist's output folder"""

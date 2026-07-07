@@ -47,6 +47,7 @@ class G:
     BTN_FORCE_VERTICAL = 1204  # Force 9:16
     BTN_RESET_ALL = 1206      # Reset all presets from template
     BTN_ADD_FRAME_TAG = 1214  # Add Sentinel Frame tag to the active/selected camera (v1.8.0)
+    BTN_VALIDATE_RENDER = 1215  # Post-render validation (U7)
 
     # Quick Actions
     BTN_CREATE_HIERARCHY = 1126
