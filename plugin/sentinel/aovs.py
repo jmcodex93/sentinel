@@ -5,8 +5,9 @@ import c4d
 
 from sentinel.common.cache import check_cache
 from sentinel.common.constants import MAX_OBJECTS_PER_CHECK
-from sentinel.common.helpers import _iter_objs, safe_print
+from sentinel.common.helpers import _iter_objs, _safe_name, safe_print
 from sentinel.common.settings import GlobalSettings
+from sentinel.checks.scene import _is_light_obj
 
 try:
     import redshift
@@ -125,6 +126,51 @@ def _are_caustics_enabled(doc):
     except Exception:
         return False
 
+def _scan_light_groups(doc):
+    """Scan scene lights and return (groups_dict, ungrouped_list)."""
+    groups = {}
+    ungrouped = []
+    first = doc.GetFirstObject()
+    if first:
+        for obj in _iter_objs(first, MAX_OBJECTS_PER_CHECK):
+            if not obj or not _is_light_obj(obj):
+                continue
+            light_name = _safe_name(obj)
+            group = ""
+            try:
+                group = obj[c4d.REDSHIFT_LIGHT_LIGHT_GROUP] or ""
+            except Exception:
+                pass
+            if not group:
+                for tag in obj.GetTags():
+                    try:
+                        g = tag[c4d.REDSHIFT_LIGHT_GROUP_LIGHT_GROUP]
+                        if g:
+                            group = g
+                            break
+                    except Exception:
+                        pass
+            if group:
+                groups.setdefault(group, []).append(light_name)
+            else:
+                ungrouped.append(light_name)
+    return groups, ungrouped
+
+
+def _is_lg_active_on_beauty(doc):
+    """Check if All Light Groups is active on Beauty AOV."""
+    vprs = _get_rs_videopost(doc)
+    if not vprs:
+        return False
+    try:
+        for aov in redshift.RendererGetAOVs(vprs):
+            if aov.GetParameter(c4d.REDSHIFT_AOV_NAME) == "Beauty":
+                return bool(aov.GetParameter(c4d.REDSHIFT_AOV_LIGHTGROUP_ALL))
+    except Exception:
+        pass
+    return False
+
+
 def _resolve_aov_type(name):
     """Resolve AOV name to c4d constant value"""
     aov_def = _AOV_DEFS.get(name)
@@ -151,12 +197,27 @@ def get_rs_aovs(doc):
                     "name": aov.GetParameter(c4d.REDSHIFT_AOV_NAME) or "",
                     "type": aov.GetParameter(c4d.REDSHIFT_AOV_TYPE),
                     "enabled": aov.GetParameter(c4d.REDSHIFT_AOV_ENABLED),
+                    "effective_path": aov.GetParameter(c4d.REDSHIFT_AOV_FILE_EFFECTIVE_PATH) or "",
+                    "file_format": aov.GetParameter(c4d.REDSHIFT_AOV_FILE_FORMAT),
+                    "direct_enabled": bool(aov.GetParameter(c4d.REDSHIFT_AOV_FILE_ENABLED)),
+                    "multipass_enabled": bool(aov.GetParameter(c4d.REDSHIFT_AOV_MULTIPASS_ENABLED)),
                 })
             except Exception:
                 pass
     except Exception as e:
         safe_print(f"Error reading RS AOVs: {e}")
     return aovs
+
+
+def get_aov_multipart(doc):
+    """Read Redshift's effective AOV Multi-Part flag from the live videopost."""
+    vprs = _get_rs_videopost(doc)
+    if not vprs:
+        return False
+    try:
+        return bool(vprs[c4d.REDSHIFT_RENDERER_AOV_MULTIPART])
+    except Exception:
+        return False
 
 def check_rs_aovs(doc, tier=None):
     """Check AOVs against a tier. tier=None uses Essentials."""

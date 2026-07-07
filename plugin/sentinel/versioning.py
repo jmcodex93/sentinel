@@ -95,6 +95,16 @@ def get_history_path(doc_path):
     return os.path.join(folder, f"{base}_history.json")
 
 
+def render_history_path(doc_path):
+    """Return the version-stripped render validation sidecar path."""
+    if not doc_path:
+        return None
+    folder = os.path.dirname(doc_path)
+    name_no_ext = os.path.splitext(os.path.basename(doc_path))[0]
+    base, _ver, _status = parse_version_filename(name_no_ext)
+    return os.path.join(folder, f"{base}_render_history.json")
+
+
 def load_history(history_path):
     """Load history JSON. Always returns a dict with 'versions' list (empty if missing/invalid)."""
     default = {"scene": None, "versions": []}
