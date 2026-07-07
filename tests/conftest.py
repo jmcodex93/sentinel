@@ -198,9 +198,10 @@ def _install_fake_c4d():
         "Xbitmap": 5833,
         "OBJECT_ON": 2,
         "OBJECT_OFF": 1,
-        "RDATA_FRAMESEQUENCE_CURRENTFRAME": 0,
-        "RDATA_FRAMESEQUENCE_ALLFRAMES": 1,
-        "RDATA_FRAMESEQUENCE_MANUAL": 2,
+        # Real C4D 2026 values (verified live 2026.301): Manual=0, Current=1, All=2.
+        "RDATA_FRAMESEQUENCE_MANUAL": 0,
+        "RDATA_FRAMESEQUENCE_CURRENTFRAME": 1,
+        "RDATA_FRAMESEQUENCE_ALLFRAMES": 2,
         "DRAWPASS_OBJECT": 1,
         "DRAWRESULT_OK": 1,
         "DRAWRESULT_SKIP": 2,
