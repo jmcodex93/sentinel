@@ -66,6 +66,18 @@
 
 ---
 
+### v1.9.0 — Post-Render Validation (I1) ✅ SHIPPED (PR #4)
+
+The render safety net: a "Validate Render Output..." button (Render tab → Post-Render) audits rendered frames **on disk** against what the scene says should exist — closing the gap where Sentinel guarded everything up to the render button and nothing after.
+
+- [x] Pure engine `plugin/sentinel/postrender.py` (stdlib-only, **no module-level `import c4d`**; C4D reads function-local in a thin adapter). Escalera de verificación: pytest + mutation + fixtures deterministas.
+- [x] Audits: sequence gaps (range-by-mode Manual/Current/All), 0-byte/truncated, size-outlier SPC (MAD, WARN), previous-session **stale** cluster (bimodal mtime, WARN, `MIN_STALE_GAP_SECONDS=300` floor), AOV presence (WARN), per-Take/format coverage
+- [x] Scene-aware **expected manifest**: render data + takes with render-selection gate (`IsChecked`/current take — Main excluded when not the render target), resolution/format→ext, RS AOVs via extended `aovs.get_rs_aovs` (`effective_path`/`file_format`/`direct_enabled`) + `get_aov_multipart`
+- [x] Atomic JSON report + **separate** `<base>_render_history.json` sidecar (never the Versions-tab history — KTD7); light-group helpers moved to `aovs.py`
+- [x] Built via the Codex-implements / we-review loop (grounding→brief→adversarial critique→Codex→pytest+mutation+adversarial review→**live-MCP**). First real production run caught 2 false-positives (beauty↔AOV prefix collision, stale sub-second jitter) → fixed
+- [x] 171 pytest + mutation + two adversarial passes + live-MCP on a real RS scene; merged to main (PR #4); v1.9.0; CLAUDE.md + README + changelog updated
+- [ ] **v2 deferred** (Scope Boundaries): per-layer EXR decode / real corruption (needs external OpenEXR), render-complete hook (no MessageData RENDER today), "Trace render" folder→version query, delivery-spec matrix, render cost/time estimator, rolling-window SPC. Minor open: reader broad-except surfacing, light-group AOV file-count coverage
+
 ### v1.8.0 — Sentinel Frame (per-camera multi-format tag) ✅ SHIPPED (PR #3)
 
 Supersedes the two WIP entries below. A single per-camera `SentinelFrameTag` (TagData, plugin id 2099073) is the one entry point for the whole multi-format workflow: live viewport guides/mask/HUD, one-click **rename-safe** delivery Takes, and true **WYSIWYG crop** that matches the guides.
@@ -574,16 +586,10 @@ Add a dropdown or settings dialog to change the studio standard FPS without edit
 
 ### Tier B — Asset Health & Validation (high impact, medium effort)
 
-> The multi-format + texture parts of this tier shipped across v1.5.4–v1.8.0 (Multi-Format Setup → Sentinel Frame, Cross-Aspect Safe-Area QC #12, Texture Repathing). What remains:
+> The multi-format + texture parts of this tier shipped across v1.5.4–v1.8.0 (Multi-Format Setup → Sentinel Frame, Cross-Aspect Safe-Area QC #12, Texture Repathing). **Post-Render Validation (I1) shipped in v1.9.0 (PR #4)** — see the shipped entry above. What remains:
 
-#### Post-Render Validation *(I1 — top candidate for the next release)*
-Verify render output after completion:
-- Check all expected AOV files exist
-- Detect zero-byte files (failed frames)
-- Verify frame sequence completeness (no gaps: frame 1-100 should have 100 files)
-- Report missing/corrupt frames
-
-**Why**: Discovering missing frames after a 12-hour render wastes another render cycle.
+#### ~~Post-Render Validation (I1)~~ ✅ SHIPPED v1.9.0 (PR #4)
+Verify render output after completion — expected AOV files, zero-byte/truncated detection, sequence completeness, size-outlier SPC, stale-cluster detection, atomic report + `<base>_render_history.json` sidecar. Full details in the v1.9.0 shipped entry above.
 
 #### Scene Complexity Budget
 Visual budget meter for scene resources:
