@@ -458,14 +458,23 @@ class YSPanel(gui.GeDialog):
                 self._update_history_area(doc)
         except Exception as e:
             safe_print(f"Per-tab label refresh error: {e}")
-        # Force immediate refresh (bypass Timer cooldown) so the new tab's
-        # widgets show current data without waiting up to 3 seconds.
+        # Populate the freshly-rebuilt tab's widgets. Only re-run QC when the
+        # scene actually changed (self._dirty, set by CoreMessage) or when no
+        # QC has been computed yet (first run). Otherwise repaint from cache —
+        # a tab switch on an unchanged scene must not trigger a full 12-check
+        # recompute (that stalled switches on heavy scenes). QC results only
+        # feed the QC tab's StatusArea; other tabs need no QC run at all.
         try:
-            self._last_check_time = 0
-            self._dirty = True
-            self._refresh()
+            if self._dirty or self._registry_results is None:
+                self._last_check_time = 0   # bypass 0.5s cooldown for the immediate run
+                self._refresh()             # fresh compute: repaints ua + score + labels
+                self._dirty = False         # serviced here; don't double-run on next Timer
+            elif idx == 0:
+                # Clean switch, valid cache: the QC tab's StatusArea was just
+                # rebuilt blank — repaint it from cache (no recompute).
+                self._repopulate_qc_from_cache()
         except Exception as e:
-            safe_print(f"Immediate refresh error: {e}")
+            safe_print(f"Tab-switch refresh error: {e}")
         # Persist the choice so reopening the plugin lands on the same tab.
         if previous_tab != idx:
             try:
@@ -894,6 +903,9 @@ class YSPanel(gui.GeDialog):
                     doc.SetActiveRenderData(rd)
                     check_cache.clear()  # Clear cache to update compliance check immediately
                     c4d.EventAdd()
+                    # Mark dirty so a fast switch to QC recomputes preset
+                    # compliance without waiting for the async EVMSG_CHANGE.
+                    self._dirty = True
                     self._active_preset = normalized_target
                     self._update_preset_buttons()
                     safe_print(f"Switched to render preset: {rd.GetName()} (normalized: {normalized_target})")
@@ -923,6 +935,55 @@ class YSPanel(gui.GeDialog):
                     self.SetString(G.BTN_FORCE_VERTICAL, "Force 16:9" if h > w else "Force 9:16")
                 except Exception:
                     pass
+
+    def _build_qc_state_dict(self, score_summary, registry_results, rules_context):
+        """Assemble the decorated StatusArea state dict from a (summary,
+        results, rules) triple. Single source for both the fresh-run path
+        (_refresh) and the cache-repaint path (_repopulate_qc_from_cache),
+        so a clean tab switch repaints identically without re-running checks."""
+        counts_by_id = score_summary.get("counts", {})
+        legacy_by_id = {
+            check_id: pair.get("legacy_result")
+            for check_id, pair in (registry_results or {}).items()
+        }
+        state = dict(counts_by_id)
+        state["_disabled_checks"] = score_summary.get("disabled", [])
+        state["_baseline_active"] = bool(score_summary.get("baseline_status"))
+        state["_severity_by_id"] = {
+            entry.check_id: entry_severity(entry, rules_context)
+            for entry in CHECK_REGISTRY
+        }
+        state["_baseline_counts"] = {
+            entry.check_id: {
+                "new": score_summary.get("new_counts", counts_by_id).get(entry.check_id, counts_by_id.get(entry.check_id, 0)),
+                "accepted": score_summary.get("accepted_counts", {}).get(entry.check_id, 0),
+                "stale": score_summary.get("stale_counts", {}).get(entry.check_id, 0),
+            }
+            for entry in CHECK_REGISTRY
+        }
+        for entry in CHECK_REGISTRY:
+            if entry.names_key:
+                items = legacy_by_id.get(entry.check_id) or []
+                state[entry.names_key] = [_safe_name(o) for o in items[:10]]
+        return state
+
+    def _repopulate_qc_from_cache(self):
+        """Repaint the QC StatusArea from already-cached QC state, no re-run.
+        Fills a freshly-(re)attached StatusArea on a clean tab switch. Keyed on
+        the widget existing (self.ua), NOT on cache-emptiness — a brand-new
+        blank StatusArea must be filled even though the cache is already full.
+        No-op if the QC tab was never built or QC has never been computed."""
+        if self.ua is None:
+            return
+        if (self._qc_summary is None or self._registry_results is None
+                or self._rules_context is None):
+            return
+        try:
+            state = self._build_qc_state_dict(
+                self._qc_summary, self._registry_results, self._rules_context)
+            self.ua.set_state(state, self.ua.show)
+        except Exception as e:
+            safe_print(f"QC cache repaint error: {e}")
 
     def _refresh(self):
         """Throttled refresh with performance optimization"""
@@ -994,25 +1055,7 @@ class YSPanel(gui.GeDialog):
             # user clicks QC. Score header still updates regardless because
             # it lives in the always-visible Scene Header.)
             if self.ua is not None:
-                state = dict(counts_by_id)
-                state["_disabled_checks"] = score_summary.get("disabled", [])
-                state["_baseline_active"] = bool(score_summary.get("baseline_status"))
-                state["_severity_by_id"] = {
-                    entry.check_id: entry_severity(entry, rules_context)
-                    for entry in CHECK_REGISTRY
-                }
-                state["_baseline_counts"] = {
-                    entry.check_id: {
-                        "new": score_summary.get("new_counts", counts_by_id).get(entry.check_id, counts_by_id.get(entry.check_id, 0)),
-                        "accepted": score_summary.get("accepted_counts", {}).get(entry.check_id, 0),
-                        "stale": score_summary.get("stale_counts", {}).get(entry.check_id, 0),
-                    }
-                    for entry in CHECK_REGISTRY
-                }
-                for entry in CHECK_REGISTRY:
-                    if entry.names_key:
-                        items = legacy_by_id.get(entry.check_id) or []
-                        state[entry.names_key] = [_safe_name(o) for o in items[:10]]
+                state = self._build_qc_state_dict(score_summary, registry_results, rules_context)
                 self.ua.set_state(state, self.ua.show)
 
             # Update Score header — pass count + scene stats summary
@@ -2152,6 +2195,9 @@ class YSPanel(gui.GeDialog):
             self._update_preset_buttons()
             self._update_aspect_button()
         scene_tools._toggle_aspect(doc, update_ui=update_ui)
+        # Mark dirty so a fast switch to QC recomputes preset compliance
+        # without waiting for the async EVMSG_CHANGE from the resolution edit.
+        self._dirty = True
 
     def _add_sentinel_frame_tag(self, doc):
         scene_tools._add_sentinel_frame_tag(doc)
