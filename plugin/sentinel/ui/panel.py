@@ -726,15 +726,38 @@ class YSPanel(gui.GeDialog):
         if doc is None:
             doc = c4d.documents.GetActiveDocument()
         if not doc:
-            self.SetString(G.LABEL_FILENAME, "▸ Scene:  (no document)")
+            self._set_filename_caption("▸ Scene:  (no document)")
             return
         name = doc.GetDocumentName() or ""
         if not name:
-            self.SetString(G.LABEL_FILENAME, "▸ Scene:  Untitled  ·  not saved yet")
+            text = "▸ Scene:  Untitled  ·  not saved yet"
+        else:
+            # Full filename including version + status — the user is working ON
+            # this exact file; transparency over abstraction.
+            text = f"▸ Scene:  {name}"
+        self._set_filename_caption(text)
+
+    def _add_filename_row(self, text):
+        """Add the [spacer][caption][spacer] row into the filename group.
+        The scalefit spacers center the content-sized caption; the caption is
+        created WITH its text so it sizes to fit instead of truncating."""
+        self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0, "", 0)  # left spacer
+        self.AddStaticText(G.LABEL_FILENAME, c4d.BFH_LEFT, 0, 0, text, 0)
+        self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0, "", 0)  # right spacer
+
+    def _set_filename_caption(self, text):
+        """Set the centered scene caption, re-creating the static text so it
+        sizes to the (possibly long) name instead of truncating. Guarded so the
+        header only re-lays-out when the caption actually changes."""
+        if getattr(self, "_filename_label_text", None) == text:
             return
-        # Show the full filename including version + status — the user is
-        # working ON this exact file; transparency over abstraction.
-        self.SetString(G.LABEL_FILENAME, f"▸ Scene:  {name}")
+        self._filename_label_text = text
+        try:
+            self.LayoutFlushGroup(11)
+            self._add_filename_row(text)
+            self.LayoutChanged(11)
+        except Exception as e:
+            safe_print(f"Filename caption error: {e}")
 
     def _update_snapshot_dir_label(self):
         snap_dir = GlobalSettings.get_snapshot_dir()
@@ -1126,8 +1149,16 @@ class YSPanel(gui.GeDialog):
         self.GroupBorderSpace(6, 4, 6, 4)
         self.GroupSpace(0, 4)
 
-        # Filename caption — read-only, prominent, centered
-        self.AddStaticText(G.LABEL_FILENAME, c4d.BFH_CENTER, 0, 0, "", 0)
+        # Filename caption — read-only, prominent, centered. Its own full-width
+        # 3-column group [scalefit spacer][caption][scalefit spacer]: the two
+        # spacers absorb equal leftover space and center the content-sized
+        # caption (BFH_CENTER on the static text alone does not center it here).
+        # _update_filename_label flushes + re-adds the row with the real name as
+        # the caption's creation text, because a static text created empty
+        # freezes its width and truncates long names on SetString.
+        self.GroupBegin(11, c4d.BFH_SCALEFIT, 3, 0)
+        self._add_filename_row("")
+        self.GroupEnd()
 
         # Editable project metadata: Shot ID + Artist
         self.GroupBegin(10, c4d.BFH_SCALEFIT, 4, 0)
