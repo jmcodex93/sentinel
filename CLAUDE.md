@@ -24,8 +24,8 @@ Additional features: RS AOV management (Essentials/Production/Light Groups), Sce
 - `plugin/sentinel/` - Sentinel Python package. Current layout:
   - `common/` - settings, cache, constants, shared helpers
   - `checks/` and `qc/` - QC check implementations, registry, result adapters, scoring
-  - `aovs.py`, `baseline.py`, `multiformat.py`, `notes.py`, `rules.py`, `safe_areas.py`, `textures.py`, `versioning.py` - extracted workflow engines
-  - `ui/ids.py`, `ui/user_areas.py`, `ui/dialogs.py`, `ui/overlay.py`, `ui/panel.py` - widget IDs, custom UserAreas, dialogs, ObjectData overlay, main GeDialog panel and CommandData
+  - `aovs.py`, `baseline.py`, `fixes.py`, `multiformat.py`, `notes.py`, `rules.py`, `safe_areas.py`, `snapshots.py`, `textures.py`, `versioning.py` - extracted workflow engines (`fixes.py` = QC auto-fix machinery + batched `apply_fixes`; `snapshots.py` = pure EXR→PNG helpers, no gui)
+  - `ui/ids.py`, `ui/user_areas.py`, `ui/dialogs.py`, `ui/frame_tag.py`, `ui/reports.py`, `ui/flows.py`, `ui/scene_tools.py`, `ui/panel.py` - widget IDs, custom UserAreas, dialogs, Sentinel Frame tag, QC-report assembly, save/collect/gate/snapshot flows, scene-tool mutations, and the main GeDialog panel (thin UI layer, ~2200 lines after the v1.10 extraction; business logic lives in the engine + `ui/{reports,flows,scene_tools}`)
 - `plugin/res/` - Resource descriptions required by C4D for plugins that need a `description` parameter (e.g. SafeAreaOverlayObject in v1.5.6). Contains `c4d_symbols.h`, `description/safearea_overlay.res|.h`, `strings_us/description/safearea_overlay.str`. Adding new ObjectData/TagData plugins needs new `.res|.h|.str` triplets here.
 - `plugin/exr_converter_external.py` - Cross-platform EXR→PNG with ACES pipeline
 - `plugin/abc_retime/` - Bundled ABC Retime plugin (by axisfx2)

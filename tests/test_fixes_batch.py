@@ -3,7 +3,7 @@ def _new_doc(sentinel_module, render_datas=None):
 
 
 def test_apply_fixes_batches_lights_and_camera_in_single_undo(sentinel_module, monkeypatch):
-    panel = sentinel_module._panel
+    from sentinel import fixes
     doc = _new_doc(sentinel_module)
     light = object()
     cam = object()
@@ -19,10 +19,10 @@ def test_apply_fixes_batches_lights_and_camera_in_single_undo(sentinel_module, m
         active_doc.AddUndo(102, bad_list[0])
         return len(bad_list)
 
-    monkeypatch.setattr(panel, "_apply_lights", apply_lights)
-    monkeypatch.setattr(panel, "_apply_camera_shift", apply_camera_shift)
+    monkeypatch.setattr(fixes, "_apply_lights", apply_lights)
+    monkeypatch.setattr(fixes, "_apply_camera_shift", apply_camera_shift)
 
-    result = panel.apply_fixes(
+    result = fixes.apply_fixes(
         doc,
         [
             {"check_id": "lights", "objects": [light]},
@@ -44,7 +44,7 @@ def test_apply_fixes_batches_lights_and_camera_in_single_undo(sentinel_module, m
 
 
 def test_apply_fixes_passes_unused_material_bad_list_unchanged(sentinel_module, monkeypatch):
-    panel = sentinel_module._panel
+    from sentinel import fixes
     doc = _new_doc(sentinel_module)
     new_mat = object()
     seen = []
@@ -54,9 +54,9 @@ def test_apply_fixes_passes_unused_material_bad_list_unchanged(sentinel_module, 
         active_doc.AddUndo(103, bad_list[0])
         return len(bad_list)
 
-    monkeypatch.setattr(panel, "_apply_unused_materials", apply_unused_materials)
+    monkeypatch.setattr(fixes, "_apply_unused_materials", apply_unused_materials)
 
-    result = panel.apply_fixes(doc, [{"check_id": "unused_mats", "objects": [new_mat]}])
+    result = fixes.apply_fixes(doc, [{"check_id": "unused_mats", "objects": [new_mat]}])
 
     assert doc.start_undo_count == 1
     assert doc.end_undo_count == 1
@@ -65,7 +65,7 @@ def test_apply_fixes_passes_unused_material_bad_list_unchanged(sentinel_module, 
 
 
 def test_public_fix_wrappers_still_open_their_own_undo(sentinel_module, monkeypatch):
-    panel = sentinel_module._panel
+    from sentinel import fixes
 
     wrappers = [
         ("fix_lights", "_apply_lights", [object()], 1),
@@ -80,25 +80,25 @@ def test_public_fix_wrappers_still_open_their_own_undo(sentinel_module, monkeypa
             active_doc.AddUndo(104, objects[0])
             return count
 
-        monkeypatch.setattr(panel, apply_name, apply_one)
+        monkeypatch.setattr(fixes, apply_name, apply_one)
 
-        assert getattr(panel, wrapper_name)(doc, bad_list) == expected
+        assert getattr(fixes, wrapper_name)(doc, bad_list) == expected
         assert doc.start_undo_count == 1
         assert doc.end_undo_count == 1
         assert len(doc.undo_operations) == 1
 
 
 def test_public_fps_wrapper_still_opens_its_own_undo(sentinel_module, monkeypatch):
-    panel = sentinel_module._panel
+    from sentinel import fixes
     doc = _new_doc(sentinel_module, render_datas=[object()])
 
     def apply_fps_range(active_doc):
         active_doc.AddUndo(105, active_doc)
         return ["fps"]
 
-    monkeypatch.setattr(panel, "_apply_fps_range", apply_fps_range)
+    monkeypatch.setattr(fixes, "_apply_fps_range", apply_fps_range)
 
-    assert panel.fix_fps_range(doc) == ["fps"]
+    assert fixes.fix_fps_range(doc) == ["fps"]
     assert doc.start_undo_count == 1
     assert doc.end_undo_count == 1
     assert len(doc.undo_operations) == 1

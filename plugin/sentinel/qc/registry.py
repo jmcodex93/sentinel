@@ -49,7 +49,7 @@ CHECK_REGISTRY = [
         preflight_template="  {n} lights outside group",
         report_key="lights",
         actions=("select", "fix"),
-        fix_fn="panel.fix_lights",
+        fix_fn="fixes.fix_lights",
     ),
     CheckEntry(
         check_id="vis",
@@ -92,7 +92,7 @@ CHECK_REGISTRY = [
         preflight_template="  {n} camera shift issues",
         report_key="camera_shift",
         actions=("select", "fix"),
-        fix_fn="panel.fix_camera_shift",
+        fix_fn="fixes.fix_camera_shift",
     ),
     CheckEntry(
         check_id="rdc",
@@ -135,7 +135,7 @@ CHECK_REGISTRY = [
         preflight_template="  {n} unused materials",
         report_key="unused_materials",
         actions=("select", "fix"),
-        fix_fn="panel.fix_unused_materials",
+        fix_fn="fixes.fix_unused_materials",
     ),
     CheckEntry(
         check_id="names",
@@ -194,7 +194,7 @@ CHECK_REGISTRY = [
         preflight_template="  {n} FPS/range issues",
         report_key="fps_range",
         actions=("info", "fix"),
-        fix_fn="panel.fix_fps_range",
+        fix_fn="fixes.fix_fps_range",
         fix_scope="document",
     ),
     CheckEntry(
@@ -278,6 +278,8 @@ def resolve_function(fn_ref, panel_module=None):
         module = import_module("sentinel.checks.scene")
     elif source == "render":
         module = import_module("sentinel.checks.render")
+    elif source == "fixes":
+        module = import_module("sentinel.fixes")
     elif source == "assets":
         module = import_module("sentinel.checks.assets")
     elif source == "safe_areas":
