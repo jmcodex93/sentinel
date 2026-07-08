@@ -16,6 +16,8 @@ def _entry(CheckEntry, check_id):
         structured_fn="scene.check_lights",
         legacy_fn="scene.check_lights",
         preflight_template="  {n} fake issues",
+        report_key=check_id,
+        actions=("select",),
     )
 
 
@@ -189,7 +191,7 @@ def test_mixed_baseline_score_and_row_rendering_semantics(sentinel_module):
 
     assert summary["counts"]["names"] == 1
     assert summary["accepted_counts"]["names"] == 2
-    assert sentinel_module.format_baseline_row_message(1, 2) == "1 nuevas (2 aceptadas)"
+    assert sentinel_module.format_baseline_row_message(1, 2) == "1 new (2 accepted)"
 
 
 def test_invalid_baseline_sidecar_uses_legacy_score_with_visible_status(sentinel_module, tmp_path):
@@ -206,4 +208,4 @@ def test_invalid_baseline_sidecar_uses_legacy_score_with_visible_status(sentinel
     assert summary["counts"]["names"] == 1
     assert summary["baseline_status"] == "invalid"
     assert summary["baseline_path"] == str(baseline_path)
-    assert "baseline ilegible" in summary["baseline_warning"]
+    assert "baseline unreadable" in summary["baseline_warning"]

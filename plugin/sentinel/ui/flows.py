@@ -1,0 +1,854 @@
+# -*- coding: utf-8 -*-
+"""UI-orchestration flows for Sentinel (Phase 4 extraction from ui/panel.py).
+
+These functions legitimately open dialogs and drive multi-step workflows
+(smart save version, quality gate, scene collector, snapshot save). They sit
+in the ui/ layer: they may import engine modules, sentinel.ui.dialogs and
+sentinel.ui.user_areas, but must NOT import sentinel.ui.panel (avoids a cycle).
+"""
+import c4d
+import os
+import json
+import sys
+
+from sentinel import baseline
+from sentinel import gate as quality_gate
+from sentinel import PLUGIN_NAME
+from sentinel.common.cache import check_cache
+from sentinel.common.constants import MAX_OBJECTS_PER_CHECK
+from sentinel.common.helpers import _iter_objs, open_in_explorer, safe_print
+from sentinel.common.settings import GlobalSettings
+from sentinel.checks.scene import _is_light_obj
+from sentinel.fixes import apply_fixes
+from sentinel.qc.registry import CHECK_REGISTRY, resolve_function
+from sentinel.qc.results import material_identity, object_identity
+from sentinel.qc.score import compute_score, run_all_checks
+from sentinel.ui.reports import build_baseline_artifact_details
+from sentinel.rules import get_active_rules
+from sentinel.snapshots import (
+    _convert_exr_to_png,
+    _find_latest_exr,
+    _get_stills_dir,
+)
+from sentinel.versioning import (
+    _sanitize_status,
+    append_history_entry,
+    build_versioned_filename,
+    compute_next_version,
+    get_history_path,
+    parse_version_filename,
+)
+from sentinel.notes import get_notes_path, load_notes, summarize_notes
+from sentinel.ui.dialogs import GateTriageDialog
+from sentinel.ui.user_areas import _accepted_entry_payload
+
+
+# ---- Rules/path helpers (private copies; panel keeps its own — no cycle) ----
+def _doc_path_for_rules(doc):
+    if doc is None:
+        return ""
+    try:
+        return doc.GetDocumentPath() or ""
+    except Exception:
+        return ""
+
+
+def _machine_rule_settings():
+    try:
+        return {"standard_fps": GlobalSettings.get_standard_fps()}
+    except Exception:
+        return {}
+
+
+def _active_rules_for_doc(doc):
+    return get_active_rules(_doc_path_for_rules(doc), _machine_rule_settings())
+
+
+def _doc_full_path(doc):
+    if not doc:
+        return ""
+    try:
+        doc_path = doc.GetDocumentPath() or ""
+        doc_name = doc.GetDocumentName() or ""
+    except Exception:
+        return ""
+    if not doc_path or not doc_name:
+        return ""
+    return os.path.join(doc_path, doc_name)
+
+
+def _baseline_path_for_doc(doc, only_existing=False):
+    path = baseline.get_baseline_path(_doc_full_path(doc))
+    if only_existing and (not path or not os.path.exists(path)):
+        return None
+    return path
+
+
+
+def get_scene_stats(doc):
+    """Get scene complexity statistics"""
+    cached = check_cache.get(doc, "stats")
+    if cached is not None:
+        return cached
+
+    stats = {"objects": 0, "polygons": 0, "materials": 0, "lights": 0}
+
+    try:
+        stats["materials"] = len(doc.GetMaterials() or [])
+
+        first = doc.GetFirstObject()
+        if first:
+            for obj in _iter_objs(first, MAX_OBJECTS_PER_CHECK):
+                if not obj:
+                    continue
+                stats["objects"] += 1
+                try:
+                    cache = obj.GetDeformCache() or obj.GetCache()
+                    target = cache if cache else obj
+                    if target.IsInstanceOf(c4d.Opolygon):
+                        stats["polygons"] += target.GetPolygonCount()
+                except Exception:
+                    pass
+                if _is_light_obj(obj):
+                    stats["lights"] += 1
+
+    except Exception as e:
+        safe_print(f"Error getting scene stats: {e}")
+
+    check_cache.set(doc, "stats", stats)
+    return stats
+
+
+
+def _current_module():
+    return sys.modules.get(__name__)
+
+
+def _build_qc_summary(doc):
+    """Run all QC checks (using cache) and return a compact summary dict."""
+    rules_context = _active_rules_for_doc(doc)
+    registry_results = run_all_checks(doc, _current_module(), rules_context)
+    baseline_path = _baseline_path_for_doc(doc, only_existing=True)
+    if baseline_path:
+        return compute_score(
+            registry_results,
+            rules_context,
+            baseline_path=baseline_path,
+            current_params=rules_context.params,
+        )
+    return compute_score(registry_results, rules_context)
+
+
+
+def _compute_gate_snapshot(doc, rules_context, doc_full_path):
+    """Compute the gate verdict through the baseline-aware recovered path."""
+    registry_results = run_all_checks(doc, _current_module(), rules_context)
+    path = baseline.get_baseline_path(doc_full_path)
+    baseline.merge_conflict_copies(path)
+    entries, status = baseline.load_baseline(path)
+    gate_entries = entries if status == baseline.STATUS_OK else []
+    score = compute_score(
+        registry_results,
+        rules_context,
+        baseline_entries=gate_entries,
+        current_params=getattr(rules_context, "params", {}),
+    )
+    gate_result = quality_gate.evaluate_gate(score, rules_context)
+    return {
+        "registry_results": registry_results,
+        "baseline_path": path,
+        "baseline_status": status,
+        "score": score,
+        "gate_result": gate_result,
+    }
+
+
+
+def _gate_new_violations(gate_result, check_id):
+    for bucket_name in ("fixable", "blocking", "advisory"):
+        for item in gate_result.get(bucket_name, []) or []:
+            if item.get("check_id") == check_id:
+                return list(item.get("violations") or [])
+    return []
+
+
+def _gate_new_counts(gate_result):
+    counts = {}
+    for bucket_name in ("fixable", "blocking", "advisory"):
+        for item in gate_result.get(bucket_name, []) or []:
+            counts[item.get("check_id")] = int(item.get("new_count") or 0)
+    return counts
+
+
+def _gate_fix_payload(check_id, registry_results, gate_result):
+    entry = next((e for e in CHECK_REGISTRY if e.check_id == check_id), None)
+    if entry is not None and entry.fix_scope == "document":
+        return {"check_id": check_id, "objects": []}
+
+    new_keys = {
+        quality_gate.identity_key(violation.get("identity"))
+        for violation in _gate_new_violations(gate_result, check_id)
+        if isinstance(violation, dict)
+    }
+    result_pair = (registry_results or {}).get(check_id, {}) or {}
+    legacy_objs = result_pair.get("legacy_result") or []
+    identity_fn = material_identity if check_id == "unused_mats" else object_identity
+    objs = quality_gate.filter_to_new(
+        legacy_objs,
+        new_keys,
+        identity_fn,
+        quality_gate.identity_key,
+    )
+    return {"check_id": check_id, "objects": objs}
+
+
+def _run_quality_gate(doc, rules_context, artist_name, doc_full_path):
+    """Run the modal quality gate. Returns a result dict or abort marker."""
+    snapshot = _compute_gate_snapshot(doc, rules_context, doc_full_path)
+    gate_result = snapshot["gate_result"]
+    gate_overrides = []
+    baseline_changed = False
+    disabled_fix_ids = set()
+    cap = len(gate_result.get("fixable") or [])
+    fix_iterations = 0
+
+    while not gate_result.get("passed"):
+        if fix_iterations >= cap:
+            disabled_fix_ids.update(
+                item.get("check_id")
+                for item in gate_result.get("fixable", []) or []
+                if item.get("check_id")
+            )
+
+        dlg = GateTriageDialog(
+            gate_result,
+            sidecar_invalid=(snapshot["baseline_status"] == baseline.STATUS_INVALID),
+            disabled_fix_ids=disabled_fix_ids,
+        )
+        try:
+            dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=620, defaulth=420)
+        except Exception as e:
+            safe_print(f"GateTriageDialog open error: {e}")
+            return {"proceed": False, "overrides": gate_overrides, "baseline_changed": baseline_changed}
+
+        if not dlg.proceed:
+            return {"proceed": False, "overrides": gate_overrides, "baseline_changed": baseline_changed}
+
+        previous_counts = _gate_new_counts(gate_result)
+        attempted_fix_ids = list(dlg.fixes or [])
+        fixes = [
+            _gate_fix_payload(check_id, snapshot["registry_results"], gate_result)
+            for check_id in attempted_fix_ids
+        ]
+        if attempted_fix_ids:
+            apply_fixes(doc, fixes)
+
+        path = snapshot["baseline_path"]
+        for check_id in dlg.baseline_accepts or []:
+            for violation in _gate_new_violations(gate_result, check_id):
+                acceptance = baseline.entry_from_violation(
+                    violation,
+                    artist_name,
+                    dlg.reason or "",
+                    current_params=getattr(rules_context, "params", {}),
+                )
+                if acceptance and baseline.add_acceptance(path, acceptance):
+                    baseline_changed = True
+
+        for check_id in dlg.overrides or []:
+            gate_overrides.extend(
+                quality_gate.build_override_records(
+                    _gate_new_violations(gate_result, check_id),
+                    artist_name,
+                    dlg.reason,
+                )
+            )
+
+        if baseline_changed or attempted_fix_ids:
+            check_cache.clear()
+            c4d.EventAdd()
+
+        if not attempted_fix_ids:
+            break
+
+        snapshot = _compute_gate_snapshot(doc, rules_context, doc_full_path)
+        gate_result = snapshot["gate_result"]
+        current_counts = _gate_new_counts(gate_result)
+        for check_id in attempted_fix_ids:
+            if current_counts.get(check_id, 0) >= previous_counts.get(check_id, 0):
+                disabled_fix_ids.add(check_id)
+        fix_iterations += 1
+
+    return {
+        "proceed": True,
+        "overrides": gate_overrides,
+        "baseline_changed": baseline_changed,
+        "baseline_path": snapshot.get("baseline_path"),
+    }
+
+
+
+
+
+def smart_save_version(doc, comment, run_qc=True, artist_name="", status=None):
+    """Save the document as a numbered version + append metadata to sidecar history.
+
+    Args:
+      status: optional review-status tag (e.g. 'TR', 'CR', 'FINAL', or any custom alphanumeric)
+              -> appears as suffix _<STATUS> in filename. None or '' = no suffix (WIP).
+
+    Returns a dict:
+      { 'success': bool,
+        'message': str,
+        'path': str (new file path on success),
+        'version': int (the version number written),
+        'status': str ('' if WIP),
+        'history_path': str,
+        'qc_summary': dict | None,
+      }
+    """
+    from datetime import datetime
+
+    result = {"success": False, "message": "", "path": None, "version": None,
+              "status": "", "history_path": None, "qc_summary": None}
+
+    if not doc:
+        result["message"] = "No active document"
+        return result
+
+    doc_path = doc.GetDocumentPath() or ""
+    doc_name = doc.GetDocumentName() or ""
+
+    # Sanitize status — uppercase alphanumeric only
+    clean_status = _sanitize_status(status) if status else ""
+
+    # ── Resolve target folder + base name ──
+    if not doc_path:
+        # First-time save: ask the user where to put the scene
+        suggested_base = os.path.splitext(doc_name)[0] if doc_name else "scene"
+        suggested_base, _v, _s = parse_version_filename(suggested_base)
+        if not suggested_base or suggested_base.lower().startswith("untitled"):
+            suggested_base = "scene"
+        suggested_filename = build_versioned_filename(suggested_base, 1, status=clean_status)
+
+        save_path = None
+        try:
+            save_path = c4d.storage.SaveDialog(
+                title="Save Versioned Scene (will be saved as scene_vNNN.c4d)",
+                force_suffix="c4d",
+                def_file=suggested_filename,
+            )
+        except TypeError:
+            save_path = c4d.storage.SaveDialog(
+                title="Save Versioned Scene",
+                force_suffix="c4d",
+            )
+
+        if not save_path:
+            result["message"] = "Save cancelled by user"
+            return result
+
+        folder = os.path.dirname(save_path)
+        chosen_name = os.path.splitext(os.path.basename(save_path))[0]
+        base, _user_ver, _user_status = parse_version_filename(chosen_name)
+        if not base:
+            base = "scene"
+        next_version = 1  # always start fresh from v001 when first saving
+    else:
+        folder = doc_path
+        full_doc_path = os.path.join(folder, doc_name) if doc_name else folder
+        base, next_version = compute_next_version(full_doc_path)
+        if not base:
+            base = os.path.splitext(doc_name or "scene")[0] or "scene"
+
+    # ── Build new filename + full path ──
+    new_filename = build_versioned_filename(base, next_version, status=clean_status)
+    new_path = os.path.join(folder, new_filename)
+
+    # Refuse to overwrite an existing file (defensive — should not happen)
+    if os.path.exists(new_path):
+        result["message"] = f"Target already exists: {new_filename} (refusing to overwrite)"
+        return result
+
+    gate_overrides = []
+    rules_context = _active_rules_for_doc(doc)
+    if (
+        getattr(rules_context, "params", {}).get("gates_enabled", False)
+        and clean_status.upper() in ("TR", "CR", "FINAL")
+    ):
+        gate_result = _run_quality_gate(doc, rules_context, artist_name, new_path)
+        if not gate_result.get("proceed"):
+            result["message"] = "Quality gate cancelled"
+            return result
+        gate_overrides = list(gate_result.get("overrides") or [])
+
+    # ── Capture metadata BEFORE saving (so QC reflects pre-save state) ──
+    qc_summary = _build_qc_summary(doc) if run_qc else None
+    stats = get_scene_stats(doc) or {}
+    active_take = ""
+    try:
+        td = doc.GetTakeData()
+        if td:
+            cur = td.GetCurrentTake()
+            if cur:
+                active_take = cur.GetName() or ""
+    except Exception:
+        pass
+
+    # ── Save the document ──
+    try:
+        ok = c4d.documents.SaveDocument(
+            doc,
+            new_path,
+            c4d.SAVEDOCUMENTFLAGS_NONE,
+            c4d.FORMAT_C4DEXPORT,
+        )
+        if not ok:
+            result["message"] = f"SaveDocument returned False (path: {new_path})"
+            return result
+    except Exception as e:
+        result["message"] = f"Save error: {e}"
+        return result
+
+    # ── Update the active document's path/name so C4D's title bar + future
+    # saves reflect the new versioned file (SaveDocument doesn't always
+    # propagate this in C4D 2026). ──
+    try:
+        doc.SetDocumentPath(os.path.dirname(new_path))
+        doc.SetDocumentName(os.path.basename(new_path))
+        c4d.EventAdd()
+    except Exception as e:
+        safe_print(f"Could not update document path metadata: {e}")
+
+    # ── Append history entry ──
+    history_path = get_history_path(new_path)
+    entry = {
+        "version": next_version,
+        "filename": new_filename,
+        "path": new_path,
+        "status": clean_status,           # NEW: review status tag
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "artist": artist_name or "",
+        "comment": (comment or "").strip(),
+        "active_take": active_take,
+        "scene": base,
+        "stats": stats,
+    }
+    if qc_summary:
+        entry["qc_score"] = qc_summary["score"]
+        entry["qc_pass"] = qc_summary["pass"]
+        entry["qc_counts"] = qc_summary["counts"]
+        if qc_summary.get("schema") == 2:
+            entry["schema"] = 2
+            entry["passed"] = qc_summary["passed"]
+            entry["total"] = qc_summary["total"]
+            entry["new"] = qc_summary.get("new", sum(qc_summary.get("counts", {}).values()))
+            entry["accepted"] = qc_summary.get("accepted", 0)
+            entry["qc_baseline"] = build_baseline_artifact_details(qc_summary)
+        entry["disabled_checks"] = list(qc_summary.get("disabled", []) or [])
+    if gate_overrides:
+        entry["gate_overrides"] = gate_overrides
+
+    appended = append_history_entry(history_path, entry)
+
+    result.update({
+        "success": True,
+        "message": f"Saved {new_filename}" + (" (history updated)" if appended else " (history write failed)"),
+        "path": new_path,
+        "version": next_version,
+        "status": clean_status,
+        "history_path": history_path,
+        "qc_summary": qc_summary,
+    })
+    return result
+
+
+
+def collect_scene(doc, artist_name):
+    """Pre-flight QC + Save Project with Assets + Verify + Manifest"""
+    from datetime import datetime
+
+    if not doc:
+        c4d.gui.MessageDialog("No active document!")
+        return
+
+    doc_path = doc.GetDocumentPath()
+    if not doc_path:
+        c4d.gui.MessageDialog("Please save the scene first before collecting.")
+        return
+
+    original_full_path = _doc_full_path(doc)
+
+    # Capture original metadata BEFORE SaveProject runs — SaveProject changes
+    # the doc's path/name to the delivery folder, losing the original identity.
+    original_doc_name = doc.GetDocumentName() or "scene.c4d"
+    original_name_no_ext = os.path.splitext(original_doc_name)[0]
+    original_base, original_version_int, original_status = parse_version_filename(original_name_no_ext)
+    if not original_base:
+        original_base = original_name_no_ext
+    # The "clean" delivery name strips _v###[_status] — pure scene identity.
+    delivery_filename = f"{original_base}.c4d"
+
+    # Capture the notes sidecar path/data BEFORE SaveProject so we don't lose them.
+    original_notes_path = get_notes_path(doc)
+    original_notes_data = None
+    if original_notes_path and os.path.exists(original_notes_path):
+        try:
+            original_notes_data = load_notes(original_notes_path)
+        except Exception as e:
+            safe_print(f"Scene Collector: Could not pre-load notes: {e}")
+
+    original_baseline_path = _baseline_path_for_doc(doc, only_existing=True)
+    original_baseline_entries = []
+    if original_baseline_path:
+        entries, status = baseline.load_baseline(original_baseline_path)
+        if status == baseline.STATUS_OK:
+            original_baseline_entries = entries
+        else:
+            safe_print(f"Scene Collector: baseline sidecar not loaded ({status})")
+
+    # ── Phase 1: Pre-flight QC ──
+    safe_print("Scene Collector: Running pre-flight checks...")
+
+    issues = []
+    rules_context = _active_rules_for_doc(doc)
+    registry_results = run_all_checks(doc, _current_module(), rules_context)
+    baseline_path = _baseline_path_for_doc(doc, only_existing=True)
+    if baseline_path:
+        preflight_score = compute_score(
+            registry_results,
+            rules_context,
+            baseline_path=baseline_path,
+            current_params=rules_context.params,
+        )
+    else:
+        preflight_score = compute_score(registry_results, rules_context)
+    legacy_by_id = {
+        check_id: pair.get("legacy_result")
+        for check_id, pair in registry_results.items()
+    }
+    preflight_entries = sorted(
+        enumerate(CHECK_REGISTRY),
+        key=lambda item: (
+            item[1].preflight_order
+            if item[1].preflight_order is not None
+            else item[0]
+        ),
+    )
+    for _idx, entry in preflight_entries:
+        count = preflight_score["counts"].get(entry.check_id, 0)
+        if count:
+            issues.append(entry.preflight_template.format(n=count))
+
+    # Show pre-flight results
+    if issues:
+        msg = f"PRE-FLIGHT: {len(issues)} issue(s) found\n\n"
+        msg += "\n".join(issues)
+        msg += "\n\nFix issues before collecting?"
+        msg += "\n\nYes = Fix auto-fixable issues, then collect"
+        msg += "\nNo = Collect anyway"
+
+        # 3-way: fix + collect, collect anyway, cancel
+        result = c4d.gui.MessageDialog(msg, c4d.GEMB_YESNOCANCEL)
+        if result == c4d.GEMB_R_CANCEL:
+            safe_print("Scene Collector: Cancelled")
+            return
+        if result == c4d.GEMB_R_YES:
+            # Auto-fix what we can — object-scoped fixable checks resolved through
+            # the registry. Document-scoped fixes (fps_range) take no object list
+            # and were never auto-fixed by the collector.
+            fixed = 0
+            for entry in CHECK_REGISTRY:
+                if not entry.has_fix or entry.fix_scope != "objects":
+                    continue
+                objs = legacy_by_id.get(entry.check_id) or []
+                if not objs:
+                    continue
+                fix_fn = resolve_function(entry.fix_fn, _current_module())
+                fixed += fix_fn(doc, objs)
+            safe_print(f"Scene Collector: Auto-fixed {fixed} issues")
+    else:
+        if not c4d.gui.QuestionDialog("Pre-flight: All checks passed!\n\nProceed with Save Project with Assets?"):
+            return
+
+    gate_overrides = []
+    gate_evaluated = False
+    if getattr(rules_context, "params", {}).get("gates_enabled", False):
+        gate_evaluated = True
+        gate_result = _run_quality_gate(doc, rules_context, artist_name, original_full_path)
+        if not gate_result.get("proceed"):
+            safe_print("Scene Collector: Quality gate cancelled")
+            return
+        gate_overrides = list(gate_result.get("overrides") or [])
+        if gate_result.get("baseline_changed"):
+            refreshed_path = gate_result.get("baseline_path") or baseline.get_baseline_path(original_full_path)
+            refreshed_entries, refreshed_status = baseline.load_baseline(refreshed_path)
+            if refreshed_status == baseline.STATUS_OK:
+                original_baseline_path = refreshed_path
+                original_baseline_entries = refreshed_entries
+
+    # ── Phase 2: Collect via C4D native ──
+    safe_print("Scene Collector: Running Save Project with Assets...")
+
+    target_dir = c4d.storage.LoadDialog(
+        title="Select folder to collect project into",
+        flags=c4d.FILESELECT_DIRECTORY
+    )
+    if not target_dir:
+        safe_print("Scene Collector: No folder selected")
+        return
+
+    assets = []
+    missing_assets = []
+
+    try:
+        flags = (c4d.SAVEPROJECT_ASSETS |
+                 c4d.SAVEPROJECT_SCENEFILE |
+                 c4d.SAVEPROJECT_PROGRESSALLOWED |
+                 c4d.SAVEPROJECT_DONTFAILONMISSINGASSETS)
+
+        result = c4d.documents.SaveProject(doc, flags, target_dir, assets, missing_assets)
+
+        if not result:
+            c4d.gui.MessageDialog("Save Project failed!\n\nCheck console for details.")
+            safe_print("Scene Collector: SaveProject returned False")
+            return
+
+    except Exception as e:
+        c4d.gui.MessageDialog(f"Save Project error:\n{e}")
+        safe_print(f"Scene Collector error: {e}")
+        return
+
+    safe_print(f"Scene Collector: Collected {len(assets)} assets")
+    if missing_assets:
+        safe_print(f"Scene Collector: {len(missing_assets)} missing assets!")
+
+    # ── Phase 2.5: Rename the saved file to the clean delivery name ──
+    # C4D's SaveProject saves to <target_dir>/<folder_basename>.c4d. We rename
+    # it to the clean original scene base (stripped of _v### suffix) so the
+    # delivery has a clean identity matching the notes sidecar naming.
+    saved_folder_basename = os.path.basename(target_dir.rstrip(os.sep)) + ".c4d"
+    saved_at = os.path.join(target_dir, saved_folder_basename)
+    desired_at = os.path.join(target_dir, delivery_filename)
+
+    if saved_at != desired_at:
+        if os.path.exists(saved_at):
+            try:
+                if os.path.exists(desired_at):
+                    # Defensive: refuse to overwrite an existing file
+                    safe_print(f"Scene Collector: refused to overwrite existing {delivery_filename}")
+                else:
+                    os.rename(saved_at, desired_at)
+                    safe_print(f"Scene Collector: Renamed {saved_folder_basename} -> {delivery_filename}")
+                    # Update the active doc's identity so the panel + future Cmd+S
+                    # reflect the renamed file
+                    try:
+                        doc.SetDocumentPath(target_dir)
+                        doc.SetDocumentName(delivery_filename)
+                        c4d.EventAdd()
+                    except Exception as e:
+                        safe_print(f"Scene Collector: Could not update doc metadata: {e}")
+            except Exception as e:
+                safe_print(f"Scene Collector: Could not rename to delivery name: {e}")
+        else:
+            safe_print(f"Scene Collector: expected file {saved_folder_basename} not found after SaveProject")
+
+    # ── Phase 3: Generate manifest ──
+    safe_print("Scene Collector: Generating manifest...")
+
+    manifest = {
+        "sentinel_manifest": True,
+        "version": PLUGIN_NAME,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        # Delivery identity (clean name, what the receiver sees)
+        "scene": delivery_filename,
+        # Original version metadata (traceability — where this came from)
+        "original_filename": original_doc_name,
+        "original_version": original_version_int,
+        "original_status": (original_status or ""),
+        "artist": artist_name or "",
+        "shot_id": "",
+        "collected_to": target_dir,
+        "assets_collected": len(assets),
+        "assets_missing": len(missing_assets),
+        "missing_list": [],
+        "pre_flight_issues": issues,
+    }
+    if gate_evaluated:
+        manifest["gate_overrides"] = gate_overrides
+    baseline_collection_active = bool(original_baseline_path)
+    rules_collection_active = bool(rules_context.rules_path)
+    if rules_collection_active:
+        manifest["ruleset"] = {
+            "source": rules_context.source,
+            "path": rules_context.rules_path or "",
+            "identity": list(rules_context.identity or (None, None)),
+            "shadowed_paths": list(rules_context.shadowed_paths or []),
+            "warnings": list(rules_context.warnings or []),
+        }
+        manifest["qc"] = {
+            "score": preflight_score.get("score", ""),
+            "passed": preflight_score.get("passed", 0),
+            "total": preflight_score.get("total", 0),
+            "new": preflight_score.get("new", sum(preflight_score.get("counts", {}).values())),
+            "accepted": preflight_score.get("accepted", 0),
+            "stale": preflight_score.get("stale", 0),
+            "schema": preflight_score.get("schema", 2),
+            "disabled_checks": list(preflight_score.get("disabled", []) or []),
+            "disabled_count": preflight_score.get("disabled_count", 0),
+            "checks": build_baseline_artifact_details(preflight_score),
+        }
+
+    # Get shot ID
+    try:
+        td = doc.GetTakeData()
+        if td:
+            main_take = td.GetMainTake()
+            if main_take:
+                manifest["shot_id"] = main_take.GetName() or ""
+    except Exception:
+        pass
+
+    # Log missing assets
+    for m in missing_assets:
+        try:
+            manifest["missing_list"].append(str(m))
+        except Exception:
+            pass
+
+    # Calculate total size
+    total_size = 0
+    for a in assets:
+        try:
+            filepath = str(a.get("filename", ""))
+            if filepath and os.path.exists(filepath):
+                total_size += os.path.getsize(filepath)
+        except Exception:
+            pass
+    manifest["total_size_mb"] = round(total_size / (1024 * 1024), 1)
+
+    # ── Include scene notes + TODOs in manifest (and copy sidecar to delivery) ──
+    # Uses original_notes_path/data captured before SaveProject moved the doc.
+    if original_notes_data is not None:
+        manifest["notes"] = {
+            "summary": summarize_notes(original_notes_data),
+            "text": original_notes_data.get("notes", "") or "",
+            "todos": original_notes_data.get("todos", []) or [],
+            "pending_count": sum(1 for t in (original_notes_data.get("todos") or []) if not t.get("done")),
+            "updated": original_notes_data.get("updated", ""),
+        }
+        # Also copy the sidecar file alongside the .c4d so it travels with delivery
+        if original_notes_path:
+            try:
+                import shutil
+                shutil.copy2(original_notes_path, target_dir)
+                safe_print(f"Scene Collector: Notes sidecar copied to delivery: {os.path.basename(original_notes_path)}")
+            except Exception as e:
+                safe_print(f"Scene Collector: Could not copy notes sidecar: {e}")
+    else:
+        manifest["notes"] = {"summary": "Notes: empty", "text": "", "todos": [], "pending_count": 0}
+
+    if baseline_collection_active and original_baseline_entries:
+        manifest["baseline"] = {
+            "sidecar": os.path.basename(original_baseline_path),
+            "acceptances": [
+                _accepted_entry_payload(entry)
+                for entry in original_baseline_entries
+            ],
+        }
+        try:
+            import shutil
+            shutil.copy2(original_baseline_path, target_dir)
+            safe_print(f"Scene Collector: Baseline sidecar copied to delivery: {os.path.basename(original_baseline_path)}")
+        except Exception as e:
+            safe_print(f"Scene Collector: Could not copy baseline sidecar: {e}")
+    else:
+        if baseline_collection_active:
+            manifest["baseline"] = {"sidecar": os.path.basename(original_baseline_path or ""), "acceptances": []}
+
+    if rules_collection_active:
+        try:
+            import shutil
+            copied_rules_path = os.path.join(target_dir, "sentinel_rules.json")
+            shutil.copy2(rules_context.rules_path, copied_rules_path)
+            manifest["ruleset"]["copied_to"] = copied_rules_path
+            safe_print("Scene Collector: effective sentinel_rules.json copied to delivery")
+        except Exception as e:
+            manifest["ruleset"]["copy_error"] = str(e)
+            safe_print(f"Scene Collector: Could not copy sentinel_rules.json: {e}")
+
+    # Save manifest
+    manifest_path = os.path.join(target_dir, "sentinel_manifest.json")
+    try:
+        with open(manifest_path, 'w') as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
+        safe_print(f"Scene Collector: Manifest saved to {manifest_path}")
+    except Exception as e:
+        safe_print(f"Scene Collector: Could not save manifest: {e}")
+
+    # ── Summary ──
+    msg = f"Scene Collected!\n\n"
+    msg += f"Location: {target_dir}\n"
+    msg += f"Assets: {len(assets)} collected"
+    if missing_assets:
+        msg += f"\nMissing: {len(missing_assets)} (check manifest)"
+    msg += f"\nSize: {manifest['total_size_mb']} MB"
+    msg += f"\nManifest: sentinel_manifest.json"
+    notes_pending = manifest.get("notes", {}).get("pending_count", 0)
+    if notes_pending:
+        msg += f"\n⚠ {notes_pending} pending TODO(s) in scene notes"
+
+    c4d.gui.MessageDialog(msg)
+    safe_print("Scene Collector: Complete")
+
+
+
+def snapshot_save_still(doc, artist_name):
+    """Main entry point: find latest EXR, convert with ACES, save to project"""
+    if not artist_name:
+        c4d.gui.MessageDialog("Please set your artist name first!")
+        return
+
+    # Find latest EXR
+    exr_path, error = _find_latest_exr()
+    if not exr_path:
+        c4d.gui.MessageDialog(error)
+        return
+
+    # Build output path
+    output_dir = _get_stills_dir(doc, artist_name)
+    doc_name = doc.GetDocumentName() or "untitled"
+    scene_name = os.path.splitext(doc_name)[0]
+    png_path = os.path.join(output_dir, f"{scene_name}.png")
+
+    safe_print(f"Converting {os.path.basename(exr_path)} -> {png_path}")
+
+    # Convert
+    success, error = _convert_exr_to_png(exr_path, png_path)
+    if not success:
+        c4d.gui.MessageDialog(f"Conversion failed:\n{error}")
+        return
+
+    # Show in Picture Viewer
+    bmp = c4d.bitmaps.BaseBitmap()
+    if bmp.InitWith(png_path)[0] == c4d.IMAGERESULT_OK:
+        c4d.bitmaps.ShowBitmap(bmp)
+        w, h = bmp.GetBw(), bmp.GetBh()
+        c4d.gui.MessageDialog(f"Still saved!\n\nFile: {os.path.basename(png_path)}\nResolution: {w}x{h}\nFolder: {output_dir}")
+    else:
+        c4d.gui.MessageDialog(f"Still saved!\n\n{png_path}")
+
+    safe_print(f"Still saved: {png_path}")
+
+
+def snapshot_open_folder(doc, artist_name):
+    """Open the artist's stills folder"""
+    if not artist_name:
+        c4d.gui.MessageDialog("Please set your artist name first!")
+        return
+    output_dir = _get_stills_dir(doc, artist_name)
+    if os.path.exists(output_dir):
+        open_in_explorer(output_dir)
+    else:
+        c4d.gui.MessageDialog(f"Folder not found:\n{output_dir}")
+

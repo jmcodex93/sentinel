@@ -54,6 +54,9 @@ DEFAULT_OBJECT_NAMES = (
     "physical sky",
 )
 
+# C4D core message id for a take-change event (empirically observed; not in the SDK symbols).
+EVMSG_TAKECHANGED = 431000159
+
 # Performance settings for watcher
 MAX_OBJECTS_PER_CHECK = 1000  # Process in chunks
 CACHE_DURATION = 2.0  # Cache results for 2 seconds (optimized for performance)

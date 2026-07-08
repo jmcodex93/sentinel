@@ -263,16 +263,16 @@ class BaselineActionDialog(gui.GeDialog):
 
     def _items_text(self):
         if not self.new_items:
-            return "No hay violaciones nuevas para aceptar."
-        lines = [f"Se aceptaran {len(self.new_items)} violacion(es) nueva(s):", ""]
+            return "No new violations to accept."
+        lines = [f"Accepting {len(self.new_items)} new violation(s):", ""]
         for index, item in enumerate(self.new_items[:20], 1):
             lines.append(f"{index}. {_violation_label(item)}")
         if len(self.new_items) > 20:
-            lines.append(f"... y {len(self.new_items) - 20} mas")
+            lines.append(f"... and {len(self.new_items) - 20} more")
         if self.accepted_count or self.stale_count:
             lines.append("")
-            lines.append(f"Aceptadas actuales: {self.accepted_count}")
-            lines.append(f"Obsoletas: {self.stale_count}")
+            lines.append(f"Currently accepted: {self.accepted_count}")
+            lines.append(f"Stale: {self.stale_count}")
         return "\n".join(lines)
 
     def CreateLayout(self):
@@ -291,14 +291,14 @@ class BaselineActionDialog(gui.GeDialog):
             multiline_flags,
         )
         self.AddSeparatorH(6)
-        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Reason (required for Aceptar):", 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Reason (required for Accept):", 0)
         self.AddEditText(self.EDT_REASON, c4d.BFH_SCALEFIT, 0, 0)
         self.AddSeparatorH(8)
         self.GroupBegin(0, c4d.BFH_RIGHT, 3, 0)
         self.GroupSpace(6, 0)
         self.AddButton(self.BTN_CANCEL, c4d.BFH_RIGHT, 90, 0, "Cancel")
-        self.AddButton(self.BTN_RETIRE, c4d.BFH_RIGHT, 150, 0, "Retirar aceptaciones")
-        self.AddButton(self.BTN_ACCEPT, c4d.BFH_RIGHT, 100, 0, "Aceptar")
+        self.AddButton(self.BTN_RETIRE, c4d.BFH_RIGHT, 150, 0, "Retire acceptances")
+        self.AddButton(self.BTN_ACCEPT, c4d.BFH_RIGHT, 100, 0, "Accept")
         self.GroupEnd()
         self.GroupEnd()
         return True
@@ -326,7 +326,7 @@ class BaselineActionDialog(gui.GeDialog):
             if not reason:
                 c4d.gui.MessageDialog("Reason is required before accepting baseline violations.")
                 return True
-            confirm = self._items_text() + f"\n\nReason:\n{reason}\n\nAceptar estas violaciones?"
+            confirm = self._items_text() + f"\n\nReason:\n{reason}\n\nAccept these violations?"
             if not c4d.gui.QuestionDialog(confirm):
                 return True
             self.reason = reason
@@ -335,8 +335,8 @@ class BaselineActionDialog(gui.GeDialog):
             return True
         if cid == self.BTN_RETIRE:
             if not c4d.gui.QuestionDialog(
-                f"Retirar todas las aceptaciones de {self.row_label}?\n\n"
-                "El check volvera a contar esas violaciones como nuevas."
+                f"Retire all acceptances for {self.row_label}?\n\n"
+                "The check will count those violations as new again."
             ):
                 return True
             self.action = "retire"
@@ -408,7 +408,7 @@ class GateTriageDialog(gui.GeDialog):
                 c4d.BFH_SCALEFIT,
                 0,
                 0,
-                "Fix no resolvio esta violacion - requiere anular o aceptar en baseline",
+                "Fix did not resolve this violation - requires override or accept into baseline",
                 0,
             )
             self.GroupEnd()
@@ -416,16 +416,16 @@ class GateTriageDialog(gui.GeDialog):
             self.GroupBegin(0, c4d.BFH_SCALEFIT, 4, 0)
             self.GroupSpace(8, 0)
             self.AddStaticText(0, c4d.BFH_LEFT, 90, 0, check_id, 0)
-            self.AddCheckbox(self._override_id(index), c4d.BFH_LEFT, 90, 0, "Anular")
-            self.AddCheckbox(self._baseline_id(index), c4d.BFH_LEFT, 150, 0, "Aceptar en baseline")
+            self.AddCheckbox(self._override_id(index), c4d.BFH_LEFT, 90, 0, "Override")
+            self.AddCheckbox(self._baseline_id(index), c4d.BFH_LEFT, 150, 0, "Accept into baseline")
             self.GroupEnd()
 
     def _add_blocking_row(self, item, index):
         self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0, self._label_for_item(item), 0)
         self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
         self.GroupSpace(8, 0)
-        self.AddCheckbox(self._override_id(index), c4d.BFH_LEFT, 90, 0, "Anular")
-        self.AddCheckbox(self._baseline_id(index), c4d.BFH_LEFT, 170, 0, "Aceptar en baseline")
+        self.AddCheckbox(self._override_id(index), c4d.BFH_LEFT, 90, 0, "Override")
+        self.AddCheckbox(self._baseline_id(index), c4d.BFH_LEFT, 170, 0, "Accept into baseline")
         self.GroupEnd()
 
     def _add_advisory_row(self, item):
@@ -447,26 +447,26 @@ class GateTriageDialog(gui.GeDialog):
 
         row_index = 0
         if self.fixable_items:
-            self._add_section_header("Corregible")
+            self._add_section_header("Fixable")
             for item in self.fixable_items:
                 self._row_order.append((row_index, item))
                 self._add_fixable_row(item, row_index)
                 row_index += 1
 
         if self.blocking_items:
-            self._add_section_header("Bloqueante")
+            self._add_section_header("Blocking")
             for item in self.blocking_items:
                 self._row_order.append((row_index, item))
                 self._add_blocking_row(item, row_index)
                 row_index += 1
 
         if self.advisory_items:
-            self._add_section_header("Aviso")
+            self._add_section_header("Advisory")
             for item in self.advisory_items:
                 self._add_advisory_row(item)
 
         self.AddSeparatorH(6)
-        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Motivo compartido para anulaciones:", 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "Shared reason for overrides:", 0)
         self.AddEditText(GateTriageIds.EDT_REASON, c4d.BFH_SCALEFIT, 0, 0)
 
         self.AddSeparatorH(8)

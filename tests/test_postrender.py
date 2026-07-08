@@ -465,6 +465,15 @@ def test_render_history_path_strips_version_status():
     )
 
 
+def test_render_history_target_delegates_to_versioning():
+    # The per-scene sidecar path has a single owner (versioning.render_history_path);
+    # postrender's file-path branch must produce the identical result.
+    for doc_path in ("/show/robot_v007_TR.c4d", "/show/robot_010_v001.c4d"):
+        assert postrender._render_history_target(doc_path) == (
+            versioning.render_history_path(doc_path)
+        )
+
+
 def test_audit_manifest_missing_direct_aov_warns_but_multipart_does_not(tmp_path):
     folder = tmp_path / "missing_aov"
     for frame in (1001, 1002):
