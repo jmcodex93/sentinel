@@ -1468,7 +1468,7 @@ class YSPanel(gui.GeDialog):
 
             msg = f"Unused material [{self._unused_mats_idx + 1}/{len(self._unused_mats_bad)}]: '{mat.GetName()}'"
             safe_print(msg)
-            c4d.StatusSetText(msg)
+            c4d.gui.StatusSetText(msg)
             self._unused_mats_idx += 1
         else:
             safe_print("No unused materials found")
@@ -1484,7 +1484,7 @@ class YSPanel(gui.GeDialog):
 
             msg = f"Default name [{self._names_idx + 1}/{len(self._names_bad)}]: '{obj.GetName()}'"
             safe_print(msg)
-            c4d.StatusSetText(msg)
+            c4d.gui.StatusSetText(msg)
             self._names_idx += 1
         else:
             safe_print("No naming issues found")
@@ -1571,7 +1571,7 @@ class YSPanel(gui.GeDialog):
             count = fix_lights(doc, self._lights_bad)
             msg = f"Moved {count} light(s) into 'lights' group"
             safe_print(msg)
-            c4d.StatusSetText(msg)
+            c4d.gui.StatusSetText(msg)
         else:
             safe_print("No light issues to fix")
 
@@ -1581,7 +1581,7 @@ class YSPanel(gui.GeDialog):
             count = fix_camera_shift(doc, self._cam_bad)
             msg = f"Reset shift to 0 on {count} camera(s)"
             safe_print(msg)
-            c4d.StatusSetText(msg)
+            c4d.gui.StatusSetText(msg)
         else:
             safe_print("No camera shift issues to fix")
 
@@ -1593,7 +1593,7 @@ class YSPanel(gui.GeDialog):
                 deleted = fix_unused_materials(doc, self._unused_mats_bad)
                 msg = f"Deleted {deleted} unused material(s)"
                 safe_print(msg)
-                c4d.StatusSetText(msg)
+                c4d.gui.StatusSetText(msg)
                 self._unused_mats_idx = 0
         else:
             safe_print("No unused materials to delete")
