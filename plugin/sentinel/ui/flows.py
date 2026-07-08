@@ -17,14 +17,12 @@ from sentinel import PLUGIN_NAME
 from sentinel.common.cache import check_cache
 from sentinel.common.constants import MAX_OBJECTS_PER_CHECK
 from sentinel.common.helpers import _iter_objs, open_in_explorer, safe_print
-from sentinel.common.settings import GlobalSettings
 from sentinel.checks.scene import _is_light_obj
 from sentinel.fixes import apply_fixes
 from sentinel.qc.registry import CHECK_REGISTRY, resolve_function
 from sentinel.qc.results import material_identity, object_identity
 from sentinel.qc.score import compute_score, run_all_checks
 from sentinel.ui.reports import build_baseline_artifact_details
-from sentinel.rules import get_active_rules
 from sentinel.snapshots import (
     _convert_exr_to_png,
     _find_latest_exr,
@@ -44,24 +42,7 @@ from sentinel.ui.user_areas import _accepted_entry_payload
 
 
 # ---- Rules/path helpers (private copies; panel keeps its own — no cycle) ----
-def _doc_path_for_rules(doc):
-    if doc is None:
-        return ""
-    try:
-        return doc.GetDocumentPath() or ""
-    except Exception:
-        return ""
-
-
-def _machine_rule_settings():
-    try:
-        return {"standard_fps": GlobalSettings.get_standard_fps()}
-    except Exception:
-        return {}
-
-
-def _active_rules_for_doc(doc):
-    return get_active_rules(_doc_path_for_rules(doc), _machine_rule_settings())
+from sentinel.rules_context import active_rules_for_doc as _active_rules_for_doc
 
 
 def _doc_full_path(doc):

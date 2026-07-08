@@ -14,24 +14,13 @@ from sentinel.qc.results import (
     param_identity,
     store_result as _store_result,
 )
-from sentinel.rules import get_active_rules
-
-
-def _doc_path_for_rules(doc):
-    try:
-        return doc.GetDocumentPath() or ""
-    except Exception:
-        return ""
-
-
-def _machine_rule_settings():
-    return {"standard_fps": GlobalSettings.get_standard_fps()}
+from sentinel.rules_context import active_rules_for_doc
 
 
 def _rules_context(doc, rules_context=None):
     if rules_context is not None:
         return rules_context
-    return get_active_rules(_doc_path_for_rules(doc), _machine_rule_settings())
+    return active_rules_for_doc(doc)
 
 
 def normalize_preset_name(name):

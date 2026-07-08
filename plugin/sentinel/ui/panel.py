@@ -91,12 +91,10 @@ from sentinel.checks.render import normalize_preset_name
 
 
 # Rules/path helpers moved to sentinel.ui.flows (shared by save/collect flows).
+from sentinel.rules_context import active_rules_for_doc as _active_rules_for_doc
 from sentinel.ui.flows import (
-    _active_rules_for_doc,
     _baseline_path_for_doc,
     _doc_full_path,
-    _doc_path_for_rules,
-    _machine_rule_settings,
 )
 
 
