@@ -8,14 +8,12 @@ import c4d
 from c4d import plugins
 
 from sentinel import framing
-from sentinel.common.settings import GlobalSettings
 from sentinel.multiformat import (
     MULTIFORMAT_DEFS,
     compute_format_output_path,
     generate_multiformat_takes,
     get_multiformat_def,
 )
-from sentinel.rules import get_active_rules
 from sentinel.safe_areas import (
     SAFE_AREA_INSETS,
     format_safe_area_in_master_ndc,
@@ -273,24 +271,7 @@ def _doc_from_node(node):
         return None
 
 
-def _doc_path_for_rules(doc):
-    if doc is None:
-        return ""
-    try:
-        return doc.GetDocumentPath() or ""
-    except Exception:
-        return ""
-
-
-def _machine_rule_settings():
-    try:
-        return {"standard_fps": GlobalSettings.get_standard_fps()}
-    except Exception:
-        return {}
-
-
-def _active_rules_for_doc(doc):
-    return get_active_rules(_doc_path_for_rules(doc), _machine_rule_settings())
+from sentinel.rules_context import active_rules_for_doc as _active_rules_for_doc
 
 
 def _is_main_thread():

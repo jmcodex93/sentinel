@@ -27,7 +27,6 @@ from sentinel.textures import (
     find_missing_texture_candidates,
     scan_all_texture_paths,
 )
-from sentinel.rules import get_active_rules
 
 from .ids import GateTriageIds
 from .user_areas import TextureListArea, TodoArea, _violation_label
@@ -71,24 +70,7 @@ def gate_dialog_can_proceed(blocking_items, fixable_items, decisions, reason):
     return True
 
 
-def _doc_path_for_rules(doc):
-    if doc is None:
-        return ""
-    try:
-        return doc.GetDocumentPath() or ""
-    except Exception:
-        return ""
-
-
-def _machine_rule_settings():
-    try:
-        return {"standard_fps": GlobalSettings.get_standard_fps()}
-    except Exception:
-        return {}
-
-
-def _active_rules_for_doc(doc):
-    return get_active_rules(_doc_path_for_rules(doc), _machine_rule_settings())
+from sentinel.rules_context import active_rules_for_doc as _active_rules_for_doc
 
 class SaveVersionDialog(gui.GeDialog):
     """Modal dialog: comment + run-QC + review status tag.

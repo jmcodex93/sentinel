@@ -15,6 +15,7 @@ from sentinel.qc.results import (
     store_result as _store_result,
 )
 from sentinel.rules import get_active_rules
+from sentinel.rules_context import doc_path_for_rules
 
 
 def _object_result(check_id, legacy_items_value, message, extras_builder=None):
@@ -434,17 +435,10 @@ def check_unused_materials(doc):
 _DEFAULT_NAMES = set(DEFAULT_OBJECT_NAMES)
 
 
-def _doc_path_for_rules(doc):
-    try:
-        return doc.GetDocumentPath() or ""
-    except Exception:
-        return ""
-
-
 def check_default_names(doc, rules_context=None):
     """Check for objects with default/generic names (Cube, Null, Sphere.1, etc.)"""
     if rules_context is None:
-        rules_context = get_active_rules(_doc_path_for_rules(doc))
+        rules_context = get_active_rules(doc_path_for_rules(doc))
     cached_result = _cached_result(doc, "names", _default_names_result)
     if cached_result is not None:
         return cached_result

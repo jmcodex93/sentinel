@@ -11,27 +11,7 @@ from sentinel.common.helpers import safe_print
 from sentinel.common.settings import GlobalSettings
 from sentinel.checks.render import normalize_preset_name
 from sentinel.qc.registry import CHECK_REGISTRY, resolve_function
-from sentinel.rules import get_active_rules
-
-
-def _doc_path_for_rules(doc):
-    if doc is None:
-        return ""
-    try:
-        return doc.GetDocumentPath() or ""
-    except Exception:
-        return ""
-
-
-def _machine_rule_settings():
-    try:
-        return {"standard_fps": GlobalSettings.get_standard_fps()}
-    except Exception:
-        return {}
-
-
-def _active_rules_for_doc(doc):
-    return get_active_rules(_doc_path_for_rules(doc), _machine_rule_settings())
+from sentinel.rules_context import active_rules_for_doc as _active_rules_for_doc
 
 
 def _fix_one_render_data(doc, rd, standard_fps, start_frame=1001):
