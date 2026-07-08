@@ -1566,27 +1566,34 @@ class YSPanel(gui.GeDialog):
         c4d.gui.MessageDialog(info_msg)
 
     def _qc_fix_lights(self, doc):
+        # Reversible, low-impact fix: status bar + console, no popup.
         if self._lights_bad:
             count = fix_lights(doc, self._lights_bad)
-            safe_print(f"Moved {count} lights into 'lights' group")
-            c4d.gui.MessageDialog(f"Moved {count} light(s) into 'lights' group.\n\nUndo available (Ctrl+Z).")
+            msg = f"Moved {count} light(s) into 'lights' group"
+            safe_print(msg)
+            c4d.StatusSetText(msg)
         else:
             safe_print("No light issues to fix")
 
     def _qc_fix_cam(self, doc):
+        # Reversible, low-impact fix: status bar + console, no popup.
         if self._cam_bad:
             count = fix_camera_shift(doc, self._cam_bad)
-            safe_print(f"Reset shift on {count} cameras")
-            c4d.gui.MessageDialog(f"Reset shift to 0 on {count} camera(s).\n\nUndo available (Ctrl+Z).")
+            msg = f"Reset shift to 0 on {count} camera(s)"
+            safe_print(msg)
+            c4d.StatusSetText(msg)
         else:
             safe_print("No camera shift issues to fix")
 
     def _qc_fix_unused_mats(self, doc):
+        # Destructive: keep the pre-confirm; report the result on the status bar.
         if self._unused_mats_bad:
             count = len(self._unused_mats_bad)
             if c4d.gui.QuestionDialog(f"Delete {count} unused material(s)?\n\nThis can be undone (Ctrl+Z)."):
                 deleted = fix_unused_materials(doc, self._unused_mats_bad)
-                safe_print(f"Deleted {deleted} unused materials")
+                msg = f"Deleted {deleted} unused material(s)"
+                safe_print(msg)
+                c4d.StatusSetText(msg)
                 self._unused_mats_idx = 0
         else:
             safe_print("No unused materials to delete")
