@@ -764,6 +764,7 @@ class SentinelSettingsDialog(gui.GeDialog):
     BTN_CANCEL = 1007
     BTN_SAVE = 1008
     LABEL_STANDARD_FPS = 1009
+    EDT_MV_MAX_MOTION = 1010
 
     # FPS choices in the combo
     FPS_OPTIONS = [24, 25, 30, 60]
@@ -795,7 +796,18 @@ class SentinelSettingsDialog(gui.GeDialog):
 
         self.AddStaticText(0, c4d.BFH_LEFT, 180, 0, "", 0)
         self.AddCheckbox(self.CHK_MULTIPART, c4d.BFH_LEFT, 0, 0,
-                         "Multi-Part EXR (default for new scenes)")
+                         "Multi-Part EXR default (applied when adding AOV tiers)")
+        # This is only the default used when Essentials/Production add AOVs. To
+        # change Multi-Part on the CURRENT scene, use the Render tab button.
+        self.AddStaticText(0, c4d.BFH_LEFT, 180, 0, "", 0)
+        self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0,
+                           "↳ change the current scene from the Render tab", 0)
+
+        # Motion Vectors Max Motion for the AE/RSMB path (0 = auto by render width).
+        # Compositor must set RSMB "Max Displace" to the same effective value.
+        self.AddStaticText(0, c4d.BFH_LEFT, 260, 0,
+                           "MV Max Motion (px, 0 = auto):", 0)
+        self.AddEditNumberArrows(self.EDT_MV_MAX_MOTION, c4d.BFH_LEFT, 100, 0)
         self.GroupEnd()
 
         self.AddSeparatorH(8)
@@ -869,6 +881,13 @@ class SentinelSettingsDialog(gui.GeDialog):
         # Multi-Part checkbox
         self.SetBool(self.CHK_MULTIPART, bool(int(GlobalSettings.get('aov_multipart', 1))))
 
+        # MV Max Motion (0 = auto by render width)
+        try:
+            mv_max = int(GlobalSettings.get('mv_max_motion', 0))
+        except (TypeError, ValueError):
+            mv_max = 0
+        self.SetInt32(self.EDT_MV_MAX_MOTION, max(mv_max, 0), min=0)
+
         # Snapshot dir
         self.SetString(self.EDT_SNAP_DIR, GlobalSettings.get_snapshot_dir())
 
@@ -918,6 +937,10 @@ class SentinelSettingsDialog(gui.GeDialog):
 
                 # Multi-Part
                 GlobalSettings.set('aov_multipart', 1 if self.GetBool(self.CHK_MULTIPART) else 0)
+
+                # MV Max Motion (0 = auto by render width)
+                mv_max = int(self.GetInt32(self.EDT_MV_MAX_MOTION))
+                GlobalSettings.set('mv_max_motion', max(mv_max, 0))
 
                 # Snapshot dir
                 snap_dir = (self.GetString(self.EDT_SNAP_DIR) or "").strip()

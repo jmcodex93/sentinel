@@ -49,14 +49,17 @@ _AOV_DEFS = {
     "Diffuse Lighting Raw": (["REDSHIFT_AOV_TYPE_DIFFUSE_LIGHTING_RAW"], 16, "rgba", "dwab"),
     "Refractions Raw":      (["REDSHIFT_AOV_TYPE_REFRACTIONS_RAW", "REDSHIFT_AOV_TYPE_REFRACTION_RAW"], 16, "rgba", "dwab"),
     "Ambient Occlusion":    (["REDSHIFT_AOV_TYPE_AMBIENT_OCCLUSION"], 16, "rgba", "dwab"),
-    # Utility passes (RGB, PIZ lossless, 32-bit float for precision)
-    "Depth":                (["REDSHIFT_AOV_TYPE_DEPTH", "REDSHIFT_AOV_TYPE_Z_DEPTH"], 32, "rgb", "piz"),
-    "Motion Vectors":       (["REDSHIFT_AOV_TYPE_MOTION_VECTORS"], 32, "rgb", "piz"),
-    "Cryptomatte":          (["REDSHIFT_AOV_TYPE_CRYPTOMATTE"], 32, "rgb", "piz"),
-    "World Position":       (["REDSHIFT_AOV_TYPE_WORLD_POSITION"], 32, "rgb", "piz"),
-    # Utility passes (RGB, PIZ lossless, 16-bit half)
-    "Normals":              (["REDSHIFT_AOV_TYPE_NORMALS"], 16, "rgb", "piz"),
-    "Bump Normals":         (["REDSHIFT_AOV_TYPE_BUMP_NORMALS"], 16, "rgb", "piz"),
+    # Utility passes (RGB, ZIP16 lossless, 32-bit float for precision).
+    # ZIP over PIZ: data passes are smooth (or, for Cryptomatte, incoherent hashes)
+    # — PIZ's only edge is grainy content, which these lack, and ZIP decodes faster
+    # + is Nuke's default family (see reference_exr_aov_compositing_standards).
+    "Depth":                (["REDSHIFT_AOV_TYPE_DEPTH", "REDSHIFT_AOV_TYPE_Z_DEPTH"], 32, "rgb", "zip"),
+    "Motion Vectors":       (["REDSHIFT_AOV_TYPE_MOTION_VECTORS"], 32, "rgb", "zip"),
+    "Cryptomatte":          (["REDSHIFT_AOV_TYPE_CRYPTOMATTE"], 32, "rgb", "zip"),
+    "World Position":       (["REDSHIFT_AOV_TYPE_WORLD_POSITION"], 32, "rgb", "zip"),
+    # Utility passes (RGB, ZIP16 lossless, 16-bit half)
+    "Normals":              (["REDSHIFT_AOV_TYPE_NORMALS"], 16, "rgb", "zip"),
+    "Bump Normals":         (["REDSHIFT_AOV_TYPE_BUMP_NORMALS"], 16, "rgb", "zip"),
 }
 
 # AOVs that have the Apply Color Processing option (lighting/shading components)
@@ -244,6 +247,99 @@ def _build_tier_list(doc, tier_list):
         safe_print("  Volumetric objects found - adding Volume AOVs")
     return effective
 
+def _apply_multipart_globals(vprs, enabled):
+    """Push the Multi-Part EXR flag + its coupled global file settings onto a live
+    RS videopost.
+
+    Multi-Part bundles ALL AOVs into one file under a SINGLE global bit-depth +
+    compression (verified live, C4D 2026.301 / RS 2026.7.1: no per-AOV override
+    survives inside Multi-Part except Cryptomatte, which RS writes to its own file
+    regardless). Because that bundle contains the technical data passes (Depth,
+    Motion Vectors, World Position, Normals), the global codec MUST be lossless —
+    a lossy codec (DWAB) corrupts them. We use ZIP (zip16): lossless, fastest to
+    decode in a read-heavy comp pipeline, Nuke's own default family, and fine for
+    After Effects' whole-image reads (see reference_exr_aov_compositing_standards).
+    Bit depth stays 32-bit because the data passes need the precision. When OFF,
+    each AOV's own Direct-Output settings apply (beauty = DWAB small-lossy,
+    data = PIZ lossless) and we leave them untouched.
+
+    Best-effort: logs and swallows on failure, never raises.
+    """
+    try:
+        vprs[c4d.REDSHIFT_RENDERER_AOV_GLOBAL_MODE] = c4d.REDSHIFT_RENDERER_AOV_GLOBAL_MODE_ENABLE
+        vprs[c4d.REDSHIFT_RENDERER_AOV_MULTIPART] = bool(enabled)
+        if enabled:
+            # One global codec for the whole bundle → must be lossless (it holds the
+            # data passes). ZIP16 = lossless + fast decode; 32-bit for Depth/MV.
+            vprs[c4d.REDSHIFT_RENDERER_AOV_FILE_BIT_DEPTH] = c4d.REDSHIFT_RENDERER_AOV_FILE_BIT_DEPTH_FLOAT32
+            vprs[c4d.REDSHIFT_RENDERER_AOV_FILE_COMPRESSION] = c4d.REDSHIFT_RENDERER_AOV_FILE_COMPRESSION_EXR_ZIP
+            safe_print("  Multi-Part EXR: ON (32-bit Float, ZIP lossless)")
+        else:
+            safe_print("  Multi-Part EXR: OFF (per-AOV Direct Output)")
+    except Exception as e:
+        safe_print(f"  Warning: Could not set AOV global settings: {e}")
+
+
+def set_scene_multipart(doc, enabled):
+    """Apply a Multi-Part EXR ON/OFF choice directly to the active scene's RS
+    videopost — the scene-scoped writer the Render-tab button uses.
+
+    Unlike force_aov_tier (which only pushes the flag as a side effect of adding
+    missing tier AOVs, and never runs at all when the tier is already complete),
+    this writes the flag on its own, as a single undo step, and refreshes the UI.
+
+    Returns (ok: bool, error: str|None).
+    """
+    if not REDSHIFT_AVAILABLE:
+        return False, "Redshift module not available"
+    vprs = _get_rs_videopost(doc)
+    if not vprs:
+        return False, "Redshift VideoPost not found"
+    try:
+        doc.StartUndo()
+        try:
+            doc.AddUndo(c4d.UNDOTYPE_CHANGE, vprs)
+        except Exception:
+            pass
+        _apply_multipart_globals(vprs, bool(enabled))
+        doc.EndUndo()
+        check_cache.clear()
+        c4d.EventAdd()
+        return True, None
+    except Exception as e:
+        safe_print(f"Error setting Multi-Part EXR: {e}")
+        return False, f"Error: {e}"
+
+
+def effective_mv_max_motion(doc):
+    """Resolve the Max Motion (in pixels) written on the After Effects / RSMB
+    Motion Vectors AOV.
+
+    Redshift's "Max Motion" is BOTH a render-time clamp and (for the normalized
+    AE path) the encoding scale: pixel displacement in [-max, +max] maps to the
+    stored [0, 1] range, so the compositor must set RSMB's "Max Displace" to the
+    SAME number to decode it. Too low → fast motion is clamped/under-blurred.
+
+    Setting `mv_max_motion` > 0 is an explicit studio override. The default (0)
+    is "auto": the render's longest side, so a full-screen move in one frame
+    never clamps (overshoot is free on a 32-bit float pass). Only the AE path
+    uses this — the Nuke path outputs raw, unclamped vectors.
+    """
+    try:
+        override = int(GlobalSettings.get('mv_max_motion', 0))
+    except (TypeError, ValueError):
+        override = 0
+    if override > 0:
+        return override
+    rd = doc.GetActiveRenderData() if doc else None
+    try:
+        w = int(rd[c4d.RDATA_XRES]) if rd else 1920
+        h = int(rd[c4d.RDATA_YRES]) if rd else 1080
+    except Exception:
+        w, h = 1920, 1080
+    return max(w, h, 1)
+
+
 def force_aov_tier(doc, tier_list):
     """Add missing AOVs from a tier to RS render settings, with proper bit depth"""
     if not REDSHIFT_AVAILABLE:
@@ -255,19 +351,7 @@ def force_aov_tier(doc, tier_list):
 
     # Enable AOV system + configure output mode
     use_multipart = bool(int(GlobalSettings.get('aov_multipart', 1)))
-    try:
-        vprs[c4d.REDSHIFT_RENDERER_AOV_GLOBAL_MODE] = c4d.REDSHIFT_RENDERER_AOV_GLOBAL_MODE_ENABLE
-        vprs[c4d.REDSHIFT_RENDERER_AOV_MULTIPART] = use_multipart
-        if use_multipart:
-            # Multi-Part forces uniform settings — 32-bit for Depth/MV precision
-            vprs[c4d.REDSHIFT_RENDERER_AOV_FILE_BIT_DEPTH] = c4d.REDSHIFT_RENDERER_AOV_FILE_BIT_DEPTH_FLOAT32
-            vprs[c4d.REDSHIFT_RENDERER_AOV_FILE_COMPRESSION] = c4d.REDSHIFT_RENDERER_AOV_FILE_COMPRESSION_EXR_DWAB
-            vprs[c4d.REDSHIFT_RENDERER_AOV_FILE_EXR_DWA_COMPRESSION] = 45.0
-            safe_print("  Multi-Part EXR: ON (32-bit Float, DWAB 45)")
-        else:
-            safe_print("  Multi-Part EXR: OFF (per-AOV Direct Output)")
-    except Exception as e:
-        safe_print(f"  Warning: Could not set AOV global settings: {e}")
+    _apply_multipart_globals(vprs, use_multipart)
 
     tier_list = _build_tier_list(doc, tier_list)
 
@@ -331,7 +415,8 @@ def force_aov_tier(doc, tier_list):
                     else:  # After Effects (RSMB Pro)
                         new_aov.SetParameter(_MV_RAW_VECTORS, 0)  # OFF (normalized)
                         new_aov.SetParameter(_MV_NO_CLAMP, 0)     # OFF
-                        new_aov.SetParameter(_MV_MAX_MOTION, 64)  # Match RSMB MaxDisplace
+                        # Compositor must set RSMB "Max Displace" to this same value.
+                        new_aov.SetParameter(_MV_MAX_MOTION, effective_mv_max_motion(doc))
 
                 new_aovs.append(new_aov)
                 added += 1

@@ -16,6 +16,7 @@ from sentinel.aovs import (
     _is_lg_active_on_beauty,
     _scan_light_groups,
     check_rs_aovs,
+    effective_mv_max_motion,
     force_aov_tier,
 )
 from sentinel.checks.render import normalize_preset_name
@@ -130,7 +131,7 @@ def _force_aov_tier(doc, tier_list, tier_name):
         else:
             target_name = "Nuke" if int(GlobalSettings.get('comp_target', 0)) == 0 else "After Effects"
             multipart = bool(int(GlobalSettings.get('aov_multipart', 1)))
-            output_mode = "Multi-Part EXR (32-bit, DWAB)" if multipart else "Direct Output (per-AOV settings)"
+            output_mode = "Multi-Part EXR (32-bit, ZIP lossless)" if multipart else "Direct Output (per-AOV settings)"
             safe_print(f"Added {added} {tier_name} AOVs for {target_name}")
             msg = f"Added {added} {tier_name} AOV(s)\n\n"
             msg += f"Compositor: {target_name}\n"
@@ -138,7 +139,10 @@ def _force_aov_tier(doc, tier_list, tier_name):
             if target_name == "Nuke":
                 msg += "Depth: Z raw, Center Sample\nMotion Vectors: Raw, No Clamp, No Filter"
             else:
-                msg += "Depth: Z Normalized Inverted, Center Sample\nMotion Vectors: Normalized 0-1, Max Motion=64"
+                mv_max = effective_mv_max_motion(doc)
+                msg += "Depth: Z Normalized Inverted, Center Sample\n"
+                msg += f"Motion Vectors: Normalized 0-1, Max Motion={mv_max} px\n\n"
+                msg += f"→ In RSMB (After Effects) set 'Max Displace' to {mv_max} to match this render."
             c4d.gui.MessageDialog(msg)
 
 
