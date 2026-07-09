@@ -20,6 +20,10 @@ except ImportError:
 _DEPTH_FILTER_TYPE = 1004      # 0=Full, 1=Min, 2=Max, 3=Center Sample
 _DEPTH_MODE = 1019             # 0=Z, 1=Z Normalized, 2=Z Normalized Inverted
 _DEPTH_CAMERA_NEARFAR = 1020   # 0=off, 1=on
+_DEPTH_ENV_RAYS_TO_BLACK = 1032 # 0=off, 1=on. Env/background rays get depth=0 when on.
+                                # Raw Z (Nuke): must be OFF — 0=camera, so sky→0 reads as
+                                # nearest and breaks ZDefocus/fog at the background. Z
+                                # Normalized Inverted (AE): ON is correct — 0=far already.
 _MV_RAW_VECTORS = 1008         # 0=off, 1=on
 _MV_NO_CLAMP = 1009            # 0=off, 1=on
 _MV_MAX_MOTION = 1010          # pixels (int)
@@ -60,6 +64,11 @@ _AOV_DEFS = {
     # Utility passes (RGB, ZIP16 lossless, 16-bit half)
     "Normals":              (["REDSHIFT_AOV_TYPE_NORMALS"], 16, "rgb", "zip"),
     "Bump Normals":         (["REDSHIFT_AOV_TYPE_BUMP_NORMALS"], 16, "rgb", "zip"),
+    # Artist-friendly fog matte: a second Depth-type AOV configured as a ready-to-use
+    # 0-1 mask (Z Normalized, near=black/far=white so it's bright where fog is thick;
+    # Full-filtered for soft edges; env→far so the sky reads full-fog). See the
+    # "Z Fog" branch below. 16-bit half is plenty for a 0-1 matte.
+    "Z Fog":                (["REDSHIFT_AOV_TYPE_DEPTH", "REDSHIFT_AOV_TYPE_Z_DEPTH"], 16, "rgb", "zip"),
 }
 
 # AOVs that have the Apply Color Processing option (lighting/shading components)
@@ -89,7 +98,7 @@ AOV_TIER_ESSENTIALS = [
 # Volume AOVs added conditionally when RS Environment or RS Volume objects exist
 AOV_TIER_PRODUCTION = AOV_TIER_ESSENTIALS + [
     "Diffuse Filter", "World Position", "Normals", "Ambient Occlusion",
-    "Reflection Filter", "Refractions Raw",
+    "Reflection Filter", "Refractions Raw", "Z Fog",
 ]
 
 def _get_rs_videopost(doc):
@@ -402,11 +411,24 @@ def force_aov_tier(doc, tier_list):
                 if name == "Depth":
                     new_aov.SetParameter(_DEPTH_FILTER_TYPE, 3)  # Center Sample
                     if comp_target == 0:  # Nuke
-                        new_aov.SetParameter(_DEPTH_MODE, 0)          # Z raw
-                        new_aov.SetParameter(_DEPTH_CAMERA_NEARFAR, 0) # OFF
-                    else:  # After Effects
-                        new_aov.SetParameter(_DEPTH_MODE, 2)          # Z Normalized Inverted
-                        new_aov.SetParameter(_DEPTH_CAMERA_NEARFAR, 1) # ON
+                        new_aov.SetParameter(_DEPTH_MODE, 0)             # Z raw
+                        new_aov.SetParameter(_DEPTH_CAMERA_NEARFAR, 0)   # OFF
+                        new_aov.SetParameter(_DEPTH_ENV_RAYS_TO_BLACK, 0) # OFF: sky must read far, not 0
+                    else:  # After Effects (Frischluft Lenscare / Sapphire: white=near)
+                        new_aov.SetParameter(_DEPTH_MODE, 2)             # Z Normalized Inverted
+                        new_aov.SetParameter(_DEPTH_CAMERA_NEARFAR, 1)   # ON
+                        new_aov.SetParameter(_DEPTH_ENV_RAYS_TO_BLACK, 1) # ON: inverted, 0=far, sky→0 correct
+                elif name == "Z Fog":
+                    # Artist-friendly fog matte: a ready-to-use 0-1 mask, bright where
+                    # fog is thick. Z Normalized (near=0/black, far=1/white); Full
+                    # filter for soft matte edges (a mask wants AA, unlike the raw DOF
+                    # Depth pass); env→far (env-to-black OFF) so the sky reads white =
+                    # full fog. Use Camera Near/Far for the range — if the matte comes
+                    # out flat, tighten via the AOV's Depth Min/Max (Near/Far off).
+                    new_aov.SetParameter(_DEPTH_FILTER_TYPE, 0)       # Full (anti-aliased matte)
+                    new_aov.SetParameter(_DEPTH_MODE, 1)             # Z Normalized (far = white)
+                    new_aov.SetParameter(_DEPTH_CAMERA_NEARFAR, 1)   # ON (range from camera)
+                    new_aov.SetParameter(_DEPTH_ENV_RAYS_TO_BLACK, 0) # OFF: sky far → white → full fog
                 elif name == "Motion Vectors":
                     new_aov.SetParameter(_MV_FILTERING, 0)  # OFF
                     if comp_target == 0:  # Nuke
