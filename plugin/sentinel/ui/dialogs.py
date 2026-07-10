@@ -8,6 +8,7 @@ import c4d
 from c4d import gui
 
 from sentinel import doctor
+from sentinel import supervisor
 from sentinel.common.helpers import safe_print
 from sentinel.common.settings import GlobalSettings
 from sentinel.notes import (
@@ -1701,6 +1702,140 @@ class SentinelDoctorDialog(gui.GeDialog):
             self.SetString(self.TXT_REPORT, self._report_text())
             gui.MessageDialog("%s\n\n%s" % (item.get("detail", ""),
                                             item.get("hint", "")))
+            return True
+
+        if cid == self.BTN_CLOSE:
+            self.Close()
+            return True
+
+        return True
+
+
+class SupervisorDialog(gui.GeDialog):
+    """Modal folder-QC aggregator (feature I5-A).
+
+    ALL logic lives in ``sentinel.supervisor`` — this dialog only picks a folder,
+    renders the aggregated per-shot table + trajectories into a read-only
+    monospaced field (the Doctor pattern), and exports one self-contained HTML
+    file. No scene is ever opened; sidecars on disk are the only data source.
+    """
+
+    BTN_SCAN = 3101
+    BTN_EXPORT = 3102
+    BTN_CLOSE = 3103
+    TXT_REPORT = 3104
+    LABEL_FOLDER = 3105
+
+    _LAST_FOLDER_KEY = "supervisor_last_folder"
+
+    def __init__(self):
+        super().__init__()
+        self._folder = GlobalSettings.get(self._LAST_FOLDER_KEY, "") or ""
+        self._shots = []
+        self._meta = {}
+
+    def _report_text(self):
+        if not self._meta:
+            return ("Pick a project folder and press \"Scan Folder...\".\n\n"
+                    "Sentinel aggregates every scene's version/notes sidecars "
+                    "without opening any .c4d file.")
+        return supervisor.build_supervisor_report(self._shots, self._meta)
+
+    def CreateLayout(self):
+        self.SetTitle("Sentinel Supervisor")
+
+        self.GroupBegin(0, c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT, 1, 0)
+        self.GroupBorderSpace(12, 10, 12, 10)
+        self.GroupSpace(0, 6)
+
+        self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0,
+                           "▸ Folder QC — aggregate every scene's sidecars", 0)
+        self.AddStaticText(self.LABEL_FOLDER, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+
+        self.AddSeparatorH(6)
+        multiline_flags = c4d.DR_MULTILINE_READONLY | c4d.DR_MULTILINE_MONOSPACED
+        self.AddMultiLineEditText(self.TXT_REPORT,
+                                  c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT,
+                                  0, 320, multiline_flags)
+
+        self.AddSeparatorH(10)
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 3, 0)
+        self.GroupSpace(8, 0)
+        self.AddButton(self.BTN_SCAN, c4d.BFH_LEFT, 150, 0, "Scan Folder...")
+        self.AddButton(self.BTN_EXPORT, c4d.BFH_LEFT, 150, 0, "Export HTML...")
+        self.AddButton(self.BTN_CLOSE, c4d.BFH_RIGHT, 100, 0, "Close")
+        self.GroupEnd()
+
+        self.GroupEnd()
+        return True
+
+    def InitValues(self):
+        self._refresh_folder_label()
+        self.SetString(self.TXT_REPORT, self._report_text())
+        return True
+
+    def _refresh_folder_label(self):
+        label = ("Folder: %s" % self._folder) if self._folder else "No folder selected."
+        self.SetString(self.LABEL_FOLDER, label)
+
+    def _scan(self):
+        try:
+            self._shots, self._meta = supervisor.scan_folder(self._folder)
+        except Exception as exc:
+            safe_print("Supervisor scan failed: %s" % exc)
+            gui.MessageDialog("Could not scan the folder:\n%s" % exc)
+            return
+        self.SetString(self.TXT_REPORT, self._report_text())
+        warnings = self._meta.get("warnings") or []
+        if not self._shots and not warnings:
+            gui.MessageDialog(
+                "No scene sidecars found in this folder.\n\n"
+                "Save a version from the Versions tab (or point the scan at a "
+                "folder that contains versioned scenes) to populate this view.")
+
+    def Command(self, cid, msg):
+        if cid == self.BTN_SCAN:
+            chosen = c4d.storage.LoadDialog(
+                title="Select project folder to scan",
+                flags=c4d.FILESELECT_DIRECTORY,
+            )
+            if chosen:
+                self._folder = chosen
+                GlobalSettings.set(self._LAST_FOLDER_KEY, chosen)
+                self._refresh_folder_label()
+                self._scan()
+            return True
+
+        if cid == self.BTN_EXPORT:
+            if not self._meta:
+                gui.MessageDialog("Scan a folder first, then export.")
+                return True
+            default_name = supervisor.DEFAULT_EXPORT_NAME
+            try:
+                save_path = c4d.storage.SaveDialog(
+                    title="Export Supervisor HTML",
+                    force_suffix="html",
+                    def_file=default_name,
+                )
+            except TypeError:
+                save_path = c4d.storage.SaveDialog(
+                    title="Export Supervisor HTML",
+                    force_suffix="html",
+                )
+            if not save_path:
+                return True
+            try:
+                written = supervisor.write_supervisor_html(
+                    self._shots, self._meta, save_path)
+            except Exception as exc:
+                safe_print("Supervisor HTML export failed: %s" % exc)
+                gui.MessageDialog("Could not write the HTML export:\n%s" % exc)
+                return True
+            try:
+                c4d.storage.ShowInFinder(written)
+            except Exception:
+                pass
+            gui.MessageDialog("Supervisor report exported:\n\n%s" % written)
             return True
 
         if cid == self.BTN_CLOSE:
