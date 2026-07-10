@@ -61,3 +61,29 @@ def test_history_qc_label_marks_old_schema_entries_legacy(sentinel_module):
     assert sentinel_module.format_history_qc_label(legacy) == "8/12 (legacy)"
     assert sentinel_module.format_version_row(legacy)["qc_label"] == "8/12 (legacy)"
     assert sentinel_module.format_history_qc_label(current) == "11/12 · 1 new · 4 accepted"
+
+
+def test_history_qc_label_ignores_qc_counts_vector(sentinel_module):
+    """qc_counts (the per-check trajectory vector) never changes rendering."""
+    # Legacy v1 entries without the vector render exactly as before.
+    legacy_v1 = {"qc_score": "8/12", "qc_pass": False}
+    assert sentinel_module.format_history_qc_label(legacy_v1) == "8/12 (legacy)"
+
+    # A schema-2 entry carrying qc_counts renders identically to one without
+    # it — readers only use qc_score/schema/new/accepted.
+    without = {"schema": 2, "qc_score": "11/12", "qc_pass": False, "new": 1, "accepted": 4}
+    with_vector = dict(without, qc_counts={"names": 1, "cam": 0, "lights": 0})
+    assert (
+        sentinel_module.format_history_qc_label(with_vector)
+        == sentinel_module.format_history_qc_label(without)
+        == "11/12 · 1 new · 4 accepted"
+    )
+    # And it flows through format_version_row untouched too.
+    assert (
+        sentinel_module.format_version_row(with_vector)["qc_label"]
+        == "11/12 · 1 new · 4 accepted"
+    )
+    # A legacy v2-era entry that also carried qc_counts (they always did —
+    # flows.py has persisted it on every QC-bearing save) renders unchanged.
+    legacy_with_counts = dict(legacy_v1, qc_counts={"names": 4})
+    assert sentinel_module.format_history_qc_label(legacy_with_counts) == "8/12 (legacy)"

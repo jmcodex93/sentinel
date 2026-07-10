@@ -7,6 +7,7 @@ import re
 import c4d
 from c4d import gui
 
+from sentinel import doctor
 from sentinel.common.helpers import safe_print
 from sentinel.common.settings import GlobalSettings
 from sentinel.notes import (
@@ -1577,6 +1578,133 @@ class TextureRepathingDialog(gui.GeDialog):
             # without closing the tool. _do_apply_all rescans on success
             # so the list reflects the new scene state.
             self._do_apply_all()
+            return True
+
+        return True
+
+
+# Tag prefixes for the item rows, mirrors doctor.build_copyable_report.
+_DOCTOR_STATUS_TAG = {
+    doctor.OK: "[OK]",
+    doctor.WARN: "[WARN]",
+    doctor.FAIL: "[FAIL]",
+    doctor.INFO: "[INFO]",
+}
+
+
+class SentinelDoctorDialog(gui.GeDialog):
+    """Modal environment self-diagnostic (feature I6).
+
+    ALL logic lives in ``sentinel.doctor`` — this dialog only renders the item
+    list and exposes a copyable diagnostic block. Copy strategy: a read-only
+    multiline edit field shows the full report AND a "Copy to Clipboard" button
+    calls ``c4d.CopyStringToClipboard`` (belt and suspenders — the field lets the
+    user select/scroll, the button is the one-click path). The optional update
+    check is a separate button (never automatic) that appends its result.
+    """
+
+    GRP_ITEMS = 3001
+    TXT_REPORT = 3002
+    BTN_COPY = 3003
+    BTN_UPDATE = 3004
+    BTN_CLOSE = 3005
+
+    def __init__(self):
+        super().__init__()
+        try:
+            self._items, self._meta = doctor.run_all_diagnostics()
+        except Exception as exc:
+            safe_print("Sentinel Doctor failed to run diagnostics: %s" % exc)
+            self._items, self._meta = [], {}
+
+    def _report_text(self):
+        return doctor.build_copyable_report(self._items, self._meta)
+
+    def _build_item_rows(self):
+        if not self._items:
+            self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0,
+                               "No diagnostics available.", 0)
+            return
+        for it in self._items:
+            tag = _DOCTOR_STATUS_TAG.get(it.get("status"), "[??]")
+            label = it.get("label", "")
+            self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0,
+                               "%s  %s" % (tag, label), 0)
+            detail = it.get("detail")
+            if detail:
+                self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0,
+                                   "        %s" % detail, 0)
+            hint = it.get("hint")
+            if hint and it.get("status") in (doctor.WARN, doctor.FAIL):
+                self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0,
+                                   "        ↳ %s" % hint, 0)
+
+    def CreateLayout(self):
+        self.SetTitle("Sentinel Doctor")
+
+        self.GroupBegin(0, c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT, 1, 0)
+        self.GroupBorderSpace(12, 10, 12, 10)
+        self.GroupSpace(0, 6)
+
+        self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0,
+                           "▸ Environment diagnostic", 0)
+
+        # Item rows live in a flushable group so "Check for Updates" can re-render.
+        self.GroupBegin(self.GRP_ITEMS, c4d.BFH_SCALEFIT, 1, 0)
+        self._build_item_rows()
+        self.GroupEnd()
+
+        self.AddSeparatorH(8)
+        self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0,
+                           "Copy the block below into a GitHub bug report:", 0)
+
+        multiline_flags = c4d.DR_MULTILINE_READONLY | c4d.DR_MULTILINE_MONOSPACED
+        self.AddMultiLineEditText(self.TXT_REPORT,
+                                  c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT,
+                                  0, 200, multiline_flags)
+
+        self.AddSeparatorH(10)
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 3, 0)
+        self.GroupSpace(8, 0)
+        self.AddButton(self.BTN_COPY, c4d.BFH_LEFT, 160, 0, "Copy to Clipboard")
+        self.AddButton(self.BTN_UPDATE, c4d.BFH_LEFT, 160, 0, "Check for Updates")
+        self.AddButton(self.BTN_CLOSE, c4d.BFH_RIGHT, 100, 0, "Close")
+        self.GroupEnd()
+
+        self.GroupEnd()
+        return True
+
+    def InitValues(self):
+        self.SetString(self.TXT_REPORT, self._report_text())
+        return True
+
+    def Command(self, cid, msg):
+        if cid == self.BTN_COPY:
+            try:
+                c4d.CopyStringToClipboard(self._report_text())
+                gui.MessageDialog("Diagnostic copied to clipboard.")
+            except Exception as exc:
+                safe_print("Copy to clipboard failed: %s" % exc)
+                gui.MessageDialog("Could not copy to clipboard — select the text "
+                                  "manually and copy it.")
+            return True
+
+        if cid == self.BTN_UPDATE:
+            item = doctor.check_for_update(
+                current_version=self._meta.get("sentinel_version"))
+            # Replace any prior update item, then re-render rows + report.
+            self._items = [i for i in self._items if i.get("id") != "update"]
+            self._items.append(item)
+            self.LayoutFlushGroup(self.GRP_ITEMS)
+            self._build_item_rows()
+            self.LayoutChanged(self.GRP_ITEMS)
+            self.SetString(self.TXT_REPORT, self._report_text())
+            gui.MessageDialog("%s\n\n%s" % (item.get("detail", ""),
+                                            item.get("hint", "")))
+            return True
+
+        if cid == self.BTN_CLOSE:
+            self.Close()
             return True
 
         return True

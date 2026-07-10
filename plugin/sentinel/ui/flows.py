@@ -418,6 +418,10 @@ def smart_save_version(doc, comment, run_qc=True, artist_name="", status=None):
     if qc_summary:
         entry["qc_score"] = qc_summary["score"]
         entry["qc_pass"] = qc_summary["pass"]
+        # qc_counts IS the per-check trajectory vector (check_id -> new-violation
+        # count, baseline-aware; disabled checks omitted) — consumed by the
+        # future supervisor view. Pinned by tests (test_qc_registry_score.py,
+        # test_version_helpers.py).
         entry["qc_counts"] = qc_summary["counts"]
         if qc_summary.get("schema") == 2:
             entry["schema"] = 2

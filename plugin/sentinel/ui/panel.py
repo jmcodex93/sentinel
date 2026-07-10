@@ -65,6 +65,7 @@ from sentinel.ui.dialogs import (
     GateTriageDialog,
     NotesDialog,
     SaveVersionDialog,
+    SentinelDoctorDialog,
     SentinelSettingsDialog,
     TextureRepathingDialog,
     load_repath_presets,
@@ -1230,8 +1231,11 @@ class YSPanel(gui.GeDialog):
 
         # ───────── Footer (always visible) — secondary actions ─────────
         self.AddSeparatorH(4)
-        self.GroupBegin(70, c4d.BFH_SCALEFIT, 3, 0)
+        self.GroupBegin(70, c4d.BFH_SCALEFIT, 4, 0)
         self.AddButton(G.BTN_SETTINGS, c4d.BFH_SCALEFIT, 0, 0, "⚙ Settings")
+        # Plain text label: emoji glyphs (🩺) don't render in C4D's UI font
+        # (showed as "_" — verified live). GitHub/Report Bug are plain too.
+        self.AddButton(G.BTN_DOCTOR, c4d.BFH_SCALEFIT, 0, 0, "Doctor")
         self.AddButton(G.BTN_GITHUB, c4d.BFH_SCALEFIT, 0, 0, "GitHub")
         self.AddButton(G.BTN_BUG_REPORT, c4d.BFH_SCALEFIT, 0, 0, "Report Bug")
         self.GroupEnd()
@@ -2000,6 +2004,12 @@ class YSPanel(gui.GeDialog):
             bug_url = "https://github.com/jmcodex93/sentinel/issues/new"
             webbrowser.open(bug_url)
             safe_print(f"Opening bug report page: {bug_url}")
+
+        elif cid == G.BTN_DOCTOR:
+            # Open the Sentinel Doctor self-diagnostic (I6)
+            dlg = SentinelDoctorDialog()
+            dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=560, defaulth=560)
+            safe_print("Sentinel Doctor closed")
 
         elif cid == G.BTN_SETTINGS:
             # Open the Sentinel Settings modal dialog

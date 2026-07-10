@@ -256,18 +256,28 @@ This system maintains color accuracy by matching your scene's ACES tone mapping,
 - macOS or Windows
 - Python 3.x with Pillow + NumPy (for snapshot EXR→PNG conversion)
 
-### Quick Install (Windows)
+### Quick Install (macOS / Windows) — `install.py`
+
+The cross-platform installer detects every Cinema 4D version on your machine and
+copies the plugin into the one(s) you choose (no hardcoded paths):
 
 ```bash
-# Run as Administrator
-INSTALL_SENTINEL.bat
+python3 install.py            # interactive: pick one, several, or all
+python3 install.py --list     # just list the C4D installs it found
+python3 install.py --all      # install into every detected C4D
+python3 install.py --target "/path/to/Maxon Cinema 4D 2026_XXXX/plugins"
 ```
 
-The installer handles:
-- Plugin files → Cinema 4D plugins folder
-- Python 3.x + Pillow + NumPy (global install)
-- Directory structure creation (`C:\cache\rs snapshots\`)
-- ABC Retime plugin integration
+It mirror-copies the whole `plugin/` payload into `<plugins>/Sentinel/` (pruning
+orphaned files), verifies the critical files landed, and warns if an old
+`YS_Guardian/` folder is still present. Restart Cinema 4D afterwards.
+
+For snapshot EXR→PNG conversion, install the Python deps once:
+`pip3 install Pillow numpy OpenEXR`.
+
+Run **⚙ Doctor** in the panel footer any time to self-diagnose the environment
+(version compatibility, payload integrity, renderers, permissions) and copy a
+diagnostic block for bug reports.
 
 ### Manual Install (macOS / Windows)
 
