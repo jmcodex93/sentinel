@@ -194,6 +194,63 @@ def test_mixed_baseline_score_and_row_rendering_semantics(sentinel_module):
     assert sentinel_module.format_baseline_row_message(1, 2) == "1 new (2 accepted)"
 
 
+def test_counts_is_per_check_trajectory_vector_baseline_path(sentinel_module):
+    """Pin the qc_counts contract: summary["counts"] is the per-check
+    trajectory vector persisted to <base>_history.json (flows.py qc_counts) —
+    {check_id: int} of NEW (non-accepted) counts, one entry per enabled check.
+    """
+    from sentinel import baseline
+    from sentinel.qc.registry import CHECK_REGISTRY
+    from sentinel.qc.score import compute_score
+
+    # 2 new violations on `names`, plus 1 accepted on `cam` (via baseline).
+    name_violations = [_object_violation("names", index) for index in range(2)]
+    cam_violation = _object_violation("cam", 0)
+    entries = [baseline.entry_from_violation(cam_violation, "Javier", "known shift")]
+
+    results = _empty_results(CHECK_REGISTRY)
+    results["names"] = {
+        "legacy_result": ["Cube", "Cube"],
+        "structured_result": {"violations": name_violations},
+    }
+    results["cam"] = {
+        "legacy_result": ["Camera"],
+        "structured_result": {"violations": [cam_violation]},
+    }
+
+    counts = compute_score(results, baseline_entries=entries, current_params={})["counts"]
+
+    # NEW-only counts: names has 2 new; cam's single violation is accepted -> 0.
+    assert counts["names"] == 2
+    assert counts["cam"] == 0
+    # Every enabled check present, all ints, passing checks are 0.
+    assert set(counts) == {e.check_id for e in CHECK_REGISTRY}
+    assert all(isinstance(v, int) for v in counts.values())
+    assert counts["lights"] == 0
+
+
+def test_counts_vector_legacy_path_and_disabled_omitted(sentinel_module):
+    """Same contract on the legacy (no-baseline) path: per-check int counts
+    (nothing accepted, so total == new) with disabled checks omitted."""
+    from sentinel.qc.registry import CHECK_REGISTRY
+    from sentinel.qc.score import compute_score
+
+    results = _empty_results(CHECK_REGISTRY)
+    results["names"] = {"legacy_result": ["Cube"]}
+    context = SimpleNamespace(params={"checks_enabled": {"names": False}})
+
+    # Legacy path, no rules: every check present as an int.
+    plain_counts = compute_score(results)["counts"]
+    assert set(plain_counts) == {e.check_id for e in CHECK_REGISTRY}
+    assert all(isinstance(v, int) for v in plain_counts.values())
+    assert plain_counts["names"] == 1
+
+    # Disabled check drops out of the vector entirely.
+    disabled_counts = compute_score(results, context)["counts"]
+    assert "names" not in disabled_counts
+    assert len(disabled_counts) == len(CHECK_REGISTRY) - 1
+
+
 def test_invalid_baseline_sidecar_uses_legacy_score_with_visible_status(sentinel_module, tmp_path):
     from sentinel.qc.registry import CHECK_REGISTRY
     from sentinel.qc.score import compute_score
