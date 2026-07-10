@@ -97,6 +97,7 @@ class G:
     LABEL_AOV_INFO = 1309   # read-only summary of comp + multi-part in Render tab
     BTN_TEXTURE_REPATH = 1310  # Tools tab: open Texture Repathing dialog (v1.5.7)
     BTN_DOCTOR = 1311  # Footer: open Sentinel Doctor self-diagnostic (I6)
+    BTN_SUPERVISOR = 1312  # Versions tab: open Supervisor folder QC aggregator (I5-A)
 
 
 class GateTriageIds:

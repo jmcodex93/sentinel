@@ -67,6 +67,7 @@ from sentinel.ui.dialogs import (
     SaveVersionDialog,
     SentinelDoctorDialog,
     SentinelSettingsDialog,
+    SupervisorDialog,
     TextureRepathingDialog,
     load_repath_presets,
     save_repath_preset,
@@ -641,6 +642,8 @@ class YSPanel(gui.GeDialog):
         self.AddButton(G.BTN_SAVE_VERSION, c4d.BFH_SCALEFIT, 0, 0, "Save Version")
         self.AddButton(G.BTN_COLLECT_SCENE, c4d.BFH_SCALEFIT, 0, 0, "Collect Scene")
         self.GroupEnd()
+        self.AddButton(G.BTN_SUPERVISOR, c4d.BFH_SCALEFIT, 0, 0,
+                       "Supervisor... (folder QC)")
 
         # ── Recent Versions ──
         self._add_section_label("Recent Versions")
@@ -2010,6 +2013,12 @@ class YSPanel(gui.GeDialog):
             dlg = SentinelDoctorDialog()
             dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=560, defaulth=560)
             safe_print("Sentinel Doctor closed")
+
+        elif cid == G.BTN_SUPERVISOR:
+            # Open the Supervisor folder-QC aggregator (I5-A)
+            dlg = SupervisorDialog()
+            dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=680, defaulth=560)
+            safe_print("Supervisor closed")
 
         elif cid == G.BTN_SETTINGS:
             # Open the Sentinel Settings modal dialog
