@@ -150,6 +150,54 @@ def test_project_gates_enabled_false_wins_over_machine_true(tmp_path):
     assert context.field_sources["gates_enabled"] == "project"
 
 
+def test_slate_true_in_project_rules(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(scene_dir, {"slate": True})
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert context.params["slate"] is True
+    assert context.field_sources["slate"] == "project"
+
+
+def test_slate_defaults_to_false_when_absent(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert context.params["slate"] is False
+    assert context.field_sources["slate"] == "defaults"
+
+
+def test_invalid_slate_is_rejected_but_rest_of_file_applies(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(scene_dir, {"slate": "yes", "start_frame": 1000})
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert context.params["slate"] is False
+    assert context.params["start_frame"] == 1000
+    assert any("slate" in warning and "expected a bool" in warning for warning in context.warnings)
+
+
+def test_project_slate_false_wins_over_machine_true(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(scene_dir, {"slate": False})
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {"slate": True})
+
+    assert context.params["slate"] is False
+    assert context.field_sources["slate"] == "project"
+
+
 def test_integral_float_standard_fps_is_normalized(tmp_path):
     scene_dir = tmp_path / "project"
     scene_dir.mkdir()

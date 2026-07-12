@@ -7,8 +7,155 @@ Uses system Python with OpenEXR and Pillow
 
 import sys
 import os
+import json
 import numpy as np
 from PIL import Image
+
+# ── Review slate (I7) ────────────────────────────────────────────────────────
+# A bottom burn-in strip stamped onto review PNGs so a client can never mistake
+# a WIP for a FINAL. Pillow-only, default bitmap font (no font files bundled).
+# The strip is COMPOSITED (image grows by the strip height) — the review pixels
+# above it are never overwritten. Metadata is mirrored into PNG text chunks.
+
+# Status badge colors (RGB). Semantics always paired with the text label.
+SLATE_STATUS_COLORS = {
+    "WIP": (150, 150, 150),    # grey — not for review
+    "TR": (255, 178, 36),      # amber — in review
+    "CR": (255, 178, 36),      # amber — in review
+    "FINAL": (69, 209, 131),   # green — approved
+}
+SLATE_DEFAULT_BADGE = (150, 150, 150)
+SLATE_STRIP_BG = (11, 20, 26)       # dark instrument bar
+SLATE_TEXT_LIGHT = (233, 237, 242)
+SLATE_TEXT_DIM = (166, 176, 188)
+SLATE_METADATA_KEYS = ("shot", "version", "status", "score", "artist", "date")
+
+
+def pick_badge_color(status):
+    """Return the RGB badge color for a review status (case-insensitive)."""
+    if not status:
+        return SLATE_STATUS_COLORS["WIP"]
+    return SLATE_STATUS_COLORS.get(str(status).strip().upper(), SLATE_DEFAULT_BADGE)
+
+
+def format_badge_label(slate):
+    """The colorized badge text, e.g. 'TR · 9/12', 'FINAL · 12/12', 'WIP'."""
+    status = (slate.get("status") or "WIP") if slate else "WIP"
+    status = str(status).strip() or "WIP"
+    score = str((slate.get("score") if slate else "") or "").strip()
+    return f"{status} · {score}" if score else status
+
+
+def build_slate_lines(slate):
+    """Assemble the (left, right) text blocks for the slate strip.
+
+    left  : 'shot · vNNN' (the badge is drawn separately, colorized)
+    right : 'artist · date · frame' (blank parts skipped)
+    """
+    slate = slate or {}
+    shot = str(slate.get("shot") or "").strip() or "—"
+    version = str(slate.get("version") or "").strip()
+    left = f"{shot} · {version}".rstrip(" ·") if version else shot
+
+    right_parts = []
+    for key in ("artist", "date", "frame"):
+        val = slate.get(key)
+        if val not in (None, ""):
+            right_parts.append(str(val))
+    right = "  ·  ".join(right_parts)
+    return left, right
+
+
+def load_slate_data(path):
+    """Load slate JSON written by the Sentinel caller. Returns a dict or None."""
+    if not path:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception as exc:
+        print(f"Warning: could not read slate data {path}: {exc}")
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def build_png_info(slate):
+    """Build a PngInfo carrying sentinel:* text chunks mirroring the slate."""
+    from PIL import PngImagePlugin
+
+    info = PngImagePlugin.PngInfo()
+    slate = slate or {}
+    for key in SLATE_METADATA_KEYS:
+        val = slate.get(key)
+        info.add_text("sentinel:%s" % key, "" if val is None else str(val))
+    frame = slate.get("frame")
+    if frame not in (None, ""):
+        info.add_text("sentinel:frame", str(frame))
+    return info
+
+
+def _measure_text(draw, text, font):
+    try:
+        return int(draw.textlength(text, font=font))
+    except Exception:
+        try:
+            bbox = font.getbbox(text)
+            return int(bbox[2] - bbox[0])
+        except Exception:
+            return len(text) * 6
+
+
+def compose_slate(img, slate):
+    """Return a new image with the slate strip composited beneath ``img``.
+
+    The original pixels are preserved verbatim; the canvas grows downward by the
+    strip height (max(24, ~4.5% of image height)).
+    """
+    from PIL import ImageDraw, ImageFont
+
+    img = img.convert("RGB")
+    w, h = img.size
+    strip_h = max(24, int(round(h * 0.045)))
+
+    out = Image.new("RGB", (w, h + strip_h), SLATE_STRIP_BG)
+    out.paste(img, (0, 0))
+
+    draw = ImageDraw.Draw(out)
+    font = ImageFont.load_default()
+
+    try:
+        text_h = font.getbbox("Ag")[3]
+    except Exception:
+        text_h = 11
+    pad = max(6, strip_h // 4)
+    ty = h + max(0, (strip_h - text_h) // 2)
+
+    left, right = build_slate_lines(slate)
+    badge = format_badge_label(slate)
+    badge_color = pick_badge_color(slate.get("status") if slate else None)
+
+    x = pad
+    left_block = left + "   "
+    draw.text((x, ty), left_block, fill=SLATE_TEXT_LIGHT, font=font)
+    x += _measure_text(draw, left_block, font)
+    draw.text((x, ty), badge, fill=badge_color, font=font)
+
+    if right:
+        rw = _measure_text(draw, right, font)
+        draw.text((w - pad - rw, ty), right, fill=SLATE_TEXT_DIM, font=font)
+
+    return out
+
+
+def _save_png(img, png_path, slate_data=None):
+    """Save PNG. With no slate: byte-identical to the legacy plain save."""
+    if slate_data:
+        composed = compose_slate(img, slate_data)
+        composed.save(png_path, 'PNG', compress_level=0, optimize=False,
+                      pnginfo=build_png_info(slate_data))
+    else:
+        img.save(png_path, 'PNG', compress_level=0, optimize=False)
+
 
 # Try to import OpenEXR
 try:
@@ -135,7 +282,7 @@ def read_exr_openexr(filepath):
     return rgb
 
 
-def convert_exr_to_png(exr_path, png_path, color_mode='auto'):
+def convert_exr_to_png(exr_path, png_path, color_mode='auto', slate_data=None):
     """Convert EXR to PNG with Redshift-accurate color management
 
     Args:
@@ -146,6 +293,9 @@ def convert_exr_to_png(exr_path, png_path, color_mode='auto'):
                    'aces' - Use ACES display transform (default Redshift)
                    'simple' - Simple gamma 2.2 (legacy)
                    'linear' - No tone mapping, just sRGB encoding
+        slate_data: optional dict — when provided, a review-slate strip is
+                    composited and sentinel:* metadata is stamped. None keeps
+                    the output byte-identical to the legacy pipeline.
     """
     try:
         # Ensure output directory exists
@@ -223,10 +373,8 @@ def convert_exr_to_png(exr_path, png_path, color_mode='auto'):
                 # Save with PIL using maximum quality settings
                 img = Image.fromarray(rgb_8bit)
 
-                # Save with maximum PNG quality (no compression)
-                img.save(png_path, 'PNG',
-                        compress_level=0,  # No compression (0-9, 0 is none)
-                        optimize=False)    # Don't optimize file size
+                # Save with maximum PNG quality (no compression); optional slate
+                _save_png(img, png_path, slate_data)
 
                 print(f"SUCCESS: Converted with ACES display transform to {png_path}")
                 return True
@@ -274,10 +422,8 @@ def convert_exr_to_png(exr_path, png_path, color_mode='auto'):
         rgb_8bit = np.clip(display_rgb * 255, 0, 255).astype(np.uint8)
         img = Image.fromarray(rgb_8bit)
 
-        # Save with maximum quality
-        img.save(png_path, 'PNG',
-                compress_level=0,
-                optimize=False)
+        # Save with maximum quality; optional slate
+        _save_png(img, png_path, slate_data)
 
         print(f"SUCCESS: Converted with PIL (display transform applied) to {png_path}")
         return True
@@ -289,23 +435,52 @@ def convert_exr_to_png(exr_path, png_path, color_mode='auto'):
         return False
 
 
+def parse_cli_args(argv):
+    """Parse CLI args backward-compatibly.
+
+    Positional: input.exr output.png [color_mode]. The optional ``--slate
+    <path>`` flag may appear anywhere; without it, old 3-arg calls behave
+    exactly as before (slate disabled).
+
+    Returns (exr_path, png_path, color_mode, slate_path).
+    """
+    slate_path = None
+    positionals = []
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token == "--slate":
+            i += 1
+            if i < len(argv):
+                slate_path = argv[i]
+        else:
+            positionals.append(token)
+        i += 1
+
+    exr_path = positionals[0] if len(positionals) > 0 else None
+    png_path = positionals[1] if len(positionals) > 1 else None
+    color_mode = positionals[2] if len(positionals) > 2 else 'auto'
+    return exr_path, png_path, color_mode, slate_path
+
+
 def main():
     """Main entry point for command line usage"""
-    if len(sys.argv) < 3:
-        print("Usage: python exr_converter_external.py input.exr output.png [color_mode]")
+    exr_path, png_path, color_mode, slate_path = parse_cli_args(sys.argv[1:])
+
+    if not exr_path or not png_path:
+        print("Usage: python exr_converter_external.py input.exr output.png [color_mode] [--slate slate.json]")
         print("Color modes: auto (default), aces, simple, linear")
         sys.exit(1)
-
-    exr_path = sys.argv[1]
-    png_path = sys.argv[2]
-    color_mode = sys.argv[3] if len(sys.argv) > 3 else 'auto'
 
     if not os.path.exists(exr_path):
         print(f"ERROR: Input file not found: {exr_path}")
         sys.exit(1)
 
-    print(f"Converting with color mode: {color_mode}")
-    success = convert_exr_to_png(exr_path, png_path, color_mode)
+    slate_data = load_slate_data(slate_path) if slate_path else None
+
+    print(f"Converting with color mode: {color_mode}"
+          + (" (+slate)" if slate_data else ""))
+    success = convert_exr_to_png(exr_path, png_path, color_mode, slate_data=slate_data)
 
     # Return exit code (0 for success, 1 for failure)
     sys.exit(0 if success else 1)

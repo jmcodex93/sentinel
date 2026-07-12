@@ -83,9 +83,73 @@ def _find_system_python():
 
 _CACHED_PYTHON = None
 
-def _convert_exr_to_png(exr_path, png_path):
-    """Convert EXR to PNG via external Python with OpenEXR + ACES pipeline"""
+
+def build_slate_data(doc, artist_name, frame=None):
+    """Assemble the review-slate fields from the doc + its version history.
+
+    Pure adapter: reads the LATEST entry of the scene's ``<base>_history.json``
+    via sentinel.versioning and combines it with shot (active take/doc) + now.
+    Returns a JSON-serializable dict; never raises.
+    """
+    from datetime import datetime
+    from sentinel.versioning import get_latest_version_info
+
+    shot = ""
+    try:
+        td = doc.GetTakeData() if doc else None
+        if td:
+            cur = td.GetCurrentTake()
+            if cur:
+                shot = cur.GetName() or ""
+    except Exception:
+        shot = ""
+    if not shot and doc:
+        try:
+            shot = os.path.splitext(doc.GetDocumentName() or "")[0]
+        except Exception:
+            shot = ""
+
+    version_label = ""
+    status = "WIP"
+    score = ""
+    try:
+        latest = get_latest_version_info(doc)
+        if latest:
+            try:
+                version_label = "v%03d" % int(latest.get("version"))
+            except (TypeError, ValueError):
+                version_label = ""
+            status = (latest.get("status") or "").upper() or "WIP"
+            score = latest.get("qc_score", "") or ""
+    except Exception:
+        pass
+
+    if frame is None and doc is not None:
+        try:
+            frame = doc.GetTime().GetFrame(doc.GetFps())
+        except Exception:
+            frame = None
+
+    return {
+        "shot": shot or "",
+        "version": version_label,
+        "status": status,
+        "score": score,
+        "artist": artist_name or "",
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "frame": frame if frame is not None else "",
+    }
+
+
+def _convert_exr_to_png(exr_path, png_path, slate_data=None):
+    """Convert EXR to PNG via external Python with OpenEXR + ACES pipeline.
+
+    When ``slate_data`` is provided it is written to a temp JSON and passed to
+    the converter via ``--slate`` so a review-slate strip + PNG metadata are
+    burned in. None keeps the legacy (byte-identical) conversion.
+    """
     import subprocess
+    import tempfile
 
     global _CACHED_PYTHON
     if not _CACHED_PYTHON:
@@ -101,10 +165,24 @@ def _convert_exr_to_png(exr_path, png_path):
     if not os.path.exists(converter):
         return False, f"Converter script not found: {converter}"
 
+    slate_path = None
+    if slate_data:
+        try:
+            import json
+            fd, slate_path = tempfile.mkstemp(prefix="sentinel_slate_", suffix=".json")
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(slate_data, handle, ensure_ascii=False)
+        except Exception as e:
+            safe_print(f"Could not write slate data (skipping slate): {e}")
+            slate_path = None
+
+    cmd = [_CACHED_PYTHON, converter, exr_path, png_path, "aces"]
+    if slate_path:
+        cmd += ["--slate", slate_path]
+
     try:
         result = subprocess.run(
-            [_CACHED_PYTHON, converter, exr_path, png_path, "aces"],
-            capture_output=True, text=True, timeout=120
+            cmd, capture_output=True, text=True, timeout=120
         )
 
         if result.returncode == 0 and os.path.exists(png_path):
@@ -119,3 +197,9 @@ def _convert_exr_to_png(exr_path, png_path):
         return False, "Conversion timed out (>120s)"
     except Exception as e:
         return False, f"Error running converter: {e}"
+    finally:
+        if slate_path:
+            try:
+                os.remove(slate_path)
+            except Exception:
+                pass
