@@ -98,3 +98,12 @@ class GlobalSettings:
     @staticmethod
     def set_standard_fps(fps):
         return GlobalSettings.set('standard_fps', int(fps))
+
+    @staticmethod
+    def get_snapshot_slate():
+        """Get whether review-slate burn-in is applied to snapshots (default OFF)."""
+        return bool(GlobalSettings.get('snapshot_slate', False))
+
+    @staticmethod
+    def set_snapshot_slate(enabled):
+        return GlobalSettings.set('snapshot_slate', bool(enabled))

@@ -25,6 +25,7 @@ DEFAULTS = {
     "standard_fps": 25,
     "start_frame": 1001,
     "gates_enabled": False,
+    "slate": False,
     "approved_presets": list(PRESETS),
     "default_names": list(DEFAULT_OBJECT_NAMES),
     "safe_area_insets": {
@@ -195,6 +196,7 @@ def _load_machine_settings() -> dict[str, Any]:
         from sentinel.common.settings import GlobalSettings
 
         settings["standard_fps"] = GlobalSettings.get_standard_fps()
+        settings["slate"] = GlobalSettings.get_snapshot_slate()
     except Exception:
         pass
     return settings
@@ -301,7 +303,7 @@ def _validate_key(key: str, value: Any) -> tuple[bool, Any, str | None]:
             return True, value, None
         return False, None, "expected an int >= 0"
 
-    if key == "gates_enabled":
+    if key in {"gates_enabled", "slate"}:
         if isinstance(value, bool):
             return True, value, None
         return False, None, "expected a bool"

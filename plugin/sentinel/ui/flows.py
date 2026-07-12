@@ -27,6 +27,7 @@ from sentinel.snapshots import (
     _convert_exr_to_png,
     _find_latest_exr,
     _get_stills_dir,
+    build_slate_data,
 )
 from sentinel.versioning import (
     _sanitize_status,
@@ -483,6 +484,14 @@ def collect_scene(doc, artist_name):
         except Exception as e:
             safe_print(f"Scene Collector: Could not pre-load notes: {e}")
 
+    # Capture the client report sidecar (<base>_report.html) before SaveProject
+    # moves the doc — its base is already version-stripped, so it copies into the
+    # delivery under the clean <original_base>_report.html name unchanged.
+    from sentinel.versioning import report_html_path
+    original_report_path = report_html_path(original_full_path)
+    if original_report_path and not os.path.exists(original_report_path):
+        original_report_path = None
+
     original_baseline_path = _baseline_path_for_doc(doc, only_existing=True)
     original_baseline_entries = []
     if original_baseline_path:
@@ -751,6 +760,17 @@ def collect_scene(doc, artist_name):
         if baseline_collection_active:
             manifest["baseline"] = {"sidecar": os.path.basename(original_baseline_path or ""), "acceptances": []}
 
+    # ── Copy the client HTML report into the delivery (clean name) ──
+    if original_report_path:
+        try:
+            import shutil
+            delivery_report_name = f"{original_base}_report.html"
+            shutil.copy2(original_report_path, os.path.join(target_dir, delivery_report_name))
+            manifest["client_report"] = delivery_report_name
+            safe_print(f"Scene Collector: Client report copied to delivery: {delivery_report_name}")
+        except Exception as e:
+            safe_print(f"Scene Collector: Could not copy client report: {e}")
+
     if rules_collection_active:
         try:
             import shutil
@@ -808,8 +828,17 @@ def snapshot_save_still(doc, artist_name):
 
     safe_print(f"Converting {os.path.basename(exr_path)} -> {png_path}")
 
+    # Resolve opt-in review slate (project rules > machine setting > default OFF)
+    slate_data = None
+    try:
+        rules_context = _active_rules_for_doc(doc)
+        if bool(rules_context.params.get("slate", False)):
+            slate_data = build_slate_data(doc, artist_name)
+    except Exception as e:
+        safe_print(f"Slate resolution skipped: {e}")
+
     # Convert
-    success, error = _convert_exr_to_png(exr_path, png_path)
+    success, error = _convert_exr_to_png(exr_path, png_path, slate_data=slate_data)
     if not success:
         c4d.gui.MessageDialog(f"Conversion failed:\n{error}")
         return
