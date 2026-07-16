@@ -205,3 +205,38 @@ class TestManifestIO:
         assert manifest.write_manifest_json(bad, str(target)) is False
         assert not target.exists()
         assert not list(tmp_path.glob("*.tmp.*"))
+
+
+class TestRealisticPackageTree:
+    """Simula el árbol que SaveProject produce: tex/ + subcarpetas +
+    una referencia externa y una perdida — el caso de la entrega real."""
+
+    def test_mixed_package(self, tmp_path):
+        pkg = tmp_path / "delivery"
+        (pkg / "tex").mkdir(parents=True)
+        (pkg / "tex" / "wood.jpg").write_bytes(b"x" * 100)
+        (pkg / "tex" / "hdr.exr").write_bytes(b"x" * 100)
+        external = tmp_path / "shared_lib" / "metal.jpg"
+        external.parent.mkdir()
+        external.write_bytes(b"x")
+
+        records = [
+            _record("tex/wood.jpg", str(pkg / "tex" / "wood.jpg"), "ok"),
+            _record("tex/hdr.exr", str(pkg / "tex" / "hdr.exr"), "ok",
+                    source_type="rs_object_fileref", channel="Dome HDR"),
+            _record(str(external), str(external), "absolute",
+                    host_name="MAT_metal"),
+            _record("caches/sim.abc", str(pkg / "caches" / "sim.abc"),
+                    "missing", source_type="alembic"),
+        ]
+        entries = manifest.build_asset_entries(records, str(pkg))
+        m = manifest.merge_into_manifest(
+            {"sentinel_manifest": True}, entries, "ok",
+            [{"plugin_id": 1028083, "name": "Alembic"}])
+        s = m["asset_summary"]
+        assert (s["collected"], s["missing"], s["external"]) == (2, 1, 1)
+
+        # Recepción: el receptor pierde el HDR al transferir.
+        (pkg / "tex" / "hdr.exr").unlink()
+        v = manifest.verify_package(m, str(pkg))
+        assert v["lost"] == [os.path.join("tex", "hdr.exr")]
