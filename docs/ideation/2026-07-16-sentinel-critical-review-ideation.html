@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ideación: Revisión crítica de Sentinel — estado, features y siguientes pasos</title>
+<style>
+  :root{
+    --bg:#faf9f7; --ink:#22252a; --muted:#6b7280; --line:#e5e2dc;
+    --card:#ffffff; --accent:#0f6f5c; --accent-soft:#e7f2ef; --accent-text:#0c5a4b;
+    --warn:#b45309; --warn-soft:#fdf3e3; --warn-text:#92400e;
+    --danger:#b91c1c; --danger-soft:#fdecec; --danger-text:#991b1b;
+    --info:#1d4ed8; --info-soft:#e8eefc; --info-text:#1e40af;
+    --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .page{max-width:900px;margin-inline:auto;padding:48px 28px 80px;}
+  p,li{max-width:72ch}
+  h1{font-size:1.8rem;line-height:1.25;margin:.2em 0 .3em}
+  h2{font-size:1.3rem;margin:2.2em 0 .6em;padding-top:.6em;border-top:1px solid var(--line)}
+  h3{font-size:1.08rem;margin:1.4em 0 .4em}
+  code{font-family:var(--mono);font-size:.86em;background:#f0eee9;padding:.1em .35em;border-radius:4px}
+  a{color:var(--accent-text)}
+  .eyebrow{font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600}
+  .meta{display:flex;flex-wrap:wrap;gap:.5em 1.6em;color:var(--muted);font-size:.88rem;margin:.4em 0 0}
+  .meta b{color:var(--ink);font-weight:600}
+  .stats{display:flex;flex-wrap:wrap;gap:12px;margin:26px 0 8px}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 18px;min-width:130px}
+  .stat .n{font-size:1.5rem;font-weight:700;line-height:1.15}
+  .stat .l{font-size:.78rem;color:var(--muted)}
+  .verdict{background:var(--warn-soft);border:1px solid #f0dcbb;border-radius:10px;padding:16px 20px;margin:22px 0}
+  .verdict .eyebrow{color:var(--warn-text)}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:.92rem}
+  th{text-align:left;font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+     border-bottom:2px solid var(--line);padding:8px 10px}
+  td{border-bottom:1px solid var(--line);padding:9px 10px;vertical-align:top}
+  .chip{display:inline-block;border-radius:999px;padding:.14em .7em;font-size:.74rem;font-weight:600;white-space:nowrap}
+  .chip.ok{background:var(--accent-soft);color:var(--accent-text)}
+  .chip.warn{background:var(--warn-soft);color:var(--warn-text)}
+  .chip.danger{background:var(--danger-soft);color:var(--danger-text)}
+  .chip.info{background:var(--info-soft);color:var(--info-text)}
+  .chip.gray{background:#efedea;color:#57534e}
+  .jump{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 20px;margin:16px 0 26px}
+  .jump ol{margin:.3em 0 0;padding-left:1.3em}
+  .jump li{margin:.25em 0}
+  article.idea{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:22px 26px;margin:22px 0}
+  article.idea h3{margin:0 0 .35em;font-size:1.15rem}
+  .idea-chips{display:flex;flex-wrap:wrap;gap:8px;margin:.2em 0 1em}
+  dl.fields{margin:1em 0 0}
+  dl.fields dt{font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);
+    font-weight:700;margin-top:.9em}
+  dl.fields dd{margin:.25em 0 0}
+  figure{margin:1.4em 0;padding:16px;background:#fbfaf8;border:1px solid var(--line);border-radius:10px}
+  figure svg{display:block;max-width:100%;height:auto}
+  figcaption{font-size:.8rem;color:var(--muted);margin-top:10px}
+  footer.composition-signal{margin-top:56px;padding-top:16px;border-top:1px solid var(--line);
+    font-size:.8rem;color:var(--muted)}
+  .overflow{overflow-x:auto}
+</style>
+</head>
+<body>
+<div class="page">
+
+<span class="eyebrow">Ideación · ce-ideate</span>
+<h1>Revisión crítica de Sentinel — estado, features y siguientes pasos</h1>
+<div class="meta">
+  <span>Fecha: <b><time datetime="2026-07-16">2026-07-16</time></b></span>
+  <span>Topic: <b>sentinel-critical-review</b></span>
+  <span>Modo: <b>repo-grounded</b></span>
+</div>
+<div class="meta" style="margin-top:.5em">
+  <span>Focus: revisión crítica del estado del plugin Sentinel (C4D QC/workflow), sus features, roadmap y siguientes pasos — con Octane mencionado explícitamente como contexto.</span>
+</div>
+
+<div class="stats">
+  <div class="stat"><div class="n">48</div><div class="l">ideas crudas (6 frames)</div></div>
+  <div class="stat"><div class="n">7</div><div class="l">supervivientes</div></div>
+  <div class="stat"><div class="n">13</div><div class="l">rechazadas / fusionadas</div></div>
+  <div class="stat"><div class="n">5/5</div><div class="l">ejes cubiertos</div></div>
+</div>
+
+<h2 id="grounding">Grounding Context</h2>
+
+<p><strong>Contexto de código.</strong> Sentinel v1.9.0 (rumbo a v1.10), plugin Python para C4D 2026: bootstrap <code>.pyp</code> de 115 líneas + paquete modular <code>sentinel/</code>. 12 checks QC declarativos en <code>qc/registry.py</code>, reglas por proyecto (<code>sentinel_rules.json</code>), baseline de violaciones aceptadas, quality gates (I3, flag apagado por defecto), Smart Save con etiquetas de estado, tag Sentinel Frame multi-formato (v1.8.0), validación post-render en disco (I1, v1.9.0), AOVs RS por tiers, Texture Repathing multi-renderer, Scene Collector, snapshots EXR→PNG ACES, panel de supervisor (I5), installer + doctor (I6), slate de revisión + informe HTML de cliente (I7). pytest 171+. Arquitectura asentada: motor puro stdlib + adaptador C4D fino, sidecars separados por concern, política de recarga «reiniciar C4D».</p>
+
+<p><strong>Trabajo en vuelo (uncommitted).</strong> 7 ficheros modificados alrededor de <code>snapshots.py</code>, <code>panel.py</code>, <code>flows.py</code>, <code>dialogs.py</code> + un test nuevo <code>tests/test_snapshot_watch.py</code> — remate de I7 / vigilancia de snapshots aún sin cerrar.</p>
+
+<p><strong>Hallazgos de la revisión crítica</strong> (los que motivan el ranking):</p>
+<ul>
+  <li><strong>Velocidad &gt; verificación.</strong> I5, I6 e I7 shippearon en ~2 semanas, y la lección más cara del proyecto (postrender pasó pytest 171/171 + 2 revisiones adversariales y aun así llegó a producción con <em>dos</em> falsos positivos) dice que el peldaño de datos reales es obligatorio para features de filesystem. Ninguna de las tres lo ha pasado.</li>
+  <li><strong>Valor construido pero dormido.</strong> Los gates existen desde v1.7.0 con <code>gates_enabled</code> apagado; la severidad FAIL/WARN se formalizó en v1.6.0 con la ponderación «diferida al trabajo de gates» — condición ya cumplida sin que nadie volviera. El watchdog avisa pero no protege.</li>
+  <li><strong>Un superviviente huérfano.</strong> Del ranking del 2026-07-03, todo shippeó (I1, I2, I3, I5, I6, I7 + Sentinel Frame) excepto <strong>I4 «Collect confiable»</strong> — precisamente el que ataca el dolor externo más documentado (Save with Assets poco fiable, entregas sin garantía).</li>
+  <li><strong>Un rechazo cuyo bloqueador desapareció.</strong> El estimador de coste/tiempo de render se rechazó por «no hay historial de render»; I1 ahora escribe <code>&lt;base&gt;_render_history.json</code> en cada validación. El dato se persiste y nada lo lee.</li>
+  <li><strong>Redshift-céntrico de facto sin declararlo.</strong> En una escena Octane varios checks devuelven OK no porque la escena esté bien sino porque no saben mirar — exactamente el anti-patrón «confianza falsa» que la auditoría de 2026-06-12 nombró como riesgo rector. La API Python de Octane permite leer/escribir AOVs, materiales y rutas de textura vía tags/BaseContainers, pero no ofrece introspección del node-graph (sin walk tipo <code>maxon.GraphNode</code>).</li>
+  <li><strong>Features de equipo sin historia de adopción.</strong> Rules compartidas, baseline, supervisor y gates presuponen equipo, pero el ruleset se escribe a mano en JSON (fricción de arranque), no hay canal de distribución ni detección de version-skew entre máquinas, y las lecciones institucionales viven dispersas (docs/audit + KTDs de docs/plans + CLAUDE.md, sin <code>docs/solutions/</code>).</li>
+</ul>
+
+<p><strong>Aprendizajes previos aplicados.</strong> Barra de «confianza falsa» (un verde que miente es peor que ningún reporte); peldaño de datos de producción reales obligatorio para features filesystem/render; gotcha de conflicted-copies de Synology en sidecars compartidos; el loop Codex⇄Fable como fábrica; el Rejection Summary de la ideación 2026-07-03 respetado como constraint (nada rechazado se re-propone salvo cambio demostrable del bloqueador).</p>
+
+<p><strong>Contexto externo.</strong> El sanity check de Deadline es el pariente más cercano (niveles FATAL/corregible/aviso + hook <code>CustomSanityChecks.py</code> por estudio); Prism/Kitsu ocupan el tier PM por encima; no se encontró competidor directo de QC en el nicho C4D — el hueco sigue abierto; aescripts es el canal de distribución probado (no existe marketplace de Maxon); dolores documentados de artistas: ~20% de primeras submissions a granja fallan por rutas, «Save Project with Assets» omite referencias de RS Proxy, el caos de versionado manual es la norma.</p>
+
+<h2 id="axes">Topic Axes</h2>
+<ol>
+  <li><strong>Consolidación y confianza</strong> — deuda de verificación de lo recién shippeado, activación de gates, peso de severidad, captura de learnings.</li>
+  <li><strong>Alcance de renderer</strong> — Redshift-céntrico vs Octane / multi-renderer.</li>
+  <li><strong>Flujo de equipo y revisión</strong> — supervisor, reglas compartidas, informe cliente, sincronización con trackers.</li>
+  <li><strong>Entrega y granja</strong> — I4, pre-flight de farm, estimación de coste, matriz de entregables.</li>
+  <li><strong>Producto y adopción</strong> — distribución, onboarding, activación, posicionamiento.</li>
+</ol>
+
+<h2 id="ranked">Ranked Ideas</h2>
+
+<div class="jump">
+  <span class="eyebrow">Índice</span>
+  <ol>
+    <li><a href="#i1">Fábrica de confianza — consolidar antes de añadir</a></li>
+    <li><a href="#i2">Gobernanza con dientes — gates ON, severidad con peso, excepciones visibles</a></li>
+    <li><a href="#i3">I4 · Collect confiable — manifiesto hasheado + certificado autoverificable</a></li>
+    <li><a href="#i4">Farm Pre-flight — la submission falla en tu máquina, no en la granja</a></li>
+    <li><a href="#i5">Octane honesto — matriz de capacidades por renderer</a></li>
+    <li><a href="#i6">Reglas por ejemplo — inferir el ruleset de una escena dorada</a></li>
+    <li><a href="#i7">Decisión de identidad — ¿herramienta interna o producto?</a></li>
+  </ol>
+</div>
+
+<article class="idea" id="i1">
+  <h3>1. Fábrica de confianza — consolidar antes de añadir</h3>
+  <div class="idea-chips">
+    <span class="chip info">Eje 1 · Consolidación y confianza</span>
+    <span class="chip ok">Confianza 90%</span>
+    <span class="chip gray">Complejidad Baja–Media</span>
+  </div>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>Un ciclo deliberado de consolidación, sin features nuevas, con cuatro entregables: <strong>(a)</strong> cerrar y verificar el trabajo in-flight de snapshot-watch (incluyendo el «guardián del formato»: si llegan snapshots no-EXR — la única limitación «verified unfixable» del plugin — avisar una vez por sesión con el recordatorio exacto); <strong>(b)</strong> pasar I5 (agregación de carpeta), I6 (doctor) e I7 (slate + informe HTML) contra carpetas y escenas de producción reales, el peldaño que ninguno ha pisado; <strong>(c)</strong> institucionalizar el loop incidente→fixture: un comando «Reportar falso positivo» en el panel que captura contexto exacto (check, escena, ruleset, versión) en <code>sentinel_incidents/</code>, más la serialización del árbol de disco observado (nombres, tamaños, mtimes — sin píxeles) como fixture de regresión cuando un run real destapa un bug; <strong>(d)</strong> consolidar las lecciones dispersas en <code>docs/solutions/</code> y hacer que el grounding del loop Codex⇄Fable las lea siempre.</dd>
+    <dt>Basis</dt>
+    <dd><code>direct:</code> «the first real production run caught two false-positives pytest+review missed» (CLAUDE.md v1.9.0) + memoria <em>validate-on-real-render-data</em>; I5/I6/I7 mergeados en ~2 semanas sin ese peldaño; 7 ficheros uncommitted + <code>tests/test_snapshot_watch.py</code> nuevo en git status. <code>external:</code> el ASRS de NASA/FAA (reporte de incidentes blame-free que alimenta boletines) como modelo del loop incidente→fixture.</dd>
+    <dt>Rationale</dt>
+    <dd>La velocidad de shipping actual supera la velocidad de verificación con datos reales, y el patrón que ya mordió una vez (falsos positivos que pytest + review no ven) es estadísticamente seguro que se repita en el supervisor panel — que agrega filesystem igual que postrender. Consolidar ahora es más barato que depurar en producción después, y el loop incidente→fixture convierte la lección de una regla escrita que hay que recordar en un mecanismo que funciona solo.</dd>
+    <dt>Downsides</dt>
+    <dd>Una semana sin features visibles; el corpus de fixtures de producción necesita cuidado con rutas/nombres sensibles de cliente (anonimizar); el comando de reporte añade una superficie de UI pequeña.</dd>
+  </dl>
+  <figure>
+    <svg viewBox="0 0 720 150" role="img" aria-label="Loop incidente a fixture">
+      <defs><marker id="ar1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6b7280"/></marker></defs>
+      <rect x="10" y="45" width="150" height="52" rx="9" fill="#fdf3e3" stroke="#e8c98a"/>
+      <text x="85" y="66" text-anchor="middle" font-size="12" font-weight="600" fill="#92400e">Falso positivo</text>
+      <text x="85" y="83" text-anchor="middle" font-size="11" fill="#92400e">en producción real</text>
+      <rect x="205" y="45" width="150" height="52" rx="9" fill="#ffffff" stroke="#d3d0c9"/>
+      <text x="280" y="66" text-anchor="middle" font-size="12" font-weight="600" fill="#22252a">Reporte 1-clic</text>
+      <text x="280" y="83" text-anchor="middle" font-size="11" fill="#6b7280">check · escena · ruleset</text>
+      <rect x="400" y="45" width="150" height="52" rx="9" fill="#ffffff" stroke="#d3d0c9"/>
+      <text x="475" y="66" text-anchor="middle" font-size="12" font-weight="600" fill="#22252a">Árbol de disco</text>
+      <text x="475" y="83" text-anchor="middle" font-size="11" fill="#6b7280">serializado (sin píxeles)</text>
+      <rect x="595" y="45" width="115" height="52" rx="9" fill="#e7f2ef" stroke="#9cc9be"/>
+      <text x="652" y="66" text-anchor="middle" font-size="12" font-weight="600" fill="#0c5a4b">Fixture de</text>
+      <text x="652" y="83" text-anchor="middle" font-size="12" font-weight="600" fill="#0c5a4b">regresión</text>
+      <line x1="160" y1="71" x2="203" y2="71" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ar1)"/>
+      <line x1="355" y1="71" x2="398" y2="71" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ar1)"/>
+      <line x1="550" y1="71" x2="593" y2="71" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ar1)"/>
+      <path d="M 652 97 L 652 128 L 85 128 L 85 99" fill="none" stroke="#9cc9be" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#ar1)"/>
+      <text x="368" y="122" text-anchor="middle" font-size="11" fill="#0c5a4b" style="paint-order:stroke fill" stroke="#fbfaf8" stroke-width="3">el mismo bug nunca vuelve a escaparse</text>
+    </svg>
+    <figcaption>Ilustrativo: hoy este circuito depende de la memoria de una persona; la idea lo vuelve mecánico.</figcaption>
+  </figure>
+</article>
+
+<article class="idea" id="i2">
+  <h3>2. Gobernanza con dientes — gates ON, severidad con peso, excepciones visibles</h3>
+  <div class="idea-chips">
+    <span class="chip info">Eje 1 · Consolidación y confianza</span>
+    <span class="chip ok">Confianza 85%</span>
+    <span class="chip gray">Complejidad Media</span>
+  </div>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>Convertir tres piezas cosméticas en un sistema con consecuencias, en tres pasos graduales. <strong>(a) Modo sombra:</strong> gates activos por defecto pero sin bloquear — registran qué <em>habría</em> pasado (qué check, qué severidad, qué hizo el usuario); tras N sesiones el panel presenta la evidencia («el gate te habría avisado 14 veces este mes, 3 eran FAIL») y ofrece activar el modo real. <strong>(b) Semántica MEL</strong> (Minimum Equipment List de aviación) gobernada por el ruleset del proyecto, no por settings de máquina: cada check es NO-GO (bloquea Save/Collect), GO-IF-DOCUMENTED (pasa solo con acceptance en baseline — autor + razón, que ya existe) o GO (informativo); el score pondera por ese nivel y el header puede leerse como veredictos por audiencia («¿listo para render / revisión / entrega?») en vez de un X/12 plano. <strong>(c) Excepciones visibles:</strong> cada «proceed anyway» y cada acceptance se persiste, y el panel de supervisor (I5) gana una pestaña «Excepciones» agregada por carpeta — el tablero andon que hace socialmente viable endurecer los gates.</dd>
+    <dt>Basis</dt>
+    <dd><code>direct:</code> «gated behind a <code>gates_enabled</code> flag (off by default)» (v1.7.0) y «weighting is deferred to the gates work» (v1.6.0) — la condición del aplazamiento se cumplió y nadie volvió. La infraestructura entera existe: severidad per-check en el ruleset con precedencia proyecto&gt;máquina, GateTriageDialog, baseline con autor+razón. <code>external:</code> MEL FAA/EASA (despacho con deficiencias documentadas, no perfección binaria) + andon de Toyota / audit-trail SOX para los overrides. 5 de los 6 frames de ideación convergieron aquí de forma independiente.</dd>
+    <dt>Rationale</dt>
+    <dd>Un gate que cada artista puede dejar apagado no es un gate, es una sugerencia — y garantiza que quien más lo necesita nunca lo enciende. El modelo binario (bloquea todo / no bloquea nada) es lo que da miedo activar; la gradación MEL es exactamente la solución que la aviación inventó para ese dilema, y mapea 1:1 sobre piezas ya construidas. Es la definición de apalancamiento retroactivo: una decisión multiplica el valor de los 12 checks existentes y de cada check futuro.</dd>
+    <dt>Downsides</dt>
+    <dd>Cambia el contrato con el artista (de avisar a intervenir) — necesita el modo sombra como rampa para no quemar confianza; la pestaña de excepciones roza vigilancia si se comunica mal (es calibración de checks, no fichaje de personas); tocar el score visible requiere cuidado con la serie histórica (precedente: el render «X/12 (legacy)» de v1.6.0).</dd>
+  </dl>
+  <figure>
+    <svg viewBox="0 0 720 170" role="img" aria-label="Tres niveles MEL">
+      <rect x="10" y="30" width="220" height="110" rx="10" fill="#fdecec" stroke="#e7b3b3"/>
+      <text x="120" y="56" text-anchor="middle" font-size="13" font-weight="700" fill="#991b1b">NO-GO</text>
+      <text x="120" y="78" text-anchor="middle" font-size="11" fill="#991b1b">bloquea Save / Collect</text>
+      <text x="120" y="96" text-anchor="middle" font-size="11" fill="#991b1b">ej.: texturas rotas,</text>
+      <text x="120" y="112" text-anchor="middle" font-size="11" fill="#991b1b">rango de frames inválido</text>
+      <rect x="250" y="30" width="220" height="110" rx="10" fill="#fdf3e3" stroke="#e8c98a"/>
+      <text x="360" y="56" text-anchor="middle" font-size="13" font-weight="700" fill="#92400e">GO-IF-DOCUMENTED</text>
+      <text x="360" y="78" text-anchor="middle" font-size="11" fill="#92400e">pasa solo con acceptance</text>
+      <text x="360" y="96" text-anchor="middle" font-size="11" fill="#92400e">en baseline (autor + razón,</text>
+      <text x="360" y="112" text-anchor="middle" font-size="11" fill="#92400e">ya existe desde v1.6.0)</text>
+      <rect x="490" y="30" width="220" height="110" rx="10" fill="#e7f2ef" stroke="#9cc9be"/>
+      <text x="600" y="56" text-anchor="middle" font-size="13" font-weight="700" fill="#0c5a4b">GO</text>
+      <text x="600" y="78" text-anchor="middle" font-size="11" fill="#0c5a4b">informativo, no gatea</text>
+      <text x="600" y="96" text-anchor="middle" font-size="11" fill="#0c5a4b">ej.: nombres default</text>
+      <text x="600" y="112" text-anchor="middle" font-size="11" fill="#0c5a4b">en un WIP temprano</text>
+      <text x="360" y="162" text-anchor="middle" font-size="11" fill="#6b7280">La clasificación vive en el ruleset del proyecto — el proyecto decide, no cada artista.</text>
+    </svg>
+    <figcaption>Ilustrativo: la política de despacho graduada que hace activable el gate sin volverlo binario.</figcaption>
+  </figure>
+</article>
+
+<article class="idea" id="i3">
+  <h3>3. I4 · Collect confiable — manifiesto hasheado + certificado autoverificable</h3>
+  <div class="idea-chips">
+    <span class="chip warn">Eje 4 · Entrega y granja</span>
+    <span class="chip ok">Confianza 85%</span>
+    <span class="chip gray">Complejidad Media</span>
+  </div>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>Cerrar el único superviviente no shippeado del ranking anterior, con un giro que lo diferencia de cualquier «save with assets»: el Collect genera un <strong>manifiesto de dependencias</strong> construido sobre <code>scan_all_texture_paths</code> (que ya cubre RS/Arnold/Octane/clásico/ABC — ~70% del descubrimiento hecho) con hash SHA-256, origen y estado (copiado / embebido / faltante) por asset, hace <strong>re-scan post-copia</strong> para detectar lo que quedó fuera, y emite un <strong>certificado de entrega</strong> que ata manifiesto + score QC + baseline activo + ruleset efectivo. Dentro del paquete viaja un <code>verify.py</code> stdlib: el receptor (cliente, granja, otro estudio) valida integridad y completitud sin C4D ni Sentinel. El informe HTML de I7 enlaza el certificado.</dd>
+    <dt>Basis</dt>
+    <dd><code>direct:</code> I4 es el único superviviente sin shipear de la ideación 2026-07-03; el escáner multi-mecanismo de v1.5.7 ya existe como oráculo de completitud. <code>external:</code> «Save Project with Assets» poco fiable y omite referencias de RS Proxy (dolor documentado de artistas); SBOM (SPDX/CycloneDX) + attestations (in-toto/SLSA) como esqueleto probado de «qué contiene este paquete y quién lo garantiza» — el rechazo previo del «certificado standalone» caía por ser certificado sin manifiesto; juntos son exactamente lo que I4 pedía.</dd>
+    <dt>Rationale</dt>
+    <dd>Convierte «creo que copié todo» en «puedo probar que copié todo». Cierra la promesa del arco: Sentinel protegía hasta el botón de render (QC) y después del render (I1); la entrega — el momento de mayor consecuencia comercial — sigue sin garantía. La entrega se defiende sola, sin servidor, coherente con la filosofía sidecar del plugin, y la disputa con cliente («faltaba una textura») se resuelve con el certificado, no con memoria.</dd>
+    <dt>Downsides</dt>
+    <dd>Hashear entregas grandes cuesta tiempo (mitigable: hash en paralelo / opcional por tamaño); dependencias fuera del alcance del escáner actual (plugins requeridos, fuentes) necesitan inventario propio; obligatorio el peldaño de carpeta de producción real antes de merge (lección I1).</dd>
+  </dl>
+  <figure>
+    <svg viewBox="0 0 720 130" role="img" aria-label="Cadena de custodia de la entrega">
+      <defs><marker id="ar3" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6b7280"/></marker></defs>
+      <rect x="10" y="35" width="130" height="56" rx="9" fill="#ffffff" stroke="#d3d0c9"/>
+      <text x="75" y="58" text-anchor="middle" font-size="12" font-weight="600" fill="#22252a">Escena</text>
+      <text x="75" y="76" text-anchor="middle" font-size="11" fill="#6b7280">v012_FINAL</text>
+      <rect x="185" y="35" width="160" height="56" rx="9" fill="#ffffff" stroke="#d3d0c9"/>
+      <text x="265" y="58" text-anchor="middle" font-size="12" font-weight="600" fill="#22252a">Collect + re-scan</text>
+      <text x="265" y="76" text-anchor="middle" font-size="11" fill="#6b7280">nada se queda fuera</text>
+      <rect x="390" y="35" width="160" height="56" rx="9" fill="#e8eefc" stroke="#a9bdf0"/>
+      <text x="470" y="58" text-anchor="middle" font-size="12" font-weight="600" fill="#1e40af">Manifiesto + certificado</text>
+      <text x="470" y="76" text-anchor="middle" font-size="11" fill="#1e40af">SHA-256 · QC · baseline</text>
+      <rect x="595" y="35" width="115" height="56" rx="9" fill="#e7f2ef" stroke="#9cc9be"/>
+      <text x="652" y="58" text-anchor="middle" font-size="12" font-weight="600" fill="#0c5a4b">verify.py</text>
+      <text x="652" y="76" text-anchor="middle" font-size="11" fill="#0c5a4b">sin C4D</text>
+      <line x1="140" y1="63" x2="183" y2="63" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ar3)"/>
+      <line x1="345" y1="63" x2="388" y2="63" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ar3)"/>
+      <line x1="550" y1="63" x2="593" y2="63" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ar3)"/>
+      <text x="360" y="118" text-anchor="middle" font-size="11" fill="#6b7280">La confianza viaja dentro del paquete — el receptor no necesita Sentinel.</text>
+    </svg>
+    <figcaption>Ilustrativo: cadena de custodia de la entrega, del collect al receptor.</figcaption>
+  </figure>
+</article>
+
+<article class="idea" id="i4">
+  <h3>4. Farm Pre-flight — la submission falla en tu máquina, no en la granja</h3>
+  <div class="idea-chips">
+    <span class="chip warn">Eje 4 · Entrega y granja</span>
+    <span class="chip ok">Confianza 75%</span>
+    <span class="chip gray">Complejidad Media</span>
+  </div>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>Un botón «Farm Pre-flight» que valida la escena <em>desde la perspectiva del render node</em>, no en abstracto: perfil curado del registry (rutas absolutas / texturas en disco local o de usuario, RS Proxies y cachés resolubles, output path escribible y con tokens, rango/FPS) más un mapeo local→farm configurable en <code>sentinel_rules.json</code> para re-resolver cada ruta como la vería otra máquina. Exporta un <code>preflight.json</code> que un hook <code>CustomSanityChecks.py</code> de Deadline puede consumir — los mismos checks del panel bloquean el submit. Incluye la primera métrica prospectiva del plugin: <strong>estimador de duración y disco</strong> del rango pendiente («faltan 180 frames ≈ 6.2 h, ~14 GB según las últimas 3 sesiones») derivado de los mtimes de <code>&lt;base&gt;_render_history.json</code> — el rechazo previo del estimador citaba «no hay historial», e I1 lo creó.</dd>
+    <dt>Basis</dt>
+    <dd><code>external:</code> ~20% de primeras submissions a granja fallan por rutas (dolor documentado #1); Deadline resuelve esto server-side con su Sanity Check + hook por estudio — nadie lo hace client-side en C4D; PitStop/«Certified PDF» como precedente del preflight-por-destino en otra industria de producción visual. <code>direct:</code> postrender ya predice nombres en disco (StringConvertTokens + RS <code>EFFECTIVE_PATH</code>) — la mitad del motor existe; <code>detect_stale_cluster</code> ya razona sobre mtimes por sesión, la primitiva del estimador.</dd>
+    <dt>Rationale</dt>
+    <dd>Mueve el descubrimiento del fallo de «2 horas después, en la cola de la granja, de noche» a «10 segundos antes de enviar». Complementa I4 sin duplicarlo: collect empaqueta con prueba, pre-flight valida sin empaquetar. Y planta la primera integración con un sistema externo real (Deadline), que posiciona a Sentinel dentro del pipeline del estudio, no solo dentro de C4D.</dd>
+    <dt>Downsides</dt>
+    <dd>El path-map local→farm exige configuración honesta (y varía por estudio); el estimador necesita presentación actuarial (rango, no cifra exacta) para no generar la confianza falsa que el plugin combate; sin acceso a una instalación Deadline real, el hook se valida contra su documentación — marcar como experimental hasta probarlo en granja real.</dd>
+  </dl>
+  <figure>
+    <svg viewBox="0 0 720 150" role="img" aria-label="Antes y después del pre-flight">
+      <defs><marker id="ar4" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6b7280"/></marker></defs>
+      <text x="14" y="28" font-size="11" font-weight="700" fill="#991b1b" letter-spacing="1">HOY</text>
+      <rect x="10" y="38" width="120" height="40" rx="8" fill="#ffffff" stroke="#d3d0c9"/>
+      <text x="70" y="62" text-anchor="middle" font-size="11" fill="#22252a">Submit 19:00</text>
+      <rect x="175" y="38" width="120" height="40" rx="8" fill="#ffffff" stroke="#d3d0c9"/>
+      <text x="235" y="62" text-anchor="middle" font-size="11" fill="#22252a">Cola de granja</text>
+      <rect x="340" y="38" width="150" height="40" rx="8" fill="#fdecec" stroke="#e7b3b3"/>
+      <text x="415" y="56" text-anchor="middle" font-size="11" font-weight="600" fill="#991b1b">Job muerto 21:00</text>
+      <text x="415" y="70" text-anchor="middle" font-size="10" fill="#991b1b">textura en el Desktop</text>
+      <line x1="130" y1="58" x2="173" y2="58" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ar4)"/>
+      <line x1="295" y1="58" x2="338" y2="58" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ar4)"/>
+      <text x="14" y="112" font-size="11" font-weight="700" fill="#0c5a4b" letter-spacing="1">CON PRE-FLIGHT</text>
+      <rect x="10" y="120" width="200" height="22" rx="8" fill="#e7f2ef" stroke="#9cc9be"/>
+      <text x="110" y="135" text-anchor="middle" font-size="10.5" fill="#0c5a4b">Pre-flight 18:59 · 3 rutas irresolubles</text>
+      <rect x="255" y="120" width="150" height="22" rx="8" fill="#ffffff" stroke="#d3d0c9"/>
+      <text x="330" y="135" text-anchor="middle" font-size="10.5" fill="#22252a">arreglo en 5 min</text>
+      <rect x="450" y="120" width="180" height="22" rx="8" fill="#e7f2ef" stroke="#9cc9be"/>
+      <text x="540" y="135" text-anchor="middle" font-size="10.5" fill="#0c5a4b">render completo a las 07:00</text>
+      <line x1="210" y1="131" x2="253" y2="131" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ar4)"/>
+      <line x1="405" y1="131" x2="448" y2="131" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ar4)"/>
+    </svg>
+    <figcaption>Ilustrativo: el mismo fallo, descubierto antes o después del punto de no retorno.</figcaption>
+  </figure>
+</article>
+
+<article class="idea" id="i5">
+  <h3>5. Octane honesto — matriz de capacidades por renderer</h3>
+  <div class="idea-chips">
+    <span class="chip danger" style="background:var(--info-soft);color:var(--info-text)">Eje 2 · Alcance de renderer</span>
+    <span class="chip ok">Confianza 80% (fase honesta) · 55% (paridad)</span>
+    <span class="chip gray">Complejidad Media–Alta</span>
+  </div>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>Dos fases con valor independiente. <strong>Fase 1 — honestidad:</strong> el registry gana un campo <code>renderer_support</code> por check (full / container-only / n/a); en una escena Octane, los checks que no saben mirar muestran «no verificable en Octane» en gris — en panel, QC Report, informe de cliente — en vez de un OK silencioso que miente. Coste bajo: una propiedad declarativa + detección del renderer activo. <strong>Fase 2 — paridad donde el API llega:</strong> backend Octane a nivel BaseContainer/tags para texturas (el repathing ya escanea los image shaders legacy, ID 1029508), AOVs, presets y output paths, aceptando que sin introspección de node-graph la UX degrada a report-first (ruta + material nombrado, sin «select broken node»).</dd>
+    <dt>Basis</dt>
+    <dd><code>direct:</code> el usuario mencionó Octane explícitamente; <code>textures.py</code> ya cubre shaders Octane legacy. <code>external:</code> API Python de Octane para C4D verificada (foro OTOY): AOVs get/set, materiales, rutas de textura vía tags/BaseContainers — pero «we can not get the selection of the node editor», sin walk de grafo tipo <code>maxon.GraphNode</code>. Los 6 frames de ideación convergieron aquí (con la cautela de que Octane iba nombrado en el brief de todos).</dd>
+    <dt>Rationale</dt>
+    <dd>El riesgo real no es «no soportar Octane» — es soportarlo mal: un check que devuelve OK porque no supo mirar es exactamente el anti-patrón de confianza falsa que la auditoría nombró como riesgo rector. La fase 1 elimina la mentira a coste casi nulo y define la arquitectura (capability por renderer en el registry, el patrón v1.6.0 de «una entrada, no N ediciones») sobre la que la fase 2 — y el tercer renderer que venga — se apoyan.</dd>
+    <dt>Downsides</dt>
+    <dd>La fase 2 es la más cara del ranking y su demanda real depende de cuántos proyectos Octane entren de verdad — de ahí el corte en dos fases; los IDs de Octane requieren sondeo empírico (precedente: <code>RS_AOV_PARAM_IDS.md</code>); mantener dos backends multiplica la matriz de pruebas en vivo.</dd>
+  </dl>
+  <figure>
+    <div class="overflow">
+    <svg viewBox="0 0 720 168" role="img" aria-label="Matriz de capacidades por renderer">
+      <text x="200" y="24" text-anchor="middle" font-size="12" font-weight="700" fill="#22252a">Redshift</text>
+      <text x="420" y="24" text-anchor="middle" font-size="12" font-weight="700" fill="#22252a">Octane hoy (silencio)</text>
+      <text x="620" y="24" text-anchor="middle" font-size="12" font-weight="700" fill="#22252a">Octane honesto</text>
+      <text x="14" y="52" font-size="11.5" fill="#22252a">#6 Texturas</text>
+      <rect x="150" y="38" width="100" height="20" rx="10" fill="#e7f2ef"/><text x="200" y="52" text-anchor="middle" font-size="10.5" fill="#0c5a4b" font-weight="600">verifica</text>
+      <rect x="370" y="38" width="100" height="20" rx="10" fill="#fdecec"/><text x="420" y="52" text-anchor="middle" font-size="10.5" fill="#991b1b" font-weight="600">OK falso</text>
+      <rect x="570" y="38" width="100" height="20" rx="10" fill="#e7f2ef"/><text x="620" y="52" text-anchor="middle" font-size="10.5" fill="#0c5a4b" font-weight="600">container-only</text>
+      <text x="14" y="86" font-size="11.5" fill="#22252a">AOVs</text>
+      <rect x="150" y="72" width="100" height="20" rx="10" fill="#e7f2ef"/><text x="200" y="86" text-anchor="middle" font-size="10.5" fill="#0c5a4b" font-weight="600">verifica</text>
+      <rect x="370" y="72" width="100" height="20" rx="10" fill="#fdecec"/><text x="420" y="86" text-anchor="middle" font-size="10.5" fill="#991b1b" font-weight="600">OK falso</text>
+      <rect x="570" y="72" width="100" height="20" rx="10" fill="#e7f2ef"/><text x="620" y="86" text-anchor="middle" font-size="10.5" fill="#0c5a4b" font-weight="600">verifica</text>
+      <text x="14" y="120" font-size="11.5" fill="#22252a">Select nodo roto</text>
+      <rect x="150" y="106" width="100" height="20" rx="10" fill="#e7f2ef"/><text x="200" y="120" text-anchor="middle" font-size="10.5" fill="#0c5a4b" font-weight="600">sí</text>
+      <rect x="370" y="106" width="100" height="20" rx="10" fill="#fdecec"/><text x="420" y="120" text-anchor="middle" font-size="10.5" fill="#991b1b" font-weight="600">imposible</text>
+      <rect x="570" y="106" width="100" height="20" rx="10" fill="#efedea"/><text x="620" y="120" text-anchor="middle" font-size="10.5" fill="#57534e" font-weight="600">«no disponible»</text>
+      <text x="360" y="154" text-anchor="middle" font-size="11" fill="#6b7280">Un gris honesto vale más que un verde que no miró.</text>
+    </svg>
+    </div>
+    <figcaption>Ilustrativo: el paso de valor no es la paridad — es dejar de mentir por omisión.</figcaption>
+  </figure>
+</article>
+
+<article class="idea" id="i6">
+  <h3>6. Reglas por ejemplo — inferir el ruleset de una escena dorada</h3>
+  <div class="idea-chips">
+    <span class="chip info" style="background:#efe7f6;color:#6b21a8">Eje 3 · Flujo de equipo y revisión</span>
+    <span class="chip ok">Confianza 75%</span>
+    <span class="chip gray">Complejidad Baja–Media</span>
+  </div>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>Un botón «Aprender reglas de esta escena»: Sentinel lee una escena aprobada (o las últimas N versiones del proyecto) y sintetiza un <code>sentinel_rules.json</code> propuesto — FPS observado, start frame, presets presentes, insets de safe-area del Sentinel Frame existente, nombres default tolerados — presentado como diff editable que el supervisor revisa y publica. La autoría de reglas pasa de «leer la doc del schema y redactar JSON» a «señala tu escena buena».</dd>
+    <dt>Basis</dt>
+    <dd><code>external:</code> RuboCop <code>--auto-gen-config</code> / inferencia de config en linters maduros: la configuración se genera desde el estado real, no desde una página en blanco. <code>reasoned:</code> cada campo del schema de rules es <em>observable</em> en una escena que ya cumple, y el motor QC ya lee cada uno de esos valores para compararlos — invertir la dirección (leer→proponer regla) reutiliza los mismos lectores; los defaults embebidos prueban que el formato se serializa desde código.</dd>
+    <dt>Rationale</dt>
+    <dd>Las per-project rules son la feature de equipo más potente de v1.6.0 y probablemente la menos usada, porque exige un acto de autoría manual que nadie hace hasta que duele. Todo el tier de equipo (baseline → gates → supervisor) se apoya sobre las rules; si el paso cero se auto-propone, cada proyecto arranca con reglas reales el día uno. Además alimenta directamente la idea 2: la semántica MEL vive en el mismo fichero.</dd>
+    <dt>Downsides</dt>
+    <dd>Riesgo de canonizar una escena mediocre («dorada» que no lo era) — mitigado por el diff editable y por proponer, nunca publicar solo; algunos campos (severidades, per-check on/off) no son observables y quedan en defaults; decisión de UX sobre dónde publica (carpeta del proyecto vs compartida).</dd>
+  </dl>
+</article>
+
+<article class="idea" id="i7">
+  <h3>7. Decisión de identidad — ¿herramienta interna o producto?</h3>
+  <div class="idea-chips">
+    <span class="chip gray" style="background:#fdf3e3;color:#92400e">Eje 5 · Producto y adopción</span>
+    <span class="chip ok">Confianza 70% (en que la decisión urge)</span>
+    <span class="chip gray">Complejidad: decisión + Baja</span>
+  </div>
+  <dl class="fields">
+    <dt>Description</dt>
+    <dd>No es un build grande: es la decisión que secuencia media docena de ideas pendientes. Instrumentos concretos: <strong>(a)</strong> auditoría «de-Yambificación» — usar «$99 en aescripts mañana» como spec de vergüenza: ¿qué revienta? (defaults hardcodeados del estudio → plantillas de ruleset seleccionables, escena demo, changelog público, canal de updates); <strong>(b)</strong> check de version-skew: dos máquinas con Sentinel distinto validan distinto contra las mismas reglas — aviso «tu Sentinel está desactualizado» contra una fuente compartida (carpeta de estudio o release de GitHub); <strong>(c)</strong> escena de entrenamiento <code>sentinel_training.c4d</code> que viola los 12 checks a propósito — el primer contacto es ver el panel encenderse en rojo y arreglarlo, y sirve igual para onboardear a un freelance que para el vídeo de producto.</dd>
+    <dt>Basis</dt>
+    <dd><code>external:</code> aescripts es el canal probado del nicho (no existe marketplace de Maxon); no se encontró competidor directo de QC para C4D — la ventana está abierta. <code>direct:</code> I6 ya construyó installer + doctor (la mitad dura del onboarding de terceros); «single-artist tool with team features but no distribution story» es el hueco estructural del estado actual. <code>reasoned:</code> usuarios externos son el único generador de datos reales a escala — la lección de los falsos positivos de I1 multiplicada por cien escenas ajenas.</dd>
+    <dt>Rationale</dt>
+    <dd>Un nicho vacío con un solo usuario es la combinación más perecedera que existe: o Sentinel lo ocupa o lo ocupará el siguiente que descubra el hueco. Y aunque nunca se venda, el ejercicio comercial es el mejor detector de deuda de generalización — cada supuesto de Yambo hardcodeado es también fricción para el próximo proyecto propio. La decisión ordena el backlog: rulepacks, CLI headless y training scene solo tienen sentido en un lado de la bifurcación.</dd>
+    <dt>Downsides</dt>
+    <dd>Vender implica soporte, licencias (acuerdo de atribución con Yambo Studio a clarificar), y compromiso de mantenimiento multi-entorno que un plugin interno no tiene; la auditoría en sí es barata, pero abre un frente que compite en foco con consolidar (idea 1) — por eso va última en el ranking pero primera en el calendario de <em>decisiones</em>.</dd>
+  </dl>
+</article>
+
+<h2 id="rejected">Rejection Summary</h2>
+<div class="overflow">
+<table>
+  <tr><th>#</th><th>Idea</th><th>Motivo</th></tr>
+  <tr><td>1</td><td>Veredictos por audiencia (Render/Review/Delivery-ready)</td><td>Fusionada en la idea 2 — es la cara natural del score cuando la severidad pesa.</td></tr>
+  <tr><td>2</td><td>Tablero andon de excepciones para el supervisor</td><td>Fusionada en la idea 2 — prerequisito cultural de activar gates, no feature aparte.</td></tr>
+  <tr><td>3</td><td>Guardián del formato EXR de snapshots</td><td>Fusionada en la idea 1 — es el remate del trabajo snapshot-watch ya in-flight.</td></tr>
+  <tr><td>4</td><td>Estimador de coste/tiempo de render</td><td>Fusionada en la idea 4 como primera métrica prospectiva — el bloqueador («no hay historial») desapareció con I1, pero no justifica carta propia.</td></tr>
+  <tr><td>5</td><td>Escena de entrenamiento como feature aislada</td><td>Fusionada en la idea 7 — pieza del kit de adopción, no independiente.</td></tr>
+  <tr><td>6</td><td>Hook de guardado nativo (caja negra QC pasiva + escolta anti-Cmd+S)</td><td>Basis API sin verificar (<code>MSG_DOCUMENTINFO</code>) + escritura en cada save = churn de sync en Synology; mejor como variante de brainstorm de la idea 2.</td></tr>
+  <tr><td>7</td><td>Presencia multi-artista (<code>_presence.json</code> heartbeat)</td><td>Heartbeats en carpeta sincronizada = generador de conflicted-copies; la falsa presencia (crash/sleep) contradice la barra de confianza falsa; valor bajo con un artista hoy.</td></tr>
+  <tr><td>8</td><td>Vigilante nocturno vía c4dpy</td><td>El licensing sigue sin verificar y el valor lo cubren más barato el corpus (idea 1), el verify embebido (idea 3) y el pre-flight (idea 4); readmitir si aparece demanda multi-escena real.</td></tr>
+  <tr><td>9</td><td><code>sentinel-verify</code> CLI headless standalone</td><td>Consumidor real hoy poco claro (no hay wrangler); sus dos usos concretos ya viven dentro de las ideas 3 (verify.py) y 4 (preflight.json); revisitar con la idea 7.</td></tr>
+  <tr><td>10</td><td>Round-trip de feedback del cliente → TODOs</td><td>Mecanismo dependiente del comportamiento del cliente (export/import de JSON) sin evidencia aún; revisitar cuando el informe HTML de I7 tenga uso real con clientes.</td></tr>
+  <tr><td>11</td><td>Checks inter-escena (el proyecto como unidad de QC)</td><td>Extensión v2 natural del supervisor panel (colisión de outputs entre shots es la semilla buena); por debajo del top-7 hoy.</td></tr>
+  <tr><td>12</td><td>Modo handoff (resumen de recepción al heredar una escena)</td><td>Valor latente en contexto mono-artista; v2 natural de Versions/supervisor cuando haya equipo real.</td></tr>
+  <tr><td>13</td><td>Rulepacks (checks Python custom del estudio)</td><td>Superficie de soporte/seguridad prematura antes de la decisión de identidad (idea 7); el patrón Deadline la valida para después.</td></tr>
+</table>
+</div>
+
+<h2 id="seq">Lectura de conjunto</h2>
+<div class="verdict">
+  <span class="eyebrow">Síntesis crítica</span>
+  <p style="margin:.5em 0 0">El proyecto no tiene un problema de ideas ni de ejecución — seis iniciativas del ranking anterior shippearon en dos semanas. Tiene un problema de <strong>absorción</strong>: features construidas que no ejercen su función (gates apagados, severidad sin peso, un sidecar de render que nadie lee) y un peldaño de verificación con datos reales que la velocidad se está saltando. Por eso el orden propuesto es 1→2 (consolidar y encender lo construido) antes que 3→4 (el cinturón de entrega, el último segmento desprotegido), con la 5 en su fase honesta como parche de integridad barato, la 6 como desbloqueador del tier de equipo, y la 7 como la decisión — no el build — que ordena todo lo demás.</p>
+</div>
+
+<footer class="composition-signal">Compuesto el 2026-07-16 por ce-ideate (repo-grounded) a partir del prompt del usuario, el escaneo del repo Sentinel, los learnings de <code>docs/audit/</code> y <code>docs/plans/</code>, el Rejection Summary de <code>docs/ideation/2026-07-03-sentinel-10x-ideation.html</code> y la investigación externa de la sesión (Deadline, Octane API, aescripts, Prism/Kitsu).</footer>
+
+</div>
+</body>
+</html>
