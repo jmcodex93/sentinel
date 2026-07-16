@@ -123,3 +123,78 @@ class TestSummarize:
             str(tmp_path))
         s = manifest.summarize_assets(entries)
         assert s == {"total": 3, "collected": 1, "missing": 1, "external": 1}
+
+
+class TestMergeIntoManifest:
+    def test_merge_adds_asset_section(self):
+        base = {"sentinel_manifest": True, "qc": {"passed": 11}}
+        entries = [{"path": "tex/a.jpg", "original_path": "tex/a.jpg",
+                    "source_type": "rs_node", "channel": "Diffuse",
+                    "host": "MAT", "state": manifest.ASSET_COLLECTED,
+                    "hash": None}]
+        out = manifest.merge_into_manifest(
+            base, entries, "ok",
+            [{"plugin_id": 1028083, "name": "Alembic"}])
+        assert out is base
+        assert out["assets_schema"] == manifest.ASSETS_SCHEMA_VERSION
+        assert out["scan_status"] == "ok"
+        assert out["asset_summary"]["collected"] == 1
+        assert out["required_plugins"][0]["name"] == "Alembic"
+        assert out["qc"] == {"passed": 11}  # lo existente no se toca
+
+    def test_failed_scan_records_empty_assets_with_status(self):
+        out = manifest.merge_into_manifest({}, [], "failed", [])
+        assert out["scan_status"] == "failed"
+        assert out["assets"] == []
+        assert out["asset_summary"]["total"] == 0
+
+
+class TestVerifyPackage:
+    def _manifest_with(self, tmp_path):
+        tex = tmp_path / "tex" / "a.jpg"
+        tex.parent.mkdir()
+        tex.write_bytes(b"x")
+        entries = manifest.build_asset_entries(
+            [_record("tex/a.jpg", str(tex), "ok"),
+             _record("tex/gone.jpg", str(tmp_path / "tex" / "gone.jpg"),
+                     "missing", host_name="MAT_b")],
+            str(tmp_path))
+        return manifest.merge_into_manifest({}, entries, "ok", [])
+
+    def test_intact_package_verifies_clean(self, tmp_path):
+        m = self._manifest_with(tmp_path)
+        result = manifest.verify_package(m, str(tmp_path))
+        assert result["checked"] == 1          # solo collected se re-chequea
+        assert result["ok"] == 1
+        assert result["lost"] == []
+        assert result["still_missing"] == ["tex/gone.jpg"]
+
+    def test_lost_in_transfer_detected(self, tmp_path):
+        m = self._manifest_with(tmp_path)
+        (tmp_path / "tex" / "a.jpg").unlink()   # se perdió al transferir
+        result = manifest.verify_package(m, str(tmp_path))
+        assert result["ok"] == 0
+        assert result["lost"] == [os.path.join("tex", "a.jpg")]
+
+    def test_failed_scan_manifest_reports_status(self, tmp_path):
+        m = manifest.merge_into_manifest({}, [], "failed", [])
+        result = manifest.verify_package(m, str(tmp_path))
+        assert result["scan_status"] == "failed"
+        assert result["checked"] == 0
+
+
+class TestManifestIO:
+    def test_atomic_write_and_load_roundtrip(self, tmp_path):
+        target = tmp_path / "sentinel_manifest.json"
+        data = manifest.merge_into_manifest(
+            {"sentinel_manifest": True}, [], "ok", [])
+        assert manifest.write_manifest_json(data, str(target)) is True
+        loaded = manifest.load_manifest_json(str(target))
+        assert loaded["scan_status"] == "ok"
+        assert not list(tmp_path.glob("*.tmp.*"))   # tmp limpiado
+
+    def test_load_missing_or_corrupt_returns_none(self, tmp_path):
+        assert manifest.load_manifest_json(str(tmp_path / "no.json")) is None
+        bad = tmp_path / "bad.json"
+        bad.write_text("{not json", encoding="utf-8")
+        assert manifest.load_manifest_json(str(bad)) is None

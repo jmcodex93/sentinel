@@ -97,3 +97,63 @@ def summarize_assets(entries):
         if state in counts:
             counts[state] += 1
     return counts
+
+
+def merge_into_manifest(manifest_dict, entries, scan_status,
+                        required_plugins):
+    """Merge the asset section into the collector's manifest dict.
+
+    Never produces a silently-empty section: ``scan_status`` travels with
+    the data so a failed re-scan is visible in the JSON itself.
+    """
+    manifest_dict["assets_schema"] = ASSETS_SCHEMA_VERSION
+    manifest_dict["scan_status"] = scan_status
+    manifest_dict["assets"] = list(entries or [])
+    manifest_dict["asset_summary"] = summarize_assets(entries or [])
+    manifest_dict["required_plugins"] = list(required_plugins or [])
+    return manifest_dict
+
+
+def verify_package(manifest_dict, package_root):
+    """Receiver-side re-check of a collected package against its manifest."""
+    result = {
+        "checked": 0, "ok": 0, "lost": [], "still_missing": [],
+        "scan_status": manifest_dict.get("scan_status", "unknown"),
+    }
+    for entry in manifest_dict.get("assets", []):
+        state = entry.get("state")
+        path = entry.get("path", "")
+        if state == ASSET_COLLECTED:
+            result["checked"] += 1
+            if os.path.exists(os.path.join(package_root, path)):
+                result["ok"] += 1
+            else:
+                result["lost"].append(path)
+        elif state == ASSET_MISSING:
+            result["still_missing"].append(path)
+    return result
+
+
+def write_manifest_json(manifest_dict, path):
+    """Atomic write: tmp + os.replace (same pattern as baseline.py)."""
+    tmp_path = f"{path}.tmp.{os.getpid()}"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump(manifest_dict, handle, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, path)
+        return True
+    except OSError:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+        return False
+
+
+def load_manifest_json(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
