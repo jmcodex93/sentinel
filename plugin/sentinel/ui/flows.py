@@ -8,7 +8,6 @@ sentinel.ui.user_areas, but must NOT import sentinel.ui.panel (avoids a cycle).
 """
 import c4d
 import os
-import json
 import sys
 
 from sentinel import baseline
@@ -794,7 +793,7 @@ def collect_scene(doc, artist_name):
     manifest_engine.merge_into_manifest(
         manifest, asset_entries, scan_status, required_plugins)
     if not manifest_engine.write_manifest_json(manifest, manifest_path):
-        safe_print(f"Scene Collector: Could not save manifest atomically")
+        safe_print("Scene Collector: Could not save manifest atomically")
     else:
         safe_print(f"Scene Collector: Manifest saved to {manifest_path}")
 
@@ -889,6 +888,10 @@ def _rescan_collected_package(delivery_c4d_path, target_dir):
                     if child:
                         stack.append(child)
                     obj = obj.GetNext()
+        for mat in tmp_doc.GetMaterials() or []:
+            type_id = mat.GetType()
+            if type_id >= 1_000_000 and type_id not in required:
+                required[type_id] = mat.GetTypeName() or "<plugin>"
         required_plugins = [
             {"plugin_id": pid, "name": name}
             for pid, name in sorted(required.items())

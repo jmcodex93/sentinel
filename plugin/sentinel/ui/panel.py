@@ -2221,7 +2221,8 @@ class YSPanel(gui.GeDialog):
         pending = notes.get("pending_count", 0)
         if pending:
             lines.append(f"Pending TODOs: {pending}")
-        if data.get("scan_status") == "failed":
+        scan_failed = data.get("scan_status") == "failed"
+        if scan_failed:
             lines.append("")
             lines.append("⚠ Package re-scan FAILED at collect time — "
                          "asset list not verified by sender!")
@@ -2235,6 +2236,11 @@ class YSPanel(gui.GeDialog):
         if plugins:
             names = ", ".join(p.get("name", "?") for p in plugins[:8])
             lines.append(f"Requires plugins: {names}")
+
+        if scan_failed:
+            c4d.gui.MessageDialog("\n".join(lines))
+            return
+
         lines.append("")
         lines.append("Verify package integrity on this machine now?")
 
