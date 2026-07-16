@@ -142,7 +142,7 @@ def write_manifest_json(manifest_dict, path):
             json.dump(manifest_dict, handle, indent=2, ensure_ascii=False)
         os.replace(tmp_path, path)
         return True
-    except OSError:
+    except Exception:
         try:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)

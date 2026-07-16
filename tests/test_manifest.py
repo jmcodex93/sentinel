@@ -198,3 +198,10 @@ class TestManifestIO:
         bad = tmp_path / "bad.json"
         bad.write_text("{not json", encoding="utf-8")
         assert manifest.load_manifest_json(str(bad)) is None
+
+    def test_write_failure_returns_false_and_cleans_tmp(self, tmp_path):
+        target = tmp_path / "sentinel_manifest.json"
+        bad = {"assets": {1, 2, 3}}  # a set is not JSON-serializable
+        assert manifest.write_manifest_json(bad, str(target)) is False
+        assert not target.exists()
+        assert not list(tmp_path.glob("*.tmp.*"))
