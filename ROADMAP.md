@@ -66,6 +66,19 @@
 
 ---
 
+### v1.10.0 — Collect Confiable (I4) ✅ SHIPPED (PR #13)
+
+The delivery guarantee: after `SaveProject()`, the Collector **reopens the collected package**, re-scans its dependencies on that copy (the step Save-with-Assets skips) and seals a per-asset manifest; the receiver gets a Delivery Summary + on-disk verify.
+
+- [x] Pure engine `plugin/sentinel/manifest.py` (stdlib-only, no `import c4d`): classify collected/missing/external, receiver-side `verify_package`, atomic IO; 24 pytest
+- [x] `collect_scene` Phase 2.6: reopen delivered `.c4d` → `scan_all_texture_paths` on the copy → asset section merged into the existing `sentinel_manifest.json` (never silently empty: `scan_status` travels); success dialog with counts, no blocking on missing
+- [x] Plugin inventory (objects+tags+materials, `>= 1M` IDs) with **native-Maxon denylist** (XPresso/SDS/Cloner/Data Tag/Bevel verified live); renderer IDs always flagged
+- [x] Reception: conditional «Delivery Summary...» (Versions tab, only with an asset-schema manifest adjacent) + «Verify» → LOST-in-transfer detection
+- [x] Cross-platform: manifest paths normalized to `/` at write, tolerant join at verify (final-review Critical)
+- [x] Verification ladder: pytest 305/305 + per-task adversarial reviews + fixtures live (violating → 1 missing with provenance; clean → 0) + **real production delivery** (39 assets, 4 missing corroborated 1:1 by SaveProject, 0 false positives; LOST test with 3 deleted textures) — 2 production-found bugs fixed same-day (stale re-scan on rename-refusal, native-ID noise), documented in `docs/solutions/`
+- [x] Process ledger: `docs/audit/2026-07-16_i4_sdd_ledger.md`; design + plan in `docs/superpowers/`
+- [ ] **v2 deferred**: `hash` field (reserved, null), standalone `verify.py` for receivers without C4D, farm pre-flight, Delivery Summary button visible without tab switch (rebuild-on-doc-change)
+
 ### v1.9.0 — Post-Render Validation (I1) ✅ SHIPPED (PR #4)
 
 The render safety net: a "Validate Render Output..." button (Render tab → Post-Render) audits rendered frames **on disk** against what the scene says should exist — closing the gap where Sentinel guarded everything up to the render button and nothing after.
