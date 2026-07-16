@@ -896,10 +896,10 @@ def _rescan_collected_package(delivery_c4d_path, target_dir):
             type_id = mat.GetType()
             if type_id >= 1_000_000 and type_id not in required:
                 required[type_id] = mat.GetTypeName() or "<plugin>"
-        required_plugins = [
+        required_plugins = manifest_engine.filter_native_plugins([
             {"plugin_id": pid, "name": name}
             for pid, name in sorted(required.items())
-        ]
+        ])
         return entries, "ok", required_plugins
     except Exception as e:
         safe_print(f"Scene Collector: re-scan error: {e}")

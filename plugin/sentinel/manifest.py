@@ -22,6 +22,26 @@ ASSETS_SCHEMA_VERSION = 1
 # manifest (RS Asset Manager URIs, empty path slots).
 _SKIP_STATUSES = ("asset_uri", "empty")
 
+# Built-in Maxon object/tag/material types that live in the plugin-ID
+# range (>= 1,000,000) and would otherwise pollute the "requires plugins"
+# inventory — every C4D install ships them, so they carry no signal for
+# the receiver. Curated from live production runs; extend as new native
+# types show up (never add renderer IDs here: a receiver missing Redshift
+# or Octane is exactly what the inventory exists to flag).
+NATIVE_PLUGIN_IDS = frozenset({
+    1001149,    # XPresso tag
+    1007455,    # Subdivision Surface
+    1018544,    # Cloner (MoGraph)
+    1018625,    # Data Tag (MoGraph)
+    431000028,  # Bevel deformer
+})
+
+
+def filter_native_plugins(plugins):
+    """Drop built-in Maxon entries from a required-plugins inventory."""
+    return [p for p in plugins or []
+            if p.get("plugin_id") not in NATIVE_PLUGIN_IDS]
+
 
 def _inside(path, root):
     """True if ``path`` is inside ``root`` (both made real/absolute)."""

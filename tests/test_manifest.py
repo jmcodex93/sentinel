@@ -268,3 +268,27 @@ class TestCrossPlatformPaths:
         result = manifest.verify_package(m, str(pkg))
         assert result["ok"] == 1
         assert result["lost"] == []
+
+
+class TestFilterNativePlugins:
+    """IDs nativos de Maxon viven en rango de plugin (>=1M) y contaminan
+    el inventario de 'requires plugins' — verificado en producción
+    (SHOT_18: XPresso/SDS/Cloner/Data Tag/Bevel listados junto a RS)."""
+
+    def test_native_ids_filtered_renderer_kept(self):
+        plugins = [
+            {"plugin_id": 1001149, "name": "XPresso"},
+            {"plugin_id": 1007455, "name": "Subdivision Surface"},
+            {"plugin_id": 1018544, "name": "Cloner"},
+            {"plugin_id": 1018625, "name": "Data Tag"},
+            {"plugin_id": 431000028, "name": "Bevel"},
+            {"plugin_id": 1036222, "name": "RS Object"},
+            {"plugin_id": 1036751, "name": "RS Light"},
+        ]
+        kept = manifest.filter_native_plugins(plugins)
+        assert [p["name"] for p in kept] == ["RS Object", "RS Light"]
+
+    def test_empty_and_unknown_pass_through(self):
+        assert manifest.filter_native_plugins([]) == []
+        unknown = [{"plugin_id": 1029508, "name": "Octane ImageTexture"}]
+        assert manifest.filter_native_plugins(unknown) == unknown
