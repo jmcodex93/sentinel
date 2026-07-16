@@ -648,7 +648,11 @@ def collect_scene(doc, artist_name):
 
     # ── Phase 2.6: Re-scan the collected package (Collect Confiable, I4) ──
     safe_print("Scene Collector: Re-scanning collected package...")
-    delivered_c4d = desired_at if os.path.exists(desired_at) else saved_at
+    # saved_at only survives when the rename to the clean delivery name was
+    # refused (a stale delivery already sat in target_dir) — in that case it
+    # is the FRESH SaveProject output and must win, or the re-scan would
+    # audit the previous delivery instead of this one.
+    delivered_c4d = saved_at if os.path.exists(saved_at) else desired_at
     asset_entries, scan_status, required_plugins = \
         _rescan_collected_package(delivered_c4d, target_dir)
 
