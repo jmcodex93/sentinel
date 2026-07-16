@@ -714,6 +714,12 @@ class YSPanel(gui.GeDialog):
         self.AddButton(G.BTN_SUPERVISOR, c4d.BFH_SCALEFIT, 0, 0,
                        "Supervisor... (folder QC)")
 
+        # Delivery reception (I4): only when a collected manifest with an
+        # asset section sits next to the open scene.
+        if self._delivery_manifest_available():
+            self.AddButton(G.BTN_DELIVERY_SUMMARY, c4d.BFH_SCALEFIT, 0, 0,
+                           "Delivery Summary...")
+
         # ── Recent Versions ──
         self._add_section_label("Recent Versions")
         self.GroupBegin(63, c4d.BFH_SCALEFIT, 2, 0)
@@ -2140,6 +2146,9 @@ class YSPanel(gui.GeDialog):
         elif cid == G.BTN_EDIT_NOTES:
             self._handle_edit_notes(doc)
 
+        elif cid == G.BTN_DELIVERY_SUMMARY:
+            self._show_delivery_summary(doc)
+
         elif cid == G.TAB_BAR:
             # Tab clicked — find which one is selected and switch
             if self._quicktab is not None:
@@ -2161,6 +2170,94 @@ class YSPanel(gui.GeDialog):
             self._update_history_area()
 
         return True
+
+    # ── Delivery reception (I4) ──
+    def _delivery_manifest_available(self):
+        """True if a collected sentinel_manifest.json with an asset section
+        (I4+) sits next to the currently open scene."""
+        doc = c4d.documents.GetActiveDocument()
+        if not doc:
+            return False
+        doc_path = doc.GetDocumentPath()
+        if not doc_path:
+            return False
+        path = os.path.join(doc_path, "sentinel_manifest.json")
+        if not os.path.exists(path):
+            return False
+        from sentinel import manifest as manifest_engine
+        data = manifest_engine.load_manifest_json(path)
+        # Solo manifiestos con sección de assets (I4+); los antiguos no
+        # ofrecen nada que verificar.
+        return bool(data and data.get("assets_schema"))
+
+    def _show_delivery_summary(self, doc):
+        """Show the collect-time delivery summary and offer a receiver-side
+        re-verify of the package's assets against sentinel_manifest.json."""
+        from sentinel import manifest as manifest_engine
+        doc_path = doc.GetDocumentPath() if doc else None
+        if not doc_path:
+            return
+        data = manifest_engine.load_manifest_json(
+            os.path.join(doc_path, "sentinel_manifest.json"))
+        if not data:
+            c4d.gui.MessageDialog("Could not read sentinel_manifest.json.")
+            return
+
+        qc = data.get("qc", {})
+        summary = data.get("asset_summary", {})
+        notes = data.get("notes", {})
+        lines = ["DELIVERY SUMMARY", ""]
+        original = data.get("original_filename") or data.get("scene", "")
+        if original:
+            lines.append(f"Origin: {original}")
+        if qc:
+            lines.append(f"QC at collect: {qc.get('passed', '?')}/"
+                         f"{qc.get('total', '?')}")
+        baseline_info = data.get("baseline", {})
+        acceptances = baseline_info.get("acceptances") or []
+        if acceptances:
+            lines.append(f"Accepted violations: {len(acceptances)} "
+                         f"(see baseline sidecar for author + reason)")
+        pending = notes.get("pending_count", 0)
+        if pending:
+            lines.append(f"Pending TODOs: {pending}")
+        scan_failed = data.get("scan_status") == "failed"
+        if scan_failed:
+            lines.append("")
+            lines.append("⚠ Package re-scan FAILED at collect time — "
+                         "asset list not verified by sender!")
+        else:
+            lines.append("")
+            lines.append(f"Assets: {summary.get('total', 0)} — "
+                         f"{summary.get('collected', 0)} in package, "
+                         f"{summary.get('missing', 0)} missing at collect, "
+                         f"{summary.get('external', 0)} external")
+        plugins = data.get("required_plugins") or []
+        if plugins:
+            names = ", ".join(p.get("name", "?") for p in plugins[:8])
+            lines.append(f"Requires plugins: {names}")
+
+        if scan_failed:
+            c4d.gui.MessageDialog("\n".join(lines))
+            return
+
+        lines.append("")
+        lines.append("Verify package integrity on this machine now?")
+
+        if c4d.gui.QuestionDialog("\n".join(lines)):
+            result = manifest_engine.verify_package(data, doc_path)
+            if result["lost"]:
+                lost = "\n  ".join(result["lost"][:15])
+                c4d.gui.MessageDialog(
+                    f"VERIFY: {len(result['lost'])} asset(s) LOST in "
+                    f"transfer (were in package at collect):\n  {lost}")
+            else:
+                c4d.gui.MessageDialog(
+                    f"VERIFY OK: {result['ok']}/{result['checked']} "
+                    f"collected assets present."
+                    + (f"\n{len(result['still_missing'])} were already "
+                       f"missing at collect time." if result["still_missing"]
+                       else ""))
 
     # ── Scene Notes handler ──
     def _handle_edit_notes(self, doc):

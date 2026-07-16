@@ -8,7 +8,6 @@ sentinel.ui.user_areas, but must NOT import sentinel.ui.panel (avoids a cycle).
 """
 import c4d
 import os
-import json
 import sys
 
 from sentinel import baseline
@@ -647,6 +646,16 @@ def collect_scene(doc, artist_name):
         else:
             safe_print(f"Scene Collector: expected file {saved_folder_basename} not found after SaveProject")
 
+    # ── Phase 2.6: Re-scan the collected package (Collect Confiable, I4) ──
+    safe_print("Scene Collector: Re-scanning collected package...")
+    # saved_at only survives when the rename to the clean delivery name was
+    # refused (a stale delivery already sat in target_dir) — in that case it
+    # is the FRESH SaveProject output and must win, or the re-scan would
+    # audit the previous delivery instead of this one.
+    delivered_c4d = saved_at if os.path.exists(saved_at) else desired_at
+    asset_entries, scan_status, required_plugins = \
+        _rescan_collected_package(delivered_c4d, target_dir)
+
     # ── Phase 3: Generate manifest ──
     safe_print("Scene Collector: Generating manifest...")
 
@@ -784,12 +793,13 @@ def collect_scene(doc, artist_name):
 
     # Save manifest
     manifest_path = os.path.join(target_dir, "sentinel_manifest.json")
-    try:
-        with open(manifest_path, 'w') as f:
-            json.dump(manifest, f, indent=2, ensure_ascii=False)
+    from sentinel import manifest as manifest_engine
+    manifest_engine.merge_into_manifest(
+        manifest, asset_entries, scan_status, required_plugins)
+    if not manifest_engine.write_manifest_json(manifest, manifest_path):
+        safe_print("Scene Collector: Could not save manifest atomically")
+    else:
         safe_print(f"Scene Collector: Manifest saved to {manifest_path}")
-    except Exception as e:
-        safe_print(f"Scene Collector: Could not save manifest: {e}")
 
     # ── Summary ──
     msg = f"Scene Collected!\n\n"
@@ -799,6 +809,20 @@ def collect_scene(doc, artist_name):
         msg += f"\nMissing: {len(missing_assets)} (check manifest)"
     msg += f"\nSize: {manifest['total_size_mb']} MB"
     msg += f"\nManifest: sentinel_manifest.json"
+
+    summary = manifest.get("asset_summary", {})
+    if manifest.get("scan_status") == "failed":
+        msg += "\n\n⚠ RE-SCAN FAILED — manifest has no asset verification!"
+    else:
+        msg += (f"\n\nPackage re-scan: {summary.get('total', 0)} assets — "
+                f"{summary.get('collected', 0)} in package, "
+                f"{summary.get('missing', 0)} missing, "
+                f"{summary.get('external', 0)} external")
+        if summary.get("missing", 0) or summary.get("external", 0):
+            problem = [e["path"] for e in manifest.get("assets", [])
+                       if e["state"] != "collected"][:10]
+            msg += "\n  " + "\n  ".join(problem)
+
     notes_pending = manifest.get("notes", {}).get("pending_count", 0)
     if notes_pending:
         msg += f"\n⚠ {notes_pending} pending TODO(s) in scene notes"
@@ -806,6 +830,86 @@ def collect_scene(doc, artist_name):
     c4d.gui.MessageDialog(msg)
     safe_print("Scene Collector: Complete")
 
+
+def _rescan_collected_package(delivery_c4d_path, target_dir):
+    """Reopen the collected .c4d and re-scan its dependencies.
+
+    This is the step SaveProject skips: verifying the *result*. Loads the
+    delivered scene into a temp document (never added to the GUI), scans
+    every texture/cache reference on that copy, classifies against the
+    package root, and inventories third-party plugin object/tag types.
+
+    Returns (asset_entries, scan_status, required_plugins). On any load
+    failure returns ([], "failed", []) — never a silently-empty result.
+    """
+    from sentinel import manifest as manifest_engine
+    from sentinel.textures import scan_all_texture_paths
+
+    tmp_doc = None
+    try:
+        tmp_doc = c4d.documents.LoadDocument(
+            delivery_c4d_path,
+            c4d.SCENEFILTER_OBJECTS | c4d.SCENEFILTER_MATERIALS,
+            None,
+        )
+        if tmp_doc is None:
+            safe_print("Scene Collector: re-scan LoadDocument failed")
+            return [], "failed", []
+
+        records = scan_all_texture_paths(tmp_doc) or []
+        # Flatten: drop live C4D refs before handing to the pure engine.
+        flat = [{
+            "current_path": r.get("current_path", ""),
+            "resolved": r.get("resolved"),
+            "status": r.get("status", ""),
+            "source_type": r.get("source_type", ""),
+            "channel": r.get("channel", ""),
+            "host_name": r.get("host_name", ""),
+        } for r in records]
+        entries = manifest_engine.build_asset_entries(flat, target_dir)
+
+        # Plugin inventory: object/tag types in the plugin-ID range
+        # (>= 1,000,000 — C4D built-ins live below; Redshift/Alembic/
+        # third-party all show up here, which is exactly the point:
+        # "this scene needs X to open correctly").
+        required = {}
+        first = tmp_doc.GetFirstObject()
+        if first:
+            stack = [first]
+            while stack:
+                obj = stack.pop()
+                while obj:
+                    type_id = obj.GetType()
+                    if type_id >= 1_000_000 and type_id not in required:
+                        required[type_id] = obj.GetTypeName() or "<plugin>"
+                    tag = obj.GetFirstTag()
+                    while tag:
+                        tag_id = tag.GetType()
+                        if tag_id >= 1_000_000 and tag_id not in required:
+                            required[tag_id] = tag.GetTypeName() or "<plugin>"
+                        tag = tag.GetNext()
+                    child = obj.GetDown()
+                    if child:
+                        stack.append(child)
+                    obj = obj.GetNext()
+        for mat in tmp_doc.GetMaterials() or []:
+            type_id = mat.GetType()
+            if type_id >= 1_000_000 and type_id not in required:
+                required[type_id] = mat.GetTypeName() or "<plugin>"
+        required_plugins = manifest_engine.filter_native_plugins([
+            {"plugin_id": pid, "name": name}
+            for pid, name in sorted(required.items())
+        ])
+        return entries, "ok", required_plugins
+    except Exception as e:
+        safe_print(f"Scene Collector: re-scan error: {e}")
+        return [], "failed", []
+    finally:
+        if tmp_doc is not None:
+            try:
+                c4d.documents.KillDocument(tmp_doc)
+            except Exception:
+                pass
 
 
 def snapshot_save_still(doc, artist_name):
