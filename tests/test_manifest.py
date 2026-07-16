@@ -1,11 +1,8 @@
 # tests/test_manifest.py
 import importlib.util
 import json
-import os
 import sys
 from pathlib import Path
-
-import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "plugin" / "sentinel" / "manifest.py"
@@ -78,7 +75,7 @@ class TestBuildAssetEntries:
         assert len(entries) == 1
         e = entries[0]
         assert e["state"] == manifest.ASSET_COLLECTED
-        assert e["path"] == os.path.join("tex", "wood.jpg")
+        assert e["path"] == "tex/wood.jpg"
         assert e["original_path"] == "tex/wood.jpg"
         assert e["hash"] is None
         assert e["host"] == "MAT_wood"
@@ -140,6 +137,7 @@ class TestMergeIntoManifest:
         assert out["scan_status"] == "ok"
         assert out["asset_summary"]["collected"] == 1
         assert out["required_plugins"][0]["name"] == "Alembic"
+        assert out["plugin_inventory_scope"] == "objects+tags+materials"
         assert out["qc"] == {"passed": 11}  # lo existente no se toca
 
     def test_failed_scan_records_empty_assets_with_status(self):
@@ -174,7 +172,7 @@ class TestVerifyPackage:
         (tmp_path / "tex" / "a.jpg").unlink()   # se perdió al transferir
         result = manifest.verify_package(m, str(tmp_path))
         assert result["ok"] == 0
-        assert result["lost"] == [os.path.join("tex", "a.jpg")]
+        assert result["lost"] == ["tex/a.jpg"]
 
     def test_failed_scan_manifest_reports_status(self, tmp_path):
         m = manifest.merge_into_manifest({}, [], "failed", [])
@@ -239,4 +237,34 @@ class TestRealisticPackageTree:
         # Recepción: el receptor pierde el HDR al transferir.
         (pkg / "tex" / "hdr.exr").unlink()
         v = manifest.verify_package(m, str(pkg))
-        assert v["lost"] == [os.path.join("tex", "hdr.exr")]
+        assert v["lost"] == ["tex/hdr.exr"]
+
+
+class TestCrossPlatformPaths:
+    """A package collected on Windows stores forward-slash paths so a
+    macOS/Linux receiver's verify_package doesn't report every asset LOST
+    just because os.sep differs from the sender's."""
+
+    def test_serialized_manifest_never_contains_backslashes(self, tmp_path):
+        pkg = tmp_path / "delivery"
+        (pkg / "tex" / "sub").mkdir(parents=True)
+        (pkg / "tex" / "sub" / "wood.jpg").write_bytes(b"x")
+        entries = manifest.build_asset_entries(
+            [_record("tex/sub/wood.jpg",
+                     str(pkg / "tex" / "sub" / "wood.jpg"), "ok")],
+            str(pkg))
+        m = manifest.merge_into_manifest({}, entries, "ok", [])
+        serialized = json.dumps(m["assets"])
+        assert "\\" not in serialized
+
+    def test_verify_accepts_forward_slash_path_on_any_platform(self, tmp_path):
+        pkg = tmp_path / "delivery"
+        (pkg / "tex").mkdir(parents=True)
+        (pkg / "tex" / "wood.jpg").write_bytes(b"x")
+        # Simulates a manifest written by a Windows sender: path uses "/"
+        # explicitly (as build_asset_entries now normalizes to).
+        m = {"assets": [{"path": "tex/wood.jpg",
+                          "state": manifest.ASSET_COLLECTED}]}
+        result = manifest.verify_package(m, str(pkg))
+        assert result["ok"] == 1
+        assert result["lost"] == []

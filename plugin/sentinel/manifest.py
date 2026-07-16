@@ -70,7 +70,7 @@ def build_asset_entries(scan_records, package_root):
         if state == ASSET_COLLECTED:
             path = os.path.relpath(
                 os.path.realpath(rec["resolved"]),
-                os.path.realpath(package_root))
+                os.path.realpath(package_root)).replace(os.sep, "/")
         else:
             path = rec.get("current_path", "")
         key = (path, state)
@@ -111,6 +111,7 @@ def merge_into_manifest(manifest_dict, entries, scan_status,
     manifest_dict["assets"] = list(entries or [])
     manifest_dict["asset_summary"] = summarize_assets(entries or [])
     manifest_dict["required_plugins"] = list(required_plugins or [])
+    manifest_dict["plugin_inventory_scope"] = "objects+tags+materials"
     return manifest_dict
 
 
@@ -125,7 +126,9 @@ def verify_package(manifest_dict, package_root):
         path = entry.get("path", "")
         if state == ASSET_COLLECTED:
             result["checked"] += 1
-            if os.path.exists(os.path.join(package_root, path)):
+            candidate = os.path.join(
+                package_root, *path.replace("\\", "/").split("/"))
+            if os.path.exists(candidate):
                 result["ok"] += 1
             else:
                 result["lost"].append(path)
