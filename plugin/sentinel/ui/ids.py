@@ -98,6 +98,7 @@ class G:
     BTN_TEXTURE_REPATH = 1310  # Tools tab: open Texture Repathing dialog (v1.5.7)
     BTN_DOCTOR = 1311  # Footer: open Sentinel Doctor self-diagnostic (I6)
     BTN_SUPERVISOR = 1312  # Versions tab: open Supervisor folder QC aggregator (I5-A)
+    BTN_DELIVERY_SUMMARY = 1313  # Versions tab: Delivery Summary + receiver-side verify (I4)
 
 
 class GateTriageIds:
