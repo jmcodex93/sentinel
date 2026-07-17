@@ -69,7 +69,12 @@ def merge_inventories(texture_records, generic_records):
     """Fuse the structured texture scan (repathable, rich owners) with the
     generic GetAllAssetsNew sweep (exhaustive, read-only). Dedupe by
     normalized path; on collision the texture record wins and only the
-    generic owner is appended. Empty-path records are kept with synthetic keys."""
+    generic owner is appended. Empty-path records are kept with synthetic keys.
+
+    Multiple texture records can collapse into one row when they share a
+    path (e.g. 3 materials referencing the same file) — "tex_idx" keeps the
+    first index for owner_ref/browse compatibility, while "tex_idxs" collects
+    every colliding tex_idx so repathing can update all of them."""
     by_key = {}
     order = []
 
@@ -80,10 +85,13 @@ def merge_inventories(texture_records, generic_records):
             key = f"__empty__tex__{rec.get('tex_idx')}"
         kind = _OWNER_KIND_BY_SOURCE.get(rec.get("source_type", ""), "material")
         owner = (rec.get("host_name", ""), kind, rec.get("channel", ""))
+        tex_idx = rec.get("tex_idx")
         if key in by_key:
             r = by_key[key]
             if owner not in r["owners"]:
                 r["owners"].append(owner)
+            if tex_idx is not None and tex_idx not in r["tex_idxs"]:
+                r["tex_idxs"].append(tex_idx)
             continue
         by_key[key] = {
             "key": key,
@@ -95,7 +103,8 @@ def merge_inventories(texture_records, generic_records):
             "size_bytes": None,
             "owners": [owner],
             "repathable": True,
-            "tex_idx": rec.get("tex_idx"),
+            "tex_idx": tex_idx,
+            "tex_idxs": [tex_idx] if tex_idx is not None else [],
         }
         order.append(key)
 
@@ -120,6 +129,7 @@ def merge_inventories(texture_records, generic_records):
             "owners": [owner],
             "repathable": False,
             "tex_idx": None,
+            "tex_idxs": [],
         }
         order.append(key)
 

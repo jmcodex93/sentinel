@@ -82,6 +82,7 @@ class TestMergeInventories:
         r = out[0]
         assert r["repathable"] is True
         assert r["tex_idx"] == 0
+        assert r["tex_idxs"] == [0]
         assert r["owners"] == [("RS_Mat", "material", "Base Color")]
         assert r["asset_type"] == "texture"
 
@@ -90,6 +91,7 @@ class TestMergeInventories:
         r = out[0]
         assert r["repathable"] is False
         assert r["tex_idx"] is None
+        assert r["tex_idxs"] == []
         assert r["asset_type"] == "lut_ocio"
         assert r["status"] == "ok"
 
@@ -110,6 +112,10 @@ class TestMergeInventories:
         assert len(out) == 1
         names = [o[0] for o in out[0]["owners"]]
         assert names == ["M1", "M2"]
+        # Every colliding tex_idx is kept so repathing updates all shaders,
+        # not just the first record that claimed the shared path.
+        assert out[0]["tex_idxs"] == [0, 1]
+        assert out[0]["tex_idx"] == 0
 
     def test_sort_missing_first(self):
         out = assets.merge_inventories(

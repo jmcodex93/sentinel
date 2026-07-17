@@ -1978,17 +1978,25 @@ class AssetHubDialog(gui.GeDialog):
         try:
             for key, new_path in list(self.pending.items()):
                 rec = self._record_by_key(key)
-                if rec is None or rec["tex_idx"] is None:
+                # A merged row can represent several shaders sharing one path
+                # (e.g. 3 materials referencing the same file) — repath every
+                # one of them, not just the first tex_idx.
+                idxs = rec.get("tex_idxs") if rec else None
+                if not idxs:
+                    idxs = ([rec["tex_idx"]]
+                            if rec and rec.get("tex_idx") is not None else [])
+                if not idxs:
                     failed.append((key, "not repathable"))
                     continue
-                live = self.tex_records[rec["tex_idx"]]
-                try:
-                    if apply_texture_path_change(live, new_path, doc=self.doc):
-                        applied += 1
-                    else:
-                        failed.append((key, "writer returned False"))
-                except Exception as e:
-                    failed.append((key, str(e)))
+                for tex_idx in idxs:
+                    live = self.tex_records[tex_idx]
+                    try:
+                        if apply_texture_path_change(live, new_path, doc=self.doc):
+                            applied += 1
+                        else:
+                            failed.append((key, "writer returned False"))
+                    except Exception as e:
+                        failed.append((key, str(e)))
         finally:
             self.doc.EndUndo()
         c4d.EventAdd()
