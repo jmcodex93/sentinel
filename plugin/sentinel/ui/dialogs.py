@@ -1680,6 +1680,16 @@ class AssetHubDialog(gui.GeDialog):
         # the scene has been quiet for QUIET_TICKS_THRESHOLD ticks
         # (~1s) — a trailing-edge debounce.
         self._quiet_ticks = 0
+        # Self-inflicted-event suppression: a row click's
+        # SetActiveMaterial/SetActiveObject + EventAdd (_select_owner_in_scene)
+        # makes C4D broadcast EVMSG_CHANGE right back at us, which would
+        # otherwise arm _needs_rescan and trigger a full rescan (texture
+        # scan + GetAllAssetsNew + all 12 QC checks) ~1s after every single
+        # row click. Set to a few Timer ticks right before our own
+        # EventAdd(); CoreMessage consumes EVMSG_CHANGE silently (without
+        # arming _needs_rescan) while this is > 0. The manual Rescan
+        # button is unaffected — it calls _rescan() directly.
+        self._suppress_ticks = 0
         self._stat_cursor = 0      # batched size stat progress
         self._recent_presets = []
         # Zone 5 pre-flight QC payload, refreshed by _refresh_preflight().
@@ -1932,6 +1942,12 @@ class AssetHubDialog(gui.GeDialog):
 
     # ── events ──────────────────────────────────────────
     def Timer(self, msg):
+        # Decrement the self-inflicted-event suppression window (see the
+        # comment on self._suppress_ticks in __init__) — independent of
+        # the pending-edits early return below, so it counts down even
+        # while a repathing preview is in progress.
+        if self._suppress_ticks > 0:
+            self._suppress_ticks -= 1
         # Skip the rescan while there are pending (un-applied) repathing
         # edits, same guard as TextureRepathingDialog.Timer — otherwise an
         # unrelated scene change (or even our own Apply All mid-batch)
@@ -1957,6 +1973,11 @@ class AssetHubDialog(gui.GeDialog):
 
     def CoreMessage(self, cid, msg):
         if cid == c4d.EVMSG_CHANGE:
+            if self._suppress_ticks > 0:
+                # Self-echo from our own row-click selection
+                # (_select_owner_in_scene's EventAdd) — consume silently,
+                # do NOT arm _needs_rescan. See self._suppress_ticks.
+                return gui.GeDialog.CoreMessage(self, cid, msg)
             self._needs_rescan = True
             # Any new change restarts the quiet period — the rescan only
             # fires after QUIET_TICKS_THRESHOLD ticks with no further
@@ -2062,6 +2083,12 @@ class AssetHubDialog(gui.GeDialog):
             self.doc.SetActiveMaterial(host)
         else:
             self.doc.SetActiveObject(host)
+        # Arm the self-inflicted-event suppression window right before our
+        # own EventAdd() — the SetActive* call above makes C4D broadcast
+        # EVMSG_CHANGE back at us via CoreMessage; without this, every row
+        # click would arm _needs_rescan and trigger a full rescan (texture
+        # scan + GetAllAssetsNew + all 12 QC checks) ~1s later.
+        self._suppress_ticks = 3
         c4d.EventAdd()
 
     def _preview_bulk(self):

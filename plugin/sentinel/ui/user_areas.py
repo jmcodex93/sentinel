@@ -1090,6 +1090,12 @@ class AssetListArea(gui.GeUserArea):
     # slot, with a hard floor of PATH_MIN_WIDTH.
     BROWSE_COL_WIDTH = 26
     PATH_MIN_WIDTH = 60
+    # Live-measured: the enclosing ScrollGroup draws its vertical
+    # scrollbar over the rightmost ~15-18px of this UserArea whenever the
+    # content scrolls (confirmed on screen — GetWidth() reported 1346 with
+    # browse drawn at x=1320, mathematically inside but visually under the
+    # scrollbar track). Reserve that strip so browse never sits under it.
+    SCROLLBAR_PAD = 18
     # Leading fixed layout before the 4 resizable columns: 6 (left margin)
     # + status(24)+6 + thumb(26)+6 = 68, derived once here so _columns and
     # _max_col_width (the drag clamp) can never drift apart.
@@ -1162,15 +1168,17 @@ class AssetListArea(gui.GeUserArea):
     def _col_budget(self, w):
         """Max total width the 4 resizable columns may occupy at widget
         width `w`, leaving room for the leading fixed columns + gutters,
-        PATH_MIN_WIDTH, and the pinned BROWSE_COL_WIDTH slot. Single
-        source of truth for both `_columns`' fit-to-viewport shrink and
-        the drag clamp in `_max_col_width` — derived directly from the
-        layout `_columns()` produces: at the limit,
-        _LEADING_FIXED_WIDTH + sum(4 resizable widths) + 4 gutters (6px
-        each) + 1 gutter before browse (6px) + PATH_MIN_WIDTH +
-        BROWSE_COL_WIDTH == w.
+        PATH_MIN_WIDTH, the pinned BROWSE_COL_WIDTH slot, and
+        SCROLLBAR_PAD (the ScrollGroup's vertical scrollbar draws over the
+        rightmost strip of this UserArea). Single source of truth for
+        both `_columns`' fit-to-viewport shrink and the drag clamp in
+        `_max_col_width` — derived directly from the layout `_columns()`
+        produces: at the limit, _LEADING_FIXED_WIDTH + sum(4 resizable
+        widths) + 4 gutters (6px each) + 1 gutter before browse (6px) +
+        PATH_MIN_WIDTH + BROWSE_COL_WIDTH + SCROLLBAR_PAD == w.
         """
-        fixed = self._LEADING_FIXED_WIDTH + 4 * 6 + 6 + self.BROWSE_COL_WIDTH
+        fixed = (self._LEADING_FIXED_WIDTH + 4 * 6 + 6
+                 + self.BROWSE_COL_WIDTH + self.SCROLLBAR_PAD)
         return w - fixed - self.PATH_MIN_WIDTH
 
     # ── column layout (computed once per hit-test / draw from current width)
@@ -1196,13 +1204,18 @@ class AssetListArea(gui.GeUserArea):
                           ("size", fitted["size"]), ("used", fitted["used"])):
             xs[name] = (x, cw)
             x += cw + 6
-        # Browse is a fixed slot pinned to the right edge, always — path
-        # fills exactly the gap between the last resizable column and the
+        # Browse is a fixed slot pinned SCROLLBAR_PAD px inboard of the
+        # right edge — live measurement showed the ScrollGroup's vertical
+        # scrollbar draws over the rightmost ~15-18px of this UserArea
+        # when content scrolls, so a browse slot anchored at the bare
+        # edge (mathematically inside GetWidth()) sat under the
+        # scrollbar track and read as invisible/clipped. Path fills
+        # exactly the gap between the last resizable column and the
         # browse slot (floor PATH_MIN_WIDTH). Between the fit-to-viewport
         # shrink above and the drag clamp in _max_col_width, this floor
         # should never be force-violated in practice; the max() here is
         # the last-resort guard for windows narrower than GetMinSize.
-        browse_x = w - self.BROWSE_COL_WIDTH
+        browse_x = w - self.BROWSE_COL_WIDTH - self.SCROLLBAR_PAD
         xs["browse"] = (browse_x, self.BROWSE_COL_WIDTH)
         xs["path"] = (x, max(self.PATH_MIN_WIDTH, browse_x - 6 - x))
         return xs
