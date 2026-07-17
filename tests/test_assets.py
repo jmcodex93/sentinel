@@ -252,3 +252,69 @@ class TestCreateZip:
         out = str(tmp_path / "custom.zip")
         result = assets.create_zip_archive(str(d), zip_path=out)
         assert result["zip_path"] == out and os.path.exists(out)
+
+
+class TestFitColumnWidths:
+    """AssetListArea's fit-to-viewport invariant (Asset Hub UI polish):
+    stored column widths may come from an earlier, wider window and must
+    never be honored verbatim past the current viewport budget."""
+
+    ORDER = ("name", "type", "size", "used")
+
+    def test_under_budget_passes_through_unchanged(self):
+        stored = {"name": 210, "type": 110, "size": 64, "used": 180}  # sum=564
+        out = assets.fit_column_widths(stored, self.ORDER, budget=700, min_width=40)
+        assert out == stored
+        # Must be a copy, not the same object — caller mutates it freely
+        # without corrupting the source dict.
+        assert out is not stored
+
+    def test_exact_budget_passes_through_unchanged(self):
+        stored = {"name": 100, "type": 100, "size": 100, "used": 100}  # sum=400
+        out = assets.fit_column_widths(stored, self.ORDER, budget=400, min_width=40)
+        assert out == stored
+
+    def test_over_budget_shrinks_proportionally_and_fits(self):
+        # sum=564, must fit into budget=400 -> shrink each proportionally,
+        # no column needs the min-width floor, so it fits on the first try.
+        stored = {"name": 210, "type": 110, "size": 64, "used": 180}
+        out = assets.fit_column_widths(stored, self.ORDER, budget=400, min_width=40)
+        assert out == {"name": 148, "type": 78, "size": 45, "used": 127}
+        assert sum(out.values()) <= 400
+        # Proportional: relative order of the stored widths is preserved
+        # (name > used > type > size, same as the input).
+        assert out["name"] > out["used"] > out["type"] > out["size"]
+
+    def test_over_budget_result_never_exceeds_budget_when_it_fits(self):
+        # A budget comfortably above 4 * min_width always yields a result
+        # that fits, whether or not the min-width floor engages.
+        stored = {"name": 500, "type": 400, "size": 300, "used": 300}  # sum=1500
+        for budget in (1200, 800, 400):
+            out = assets.fit_column_widths(stored, self.ORDER, budget, min_width=40)
+            assert sum(out.values()) <= budget
+            assert all(out[c] >= 40 for c in self.ORDER)
+
+    def test_does_not_mutate_stored_dict(self):
+        stored = {"name": 500, "type": 400, "size": 300, "used": 300}
+        original = dict(stored)
+        assets.fit_column_widths(stored, self.ORDER, budget=200, min_width=40)
+        assert stored == original
+
+    def test_degenerate_budget_floors_everything_at_min(self):
+        # Even 4 * min_width doesn't fit -> every column floors at min,
+        # accepting the residual overlap (no valid layout exists).
+        stored = {"name": 500, "type": 400, "size": 300, "used": 300}
+        out = assets.fit_column_widths(stored, self.ORDER, budget=50, min_width=40)
+        assert out == {c: 40 for c in self.ORDER}
+
+    def test_zero_or_negative_budget_floors_everything_at_min(self):
+        stored = {"name": 210, "type": 110, "size": 64, "used": 180}
+        for budget in (0, -50):
+            out = assets.fit_column_widths(stored, self.ORDER, budget, min_width=40)
+            assert out == {c: 40 for c in self.ORDER}
+
+    def test_missing_keys_in_stored_default_to_min_width(self):
+        out = assets.fit_column_widths({"name": 100}, self.ORDER,
+                                       budget=700, min_width=40)
+        assert out["name"] == 100
+        assert out["type"] == out["size"] == out["used"] == 40

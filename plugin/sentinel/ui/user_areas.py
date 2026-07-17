@@ -7,7 +7,7 @@ import time
 import c4d
 from c4d import gui
 
-from sentinel.assets import format_size
+from sentinel.assets import fit_column_widths, format_size
 from sentinel.common.helpers import safe_print
 from sentinel.common.settings import ASSET_HUB_COL_WIDTH_MIN, GlobalSettings
 from sentinel.qc.registry import CHECK_REGISTRY, CheckDisplayView, RowKeysView
@@ -1159,28 +1159,49 @@ class AssetListArea(gui.GeUserArea):
         h = self.HEADER_H + max(1, len(self.visible)) * self.ROW_H
         return 700, h
 
+    def _col_budget(self, w):
+        """Max total width the 4 resizable columns may occupy at widget
+        width `w`, leaving room for the leading fixed columns + gutters,
+        PATH_MIN_WIDTH, and the pinned BROWSE_COL_WIDTH slot. Single
+        source of truth for both `_columns`' fit-to-viewport shrink and
+        the drag clamp in `_max_col_width` — derived directly from the
+        layout `_columns()` produces: at the limit,
+        _LEADING_FIXED_WIDTH + sum(4 resizable widths) + 4 gutters (6px
+        each) + 1 gutter before browse (6px) + PATH_MIN_WIDTH +
+        BROWSE_COL_WIDTH == w.
+        """
+        fixed = self._LEADING_FIXED_WIDTH + 4 * 6 + 6 + self.BROWSE_COL_WIDTH
+        return w - fixed - self.PATH_MIN_WIDTH
+
     # ── column layout (computed once per hit-test / draw from current width)
     def _columns(self, w):
         xs = {}
         x = 6
-        # name/type/size/used read from self.col_widths (item 3, user
-        # resizable — defaults match the original fixed values, "type"
-        # widened 64 -> 110 to make room for the item-4 "read-only" badge).
+        # Fit-to-viewport invariant: self.col_widths may hold values
+        # persisted from an EARLIER, wider window (sentinel_settings.json
+        # survives across sessions/window sizes). Honoring them verbatim
+        # here would push path/browse off the visible edge on a narrower
+        # window — fit_column_widths (pure, sentinel.assets) shrinks them
+        # proportionally to fit, display-only: the return value is never
+        # written back to self.col_widths, so widening the window again
+        # restores the user's actual stored widths.
+        fitted = fit_column_widths(self.col_widths, self.RESIZABLE_COLS,
+                                    self._col_budget(w), self.MIN_COL_WIDTH)
         # status/thumb stay fixed icon columns; both the hit test and the
-        # draw pass read this same table, so they stay in sync.
+        # draw pass read this same table, so they stay in sync. "type" is
+        # widened 64 -> 110 by default to make room for the item-4
+        # "read-only" badge.
         for name, cw in (("status", 24), ("thumb", 26),
-                          ("name", self.col_widths["name"]),
-                          ("type", self.col_widths["type"]),
-                          ("size", self.col_widths["size"]),
-                          ("used", self.col_widths["used"])):
+                          ("name", fitted["name"]), ("type", fitted["type"]),
+                          ("size", fitted["size"]), ("used", fitted["used"])):
             xs[name] = (x, cw)
             x += cw + 6
         # Browse is a fixed slot pinned to the right edge, always — path
         # fills exactly the gap between the last resizable column and the
-        # browse slot (floor PATH_MIN_WIDTH). The drag clamp in
-        # _max_col_width keeps this floor from ever being force-violated,
-        # so path and browse never overlap regardless of how the user has
-        # widened name/type/size/used.
+        # browse slot (floor PATH_MIN_WIDTH). Between the fit-to-viewport
+        # shrink above and the drag clamp in _max_col_width, this floor
+        # should never be force-violated in practice; the max() here is
+        # the last-resort guard for windows narrower than GetMinSize.
         browse_x = w - self.BROWSE_COL_WIDTH
         xs["browse"] = (browse_x, self.BROWSE_COL_WIDTH)
         xs["path"] = (x, max(self.PATH_MIN_WIDTH, browse_x - 6 - x))
@@ -1207,22 +1228,20 @@ class AssetListArea(gui.GeUserArea):
 
     def _max_col_width(self, col, w):
         """Widest `col` can become while still leaving PATH_MIN_WIDTH free
-        for the path column before the fixed BROWSE_COL_WIDTH slot, given
-        the other three resizable columns' CURRENT widths.
+        for the path column before the fixed BROWSE_COL_WIDTH slot.
 
-        Derived directly from the layout `_columns()` produces: at the
-        limit, _LEADING_FIXED_WIDTH + sum(4 resizable widths) + 4 gutters
-        (6px each) + 1 gutter before browse (6px) + PATH_MIN_WIDTH +
-        BROWSE_COL_WIDTH == w. Solving for this column's width with the
-        other three held constant gives the budget below — used by the
-        drag loop so widening one column can never push path/browse off
-        the right edge or into each other (only the ~40px MIN_COL_WIDTH
-        floor was enforced before, which was not enough).
+        Belt-and-braces on top of `_columns`' fit-to-viewport shrink:
+        "others" is read from the FITTED layout (not the raw, possibly
+        oversized stored widths), so the budget for the dragged column
+        reflects what the other three columns actually occupy on screen
+        right now — widening one column can never push path/browse off
+        the right edge or into each other.
         """
-        others = sum(self.col_widths[c] for c in self.RESIZABLE_COLS if c != col)
-        budget = (w - self._LEADING_FIXED_WIDTH - 4 * 6 - 6
-                  - self.PATH_MIN_WIDTH - self.BROWSE_COL_WIDTH - others)
-        return max(self.MIN_COL_WIDTH, budget)
+        budget = self._col_budget(w)
+        fitted = fit_column_widths(self.col_widths, self.RESIZABLE_COLS,
+                                    budget, self.MIN_COL_WIDTH)
+        others = sum(fitted[c] for c in self.RESIZABLE_COLS if c != col)
+        return max(self.MIN_COL_WIDTH, budget - others)
 
     def _drag_column(self, col, mx, my):
         """Blocking column-resize drag loop.

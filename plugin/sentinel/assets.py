@@ -178,6 +178,48 @@ def compute_totals(records):
     return totals
 
 
+def fit_column_widths(stored, order, budget, min_width):
+    """Shrink a table's resizable column widths so they always sum to at
+    most `budget`, without ever mutating the caller's persisted widths.
+
+    Used by AssetListArea._columns (the Asset Hub table, item 3/5 of the
+    UI polish pass) to enforce a fit-to-viewport invariant: stored widths
+    can come from an EARLIER, wider window (persisted to
+    sentinel_settings.json), so honoring them verbatim on a narrower
+    window pushes later columns (path, the fixed browse "…" slot) off the
+    visible edge. This function is pure and display-only — callers must
+    never write its return value back to storage, so re-widening the
+    window restores the user's actual stored widths.
+
+    Args:
+        stored: {col: width} for every column in `order` (extra keys ignored).
+        order: the fixed column order, e.g. ("name", "type", "size", "used").
+        budget: max total width the columns in `order` may occupy.
+        min_width: floor for every individual column.
+
+    Returns:
+        A NEW {col: width} dict. Under budget: passed through unchanged
+        (still a copy). Over budget: shrunk proportionally to each
+        column's share of `stored`, each clamped to >= min_width. If even
+        the min-width floors don't fit inside `budget` (an absurdly
+        narrow viewport), every column floors at min_width and the
+        caller accepts the residual overlap — there is no narrower valid
+        layout to produce.
+    """
+    widths = {c: int(stored.get(c, min_width)) for c in order}
+    total = sum(widths.values())
+    if total <= budget:
+        return widths
+    if budget <= 0:
+        return {c: min_width for c in order}
+    shrunk = {c: max(min_width, int(widths[c] * budget / total)) for c in order}
+    if sum(shrunk.values()) > budget:
+        # Proportional shrink still doesn't fit once the floors kicked in
+        # — no valid layout exists inside this budget, floor everything.
+        return {c: min_width for c in order}
+    return shrunk
+
+
 def stat_sizes_batch(records, start, count, getsize=os.path.getsize):
     """Fill size_bytes for records[start:start+count]. Meant to be called
     from the dialog Timer in small batches so slow network mounts never
