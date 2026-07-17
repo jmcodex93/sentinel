@@ -9,7 +9,7 @@ from c4d import gui
 
 from sentinel.assets import format_size
 from sentinel.common.helpers import safe_print
-from sentinel.common.settings import GlobalSettings
+from sentinel.common.settings import ASSET_HUB_COL_WIDTH_MIN, GlobalSettings
 from sentinel.qc.registry import CHECK_REGISTRY, CheckDisplayView, RowKeysView
 
 def _violation_label(violation):
@@ -1079,7 +1079,9 @@ class AssetListArea(gui.GeUserArea):
     # User-resizable columns (item 3) — status/thumb are small fixed icon
     # columns and path always takes the remainder, so neither is draggable.
     RESIZABLE_COLS = ("name", "type", "size", "used")
-    MIN_COL_WIDTH = 40
+    # Shared with settings.py's per-key validation floor — one constant,
+    # not two independently-maintained "40"s.
+    MIN_COL_WIDTH = ASSET_HUB_COL_WIDTH_MIN
     DRAG_HIT_TOLERANCE = 5   # px on either side of a divider that counts as a hit
 
     def __init__(self):
@@ -1183,26 +1185,46 @@ class AssetListArea(gui.GeUserArea):
     def _drag_column(self, col, mx, my):
         """Blocking column-resize drag loop.
 
-        Grounded in the local SDK example
-        `geuserarea_drag_r13.py` (MouseDragStart / MouseDrag / MouseDragEnd):
-        C4D's per-tick deltaX from MouseDrag() is signed opposite to the
-        actual mouse movement, so the example accumulates the true current
-        mouse X via `mouseX -= deltaX` each tick — mirrored here as `mx`.
+        Grounded in the local SDK example `geuserarea_drag_r13.py`
+        (MouseDragStart / MouseDrag / MouseDragEnd):
+        - C4D's per-tick deltaX from MouseDrag() is signed opposite to the
+          actual mouse movement, so the example accumulates the true
+          current mouse X via `mouseX -= deltaX` each tick — mirrored here
+          as `mx`.
+        - The FIRST MouseDrag() tick reports a synthetic dx/dy of 4.0 from
+          the click itself (example lines 283-298), so it is skipped via
+          the same `is_first_tick` guard — without it every drag starts
+          4px off, and a plain click near a divider (no real movement)
+          would still shrink the column.
+        - MouseDragEnd() is called from `finally` (not just after a clean
+          break), matching the example's unconditional call — any
+          exception mid-drag still releases the mouse capture.
         Width is clamped to >= MIN_COL_WIDTH and pushed to col_widths (and
         therefore _columns/LayoutChanged) on every tick that changes it, so
-        the table visibly resizes live. No cursor feedback: BFM_GETCURSORINFO
-        is not routed to embedded GeUserAreas in C4D 2026 (documented
-        limitation, see CLAUDE.md Known Limitations).
+        the table visibly resizes live. Persistence only fires if the
+        final width differs from drag start — a no-movement click writes
+        nothing to settings. No cursor feedback: BFM_GETCURSORINFO is not
+        routed to embedded GeUserAreas in C4D 2026 (documented limitation,
+        see CLAUDE.md Known Limitations).
         """
+        start_x = mx
+        start_width = self.col_widths[col]
         try:
-            start_x = mx
-            start_width = self.col_widths[col]
-            self.MouseDragStart(c4d.KEY_MLEFT, mx, my,
-                                c4d.MOUSEDRAGFLAGS_DONTHIDEMOUSE)
+            # DONTHIDEMOUSE keeps the pointer visible (no OS-level cursor
+            # feedback anyway, per the limitation above); NOMOVE keeps the
+            # OS cursor pinned at the click position during the drag,
+            # matching the SDK example exactly.
+            self.MouseDragStart(
+                c4d.KEY_MLEFT, mx, my,
+                c4d.MOUSEDRAGFLAGS_DONTHIDEMOUSE | c4d.MOUSEDRAGFLAGS_NOMOVE)
+            is_first_tick = True
             while True:
                 result, dx, dy, channels = self.MouseDrag()
                 if result != c4d.MOUSEDRAGRESULT_CONTINUE:
                     break
+                if is_first_tick:
+                    is_first_tick = False
+                    continue
                 mx -= dx
                 new_width = max(self.MIN_COL_WIDTH,
                                 int(start_width + (mx - start_x)))
@@ -1210,13 +1232,13 @@ class AssetListArea(gui.GeUserArea):
                     self.col_widths[col] = new_width
                     self.LayoutChanged()
                     self.Redraw()
-            self.MouseDragEnd()
         except Exception as e:
             safe_print(f"AssetListArea._drag_column error: {e}")
-            return
-        # Persist the whole dict on drag end (cheap; avoids separate
-        # "did it actually change" bookkeeping).
-        GlobalSettings.set_asset_hub_col_widths(self.col_widths)
+        finally:
+            self.MouseDragEnd()
+        # Persist only if the width actually moved off drag start.
+        if self.col_widths[col] != start_width:
+            GlobalSettings.set_asset_hub_col_widths(self.col_widths)
 
     # ── click detection ─────────────────────────────
     def _hit_test(self, lx, ly):
@@ -1427,12 +1449,8 @@ class AssetHubHeaderArea(gui.GeUserArea):
             sep_w = self._measure(sep)
             margin = 8
 
-            # Left: scene identity.
-            left_text = f"Scene: {self.doc_name}" if self.doc_name else "Scene:"
-            self.DrawSetTextCol(_COL_HUB_HEADER_DIM, _COL_HUB_HEADER_BG)
-            self.DrawText(left_text, margin, text_y)
-
-            # Right: summary segments, right-anchored.
+            # Right: summary segments, measured first so the left side
+            # knows how much room it has before it would overlap them.
             segments = [
                 (f"{self.count} assets", _COL_HUB_HEADER_TEXT),
                 (f"{self.missing} missing",
@@ -1447,8 +1465,28 @@ class AssetHubHeaderArea(gui.GeUserArea):
 
             total_w = sum(self._measure(text) for text, _ in segments)
             total_w += sep_w * max(0, len(segments) - 1)
+            right_start = max(margin, w - total_w - margin)
 
-            x = max(margin, w - total_w - margin)
+            # Left: scene identity, clipped so a long scene name can never
+            # overlap the right-anchored summary — same truncate-to-width
+            # loop TodoArea/PreflightStripArea use (shrink + ellipsis until
+            # it fits the room between the left margin and right_start).
+            left_text = f"Scene: {self.doc_name}" if self.doc_name else "Scene:"
+            avail_w = max(0, right_start - margin)
+            truncated = left_text
+            try:
+                if self._measure(truncated) > avail_w:
+                    while truncated and self._measure(truncated + "...") > avail_w:
+                        truncated = truncated[:-1]
+                    truncated = (truncated + "..."
+                                 if truncated != left_text else truncated)
+            except Exception:
+                if len(truncated) > 40:
+                    truncated = truncated[:37] + "..."
+            self.DrawSetTextCol(_COL_HUB_HEADER_DIM, _COL_HUB_HEADER_BG)
+            self.DrawText(truncated, margin, text_y)
+
+            x = right_start
             first = True
             for text, col in segments:
                 if not first:
