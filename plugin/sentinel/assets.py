@@ -223,7 +223,12 @@ def match_missing_in_folder(records, index):
     for rec in records:
         if rec.get("status") != "missing":
             continue
-        base = os.path.basename(str(rec.get("path", ""))).lower()
+        # Derive the basename from the normalized (forward-slash) key
+        # instead of os.path.basename: a Windows-authored path like
+        # "D:\old\tex\wood.png" opened on macOS has no path separators
+        # os.path.basename recognizes, so it returns the whole string
+        # instead of "wood.png".
+        base = normalize_path_key(rec.get("path", "")).rsplit("/", 1)[-1]
         candidates = index.get(base)
         if not candidates:
             continue

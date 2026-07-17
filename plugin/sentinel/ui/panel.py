@@ -53,7 +53,6 @@ from sentinel.ui.user_areas import (
     HistoryArea,
     ScoreHeader,
     StatusArea,
-    TextureListArea,
     _CHECK_DISPLAY,
     _accepted_entry_payload,
     _entry_label,
@@ -69,8 +68,6 @@ from sentinel.ui.dialogs import (
     SentinelDoctorDialog,
     SentinelSettingsDialog,
     SupervisorDialog,
-    load_repath_presets,
-    save_repath_preset,
 )
 
 # Import maxon for node material access

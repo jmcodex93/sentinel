@@ -449,6 +449,8 @@ def smart_save_version(doc, comment, run_qc=True, artist_name="", status=None):
 
 
 
+# Retired from the panel in v1.11 — superseded by AssetHubDialog +
+# run_collect_pipeline. Kept one release.
 def collect_scene(doc, artist_name):
     """Pre-flight QC + Save Project with Assets + Verify + Manifest"""
     if not doc:

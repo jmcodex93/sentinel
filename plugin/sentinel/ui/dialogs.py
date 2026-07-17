@@ -1644,6 +1644,9 @@ class AssetHubDialog(gui.GeDialog):
                   ".exr", ".hdr", ".psd", ".webp"}
     THUMB_CAP = 200
     THUMB_BATCH = 8
+    # Ticks of quiet (no new EVMSG_CHANGE) at 250ms/tick before a pending
+    # rescan fires — see the debounce comment on self._quiet_ticks.
+    QUIET_TICKS_THRESHOLD = 4
 
     def __init__(self, doc, focus="assets"):
         super().__init__()
@@ -1656,6 +1659,15 @@ class AssetHubDialog(gui.GeDialog):
         self.list_ua = None
         self.filter_status = None
         self._needs_rescan = False
+        # Debounce counter for the rescan-on-scene-change path (Timer runs
+        # every 250ms). A busy scene edit (e.g. dragging a slider, or a
+        # multi-step script) fires EVMSG_CHANGE repeatedly; rescanning on
+        # every tick would re-run the full texture scan + GetAllAssetsNew +
+        # all 12 QC checks dozens of times per second. Instead each new
+        # change resets the counter to 0, and the rescan only fires once
+        # the scene has been quiet for QUIET_TICKS_THRESHOLD ticks
+        # (~1s) — a trailing-edge debounce.
+        self._quiet_ticks = 0
         self._stat_cursor = 0      # batched size stat progress
         self._recent_presets = []
         # Zone 5 pre-flight QC payload, refreshed by _refresh_preflight().
@@ -1883,9 +1895,15 @@ class AssetHubDialog(gui.GeDialog):
         # chance to hit Apply All. The brief's reference code rescanned
         # unconditionally on _needs_rescan; that's a data-loss regression
         # from the proven pattern, fixed here.
+        # Debounced rescan: only fires once the scene has been quiet for
+        # QUIET_TICKS_THRESHOLD ticks since the last EVMSG_CHANGE (reset in
+        # CoreMessage below) — see the comment on self._quiet_ticks.
         if self._needs_rescan and not self.pending:
-            self._needs_rescan = False
-            self._rescan()
+            self._quiet_ticks += 1
+            if self._quiet_ticks >= self.QUIET_TICKS_THRESHOLD:
+                self._needs_rescan = False
+                self._quiet_ticks = 0
+                self._rescan()
             return
         if self._stat_cursor < len(self.records):
             self._stat_cursor = assets_engine.stat_sizes_batch(
@@ -1896,6 +1914,10 @@ class AssetHubDialog(gui.GeDialog):
     def CoreMessage(self, cid, msg):
         if cid == c4d.EVMSG_CHANGE:
             self._needs_rescan = True
+            # Any new change restarts the quiet period — the rescan only
+            # fires after QUIET_TICKS_THRESHOLD ticks with no further
+            # changes (trailing-edge debounce, see Timer).
+            self._quiet_ticks = 0
         return gui.GeDialog.CoreMessage(self, cid, msg)
 
     def Command(self, cid, msg):
@@ -2247,7 +2269,7 @@ class AssetHubDialog(gui.GeDialog):
             return
 
         rules_context = (self._preflight or {}).get("rules_context")
-        author = baseline.resolve_author(None)
+        author = baseline.resolve_author(self._artist_name or None)
         accepted_checks = 0
         written_total = 0
         for check_id in failing_ids:
@@ -2392,10 +2414,28 @@ class AssetHubDialog(gui.GeDialog):
     def _do_collect(self):
         from sentinel.ui.flows import run_collect_pipeline
 
+        # Unsaved-doc guard — mirrors collect_scene's legacy guard
+        # (flows.py:458): the delivery path, baseline sidecar, and manifest
+        # location are all derived from the document's saved path.
+        if not self.doc.GetDocumentPath():
+            c4d.gui.MessageDialog(
+                "Please save the scene first before collecting.")
+            return
+
         target = self.GetString(self.EDIT_DEST).strip()
         if not target:
             c4d.gui.MessageDialog("Choose a delivery folder first.")
             return
+
+        # Pending-edits warning: unapplied repathing changes never make it
+        # into the collected package (only self.records feeds the pipeline),
+        # so surface that before the user loses the edits silently.
+        if self.pending:
+            if not c4d.gui.QuestionDialog(
+                    f"{len(self.pending)} pending repathing change(s) are "
+                    "NOT applied and will not be in the package.\n\n"
+                    "Continue anyway?"):
+                return
 
         # Missing gate: warn & continue (spec) — never a hard block, since
         # the pipeline itself tolerates missing assets (SAVEPROJECT_DONT

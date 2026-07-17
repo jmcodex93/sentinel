@@ -217,6 +217,18 @@ class TestSearchFolderForMissing:
         assert "k3" not in m
         assert "k4" not in m                    # never touches non-missing
 
+    def test_match_windows_style_path_on_any_platform(self):
+        # A missing record whose stored path uses Windows-style backslash
+        # separators (e.g. authored on Windows, opened on macOS) must still
+        # resolve to its basename via the normalized path key, not
+        # os.path.basename (which is a no-op for backslash paths on POSIX).
+        recs = [
+            {"key": "k1", "status": "missing", "path": "D:\\old\\tex\\wood.png"},
+        ]
+        idx = {"wood.png": ["/new/tex/wood.png"]}
+        m = assets.match_missing_in_folder(recs, idx)
+        assert m["k1"] == {"match": "/new/tex/wood.png"}
+
 
 class TestCreateZip:
     def test_zips_tree_and_reports(self, tmp_path):
