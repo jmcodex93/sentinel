@@ -1168,6 +1168,13 @@ class AssetListArea(gui.GeUserArea):
         xs["browse"] = (w - 26, 20)
         return xs
 
+    def _column_edges(self, xs):
+        """Right-edge x for each resizable column, from an already-computed
+        `_columns()` table. Single source of truth for both the drag hit
+        test and the drawn divider lines — what the user sees is exactly
+        where they grab (item 2 of the follow-up UI polish pass)."""
+        return {col: xs[col][0] + xs[col][1] for col in self.RESIZABLE_COLS}
+
     def _divider_hit(self, lx, ly):
         """Return the resizable column whose right-edge divider is within
         DRAG_HIT_TOLERANCE px of lx, or None. Header row only — dividers
@@ -1175,9 +1182,7 @@ class AssetListArea(gui.GeUserArea):
         if ly >= self.HEADER_H:
             return None
         xs = self._columns(self.GetWidth())
-        for col in self.RESIZABLE_COLS:
-            cx, cw = xs[col]
-            edge = cx + cw
+        for col, edge in self._column_edges(xs).items():
             if abs(lx - edge) <= self.DRAG_HIT_TOLERANCE:
                 return col
         return None
@@ -1391,6 +1396,19 @@ class AssetListArea(gui.GeUserArea):
                     self.DrawSetTextCol(c4d.Vector(0.7, 0.7, 0.7), bg)
                     self.DrawText("...", xs["browse"][0], y + 5)
                 y += self.ROW_H
+
+            # Column dividers (item 2, follow-up UI polish pass) — drawn at
+            # the exact same x as _divider_hit's boundary (both derive from
+            # `xs` via _column_edges), so what the user sees is exactly
+            # where they grab. Visible 1px line across the header; a
+            # fainter line continues down the body rows for column
+            # separation.
+            for col, edge in self._column_edges(xs).items():
+                self.DrawSetPen(c4d.Vector(0.32, 0.32, 0.32))
+                self.DrawRectangle(edge, 0, edge + 1, self.HEADER_H)
+                if y > self.HEADER_H:
+                    self.DrawSetPen(c4d.Vector(0.18, 0.18, 0.18))
+                    self.DrawRectangle(edge, self.HEADER_H, edge + 1, y)
 
         except Exception as e:
             safe_print(f"Error in AssetListArea.DrawMsg: {e}")

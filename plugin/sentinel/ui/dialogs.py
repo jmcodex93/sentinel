@@ -1722,10 +1722,12 @@ class AssetHubDialog(gui.GeDialog):
         # whole row — panel.py ~1298-1312). With minw=0 + BFH_LEFT the
         # widget collapsed to its bare minimum and the tab-style QuickTab
         # wrapped vertically instead of laying out 4 tabs side by side.
-        # 280px is enough for "All | Missing | Absolute | OK" with padding.
+        # 280px still wrapped "OK" to a second row at real font size;
+        # 400px fits all 4 tabs ("All | Missing | Absolute | OK") on one
+        # horizontal row (verified against the panel's own TAB_BAR pattern).
         self._filter_tab = self.AddCustomGui(
             self.FILTER_TAB, c4d.CUSTOMGUI_QUICKTAB, "",
-            c4d.BFH_LEFT, 280, 0, filter_bc)
+            c4d.BFH_LEFT, 400, 0, filter_bc)
         if self._filter_tab is not None:
             self._filter_tab.AppendString(0, "All", self.filter_status is None)
             self._filter_tab.AppendString(1, "Missing", self.filter_status == "missing")
