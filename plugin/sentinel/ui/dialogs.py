@@ -7,6 +7,7 @@ import re
 import c4d
 from c4d import gui
 
+from sentinel import assets as assets_engine
 from sentinel import doctor
 from sentinel import supervisor
 from sentinel.common.helpers import safe_print
@@ -31,7 +32,7 @@ from sentinel.textures import (
 )
 
 from .ids import GateTriageIds
-from .user_areas import TextureListArea, TodoArea, _violation_label
+from .user_areas import AssetListArea, TextureListArea, TodoArea, _violation_label
 
 
 def gate_dialog_can_proceed(blocking_items, fixable_items, decisions, reason):
@@ -1597,6 +1598,415 @@ class TextureRepathingDialog(gui.GeDialog):
             return True
 
         return True
+
+
+class AssetHubDialog(gui.GeDialog):
+    """Sentinel Asset Hub — unified asset inventory + repathing + collect.
+
+    Replaces TextureRepathingDialog and the chained collect_scene dialogs.
+    Async (Cmd+Z must reach C4D) — same rationale as TextureRepathingDialog:
+    a modal dialog captures the keyboard, so Cmd+Z would never reach C4D
+    while the tool is open. Zones:
+      1 header (scene, totals, Rescan)   4 repathing (find/replace, smart)
+      2 filters (+ search)               5 pre-flight strip (Task 10)
+      3 AssetListArea table              6 delivery bar (Task 12)
+
+    Zones 5-6 are deliberately absent from CreateLayout in this pass — the
+    group structure below (one GroupBegin/GroupEnd per zone, all inside the
+    single outer scale-fit group) makes appending them a matter of inserting
+    another zone block before the final GroupEnd, not restructuring.
+    """
+
+    LBL_HEADER = 2001
+    BTN_RESCAN = 2002
+    BTN_FILTER_ALL, BTN_FILTER_MISSING = 2010, 2011
+    BTN_FILTER_ABSOLUTE, BTN_FILTER_OK = 2012, 2013
+    EDIT_SEARCH = 2014
+    SCROLL_LIST, USERAREA_LIST = 2020, 2021
+    EDIT_FIND, EDIT_REPLACE = 2030, 2031
+    BTN_PREVIEW, COMBO_RECENT, CHK_MATCH_CASE = 2032, 2033, 2034
+    BTN_SEARCH_FOLDER, BTN_MAKE_RELATIVE, BTN_CLEAR = 2040, 2041, 2042
+    LBL_PENDING, BTN_APPLY_ALL = 2043, 2044
+
+    def __init__(self, doc, focus="assets"):
+        super().__init__()
+        self.doc = doc
+        self.focus = focus
+        self.records = []          # AssetRecords (merged)
+        self.tex_records = []      # live TextureRecords (writers / owner_ref)
+        self.skipped = 0
+        self.pending = {}          # {record_key: new_path}
+        self.list_ua = None
+        self.filter_status = None
+        self._needs_rescan = False
+        self._stat_cursor = 0      # batched size stat progress
+        self._recent_presets = []
+
+    # ── layout ──────────────────────────────────────────
+    def CreateLayout(self):
+        self.SetTitle("Sentinel — Asset Hub")
+        self.GroupBegin(0, c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT, 1, 0)
+        self.GroupBorderSpace(12, 10, 12, 10)
+        self.GroupSpace(0, 6)
+
+        # zone 1: header
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
+        self.AddStaticText(self.LBL_HEADER, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+        self.AddButton(self.BTN_RESCAN, c4d.BFH_RIGHT, 0, 0, "↻ Rescan")
+        self.GroupEnd()
+
+        # zone 2: filters + search
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 6, 0)
+        self.GroupSpace(6, 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 40, 0, "Filter:", 0)
+        for bid, label in ((self.BTN_FILTER_ALL, "All"),
+                           (self.BTN_FILTER_MISSING, "Missing"),
+                           (self.BTN_FILTER_ABSOLUTE, "Absolute"),
+                           (self.BTN_FILTER_OK, "OK")):
+            self.AddButton(bid, c4d.BFH_LEFT, 0, 0, label)
+        self.AddEditText(self.EDIT_SEARCH, c4d.BFH_SCALEFIT, 0, 0)
+        self.GroupEnd()
+
+        # zone 3: table
+        self.ScrollGroupBegin(self.SCROLL_LIST,
+                              c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT,
+                              c4d.SCROLLGROUP_VERT | c4d.SCROLLGROUP_AUTOVERT,
+                              0, 300)
+        self.AddUserArea(self.USERAREA_LIST, c4d.BFH_SCALEFIT, 700, 420)
+        if self.list_ua is None:
+            self.list_ua = AssetListArea()
+        self.AttachUserArea(self.list_ua, self.USERAREA_LIST)
+        self.list_ua.click_callback = self._on_row_click
+        self.GroupEnd()
+
+        self.AddSeparatorH(8)
+
+        # zone 4: repathing
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 1, 0, "Repathing")
+        self.GroupBorderSpace(8, 8, 8, 8)
+        self.GroupSpace(6, 4)
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 5, 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 40, 0, "Find:", 0)
+        self.AddEditText(self.EDIT_FIND, c4d.BFH_SCALEFIT, 0, 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 60, 0, "Replace:", 0)
+        self.AddEditText(self.EDIT_REPLACE, c4d.BFH_SCALEFIT, 0, 0)
+        self.AddButton(self.BTN_PREVIEW, c4d.BFH_LEFT, 0, 0, "Preview")
+        self.GroupEnd()
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 4, 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 40, 0, "Recent:", 0)
+        self.AddComboBox(self.COMBO_RECENT, c4d.BFH_SCALEFIT, 0, 0)
+        self.AddCheckbox(self.CHK_MATCH_CASE, c4d.BFH_LEFT, 0, 0, "Match case")
+        self.GroupEnd()
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 6, 0)
+        self.AddButton(self.BTN_SEARCH_FOLDER, c4d.BFH_LEFT, 0, 0,
+                       "Search Folder for Missing…")
+        self.AddButton(self.BTN_MAKE_RELATIVE, c4d.BFH_LEFT, 0, 0,
+                       "Make All Relative")
+        self.AddButton(self.BTN_CLEAR, c4d.BFH_LEFT, 0, 0, "Clear Pending")
+        self.AddStaticText(self.LBL_PENDING, c4d.BFH_SCALEFIT | c4d.BFH_RIGHT,
+                           0, 0, "", 0)
+        self.AddButton(self.BTN_APPLY_ALL, c4d.BFH_RIGHT, 0, 0,
+                       "Apply All (1 undo)")
+        self.GroupEnd()
+        self.GroupEnd()  # repathing
+
+        self.GroupEnd()  # main
+        return True
+
+    def InitValues(self):
+        self.SetBool(self.CHK_MATCH_CASE, False)
+        self._load_recent_presets()
+        self._rescan()
+        # Poll for scene changes (external undo/redo, edits) the same way
+        # TextureRepathingDialog does, so the list stays in sync without
+        # the user reopening the dialog.
+        self.SetTimer(250)
+        return True
+
+    # ── recent Find/Replace presets ────────────────────
+    # Reuses the EXACT same module-level helpers (and therefore the same
+    # `sentinel_settings.json` key, TEXTURE_REPATH_PRESETS_KEY) that
+    # TextureRepathingDialog already persists to — the user's existing
+    # presets carry over untouched, nothing is reimplemented here.
+    def _load_recent_presets(self):
+        def _clip(s, n=22):
+            s = s or ""
+            return s if len(s) <= n else s[:n - 1] + "…"
+
+        try:
+            self.FreeChildren(self.COMBO_RECENT)
+        except Exception:
+            pass
+        self.AddChild(self.COMBO_RECENT, 0, "Recent find / replace…")
+        self._recent_presets = load_repath_presets()
+        for i, (f, r) in enumerate(self._recent_presets, start=1):
+            label = '"%s"  →  "%s"' % (_clip(f), _clip(r))
+            self.AddChild(self.COMBO_RECENT, i, label)
+        self.SetInt32(self.COMBO_RECENT, 0)
+
+    def _save_recent_preset(self, find_str, replace_str):
+        save_repath_preset(find_str, replace_str)
+        self._load_recent_presets()
+
+    # ── data ────────────────────────────────────────────
+    def _rescan(self):
+        # Deferred import: sentinel.ui.flows imports GateTriageDialog from
+        # this module (dialogs.py), so importing flows at module scope here
+        # would create a circular import. Same constraint scan_scene_assets
+        # itself documents for its own use of sentinel.ui.dialogs.
+        from sentinel.ui.flows import scan_scene_assets
+        self.records, self.tex_records, self.skipped = \
+            scan_scene_assets(self.doc)
+        self.pending = {}
+        self._stat_cursor = 0
+        self._push_state()
+
+    def _push_state(self):
+        totals = assets_engine.compute_totals(self.records)
+        doc_name = self.doc.GetDocumentName() or "(unsaved)"
+        head = (f"{doc_name}   —   {totals['count']} assets · "
+                f"{totals['missing']} missing · {totals['absolute']} absolute"
+                f" · {assets_engine.format_size(totals['total_bytes'])}")
+        if totals["unsized"]:
+            head += " (sizing…)"
+        if self.skipped:
+            head += f" · {self.skipped} items skipped"
+        self.SetString(self.LBL_HEADER, head)
+        self.SetString(self.LBL_PENDING,
+                       f"{len(self.pending)} pending changes"
+                       if self.pending else "")
+        self.list_ua.set_state(self.records, self.filter_status,
+                               self.GetString(self.EDIT_SEARCH) or "",
+                               self.pending)
+        self.LayoutChanged(self.SCROLL_LIST)
+
+    # ── events ──────────────────────────────────────────
+    def Timer(self, msg):
+        # Skip the rescan while there are pending (un-applied) repathing
+        # edits, same guard as TextureRepathingDialog.Timer — otherwise an
+        # unrelated scene change (or even our own Apply All mid-batch)
+        # would silently wipe the user's preview edits before they get a
+        # chance to hit Apply All. The brief's reference code rescanned
+        # unconditionally on _needs_rescan; that's a data-loss regression
+        # from the proven pattern, fixed here.
+        if self._needs_rescan and not self.pending:
+            self._needs_rescan = False
+            self._rescan()
+            return
+        if self._stat_cursor < len(self.records):
+            self._stat_cursor = assets_engine.stat_sizes_batch(
+                self.records, self._stat_cursor, 12)
+            self._push_state()
+
+    def CoreMessage(self, cid, msg):
+        if cid == c4d.EVMSG_CHANGE:
+            self._needs_rescan = True
+        return gui.GeDialog.CoreMessage(self, cid, msg)
+
+    def Command(self, cid, msg):
+        if cid == self.BTN_RESCAN:
+            self._rescan()
+        elif cid == self.BTN_FILTER_ALL:
+            self.filter_status = None; self._push_state()
+        elif cid == self.BTN_FILTER_MISSING:
+            self.filter_status = "missing"; self._push_state()
+        elif cid == self.BTN_FILTER_ABSOLUTE:
+            self.filter_status = "absolute"; self._push_state()
+        elif cid == self.BTN_FILTER_OK:
+            self.filter_status = "ok"; self._push_state()
+        elif cid == self.EDIT_SEARCH:
+            self._push_state()
+        elif cid == self.COMBO_RECENT:
+            # Wired up per the proven pattern (TextureRepathingDialog):
+            # selecting a recent preset fills Find/Replace, then the combo
+            # snaps back to the placeholder row. The brief laid out this
+            # widget but never dispatched its Command — left it dead.
+            idx = int(self.GetInt32(self.COMBO_RECENT))
+            if 1 <= idx <= len(self._recent_presets):
+                find_str, repl_str = self._recent_presets[idx - 1]
+                self.SetString(self.EDIT_FIND, find_str)
+                self.SetString(self.EDIT_REPLACE, repl_str)
+            self.SetInt32(self.COMBO_RECENT, 0)
+        elif cid == self.BTN_PREVIEW:
+            self._preview_bulk()
+        elif cid == self.BTN_SEARCH_FOLDER:
+            self._search_folder_for_missing()
+        elif cid == self.BTN_MAKE_RELATIVE:
+            self._make_all_relative()
+        elif cid == self.BTN_CLEAR:
+            self.pending = {}; self._push_state()
+        elif cid == self.BTN_APPLY_ALL:
+            self._apply_all()
+        return True
+
+    # ── actions ─────────────────────────────────────────
+    def _record_by_key(self, key):
+        for r in self.records:
+            if r["key"] == key:
+                return r
+        return None
+
+    def _on_row_click(self, key, region):
+        rec = self._record_by_key(key)
+        if rec is None:
+            return
+        if region == "browse" and rec["repathable"]:
+            path = c4d.storage.LoadDialog(title="Choose texture file")
+            if path:
+                self.pending[key] = path
+                self._push_state()
+        elif region == "used_by" and rec["tex_idx"] is not None:
+            host = self.tex_records[rec["tex_idx"]].get("host")
+            if host is None:
+                return
+            if isinstance(host, c4d.BaseMaterial):
+                self.doc.SetActiveMaterial(host)
+            else:
+                self.doc.SetActiveObject(host)
+            c4d.EventAdd()
+
+    def _preview_bulk(self):
+        import re
+        find = self.GetString(self.EDIT_FIND)
+        repl = self.GetString(self.EDIT_REPLACE)
+        if not find:
+            c4d.gui.MessageDialog("Enter a string in the 'Find' field.")
+            return
+        flags = 0 if self.GetBool(self.CHK_MATCH_CASE) else re.IGNORECASE
+        pattern = re.compile(re.escape(find), flags)
+        matched = 0
+        for rec in self.records:
+            # Same status gate as TextureRepathingDialog._do_find_replace_
+            # preview: "asset_uri" (RS Asset Manager asset:/preset: URIs)
+            # and "empty" paths are not real filesystem strings — rewriting
+            # them with a text substitution would produce a broken literal
+            # path instead of leaving the URI alone. The brief's reference
+            # code only gated on `repathable`, which both statuses satisfy,
+            # so it would have corrupted those records; fixed here.
+            if not rec["repathable"] or rec["status"] in ("asset_uri", "empty"):
+                continue
+            new = pattern.sub(lambda _m: repl, rec["path"])
+            if new != rec["path"]:
+                self.pending[rec["key"]] = new
+                matched += 1
+        self._save_recent_preset(find, repl)
+        self._push_state()
+        if matched == 0:
+            case_note = "" if self.GetBool(self.CHK_MATCH_CASE) else \
+                " (matching is case-insensitive)"
+            c4d.gui.MessageDialog(f"No paths contain '{find}'{case_note}.")
+
+    def _make_all_relative(self):
+        doc_path = self.doc.GetDocumentPath() or ""
+        if not doc_path:
+            c4d.gui.MessageDialog(
+                "The document must be saved first — relative paths "
+                "are computed against the document folder.")
+            return
+        converted = 0
+        skipped_cross_drive = 0
+        for rec in self.records:
+            if not rec["repathable"] or rec["status"] != "absolute":
+                continue
+            # rec["path"] may be a raw absolute path OR a maxon `file://`
+            # URL (both classify as "absolute" — see textures._classify_
+            # texture_path). compute_relative_texture_path expects a plain
+            # filesystem path; feeding it the raw `file://...` string (as
+            # the brief's reference code does) makes os.path.relpath treat
+            # the whole URL as an opaque path segment and emit a bogus
+            # relative string. Strip the scheme first, same as
+            # TextureRepathingDialog._do_make_all_relative.
+            cur = rec["path"]
+            if cur.startswith("file://"):
+                abs_part = cur[len("file://"):]
+                if abs_part.startswith("/") and len(abs_part) > 3 and abs_part[2] == ":":
+                    abs_part = abs_part.lstrip("/")
+            else:
+                abs_part = cur
+            rel = compute_relative_texture_path(abs_part, doc_path)
+            if rel is None:
+                skipped_cross_drive += 1
+                continue
+            self.pending[rec["key"]] = rel
+            converted += 1
+        self._push_state()
+        msg = f"{converted} absolute path(s) → relative."
+        if skipped_cross_drive:
+            msg += (f"\n\n{skipped_cross_drive} path(s) skipped (cross-drive "
+                    f"— can't be made relative).")
+        c4d.gui.MessageDialog(msg)
+
+    def _search_folder_for_missing(self):
+        root = c4d.storage.LoadDialog(
+            title="Search this folder for missing assets",
+            flags=c4d.FILESELECT_DIRECTORY)
+        if not root:
+            return
+        index, truncated = assets_engine.build_file_index(root)
+        matches = assets_engine.match_missing_in_folder(self.records, index)
+        found = ambiguous = 0
+        for key, m in matches.items():
+            rec = self._record_by_key(key)
+            if rec is None or not rec["repathable"]:
+                continue
+            if "match" in m:
+                self.pending[key] = m["match"]; found += 1
+            else:
+                ambiguous += 1
+        msg = f"Matched {found} missing asset(s)."
+        if ambiguous:
+            msg += (f"\n{ambiguous} ambiguous (2+ candidates) — use the row"
+                    " […] picker to choose manually.")
+        if truncated:
+            msg += "\n\nWarning: folder had >50k files, index truncated."
+        c4d.gui.MessageDialog(msg)
+        self._push_state()
+
+    def _apply_all(self):
+        if not self.pending:
+            c4d.gui.MessageDialog("No pending changes to apply.")
+            return
+        n_total = len(self.pending)
+        if not c4d.gui.QuestionDialog(
+                f"Apply {n_total} change(s) to the scene?\n\n"
+                "All changes are wrapped in a single undo step — "
+                "Cmd+Z reverts the whole batch."):
+            return
+        applied = 0
+        failed = []
+        self.doc.StartUndo()
+        try:
+            for key, new_path in list(self.pending.items()):
+                rec = self._record_by_key(key)
+                if rec is None or rec["tex_idx"] is None:
+                    failed.append((key, "not repathable"))
+                    continue
+                live = self.tex_records[rec["tex_idx"]]
+                try:
+                    if apply_texture_path_change(live, new_path, doc=self.doc):
+                        applied += 1
+                    else:
+                        failed.append((key, "writer returned False"))
+                except Exception as e:
+                    failed.append((key, str(e)))
+        finally:
+            self.doc.EndUndo()
+        c4d.EventAdd()
+        lines = [f"Applied {applied} of {n_total} change(s)."]
+        if failed:
+            lines.append("")
+            lines.append(f"Failed ({len(failed)}):")
+            for key, err in failed[:8]:
+                lines.append(f"  • [{key}] {err}")
+            if len(failed) > 8:
+                lines.append(f"  ... +{len(failed) - 8} more")
+        c4d.gui.MessageDialog("\n".join(lines))
+        self._rescan()
+
+    def refresh(self):
+        """Public method: full re-scan, for callers outside the dialog
+        (e.g. a future 'Rescan after Collect' hook in zones 5-6)."""
+        self._rescan()
 
 
 # Tag prefixes for the item rows, mirrors doctor.build_copyable_report.
