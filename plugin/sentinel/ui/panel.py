@@ -53,7 +53,6 @@ from sentinel.ui.user_areas import (
     HistoryArea,
     ScoreHeader,
     StatusArea,
-    TextureListArea,
     _CHECK_DISPLAY,
     _accepted_entry_payload,
     _entry_label,
@@ -61,6 +60,7 @@ from sentinel.ui.user_areas import (
     format_baseline_row_message,
 )
 from sentinel.ui.dialogs import (
+    AssetHubDialog,
     BaselineActionDialog,
     GateTriageDialog,
     NotesDialog,
@@ -68,9 +68,6 @@ from sentinel.ui.dialogs import (
     SentinelDoctorDialog,
     SentinelSettingsDialog,
     SupervisorDialog,
-    TextureRepathingDialog,
-    load_repath_presets,
-    save_repath_preset,
 )
 
 # Import maxon for node material access
@@ -434,9 +431,10 @@ def check_cross_aspect_safe_area(doc, sample_strategy="keyframes", rules_context
 
 
 
-# ---------------- Scene Collector (moved to sentinel.ui.flows) ----------------
-from sentinel.ui.flows import collect_scene
-
+# ---------------- Scene Collector ----------------
+# Collect now runs through AssetHubDialog (focus="deliver"), which reuses
+# run_collect_pipeline internally — collect_scene is no longer called
+# directly from the panel (v1.11, superseded by the Asset Hub).
 
 
 # ---------------- Snapshot System (moved to sentinel.snapshots + ui.flows) ----------------
@@ -786,11 +784,11 @@ class YSPanel(gui.GeDialog):
                        "Mark / Unmark Safe Area Subject")
         self.GroupEnd()
 
-        # ── Asset Management ── (v1.5.7 Texture Repathing tool)
+        # ── Asset Management ── (v1.11 Asset Hub — supersedes Texture Repathing)
         self._add_section_label("Asset Management")
         self.GroupBegin(53, c4d.BFH_SCALEFIT, 1, 0)
         self.AddButton(G.BTN_TEXTURE_REPATH, c4d.BFH_SCALEFIT, 0, 0,
-                       "Texture Repathing...")
+                       "Asset Hub...")
         self.GroupEnd()
 
         # Spacer
@@ -1717,11 +1715,11 @@ class YSPanel(gui.GeDialog):
                 for i, t in enumerate(missing[:10], 1):
                     info_msg += f"  {i}. {t['source']}\n     {t['path']}\n"
                 info_msg += "\n"
-            info_msg += ("Open the Texture Repathing tool to fix these "
+            info_msg += ("Open the Asset Hub to fix these "
                          "in bulk (find/replace, make relative, "
                          "auto-find missing)?")
             if c4d.gui.QuestionDialog(info_msg):
-                self._open_texture_repathing(doc)
+                self._open_asset_hub(doc)
         else:
             c4d.gui.MessageDialog(
                 "All assets OK. No absolute paths or missing files.")
@@ -2175,7 +2173,7 @@ class YSPanel(gui.GeDialog):
             self._toggle_safe_area_mark(doc)
 
         elif cid == G.BTN_TEXTURE_REPATH:
-            self._open_texture_repathing(doc)
+            self._open_asset_hub(doc)
 
         elif cid == G.BTN_GITHUB:
             # Open GitHub repository
@@ -2244,7 +2242,7 @@ class YSPanel(gui.GeDialog):
                 c4d.gui.MessageDialog(f"QC Report saved!\n\n{save_path}")
 
         elif cid == G.BTN_COLLECT_SCENE:
-            collect_scene(doc, self._artist_name)
+            self._open_asset_hub(doc, focus="deliver")
 
         elif cid == G.BTN_SAVE_VERSION:
             self._handle_save_version(doc)
@@ -2536,38 +2534,42 @@ class YSPanel(gui.GeDialog):
     def _toggle_safe_area_mark(self, doc):
         scene_tools._toggle_safe_area_mark(doc, refresh=self._refresh)
 
-    def _open_texture_repathing(self, doc):
-        """Open the Texture Repathing dialog (v1.5.7).
+    def _open_asset_hub(self, doc, focus="assets"):
+        """Open the Sentinel Asset Hub (v1.11).
 
-        Bulk find/replace + smart-fix utility for texture paths across all
-        renderers (Redshift / Octane / Arnold).
+        Unified asset inventory + repathing + collect — supersedes the
+        standalone Texture Repathing dialog and the chained collect_scene
+        flow (single entry point for Tools → Asset Hub, QC #6 Assets Info,
+        and Collect Scene; the latter opens with focus="deliver").
 
         Opened ASYNC (not modal) so Cinema 4D's main window stays
         interactive while the tool is open — critically, this keeps the
         Cmd+Z shortcut working. A modal dialog captures the keyboard, so
         after applying changes the user could not undo them with Cmd+Z
         until the dialog closed. The panel holds a reference so the dialog
-        object isn't garbage-collected while open. QC check #6 refreshes
-        on its own via the CoreMessage dirty-flag once changes hit the
-        scene, so no explicit refresh is needed here.
+        object isn't garbage-collected while open (same pattern as the
+        retired Texture Repathing dialog). QC check #6 refreshes on its
+        own via the CoreMessage dirty-flag once changes hit the scene, so
+        no explicit refresh is needed here.
         """
         if not doc:
             c4d.gui.MessageDialog("No active document.")
             return
         try:
-            existing = getattr(self, "_texture_repath_dlg", None)
+            existing = getattr(self, "_asset_hub", None)
             if existing is not None:
                 try:
                     if existing.IsOpen():
                         existing.Close()
                 except Exception:
                     pass
-            dlg = TextureRepathingDialog(doc)
-            self._texture_repath_dlg = dlg
-            dlg.Open(c4d.DLG_TYPE_ASYNC, defaultw=900, defaulth=620)
+            dlg = AssetHubDialog(doc, focus=focus)
+            dlg._artist_name = self._artist_name
+            self._asset_hub = dlg
+            dlg.Open(c4d.DLG_TYPE_ASYNC, defaultw=980, defaulth=720)
         except Exception as e:
-            c4d.gui.MessageDialog(f"Texture Repathing failed to open:\n{e}")
-            safe_print(f"Texture Repathing error: {e}")
+            c4d.gui.MessageDialog(f"Asset Hub failed to open:\n{e}")
+            safe_print(f"Asset Hub error: {e}")
 
     def _create_hierarchy(self, doc):
         scene_tools._create_hierarchy(doc)

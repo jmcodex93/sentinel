@@ -7,10 +7,14 @@ import re
 import c4d
 from c4d import gui
 
+from sentinel import assets as assets_engine
+from sentinel import baseline
 from sentinel import doctor
 from sentinel import supervisor
-from sentinel.common.helpers import safe_print
+from sentinel.common.cache import check_cache
+from sentinel.common.helpers import open_in_explorer, safe_print
 from sentinel.common.settings import GlobalSettings
+from sentinel.fixes import apply_fixes
 from sentinel.notes import (
     _empty_notes,
     add_todo,
@@ -18,6 +22,8 @@ from sentinel.notes import (
     summarize_notes,
     toggle_todo,
 )
+from sentinel.qc.registry import CHECK_REGISTRY
+from sentinel.qc.score import compute_score, run_all_checks
 from sentinel.versioning import (
     STATUS_OPTIONS,
     _sanitize_status,
@@ -31,7 +37,8 @@ from sentinel.textures import (
 )
 
 from .ids import GateTriageIds
-from .user_areas import TextureListArea, TodoArea, _violation_label
+from .reports import build_baseline_artifact_details
+from .user_areas import AssetListArea, TextureListArea, TodoArea, _violation_label
 
 
 def gate_dialog_can_proceed(blocking_items, fixable_items, decisions, reason):
@@ -1019,6 +1026,7 @@ def save_repath_preset(find_str, replace_str):
         safe_print(f"save_repath_preset error: {e}")
 
 
+# Retired from the panel in v1.11 — superseded by AssetHubDialog. Kept one release.
 class TextureRepathingDialog(gui.GeDialog):
     """Modal dialog for the Texture Repathing Tool.
 
@@ -1597,6 +1605,899 @@ class TextureRepathingDialog(gui.GeDialog):
             return True
 
         return True
+
+
+class AssetHubDialog(gui.GeDialog):
+    """Sentinel Asset Hub — unified asset inventory + repathing + collect.
+
+    Replaces TextureRepathingDialog and the chained collect_scene dialogs.
+    Async (Cmd+Z must reach C4D) — same rationale as TextureRepathingDialog:
+    a modal dialog captures the keyboard, so Cmd+Z would never reach C4D
+    while the tool is open. Zones:
+      1 header (scene, totals, Rescan)   4 repathing (find/replace, smart)
+      2 filters (+ search)               5 pre-flight strip (Task 10)
+      3 AssetListArea table              6 delivery bar (Task 12)
+
+    Zone 6 (delivery bar) reuses run_collect_pipeline (Task 7) exactly —
+    this dialog only gathers a preflight_payload with the same keys
+    collect_scene builds, runs the missing-asset gate, and renders the
+    result. No SaveProject/manifest/zip logic is duplicated here.
+    """
+
+    LBL_HEADER = 2001
+    BTN_RESCAN = 2002
+    BTN_FILTER_ALL, BTN_FILTER_MISSING = 2010, 2011
+    BTN_FILTER_ABSOLUTE, BTN_FILTER_OK = 2012, 2013
+    EDIT_SEARCH = 2014
+    SCROLL_LIST, USERAREA_LIST = 2020, 2021
+    EDIT_FIND, EDIT_REPLACE = 2030, 2031
+    BTN_PREVIEW, COMBO_RECENT, CHK_MATCH_CASE = 2032, 2033, 2034
+    BTN_SEARCH_FOLDER, BTN_MAKE_RELATIVE, BTN_CLEAR = 2040, 2041, 2042
+    LBL_PENDING, BTN_APPLY_ALL = 2043, 2044
+    LBL_PREFLIGHT = 2050
+    BTN_PF_FIX, BTN_PF_ACCEPT, BTN_PF_DETAILS = 2051, 2052, 2053
+    EDIT_DEST, BTN_CHOOSE_DEST = 2060, 2061
+    COMBO_OUTPUT, BTN_COLLECT = 2062, 2063
+    LBL_COLLECT_STATUS = 2064
+
+    THUMB_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".tga",
+                  ".exr", ".hdr", ".psd", ".webp"}
+    THUMB_CAP = 200
+    THUMB_BATCH = 8
+    # Ticks of quiet (no new EVMSG_CHANGE) at 250ms/tick before a pending
+    # rescan fires — see the debounce comment on self._quiet_ticks.
+    QUIET_TICKS_THRESHOLD = 4
+
+    def __init__(self, doc, focus="assets"):
+        super().__init__()
+        self.doc = doc
+        self.focus = focus
+        self.records = []          # AssetRecords (merged)
+        self.tex_records = []      # live TextureRecords (writers / owner_ref)
+        self.skipped = 0
+        self.pending = {}          # {record_key: new_path}
+        self.list_ua = None
+        self.filter_status = None
+        self._needs_rescan = False
+        # Debounce counter for the rescan-on-scene-change path (Timer runs
+        # every 250ms). A busy scene edit (e.g. dragging a slider, or a
+        # multi-step script) fires EVMSG_CHANGE repeatedly; rescanning on
+        # every tick would re-run the full texture scan + GetAllAssetsNew +
+        # all 12 QC checks dozens of times per second. Instead each new
+        # change resets the counter to 0, and the rescan only fires once
+        # the scene has been quiet for QUIET_TICKS_THRESHOLD ticks
+        # (~1s) — a trailing-edge debounce.
+        self._quiet_ticks = 0
+        self._stat_cursor = 0      # batched size stat progress
+        self._recent_presets = []
+        # Zone 5 pre-flight QC payload, refreshed by _refresh_preflight().
+        # Shape: {"rules_context", "registry_results", "score"} — this is
+        # the exact interface Task 12's delivery bar (zone 6) consumes.
+        self._preflight = {}
+        # Set by the panel at open time (Task 13); default keeps _do_collect
+        # safe to call standalone (e.g. from tests or before that wiring).
+        self._artist_name = ""
+
+    # ── layout ──────────────────────────────────────────
+    def CreateLayout(self):
+        self.SetTitle("Sentinel — Asset Hub")
+        self.GroupBegin(0, c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT, 1, 0)
+        self.GroupBorderSpace(12, 10, 12, 10)
+        self.GroupSpace(0, 6)
+
+        # zone 1: header
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
+        self.AddStaticText(self.LBL_HEADER, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+        self.AddButton(self.BTN_RESCAN, c4d.BFH_RIGHT, 0, 0, "↻ Rescan")
+        self.GroupEnd()
+
+        # zone 2: filters + search
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 6, 0)
+        self.GroupSpace(6, 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 60, 0, "Filter:", 0)
+        for bid, label in ((self.BTN_FILTER_ALL, "All"),
+                           (self.BTN_FILTER_MISSING, "Missing"),
+                           (self.BTN_FILTER_ABSOLUTE, "Absolute"),
+                           (self.BTN_FILTER_OK, "OK")):
+            self.AddButton(bid, c4d.BFH_LEFT, 0, 0, label)
+        self.AddEditText(self.EDIT_SEARCH, c4d.BFH_SCALEFIT, 0, 0)
+        self.GroupEnd()
+
+        # zone 3: table
+        self.ScrollGroupBegin(self.SCROLL_LIST,
+                              c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT,
+                              c4d.SCROLLGROUP_VERT | c4d.SCROLLGROUP_AUTOVERT,
+                              0, 300)
+        self.AddUserArea(self.USERAREA_LIST,
+                         c4d.BFH_SCALEFIT | c4d.BFV_TOP, 700, 420)
+        if self.list_ua is None:
+            self.list_ua = AssetListArea()
+        self.AttachUserArea(self.list_ua, self.USERAREA_LIST)
+        self.list_ua.click_callback = self._on_row_click
+        self.GroupEnd()
+
+        self.AddSeparatorH(8)
+
+        # zone 4: repathing
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 1, 0, "Repathing")
+        self.GroupBorderSpace(8, 8, 8, 8)
+        self.GroupSpace(6, 4)
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 5, 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 60, 0, "Find:", 0)
+        self.AddEditText(self.EDIT_FIND, c4d.BFH_SCALEFIT, 0, 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 90, 0, "Replace:", 0)
+        self.AddEditText(self.EDIT_REPLACE, c4d.BFH_SCALEFIT, 0, 0)
+        self.AddButton(self.BTN_PREVIEW, c4d.BFH_LEFT, 0, 0, "Preview")
+        self.GroupEnd()
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 4, 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 60, 0, "Recent:", 0)
+        self.AddComboBox(self.COMBO_RECENT, c4d.BFH_SCALEFIT, 0, 0)
+        self.AddCheckbox(self.CHK_MATCH_CASE, c4d.BFH_LEFT, 0, 0, "Match case")
+        self.GroupEnd()
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 6, 0)
+        self.AddButton(self.BTN_SEARCH_FOLDER, c4d.BFH_LEFT, 0, 0,
+                       "Search Folder for Missing…")
+        self.AddButton(self.BTN_MAKE_RELATIVE, c4d.BFH_LEFT, 0, 0,
+                       "Make All Relative")
+        self.AddButton(self.BTN_CLEAR, c4d.BFH_LEFT, 0, 0, "Clear Pending")
+        self.AddStaticText(self.LBL_PENDING, c4d.BFH_SCALEFIT | c4d.BFH_RIGHT,
+                           0, 0, "", 0)
+        self.AddButton(self.BTN_APPLY_ALL, c4d.BFH_RIGHT, 0, 0,
+                       "Apply All (1 undo)")
+        self.GroupEnd()
+        self.GroupEnd()  # repathing
+
+        # zone 5: pre-flight QC strip (Task 10)
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 4, 0, "Pre-flight QC")
+        self.GroupBorderSpace(8, 6, 8, 6)
+        self.AddStaticText(self.LBL_PREFLIGHT, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+        self.AddButton(self.BTN_PF_FIX, c4d.BFH_RIGHT, 0, 0, "Fix auto-fixables")
+        self.AddButton(self.BTN_PF_ACCEPT, c4d.BFH_RIGHT, 0, 0, "Accept…")
+        self.AddButton(self.BTN_PF_DETAILS, c4d.BFH_RIGHT, 0, 0, "Details")
+        self.GroupEnd()
+
+        # zone 6: delivery bar
+        self.AddSeparatorH(8)
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 6, 0, "Deliver")
+        self.GroupBorderSpace(8, 6, 8, 6)
+        self.AddStaticText(0, c4d.BFH_LEFT, 90, 0, "Deliver to:", 0)
+        self.AddEditText(self.EDIT_DEST, c4d.BFH_SCALEFIT, 0, 0)
+        self.AddButton(self.BTN_CHOOSE_DEST, c4d.BFH_LEFT, 0, 0, "Choose…")
+        self.AddComboBox(self.COMBO_OUTPUT, c4d.BFH_LEFT, 90, 0)
+        self.AddButton(self.BTN_COLLECT, c4d.BFH_LEFT, 0, 0, "Collect ▸")
+        self.GroupEnd()
+        self.AddStaticText(self.LBL_COLLECT_STATUS, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+
+        self.GroupEnd()  # main
+        return True
+
+    def InitValues(self):
+        self.SetBool(self.CHK_MATCH_CASE, False)
+        self._load_recent_presets()
+        self.AddChild(self.COMBO_OUTPUT, 0, "Folder")
+        self.AddChild(self.COMBO_OUTPUT, 1, "Zip")
+        self.SetInt32(self.COMBO_OUTPUT, 0)
+        self._rescan()
+        # Poll for scene changes (external undo/redo, edits) the same way
+        # TextureRepathingDialog does, so the list stays in sync without
+        # the user reopening the dialog.
+        self.SetTimer(250)
+        if self.focus == "deliver":
+            self.Activate(self.EDIT_DEST)
+        return True
+
+    # ── recent Find/Replace presets ────────────────────
+    # Reuses the EXACT same module-level helpers (and therefore the same
+    # `sentinel_settings.json` key, TEXTURE_REPATH_PRESETS_KEY) that
+    # TextureRepathingDialog already persists to — the user's existing
+    # presets carry over untouched, nothing is reimplemented here.
+    def _load_recent_presets(self):
+        def _clip(s, n=22):
+            s = s or ""
+            return s if len(s) <= n else s[:n - 1] + "…"
+
+        try:
+            self.FreeChildren(self.COMBO_RECENT)
+        except Exception:
+            pass
+        self.AddChild(self.COMBO_RECENT, 0, "Recent find / replace…")
+        self._recent_presets = load_repath_presets()
+        for i, (f, r) in enumerate(self._recent_presets, start=1):
+            label = '"%s"  →  "%s"' % (_clip(f), _clip(r))
+            self.AddChild(self.COMBO_RECENT, i, label)
+        self.SetInt32(self.COMBO_RECENT, 0)
+
+    def _save_recent_preset(self, find_str, replace_str):
+        save_repath_preset(find_str, replace_str)
+        self._load_recent_presets()
+
+    # ── data ────────────────────────────────────────────
+    def _rescan(self):
+        # Deferred import: sentinel.ui.flows imports GateTriageDialog from
+        # this module (dialogs.py), so importing flows at module scope here
+        # would create a circular import. Same constraint scan_scene_assets
+        # itself documents for its own use of sentinel.ui.dialogs.
+        from sentinel.ui.flows import scan_scene_assets
+        self.records, self.tex_records, self.skipped = \
+            scan_scene_assets(self.doc)
+        self.pending = {}
+        self._stat_cursor = 0
+        self._push_state()
+        # Single call site: InitValues and _apply_all both route through
+        # _rescan(), so refreshing the pre-flight strip here satisfies the
+        # "InitValues and after _apply_all/_rescan" requirement without
+        # running the QC pass twice per trigger.
+        self._refresh_preflight()
+
+    def _push_state(self):
+        totals = assets_engine.compute_totals(self.records)
+        doc_name = self.doc.GetDocumentName() or "(unsaved)"
+        head = (f"{doc_name}   —   {totals['count']} assets · "
+                f"{totals['missing']} missing · {totals['absolute']} absolute"
+                f" · {assets_engine.format_size(totals['total_bytes'])}")
+        if self._stat_cursor < len(self.records):
+            head += " (sizing…)"
+        if self.skipped:
+            head += f" · {self.skipped} items skipped"
+        self.SetString(self.LBL_HEADER, head)
+        self.SetString(self.LBL_PENDING,
+                       f"{len(self.pending)} pending changes"
+                       if self.pending else "")
+        self.list_ua.set_state(self.records, self.filter_status,
+                               self.GetString(self.EDIT_SEARCH) or "",
+                               self.pending)
+        self.LayoutChanged(self.SCROLL_LIST)
+
+    def _load_thumbs_batch(self):
+        # Loads up to THUMB_BATCH thumbnails per Timer tick — never from
+        # DrawMsg, which must stay a pure read of thumb_cache (see
+        # AssetListArea.DrawMsg / Task 8). A None cache entry is a
+        # permanent placeholder: a failed/unsupported load is recorded
+        # once and never retried on subsequent ticks.
+        cache = self.list_ua.thumb_cache
+        loaded = 0
+        first, last = self.list_ua.get_visible_range()
+        for idx in self.list_ua.visible[first:last]:
+            rec = self.records[idx]
+            path = rec.get("resolved_path")
+            if (not path or path in cache or rec["status"] == "missing"
+                    or os.path.splitext(path)[1].lower() not in self.THUMB_EXTS):
+                continue
+            try:
+                bmp = c4d.bitmaps.BaseBitmap()
+                if bmp.InitWith(path)[0] == c4d.IMAGERESULT_OK:
+                    small = c4d.bitmaps.BaseBitmap()
+                    small.Init(22, 22)
+                    bmp.ScaleIt(small, 256, True, False)
+                    cache[path] = small
+                else:
+                    cache[path] = None  # permanent placeholder, no retry
+            except Exception:
+                cache[path] = None
+            loaded += 1
+            if loaded >= self.THUMB_BATCH:
+                break
+        # FIFO eviction: dicts preserve insertion order, so the oldest
+        # entries (by first-load order) are the ones dropped first.
+        if len(cache) > self.THUMB_CAP:
+            for k in list(cache.keys())[: len(cache) - self.THUMB_CAP]:
+                del cache[k]
+        if loaded:
+            self.list_ua.Redraw()
+        return loaded
+
+    # ── events ──────────────────────────────────────────
+    def Timer(self, msg):
+        # Skip the rescan while there are pending (un-applied) repathing
+        # edits, same guard as TextureRepathingDialog.Timer — otherwise an
+        # unrelated scene change (or even our own Apply All mid-batch)
+        # would silently wipe the user's preview edits before they get a
+        # chance to hit Apply All. The brief's reference code rescanned
+        # unconditionally on _needs_rescan; that's a data-loss regression
+        # from the proven pattern, fixed here.
+        # Debounced rescan: only fires once the scene has been quiet for
+        # QUIET_TICKS_THRESHOLD ticks since the last EVMSG_CHANGE (reset in
+        # CoreMessage below) — see the comment on self._quiet_ticks.
+        if self._needs_rescan and not self.pending:
+            self._quiet_ticks += 1
+            if self._quiet_ticks >= self.QUIET_TICKS_THRESHOLD:
+                self._needs_rescan = False
+                self._quiet_ticks = 0
+                self._rescan()
+            return
+        if self._stat_cursor < len(self.records):
+            self._stat_cursor = assets_engine.stat_sizes_batch(
+                self.records, self._stat_cursor, 12)
+            self._push_state()
+        self._load_thumbs_batch()
+
+    def CoreMessage(self, cid, msg):
+        if cid == c4d.EVMSG_CHANGE:
+            self._needs_rescan = True
+            # Any new change restarts the quiet period — the rescan only
+            # fires after QUIET_TICKS_THRESHOLD ticks with no further
+            # changes (trailing-edge debounce, see Timer).
+            self._quiet_ticks = 0
+        return gui.GeDialog.CoreMessage(self, cid, msg)
+
+    def Command(self, cid, msg):
+        if cid == self.BTN_RESCAN:
+            self._rescan()
+        elif cid == self.BTN_FILTER_ALL:
+            self.filter_status = None; self._push_state()
+        elif cid == self.BTN_FILTER_MISSING:
+            self.filter_status = "missing"; self._push_state()
+        elif cid == self.BTN_FILTER_ABSOLUTE:
+            self.filter_status = "absolute"; self._push_state()
+        elif cid == self.BTN_FILTER_OK:
+            self.filter_status = "ok"; self._push_state()
+        elif cid == self.EDIT_SEARCH:
+            self._push_state()
+        elif cid == self.COMBO_RECENT:
+            # Wired up per the proven pattern (TextureRepathingDialog):
+            # selecting a recent preset fills Find/Replace, then the combo
+            # snaps back to the placeholder row. The brief laid out this
+            # widget but never dispatched its Command — left it dead.
+            idx = int(self.GetInt32(self.COMBO_RECENT))
+            if 1 <= idx <= len(self._recent_presets):
+                find_str, repl_str = self._recent_presets[idx - 1]
+                self.SetString(self.EDIT_FIND, find_str)
+                self.SetString(self.EDIT_REPLACE, repl_str)
+            self.SetInt32(self.COMBO_RECENT, 0)
+        elif cid == self.BTN_PREVIEW:
+            self._preview_bulk()
+        elif cid == self.BTN_SEARCH_FOLDER:
+            self._search_folder_for_missing()
+        elif cid == self.BTN_MAKE_RELATIVE:
+            self._make_all_relative()
+        elif cid == self.BTN_CLEAR:
+            self.pending = {}; self._push_state()
+        elif cid == self.BTN_APPLY_ALL:
+            self._apply_all()
+        elif cid == self.BTN_PF_FIX:
+            self._fix_preflight()
+        elif cid == self.BTN_PF_ACCEPT:
+            self._accept_preflight()
+        elif cid == self.BTN_PF_DETAILS:
+            self._show_preflight_details()
+        elif cid == self.BTN_CHOOSE_DEST:
+            chosen = c4d.storage.LoadDialog(
+                title="Select folder to collect project into",
+                flags=c4d.FILESELECT_DIRECTORY)
+            if chosen:
+                self.SetString(self.EDIT_DEST, chosen)
+        elif cid == self.BTN_COLLECT:
+            self._do_collect()
+        return True
+
+    # ── actions ─────────────────────────────────────────
+    def _record_by_key(self, key):
+        for r in self.records:
+            if r["key"] == key:
+                return r
+        return None
+
+    def _on_row_click(self, key, region):
+        rec = self._record_by_key(key)
+        if rec is None:
+            return
+        if region == "browse" and rec["repathable"]:
+            path = c4d.storage.LoadDialog(title="Choose texture file")
+            if path:
+                self.pending[key] = path
+                self._push_state()
+        elif region == "used_by" and rec["tex_idx"] is not None:
+            host = self.tex_records[rec["tex_idx"]].get("host")
+            if host is None:
+                return
+            if isinstance(host, c4d.BaseMaterial):
+                self.doc.SetActiveMaterial(host)
+            else:
+                self.doc.SetActiveObject(host)
+            c4d.EventAdd()
+
+    def _preview_bulk(self):
+        import re
+        find = self.GetString(self.EDIT_FIND)
+        repl = self.GetString(self.EDIT_REPLACE)
+        if not find:
+            c4d.gui.MessageDialog("Enter a string in the 'Find' field.")
+            return
+        flags = 0 if self.GetBool(self.CHK_MATCH_CASE) else re.IGNORECASE
+        pattern = re.compile(re.escape(find), flags)
+        matched = 0
+        for rec in self.records:
+            # Same status gate as TextureRepathingDialog._do_find_replace_
+            # preview: "asset_uri" (RS Asset Manager asset:/preset: URIs)
+            # and "empty" paths are not real filesystem strings — rewriting
+            # them with a text substitution would produce a broken literal
+            # path instead of leaving the URI alone. The brief's reference
+            # code only gated on `repathable`, which both statuses satisfy,
+            # so it would have corrupted those records; fixed here.
+            if not rec["repathable"] or rec["status"] in ("asset_uri", "empty"):
+                continue
+            new = pattern.sub(lambda _m: repl, rec["path"])
+            if new != rec["path"]:
+                self.pending[rec["key"]] = new
+                matched += 1
+        self._save_recent_preset(find, repl)
+        self._push_state()
+        if matched == 0:
+            case_note = ("matching is case-insensitive; "
+                         if not self.GetBool(self.CHK_MATCH_CASE) else "")
+            c4d.gui.MessageDialog(
+                f"No repathable paths contain '{find}' "
+                f"({case_note}read-only assets are not repathed).")
+
+    def _make_all_relative(self):
+        doc_path = self.doc.GetDocumentPath() or ""
+        if not doc_path:
+            c4d.gui.MessageDialog(
+                "The document must be saved first — relative paths "
+                "are computed against the document folder.")
+            return
+        converted = 0
+        skipped_cross_drive = 0
+        for rec in self.records:
+            if not rec["repathable"] or rec["status"] != "absolute":
+                continue
+            # rec["path"] may be a raw absolute path OR a maxon `file://`
+            # URL (both classify as "absolute" — see textures._classify_
+            # texture_path). compute_relative_texture_path expects a plain
+            # filesystem path; feeding it the raw `file://...` string (as
+            # the brief's reference code does) makes os.path.relpath treat
+            # the whole URL as an opaque path segment and emit a bogus
+            # relative string. Strip the scheme first, same as
+            # TextureRepathingDialog._do_make_all_relative.
+            cur = rec["path"]
+            if cur.startswith("file://"):
+                abs_part = cur[len("file://"):]
+                if abs_part.startswith("/") and len(abs_part) > 3 and abs_part[2] == ":":
+                    abs_part = abs_part.lstrip("/")
+            else:
+                abs_part = cur
+            rel = compute_relative_texture_path(abs_part, doc_path)
+            if rel is None:
+                skipped_cross_drive += 1
+                continue
+            self.pending[rec["key"]] = rel
+            converted += 1
+        self._push_state()
+        msg = f"{converted} absolute path(s) → relative."
+        if skipped_cross_drive:
+            msg += (f"\n\n{skipped_cross_drive} path(s) skipped (cross-drive "
+                    f"— can't be made relative).")
+        c4d.gui.MessageDialog(msg)
+
+    def _search_folder_for_missing(self):
+        root = c4d.storage.LoadDialog(
+            title="Search this folder for missing assets",
+            flags=c4d.FILESELECT_DIRECTORY)
+        if not root:
+            return
+        index, truncated = assets_engine.build_file_index(root)
+        matches = assets_engine.match_missing_in_folder(self.records, index)
+        found = ambiguous = 0
+        for key, m in matches.items():
+            rec = self._record_by_key(key)
+            if rec is None or not rec["repathable"]:
+                continue
+            if "match" in m:
+                self.pending[key] = m["match"]; found += 1
+            else:
+                ambiguous += 1
+        msg = f"Matched {found} missing asset(s)."
+        if ambiguous:
+            msg += (f"\n{ambiguous} ambiguous (2+ candidates) — use the row"
+                    " […] picker to choose manually.")
+        if truncated:
+            msg += "\n\nWarning: folder had >50k files, index truncated."
+        c4d.gui.MessageDialog(msg)
+        self._push_state()
+
+    def _apply_all(self):
+        if not self.pending:
+            c4d.gui.MessageDialog("No pending changes to apply.")
+            return
+        n_total = len(self.pending)
+        if not c4d.gui.QuestionDialog(
+                f"Apply {n_total} change(s) to the scene?\n\n"
+                "All changes are wrapped in a single undo step — "
+                "Cmd+Z reverts the whole batch."):
+            return
+        applied = 0
+        failed = []
+        self.doc.StartUndo()
+        try:
+            for key, new_path in list(self.pending.items()):
+                rec = self._record_by_key(key)
+                # A merged row can represent several shaders sharing one path
+                # (e.g. 3 materials referencing the same file) — repath every
+                # one of them, not just the first tex_idx.
+                idxs = rec.get("tex_idxs") if rec else None
+                if not idxs:
+                    idxs = ([rec["tex_idx"]]
+                            if rec and rec.get("tex_idx") is not None else [])
+                if not idxs:
+                    failed.append((key, "not repathable"))
+                    continue
+                # Tally per ROW, not per shader write: n_total is len(pending),
+                # so a row with 3 shaders must count as 1 applied (all wrote
+                # OK) or 1 failed (any wrote wrong) — never as 3 applieds.
+                row_err = None
+                for tex_idx in idxs:
+                    live = self.tex_records[tex_idx]
+                    try:
+                        if not apply_texture_path_change(live, new_path, doc=self.doc):
+                            row_err = row_err or "writer returned False"
+                    except Exception as e:
+                        row_err = row_err or str(e)
+                if row_err is None:
+                    applied += 1
+                else:
+                    failed.append((key, row_err))
+        finally:
+            self.doc.EndUndo()
+        c4d.EventAdd()
+        lines = [f"Applied {applied} of {n_total} change(s)."]
+        if failed:
+            lines.append("")
+            lines.append(f"Failed ({len(failed)}):")
+            for key, err in failed[:8]:
+                lines.append(f"  • [{key}] {err}")
+            if len(failed) > 8:
+                lines.append(f"  ... +{len(failed) - 8} more")
+        c4d.gui.MessageDialog("\n".join(lines))
+        self._rescan()
+
+    # ── zone 5: pre-flight QC strip ─────────────────────
+    def _refresh_preflight(self):
+        """Re-run QC + score the same way `collect_scene` does (flows.py
+        Phase 1) and refresh the strip's label + button states.
+
+        `_baseline_path_for_doc`/`_current_module` are private helpers that
+        only live in ui.flows — imported locally (not at module scope) to
+        avoid the same flows<->dialogs circular import _rescan() already
+        works around (flows imports GateTriageDialog from this module).
+        `_active_rules_for_doc`, `run_all_checks` and `compute_score` have
+        no such constraint and are already imported at module scope above.
+        """
+        from sentinel.ui.flows import _baseline_path_for_doc, _current_module
+        rules_context = _active_rules_for_doc(self.doc)
+        registry_results = run_all_checks(self.doc, _current_module(), rules_context)
+        baseline_path = _baseline_path_for_doc(self.doc, only_existing=True)
+        kwargs = {"baseline_path": baseline_path,
+                  "current_params": rules_context.params} if baseline_path else {}
+        score = compute_score(registry_results, rules_context, **kwargs)
+        self._preflight = {"rules_context": rules_context,
+                           "registry_results": registry_results,
+                           "score": score}
+        failing = {cid: n for cid, n in score["counts"].items() if n}
+        label = (f"✓ {score['passed']}/{score['total']} — all clear"
+                 if not failing else
+                 f"⚠ {score['passed']}/{score['total']} — " +
+                 " · ".join(f"{cid}: {n}" for cid, n in failing.items()))
+        self.SetString(self.LBL_PREFLIGHT, label)
+        self.Enable(self.BTN_PF_FIX, bool(failing))
+        self.Enable(self.BTN_PF_ACCEPT, bool(failing))
+
+    def _fix_preflight(self):
+        """Auto-fix the object-scoped fixable checks in one undo step.
+
+        Gathers the fix payload exactly the way `collect_scene`'s Phase 1
+        "Yes" branch does (flows.py ~529-536: has_fix + fix_scope=="objects"
+        checks, objects taken from the legacy result list) — but applies it
+        through `sentinel.fixes.apply_fixes`, which wraps the whole batch in
+        a single StartUndo/EndUndo (collect_scene's own loop calls each
+        fix_fn with its default manage_undo=True, i.e. one undo step PER
+        check — not the single atomic undo this strip's interface requires).
+        Document-scoped fixes (fps_range) are skipped, matching
+        collect_scene, which never auto-fixes them from this loop either.
+        """
+        registry_results = (self._preflight or {}).get("registry_results") or {}
+        legacy_by_id = {
+            check_id: pair.get("legacy_result")
+            for check_id, pair in registry_results.items()
+        }
+        fixes = []
+        for entry in CHECK_REGISTRY:
+            if not entry.has_fix or entry.fix_scope != "objects":
+                continue
+            objs = legacy_by_id.get(entry.check_id) or []
+            if not objs:
+                continue
+            fixes.append({"check_id": entry.check_id, "objects": objs})
+        if not fixes:
+            c4d.gui.MessageDialog("No auto-fixable issues found.")
+            return
+        results = apply_fixes(self.doc, fixes)
+        fixed_total = sum(int(r.get("result") or 0) for r in results)
+        c4d.gui.MessageDialog(
+            f"Auto-fixed {fixed_total} issue(s) across {len(results)} check(s).")
+        self._refresh_preflight()
+
+    def _new_violations_for_check(self, check_id):
+        """Return the new-violation dicts for one check_id.
+
+        Mirrors panel.py's `_new_violations_for_row`: prefer the baseline
+        diff (`score["baseline_matches"]`) when a baseline sidecar exists,
+        else fall back to the raw structured violations tagged with their
+        check_id.
+        """
+        score = (self._preflight or {}).get("score") or {}
+        if score.get("baseline_matches"):
+            match = score["baseline_matches"].get(check_id, {}) or {}
+            return list(match.get("new") or [])
+        registry_results = (self._preflight or {}).get("registry_results") or {}
+        result_pair = registry_results.get(check_id, {}) or {}
+        structured = result_pair.get("structured_result")
+        raw = []
+        if isinstance(structured, dict):
+            raw = structured.get("violations") or []
+        elif structured is not None:
+            raw = getattr(structured, "violations", []) or []
+        items = []
+        for violation in raw:
+            if isinstance(violation, dict):
+                item = dict(violation)
+                item["check_id"] = check_id
+                items.append(item)
+        return items
+
+    def _accept_preflight(self):
+        """Accept (or retire) baseline acceptances for every failing check.
+
+        The strip has no per-row table (unlike the QC panel), so this walks
+        every check_id with new violations and opens one `BaselineActionDialog`
+        per check — the exact same dialog + accept/retire logic as panel.py's
+        `_show_baseline_actions(row_key)`, just looped instead of triggered
+        by a single row click. Cancelling a dialog stops the batch rather
+        than silently skipping to the next check.
+        """
+        score = (self._preflight or {}).get("score") or {}
+        failing_ids = [cid for cid, n in (score.get("counts") or {}).items() if n]
+        if not failing_ids:
+            c4d.gui.MessageDialog("No failing checks to accept.")
+            return
+
+        from sentinel.ui.flows import _baseline_path_for_doc
+        baseline_path = _baseline_path_for_doc(self.doc, only_existing=False)
+        if not baseline_path:
+            c4d.gui.MessageDialog(
+                "Save the scene first — the baseline sidecar path is "
+                "derived from the file location.")
+            return
+
+        rules_context = (self._preflight or {}).get("rules_context")
+        author = baseline.resolve_author(self._artist_name or None)
+        accepted_checks = 0
+        written_total = 0
+        for check_id in failing_ids:
+            new_items = self._new_violations_for_check(check_id)
+            accepted_count = (score.get("accepted_counts") or {}).get(check_id, 0)
+            stale_count = (score.get("stale_counts") or {}).get(check_id, 0)
+            if not new_items and not accepted_count and not stale_count:
+                continue
+            entry = next((e for e in CHECK_REGISTRY if e.check_id == check_id), None)
+            row_label = entry.row_label if entry else check_id
+            dlg = BaselineActionDialog(row_label, new_items, accepted_count, stale_count)
+            try:
+                dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=520, defaulth=320)
+            except Exception as e:
+                safe_print(f"BaselineActionDialog open error: {e}")
+                continue
+            if dlg.action == "accept":
+                for item in new_items:
+                    acceptance = baseline.entry_from_violation(
+                        item, author=author, reason=dlg.reason,
+                        current_params=getattr(rules_context, "params", {}))
+                    if acceptance and baseline.add_acceptance(baseline_path, acceptance):
+                        written_total += 1
+                accepted_checks += 1
+            elif dlg.action == "retire":
+                baseline.remove_acceptances_for_check(baseline_path, check_id)
+                accepted_checks += 1
+            elif dlg.action is None:
+                break  # user cancelled — stop the batch, don't force the rest
+
+        if accepted_checks:
+            check_cache.clear()
+            c4d.gui.MessageDialog(
+                f"Baseline updated for {accepted_checks} check(s), "
+                f"{written_total} violation(s) accepted.")
+        self._refresh_preflight()
+
+    def _show_preflight_details(self):
+        """MessageDialog with the per-check violation breakdown.
+
+        Uses `build_baseline_artifact_details(score)` — the exact helper the
+        Scene Collector manifest uses for its `qc.checks` block — so the
+        detail lines match what ships in the delivery manifest. That helper
+        only returns per-violation labels when the score carries baseline
+        schema 2 data (i.e. a baseline sidecar exists); without one this
+        still shows the per-check counts from `score["counts"]`.
+        """
+        if not self._preflight:
+            c4d.gui.MessageDialog("Run a pre-flight scan first.")
+            return
+        score = self._preflight.get("score") or {}
+        counts = score.get("counts") or {}
+        details = build_baseline_artifact_details(score)
+        lines = []
+        for entry in CHECK_REGISTRY:
+            n = counts.get(entry.check_id, 0)
+            if not n:
+                continue
+            lines.append(f"{entry.row_label} ({entry.check_id}): {n} new violation(s)")
+            detail = details.get(entry.check_id)
+            if detail:
+                for label in detail.get("new", [])[:10]:
+                    lines.append(f"  - {label}")
+                extra = detail.get("new_count", 0) - min(detail.get("new_count", 0), 10)
+                if extra > 0:
+                    lines.append(f"  ... and {extra} more")
+        if not lines:
+            lines = ["All checks passed — no violations."]
+        c4d.gui.MessageDialog("\n".join(lines))
+
+    # ── zone 6: delivery bar ────────────────────────────
+    def _build_collect_preflight_payload(self, rules_context, score):
+        """Assemble the preflight_payload dict `run_collect_pipeline` expects,
+        with the same keys `collect_scene` (flows.py Phase 1) builds:
+        issues, preflight_score, rules_context, gate_overrides,
+        gate_evaluated, baseline_path, baseline_entries.
+
+        `issues` is derived from `score["counts"]` + each registry entry's
+        `preflight_template`, in `preflight_order` — the exact loop
+        collect_scene runs, duplicated here because that loop is entangled
+        with collect_scene's own MessageDialog flow (not factored out into
+        a reusable helper) and the Hub drives its own missing-asset gate
+        instead of that dialog.
+
+        Runs `_run_quality_gate` (the same modal gate collect_scene uses)
+        BEFORE the pipeline when `gates_enabled` is set in the resolved
+        rules; returns None if the gate is cancelled (proceed=False), same
+        as collect_scene aborting the collect.
+        """
+        from sentinel.ui.flows import (
+            _run_quality_gate, _doc_full_path, _baseline_path_for_doc)
+
+        issues = []
+        preflight_entries = sorted(
+            enumerate(CHECK_REGISTRY),
+            key=lambda item: (
+                item[1].preflight_order
+                if item[1].preflight_order is not None
+                else item[0]
+            ),
+        )
+        for _idx, entry in preflight_entries:
+            count = (score.get("counts") or {}).get(entry.check_id, 0)
+            if count:
+                issues.append(entry.preflight_template.format(n=count))
+
+        baseline_path_for_payload = _baseline_path_for_doc(self.doc, only_existing=True)
+        baseline_entries_for_payload = []
+        if baseline_path_for_payload:
+            entries, status = baseline.load_baseline(baseline_path_for_payload)
+            if status == baseline.STATUS_OK:
+                baseline_entries_for_payload = entries
+
+        gate_overrides = []
+        gate_evaluated = False
+        if getattr(rules_context, "params", {}).get("gates_enabled", False):
+            gate_evaluated = True
+            original_full_path = _doc_full_path(self.doc)
+            gate_result = _run_quality_gate(
+                self.doc, rules_context, self._artist_name, original_full_path)
+            if not gate_result.get("proceed"):
+                return None
+            gate_overrides = list(gate_result.get("overrides") or [])
+            if gate_result.get("baseline_changed"):
+                refreshed_path = (gate_result.get("baseline_path")
+                                  or baseline.get_baseline_path(original_full_path))
+                refreshed_entries, refreshed_status = baseline.load_baseline(refreshed_path)
+                if refreshed_status == baseline.STATUS_OK:
+                    baseline_path_for_payload = refreshed_path
+                    baseline_entries_for_payload = refreshed_entries
+
+        return {
+            "issues": issues,
+            "preflight_score": score,
+            "rules_context": rules_context,
+            "gate_overrides": gate_overrides,
+            "gate_evaluated": gate_evaluated,
+            "baseline_path": baseline_path_for_payload,
+            "baseline_entries": baseline_entries_for_payload,
+        }
+
+    def _do_collect(self):
+        from sentinel.ui.flows import run_collect_pipeline
+
+        # Unsaved-doc guard — mirrors collect_scene's legacy guard
+        # (flows.py:458): the delivery path, baseline sidecar, and manifest
+        # location are all derived from the document's saved path.
+        if not self.doc.GetDocumentPath():
+            c4d.gui.MessageDialog(
+                "Please save the scene first before collecting.")
+            return
+
+        target = self.GetString(self.EDIT_DEST).strip()
+        if not target:
+            c4d.gui.MessageDialog("Choose a delivery folder first.")
+            return
+
+        # Pending-edits warning: unapplied repathing changes never make it
+        # into the collected package (only self.records feeds the pipeline),
+        # so surface that before the user loses the edits silently.
+        if self.pending:
+            if not c4d.gui.QuestionDialog(
+                    f"{len(self.pending)} pending repathing change(s) are "
+                    "NOT applied and will not be in the package.\n\n"
+                    "Continue anyway?"):
+                return
+
+        # Missing gate: warn & continue (spec) — never a hard block, since
+        # the pipeline itself tolerates missing assets (SAVEPROJECT_DONT
+        # FAILONMISSINGASSETS) and records them in the manifest.
+        missing = [r for r in self.records if r["status"] == "missing"]
+        if missing:
+            names = "\n".join(
+                f"  • {os.path.basename(r['path'])}" for r in missing[:12])
+            more = f"\n  … +{len(missing) - 12} more" if len(missing) > 12 else ""
+            if not c4d.gui.QuestionDialog(
+                    f"{len(missing)} missing asset(s) will NOT be in the "
+                    f"package:\n\n{names}{more}\n\nContinue anyway?"):
+                return
+
+        if not self._preflight:
+            self._refresh_preflight()
+        rules_context = self._preflight.get("rules_context")
+        score = self._preflight.get("score") or {}
+        preflight_payload = self._build_collect_preflight_payload(rules_context, score)
+        if preflight_payload is None:
+            return  # quality gate cancelled — mirrors collect_scene's abort
+
+        make_zip = self.GetInt32(self.COMBO_OUTPUT) == 1
+        result = run_collect_pipeline(
+            self.doc, self._artist_name, target,
+            make_zip=make_zip,
+            preflight_payload=preflight_payload,
+            on_status=lambda m: self.SetString(self.LBL_COLLECT_STATUS, m))
+        if result is None:
+            c4d.gui.MessageDialog("Collect failed — see console.")
+            return
+        self._show_collect_summary(result)
+
+    def _show_collect_summary(self, result):
+        lines = [
+            "Collect complete.",
+            "",
+            f"Destination : {result['target_dir']}",
+            f"Scene file  : {result['delivery_filename']}",
+            f"Assets      : {result['assets_collected']} collected, "
+            f"{result['assets_missing']} missing",
+        ]
+        if result.get("zip"):
+            z = result["zip"]
+            lines.append(f"Zip         : {z['zip_path']} "
+                         f"({assets_engine.format_size(z['bytes'])}, {z['files']} files)")
+        if result.get("zip_error"):
+            # Zip failure never invalidates the folder delivery — SaveProject
+            # + manifest already succeeded by the time zipping runs.
+            lines.append(f"Zip FAILED  : {result['zip_error']} "
+                         "(folder delivery is intact)")
+        if result.get("pending_todos"):
+            lines.append(f"⚠ {result['pending_todos']} pending TODO(s) "
+                         "in scene notes")
+        lines += ["", "Open delivery folder?"]
+        if c4d.gui.QuestionDialog("\n".join(lines)):
+            open_in_explorer(result["target_dir"])
+
+    def refresh(self):
+        """Public method: full re-scan, for callers outside the dialog
+        (e.g. a future 'Rescan after Collect' hook in zones 5-6)."""
+        self._rescan()
 
 
 # Tag prefixes for the item rows, mirrors doctor.build_copyable_report.

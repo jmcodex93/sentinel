@@ -645,6 +645,23 @@ Notify channel on Collect Scene or QC pass. Low effort, nice-to-have.
 #### Comp Tag Manager
 Bulk view/edit Object Buffer IDs, detect duplicates.
 
+### Deuda conocida (Asset Hub v1.11)
+
+Items menores identificados en la review final de rama de Asset Hub (feat/asset-hub) que no bloquean el merge pero quedan anotados para no perderse:
+
+- Test de 2 carpetas vacías simultáneas en `build_file_index`/`match_missing_in_folder`
+- Colisión sintética cuando `tex_idx` es `None` en el merge de records
+- Bloque append-owner duplicado en el merge de `AssetRecords`
+- Tests de borde para `format_size` (0 bytes, negativos, tamaños muy grandes)
+- `abspath` no aplicado consistentemente en `build_file_index` (rutas relativas del root de búsqueda)
+- Clip-culling / rango de viewport en `AssetListArea` (hoy dibuja toda la lista, no solo lo visible)
+- Evicción FIFO de placeholders `None` en el thumb cache no cuenta como entradas reales cuando supera 200 (>200 thumbs)
+- Extraer un helper compartido para el loop de preflight issues (`dialogs.py` ↔ `flows.py` duplican la misma iteración de `CHECK_REGISTRY` + `preflight_template`) — **el más prioritario**
+- Renombrar `_build_collect_preflight_payload`: el nombre no deja ver que puede abrir un modal (quality gate) como side effect
+- "Used by" clicable para records genéricos (hoy solo funciona para los que tienen `owner_ref` resuelto)
+- Marcar visualmente las filas `ambiguous` del Search-Folder-for-Missing en la tabla (hoy solo se resuelven desde el diálogo de selección)
+- Unlink del zip parcial cuando `create_zip_archive` falla a mitad de camino (hoy puede dejar un `.zip` truncado en disco)
+
 ---
 
 ## Research Notes
