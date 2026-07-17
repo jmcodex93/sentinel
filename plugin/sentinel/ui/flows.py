@@ -1009,3 +1009,82 @@ def snapshot_open_folder(doc, artist_name):
     else:
         c4d.gui.MessageDialog(f"Folder not found:\n{output_dir}")
 
+
+def scan_scene_assets(doc):
+    """Unified Asset Hub inventory: structured texture scan (repathable)
+    + GetAllAssetsNew sweep (exhaustive, read-only). Per-item failures are
+    counted, never fatal — the Hub must never show a silently-empty list.
+
+    Returns (records, tex_records, skipped):
+      records     — merged AssetRecords (assets.merge_inventories)
+      tex_records — LIVE TextureRecord list; writers resolve back to it via
+                    tex_idx, owner_ref = tex_records[r["tex_idx"]]["host"]
+      skipped     — count of per-item exceptions (never fatal)
+    """
+    from sentinel import assets as assets_engine
+    from sentinel.textures import scan_all_texture_paths
+    # _is_light_obj already imported at module scope (line 19).
+
+    skipped = 0
+
+    try:
+        tex_records = scan_all_texture_paths(doc) or []
+    except Exception as e:
+        safe_print(f"Asset Hub: texture scan failed: {e}")
+        tex_records = []
+        skipped += 1
+
+    tex_flat = []
+    for i, r in enumerate(tex_records):
+        try:
+            tex_flat.append({
+                "path": r.get("current_path", ""),
+                "resolved": r.get("resolved"),
+                "status": r.get("status", ""),
+                "host_name": r.get("host_name", ""),
+                "source_type": r.get("source_type", ""),
+                "channel": r.get("channel", ""),
+                "tex_idx": i,
+            })
+        except Exception:
+            skipped += 1
+
+    generic = []
+    try:
+        asset_list = []
+        # Real signature (Maxon docs, 2026): GetAllAssetsNew(doc, allowDialogs,
+        # lastPath, flags=ASSETDATA_FLAG_NONE, assetList=[]). The brief's
+        # `ASSETDATA_FLAG_0` isn't a real constant in the 2026 flag set (verified
+        # against Maxon's official docs) — ASSETDATA_FLAG_NONE is the documented
+        # "no filtering" value and is what an exhaustive sweep needs.
+        c4d.documents.GetAllAssetsNew(
+            doc, False, "", flags=c4d.ASSETDATA_FLAG_NONE, assetList=asset_list)
+        for item in asset_list:
+            try:
+                owner = item.get("owner")
+                owner_name = owner.GetName() if owner else ""
+                kind = "object"
+                if owner is not None:
+                    if isinstance(owner, c4d.BaseMaterial):
+                        kind = "material"
+                    # Reuse the repo's own (cached, broader) RS-light detection
+                    # — checks.scene._is_light_obj covers more Redshift light
+                    # type IDs than a hardcoded 2-id tuple and is already
+                    # imported elsewhere in this module's package.
+                    elif _is_light_obj(owner):
+                        kind = "light"
+                generic.append({
+                    "path": item.get("filename", ""),
+                    "exists": bool(item.get("exists", False)),
+                    "owner_name": owner_name,
+                    "owner_kind": kind,
+                })
+            except Exception:
+                skipped += 1
+    except Exception as e:
+        safe_print(f"Asset Hub: GetAllAssetsNew failed: {e}")
+        skipped += 1
+
+    records = assets_engine.merge_inventories(tex_flat, generic)
+    return records, tex_records, skipped
+
