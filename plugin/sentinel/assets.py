@@ -4,6 +4,7 @@ Stdlib only. NEVER import c4d here: C4D reads live in the thin adapter in
 ui/flows.py (same pattern as manifest.py / postrender.py).
 """
 import os
+import zipfile
 
 # Extension → asset_type. Lowercase, no dot.
 _TYPE_BY_EXT = {
@@ -221,3 +222,29 @@ def match_missing_in_folder(records, index):
         else:
             out[rec["key"]] = {"ambiguous": list(candidates)}
     return out
+
+
+def create_zip_archive(delivery_dir, zip_path=None, on_progress=None):
+    """Zip the delivery folder (folder name as the archive root). The source
+    folder is always kept — the zip is an additional artifact."""
+    delivery_dir = os.path.abspath(delivery_dir)
+    root_name = os.path.basename(delivery_dir.rstrip(os.sep))
+    if zip_path is None:
+        zip_path = delivery_dir.rstrip(os.sep) + ".zip"
+
+    file_list = []
+    for dirpath, _dirs, files in os.walk(delivery_dir):
+        for name in files:
+            file_list.append(os.path.join(dirpath, name))
+
+    total = len(file_list)
+    written_bytes = 0
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i, fpath in enumerate(file_list, 1):
+            arcname = os.path.join(
+                root_name, os.path.relpath(fpath, delivery_dir))
+            zf.write(fpath, arcname.replace(os.sep, "/"))
+            written_bytes += os.path.getsize(fpath)
+            if on_progress:
+                on_progress(i, total)
+    return {"zip_path": zip_path, "files": total, "bytes": written_bytes}

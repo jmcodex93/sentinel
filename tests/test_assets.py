@@ -1,4 +1,7 @@
 """Pure-engine tests for the Asset Hub inventory (plugin/sentinel/assets.py)."""
+import os
+import zipfile
+
 import pytest
 from sentinel import assets
 
@@ -207,3 +210,27 @@ class TestSearchFolderForMissing:
         assert m["k2"] == {"ambiguous": ["/a/rock.png", "/b/rock.png"]}
         assert "k3" not in m
         assert "k4" not in m                    # never touches non-missing
+
+
+class TestCreateZip:
+    def test_zips_tree_and_reports(self, tmp_path):
+        d = tmp_path / "delivery"; (d / "tex").mkdir(parents=True)
+        (d / "scene.c4d").write_bytes(b"c4d")
+        (d / "tex" / "a.png").write_bytes(b"png")
+        seen = []
+        result = assets.create_zip_archive(
+            str(d), on_progress=lambda i, n: seen.append((i, n)))
+        assert result["files"] == 2
+        assert result["zip_path"] == str(tmp_path / "delivery.zip")
+        assert seen[-1] == (2, 2)
+        with zipfile.ZipFile(result["zip_path"]) as zf:
+            names = sorted(zf.namelist())
+        assert names == ["delivery/scene.c4d", "delivery/tex/a.png"]
+        assert d.exists()                       # source folder kept
+
+    def test_explicit_zip_path(self, tmp_path):
+        d = tmp_path / "delivery"; d.mkdir()
+        (d / "scene.c4d").write_bytes(b"x")
+        out = str(tmp_path / "custom.zip")
+        result = assets.create_zip_archive(str(d), zip_path=out)
+        assert result["zip_path"] == out and os.path.exists(out)
