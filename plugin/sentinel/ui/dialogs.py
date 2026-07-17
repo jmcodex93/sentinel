@@ -12,7 +12,7 @@ from sentinel import baseline
 from sentinel import doctor
 from sentinel import supervisor
 from sentinel.common.cache import check_cache
-from sentinel.common.helpers import safe_print
+from sentinel.common.helpers import open_in_explorer, safe_print
 from sentinel.common.settings import GlobalSettings
 from sentinel.fixes import apply_fixes
 from sentinel.notes import (
@@ -1617,10 +1617,10 @@ class AssetHubDialog(gui.GeDialog):
       2 filters (+ search)               5 pre-flight strip (Task 10)
       3 AssetListArea table              6 delivery bar (Task 12)
 
-    Zones 5-6 are deliberately absent from CreateLayout in this pass — the
-    group structure below (one GroupBegin/GroupEnd per zone, all inside the
-    single outer scale-fit group) makes appending them a matter of inserting
-    another zone block before the final GroupEnd, not restructuring.
+    Zone 6 (delivery bar) reuses run_collect_pipeline (Task 7) exactly —
+    this dialog only gathers a preflight_payload with the same keys
+    collect_scene builds, runs the missing-asset gate, and renders the
+    result. No SaveProject/manifest/zip logic is duplicated here.
     """
 
     LBL_HEADER = 2001
@@ -1635,6 +1635,9 @@ class AssetHubDialog(gui.GeDialog):
     LBL_PENDING, BTN_APPLY_ALL = 2043, 2044
     LBL_PREFLIGHT = 2050
     BTN_PF_FIX, BTN_PF_ACCEPT, BTN_PF_DETAILS = 2051, 2052, 2053
+    EDIT_DEST, BTN_CHOOSE_DEST = 2060, 2061
+    COMBO_OUTPUT, BTN_COLLECT = 2062, 2063
+    LBL_COLLECT_STATUS = 2064
 
     THUMB_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".tga",
                   ".exr", ".hdr", ".psd", ".webp"}
@@ -1658,6 +1661,9 @@ class AssetHubDialog(gui.GeDialog):
         # Shape: {"rules_context", "registry_results", "score"} — this is
         # the exact interface Task 12's delivery bar (zone 6) consumes.
         self._preflight = {}
+        # Set by the panel at open time (Task 13); default keeps _do_collect
+        # safe to call standalone (e.g. from tests or before that wiring).
+        self._artist_name = ""
 
     # ── layout ──────────────────────────────────────────
     def CreateLayout(self):
@@ -1736,17 +1742,34 @@ class AssetHubDialog(gui.GeDialog):
         self.AddButton(self.BTN_PF_DETAILS, c4d.BFH_RIGHT, 0, 0, "Details")
         self.GroupEnd()
 
+        # zone 6: delivery bar
+        self.AddSeparatorH(8)
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 6, 0, "Deliver")
+        self.GroupBorderSpace(8, 6, 8, 6)
+        self.AddStaticText(0, c4d.BFH_LEFT, 60, 0, "Deliver to:", 0)
+        self.AddEditText(self.EDIT_DEST, c4d.BFH_SCALEFIT, 0, 0)
+        self.AddButton(self.BTN_CHOOSE_DEST, c4d.BFH_LEFT, 0, 0, "Choose…")
+        self.AddComboBox(self.COMBO_OUTPUT, c4d.BFH_LEFT, 90, 0)
+        self.AddButton(self.BTN_COLLECT, c4d.BFH_LEFT, 0, 0, "Collect ▸")
+        self.GroupEnd()
+        self.AddStaticText(self.LBL_COLLECT_STATUS, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+
         self.GroupEnd()  # main
         return True
 
     def InitValues(self):
         self.SetBool(self.CHK_MATCH_CASE, False)
         self._load_recent_presets()
+        self.AddChild(self.COMBO_OUTPUT, 0, "Folder")
+        self.AddChild(self.COMBO_OUTPUT, 1, "Zip")
+        self.SetInt32(self.COMBO_OUTPUT, 0)
         self._rescan()
         # Poll for scene changes (external undo/redo, edits) the same way
         # TextureRepathingDialog does, so the list stays in sync without
         # the user reopening the dialog.
         self.SetTimer(250)
+        if self.focus == "deliver":
+            self.Activate(self.EDIT_DEST)
         return True
 
     # ── recent Find/Replace presets ────────────────────
@@ -1913,6 +1936,14 @@ class AssetHubDialog(gui.GeDialog):
             self._accept_preflight()
         elif cid == self.BTN_PF_DETAILS:
             self._show_preflight_details()
+        elif cid == self.BTN_CHOOSE_DEST:
+            chosen = c4d.storage.LoadDialog(
+                title="Select folder to collect project into",
+                flags=c4d.FILESELECT_DIRECTORY)
+            if chosen:
+                self.SetString(self.EDIT_DEST, chosen)
+        elif cid == self.BTN_COLLECT:
+            self._do_collect()
         return True
 
     # ── actions ─────────────────────────────────────────
@@ -2282,6 +2313,142 @@ class AssetHubDialog(gui.GeDialog):
         if not lines:
             lines = ["All checks passed — no violations."]
         c4d.gui.MessageDialog("\n".join(lines))
+
+    # ── zone 6: delivery bar ────────────────────────────
+    def _build_collect_preflight_payload(self, rules_context, score):
+        """Assemble the preflight_payload dict `run_collect_pipeline` expects,
+        with the same keys `collect_scene` (flows.py Phase 1) builds:
+        issues, preflight_score, rules_context, gate_overrides,
+        gate_evaluated, baseline_path, baseline_entries.
+
+        `issues` is derived from `score["counts"]` + each registry entry's
+        `preflight_template`, in `preflight_order` — the exact loop
+        collect_scene runs, duplicated here because that loop is entangled
+        with collect_scene's own MessageDialog flow (not factored out into
+        a reusable helper) and the Hub drives its own missing-asset gate
+        instead of that dialog.
+
+        Runs `_run_quality_gate` (the same modal gate collect_scene uses)
+        BEFORE the pipeline when `gates_enabled` is set in the resolved
+        rules; returns None if the gate is cancelled (proceed=False), same
+        as collect_scene aborting the collect.
+        """
+        from sentinel.ui.flows import (
+            _run_quality_gate, _doc_full_path, _baseline_path_for_doc)
+
+        issues = []
+        preflight_entries = sorted(
+            enumerate(CHECK_REGISTRY),
+            key=lambda item: (
+                item[1].preflight_order
+                if item[1].preflight_order is not None
+                else item[0]
+            ),
+        )
+        for _idx, entry in preflight_entries:
+            count = (score.get("counts") or {}).get(entry.check_id, 0)
+            if count:
+                issues.append(entry.preflight_template.format(n=count))
+
+        baseline_path_for_payload = _baseline_path_for_doc(self.doc, only_existing=True)
+        baseline_entries_for_payload = []
+        if baseline_path_for_payload:
+            entries, status = baseline.load_baseline(baseline_path_for_payload)
+            if status == baseline.STATUS_OK:
+                baseline_entries_for_payload = entries
+
+        gate_overrides = []
+        gate_evaluated = False
+        if getattr(rules_context, "params", {}).get("gates_enabled", False):
+            gate_evaluated = True
+            original_full_path = _doc_full_path(self.doc)
+            gate_result = _run_quality_gate(
+                self.doc, rules_context, self._artist_name, original_full_path)
+            if not gate_result.get("proceed"):
+                return None
+            gate_overrides = list(gate_result.get("overrides") or [])
+            if gate_result.get("baseline_changed"):
+                refreshed_path = (gate_result.get("baseline_path")
+                                  or baseline.get_baseline_path(original_full_path))
+                refreshed_entries, refreshed_status = baseline.load_baseline(refreshed_path)
+                if refreshed_status == baseline.STATUS_OK:
+                    baseline_path_for_payload = refreshed_path
+                    baseline_entries_for_payload = refreshed_entries
+
+        return {
+            "issues": issues,
+            "preflight_score": score,
+            "rules_context": rules_context,
+            "gate_overrides": gate_overrides,
+            "gate_evaluated": gate_evaluated,
+            "baseline_path": baseline_path_for_payload,
+            "baseline_entries": baseline_entries_for_payload,
+        }
+
+    def _do_collect(self):
+        from sentinel.ui.flows import run_collect_pipeline
+
+        target = self.GetString(self.EDIT_DEST).strip()
+        if not target:
+            c4d.gui.MessageDialog("Choose a delivery folder first.")
+            return
+
+        # Missing gate: warn & continue (spec) — never a hard block, since
+        # the pipeline itself tolerates missing assets (SAVEPROJECT_DONT
+        # FAILONMISSINGASSETS) and records them in the manifest.
+        missing = [r for r in self.records if r["status"] == "missing"]
+        if missing:
+            names = "\n".join(
+                f"  • {os.path.basename(r['path'])}" for r in missing[:12])
+            more = f"\n  … +{len(missing) - 12} more" if len(missing) > 12 else ""
+            if not c4d.gui.QuestionDialog(
+                    f"{len(missing)} missing asset(s) will NOT be in the "
+                    f"package:\n\n{names}{more}\n\nContinue anyway?"):
+                return
+
+        if not self._preflight:
+            self._refresh_preflight()
+        rules_context = self._preflight.get("rules_context")
+        score = self._preflight.get("score") or {}
+        preflight_payload = self._build_collect_preflight_payload(rules_context, score)
+        if preflight_payload is None:
+            return  # quality gate cancelled — mirrors collect_scene's abort
+
+        make_zip = self.GetInt32(self.COMBO_OUTPUT) == 1
+        result = run_collect_pipeline(
+            self.doc, self._artist_name, target,
+            make_zip=make_zip,
+            preflight_payload=preflight_payload,
+            on_status=lambda m: self.SetString(self.LBL_COLLECT_STATUS, m))
+        if result is None:
+            c4d.gui.MessageDialog("Collect failed — see console.")
+            return
+        self._show_collect_summary(result)
+
+    def _show_collect_summary(self, result):
+        lines = [
+            "Collect complete.",
+            "",
+            f"Destination : {result['target_dir']}",
+            f"Scene file  : {result['delivery_filename']}",
+            f"Assets      : {result['assets_collected']} collected, "
+            f"{result['assets_missing']} missing",
+        ]
+        if result.get("zip"):
+            z = result["zip"]
+            lines.append(f"Zip         : {z['zip_path']} "
+                         f"({assets_engine.format_size(z['bytes'])}, {z['files']} files)")
+        if result.get("zip_error"):
+            # Zip failure never invalidates the folder delivery — SaveProject
+            # + manifest already succeeded by the time zipping runs.
+            lines.append(f"Zip FAILED  : {result['zip_error']} "
+                         "(folder delivery is intact)")
+        if result.get("pending_todos"):
+            lines.append(f"⚠ {result['pending_todos']} pending TODO(s) "
+                         "in scene notes")
+        lines += ["", "Open delivery folder?"]
+        if c4d.gui.QuestionDialog("\n".join(lines)):
+            open_in_explorer(result["target_dir"])
 
     def refresh(self):
         """Public method: full re-scan, for callers outside the dialog
