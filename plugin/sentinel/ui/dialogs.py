@@ -1988,15 +1988,21 @@ class AssetHubDialog(gui.GeDialog):
                 if not idxs:
                     failed.append((key, "not repathable"))
                     continue
+                # Tally per ROW, not per shader write: n_total is len(pending),
+                # so a row with 3 shaders must count as 1 applied (all wrote
+                # OK) or 1 failed (any wrote wrong) — never as 3 applieds.
+                row_err = None
                 for tex_idx in idxs:
                     live = self.tex_records[tex_idx]
                     try:
-                        if apply_texture_path_change(live, new_path, doc=self.doc):
-                            applied += 1
-                        else:
-                            failed.append((key, "writer returned False"))
+                        if not apply_texture_path_change(live, new_path, doc=self.doc):
+                            row_err = row_err or "writer returned False"
                     except Exception as e:
-                        failed.append((key, str(e)))
+                        row_err = row_err or str(e)
+                if row_err is None:
+                    applied += 1
+                else:
+                    failed.append((key, row_err))
         finally:
             self.doc.EndUndo()
         c4d.EventAdd()
