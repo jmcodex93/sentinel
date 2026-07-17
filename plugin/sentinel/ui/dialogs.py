@@ -8,10 +8,13 @@ import c4d
 from c4d import gui
 
 from sentinel import assets as assets_engine
+from sentinel import baseline
 from sentinel import doctor
 from sentinel import supervisor
+from sentinel.common.cache import check_cache
 from sentinel.common.helpers import safe_print
 from sentinel.common.settings import GlobalSettings
+from sentinel.fixes import apply_fixes
 from sentinel.notes import (
     _empty_notes,
     add_todo,
@@ -19,6 +22,8 @@ from sentinel.notes import (
     summarize_notes,
     toggle_todo,
 )
+from sentinel.qc.registry import CHECK_REGISTRY
+from sentinel.qc.score import compute_score, run_all_checks
 from sentinel.versioning import (
     STATUS_OPTIONS,
     _sanitize_status,
@@ -32,6 +37,7 @@ from sentinel.textures import (
 )
 
 from .ids import GateTriageIds
+from .reports import build_baseline_artifact_details
 from .user_areas import AssetListArea, TextureListArea, TodoArea, _violation_label
 
 
@@ -1627,6 +1633,8 @@ class AssetHubDialog(gui.GeDialog):
     BTN_PREVIEW, COMBO_RECENT, CHK_MATCH_CASE = 2032, 2033, 2034
     BTN_SEARCH_FOLDER, BTN_MAKE_RELATIVE, BTN_CLEAR = 2040, 2041, 2042
     LBL_PENDING, BTN_APPLY_ALL = 2043, 2044
+    LBL_PREFLIGHT = 2050
+    BTN_PF_FIX, BTN_PF_ACCEPT, BTN_PF_DETAILS = 2051, 2052, 2053
 
     def __init__(self, doc, focus="assets"):
         super().__init__()
@@ -1641,6 +1649,10 @@ class AssetHubDialog(gui.GeDialog):
         self._needs_rescan = False
         self._stat_cursor = 0      # batched size stat progress
         self._recent_presets = []
+        # Zone 5 pre-flight QC payload, refreshed by _refresh_preflight().
+        # Shape: {"rules_context", "registry_results", "score"} — this is
+        # the exact interface Task 12's delivery bar (zone 6) consumes.
+        self._preflight = {}
 
     # ── layout ──────────────────────────────────────────
     def CreateLayout(self):
@@ -1710,6 +1722,15 @@ class AssetHubDialog(gui.GeDialog):
         self.GroupEnd()
         self.GroupEnd()  # repathing
 
+        # zone 5: pre-flight QC strip (Task 10)
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 4, 0, "Pre-flight QC")
+        self.GroupBorderSpace(8, 6, 8, 6)
+        self.AddStaticText(self.LBL_PREFLIGHT, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+        self.AddButton(self.BTN_PF_FIX, c4d.BFH_RIGHT, 0, 0, "Fix auto-fixables")
+        self.AddButton(self.BTN_PF_ACCEPT, c4d.BFH_RIGHT, 0, 0, "Accept…")
+        self.AddButton(self.BTN_PF_DETAILS, c4d.BFH_RIGHT, 0, 0, "Details")
+        self.GroupEnd()
+
         self.GroupEnd()  # main
         return True
 
@@ -1760,6 +1781,11 @@ class AssetHubDialog(gui.GeDialog):
         self.pending = {}
         self._stat_cursor = 0
         self._push_state()
+        # Single call site: InitValues and _apply_all both route through
+        # _rescan(), so refreshing the pre-flight strip here satisfies the
+        # "InitValues and after _apply_all/_rescan" requirement without
+        # running the QC pass twice per trigger.
+        self._refresh_preflight()
 
     def _push_state(self):
         totals = assets_engine.compute_totals(self.records)
@@ -1837,6 +1863,12 @@ class AssetHubDialog(gui.GeDialog):
             self.pending = {}; self._push_state()
         elif cid == self.BTN_APPLY_ALL:
             self._apply_all()
+        elif cid == self.BTN_PF_FIX:
+            self._fix_preflight()
+        elif cid == self.BTN_PF_ACCEPT:
+            self._accept_preflight()
+        elif cid == self.BTN_PF_DETAILS:
+            self._show_preflight_details()
         return True
 
     # ── actions ─────────────────────────────────────────
@@ -2016,6 +2048,196 @@ class AssetHubDialog(gui.GeDialog):
                 lines.append(f"  ... +{len(failed) - 8} more")
         c4d.gui.MessageDialog("\n".join(lines))
         self._rescan()
+
+    # ── zone 5: pre-flight QC strip ─────────────────────
+    def _refresh_preflight(self):
+        """Re-run QC + score the same way `collect_scene` does (flows.py
+        Phase 1) and refresh the strip's label + button states.
+
+        `_baseline_path_for_doc`/`_current_module` are private helpers that
+        only live in ui.flows — imported locally (not at module scope) to
+        avoid the same flows<->dialogs circular import _rescan() already
+        works around (flows imports GateTriageDialog from this module).
+        `_active_rules_for_doc`, `run_all_checks` and `compute_score` have
+        no such constraint and are already imported at module scope above.
+        """
+        from sentinel.ui.flows import _baseline_path_for_doc, _current_module
+        rules_context = _active_rules_for_doc(self.doc)
+        registry_results = run_all_checks(self.doc, _current_module(), rules_context)
+        baseline_path = _baseline_path_for_doc(self.doc, only_existing=True)
+        kwargs = {"baseline_path": baseline_path,
+                  "current_params": rules_context.params} if baseline_path else {}
+        score = compute_score(registry_results, rules_context, **kwargs)
+        self._preflight = {"rules_context": rules_context,
+                           "registry_results": registry_results,
+                           "score": score}
+        failing = {cid: n for cid, n in score["counts"].items() if n}
+        label = (f"✓ {score['passed']}/{score['total']} — all clear"
+                 if not failing else
+                 f"⚠ {score['passed']}/{score['total']} — " +
+                 " · ".join(f"{cid}: {n}" for cid, n in failing.items()))
+        self.SetString(self.LBL_PREFLIGHT, label)
+        self.Enable(self.BTN_PF_FIX, bool(failing))
+        self.Enable(self.BTN_PF_ACCEPT, bool(failing))
+
+    def _fix_preflight(self):
+        """Auto-fix the object-scoped fixable checks in one undo step.
+
+        Gathers the fix payload exactly the way `collect_scene`'s Phase 1
+        "Yes" branch does (flows.py ~529-536: has_fix + fix_scope=="objects"
+        checks, objects taken from the legacy result list) — but applies it
+        through `sentinel.fixes.apply_fixes`, which wraps the whole batch in
+        a single StartUndo/EndUndo (collect_scene's own loop calls each
+        fix_fn with its default manage_undo=True, i.e. one undo step PER
+        check — not the single atomic undo this strip's interface requires).
+        Document-scoped fixes (fps_range) are skipped, matching
+        collect_scene, which never auto-fixes them from this loop either.
+        """
+        registry_results = (self._preflight or {}).get("registry_results") or {}
+        legacy_by_id = {
+            check_id: pair.get("legacy_result")
+            for check_id, pair in registry_results.items()
+        }
+        fixes = []
+        for entry in CHECK_REGISTRY:
+            if not entry.has_fix or entry.fix_scope != "objects":
+                continue
+            objs = legacy_by_id.get(entry.check_id) or []
+            if not objs:
+                continue
+            fixes.append({"check_id": entry.check_id, "objects": objs})
+        if not fixes:
+            c4d.gui.MessageDialog("No auto-fixable issues found.")
+            return
+        results = apply_fixes(self.doc, fixes)
+        fixed_total = sum(int(r.get("result") or 0) for r in results)
+        c4d.gui.MessageDialog(
+            f"Auto-fixed {fixed_total} issue(s) across {len(results)} check(s).")
+        self._refresh_preflight()
+
+    def _new_violations_for_check(self, check_id):
+        """Return the new-violation dicts for one check_id.
+
+        Mirrors panel.py's `_new_violations_for_row`: prefer the baseline
+        diff (`score["baseline_matches"]`) when a baseline sidecar exists,
+        else fall back to the raw structured violations tagged with their
+        check_id.
+        """
+        score = (self._preflight or {}).get("score") or {}
+        if score.get("baseline_matches"):
+            match = score["baseline_matches"].get(check_id, {}) or {}
+            return list(match.get("new") or [])
+        registry_results = (self._preflight or {}).get("registry_results") or {}
+        result_pair = registry_results.get(check_id, {}) or {}
+        structured = result_pair.get("structured_result")
+        raw = []
+        if isinstance(structured, dict):
+            raw = structured.get("violations") or []
+        elif structured is not None:
+            raw = getattr(structured, "violations", []) or []
+        items = []
+        for violation in raw:
+            if isinstance(violation, dict):
+                item = dict(violation)
+                item["check_id"] = check_id
+                items.append(item)
+        return items
+
+    def _accept_preflight(self):
+        """Accept (or retire) baseline acceptances for every failing check.
+
+        The strip has no per-row table (unlike the QC panel), so this walks
+        every check_id with new violations and opens one `BaselineActionDialog`
+        per check — the exact same dialog + accept/retire logic as panel.py's
+        `_show_baseline_actions(row_key)`, just looped instead of triggered
+        by a single row click. Cancelling a dialog stops the batch rather
+        than silently skipping to the next check.
+        """
+        score = (self._preflight or {}).get("score") or {}
+        failing_ids = [cid for cid, n in (score.get("counts") or {}).items() if n]
+        if not failing_ids:
+            c4d.gui.MessageDialog("No failing checks to accept.")
+            return
+
+        from sentinel.ui.flows import _baseline_path_for_doc
+        baseline_path = _baseline_path_for_doc(self.doc, only_existing=False)
+        if not baseline_path:
+            c4d.gui.MessageDialog(
+                "Save the scene first — the baseline sidecar path is "
+                "derived from the file location.")
+            return
+
+        rules_context = (self._preflight or {}).get("rules_context")
+        author = baseline.resolve_author(None)
+        accepted_checks = 0
+        written_total = 0
+        for check_id in failing_ids:
+            new_items = self._new_violations_for_check(check_id)
+            accepted_count = (score.get("accepted_counts") or {}).get(check_id, 0)
+            stale_count = (score.get("stale_counts") or {}).get(check_id, 0)
+            if not new_items and not accepted_count and not stale_count:
+                continue
+            entry = next((e for e in CHECK_REGISTRY if e.check_id == check_id), None)
+            row_label = entry.row_label if entry else check_id
+            dlg = BaselineActionDialog(row_label, new_items, accepted_count, stale_count)
+            try:
+                dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=520, defaulth=320)
+            except Exception as e:
+                safe_print(f"BaselineActionDialog open error: {e}")
+                continue
+            if dlg.action == "accept":
+                for item in new_items:
+                    acceptance = baseline.entry_from_violation(
+                        item, author=author, reason=dlg.reason,
+                        current_params=getattr(rules_context, "params", {}))
+                    if acceptance and baseline.add_acceptance(baseline_path, acceptance):
+                        written_total += 1
+                accepted_checks += 1
+            elif dlg.action == "retire":
+                baseline.remove_acceptances_for_check(baseline_path, check_id)
+                accepted_checks += 1
+            elif dlg.action is None:
+                break  # user cancelled — stop the batch, don't force the rest
+
+        if accepted_checks:
+            check_cache.clear()
+            c4d.gui.MessageDialog(
+                f"Baseline updated for {accepted_checks} check(s), "
+                f"{written_total} violation(s) accepted.")
+        self._refresh_preflight()
+
+    def _show_preflight_details(self):
+        """MessageDialog with the per-check violation breakdown.
+
+        Uses `build_baseline_artifact_details(score)` — the exact helper the
+        Scene Collector manifest uses for its `qc.checks` block — so the
+        detail lines match what ships in the delivery manifest. That helper
+        only returns per-violation labels when the score carries baseline
+        schema 2 data (i.e. a baseline sidecar exists); without one this
+        still shows the per-check counts from `score["counts"]`.
+        """
+        if not self._preflight:
+            c4d.gui.MessageDialog("Run a pre-flight scan first.")
+            return
+        score = self._preflight.get("score") or {}
+        counts = score.get("counts") or {}
+        details = build_baseline_artifact_details(score)
+        lines = []
+        for entry in CHECK_REGISTRY:
+            n = counts.get(entry.check_id, 0)
+            if not n:
+                continue
+            lines.append(f"{entry.row_label} ({entry.check_id}): {n} new violation(s)")
+            detail = details.get(entry.check_id)
+            if detail:
+                for label in detail.get("new", [])[:10]:
+                    lines.append(f"  - {label}")
+                extra = detail.get("new_count", 0) - min(detail.get("new_count", 0), 10)
+                if extra > 0:
+                    lines.append(f"  ... and {extra} more")
+        if not lines:
+            lines = ["All checks passed — no violations."]
+        c4d.gui.MessageDialog("\n".join(lines))
 
     def refresh(self):
         """Public method: full re-scan, for callers outside the dialog
