@@ -136,3 +136,40 @@ class TestMergeInventories:
         assert r["status"] == "empty"
         assert r["repathable"] is False
         assert r["key"].startswith("__empty__gen__")
+
+
+class TestTotalsAndSizes:
+    def test_format_size(self):
+        assert assets.format_size(None) == "—"
+        assert assets.format_size(-1) == "?"
+        assert assets.format_size(512) == "512 B"
+        assert assets.format_size(48 * 1024 * 1024) == "48.0 MB"
+        assert assets.format_size(int(1.94 * 1024**3)) == "1.94 GB"
+
+    def test_compute_totals(self):
+        recs = assets.merge_inventories(
+            [_tex("/p/a.png", status="missing"),
+             _tex("/p/b.png", status="absolute"),
+             _tex("/p/c.abc")], [])
+        recs[1]["size_bytes"] = 100
+        recs[2]["size_bytes"] = 50
+        t = assets.compute_totals(recs)
+        assert t["count"] == 3 and t["missing"] == 1 and t["absolute"] == 1
+        assert t["total_bytes"] == 150
+        assert t["unsized"] == 1          # the missing one has size None
+        assert t["by_type"]["texture"] == 2 and t["by_type"]["alembic"] == 1
+
+    def test_stat_sizes_batch(self, tmp_path):
+        f = tmp_path / "a.png"; f.write_bytes(b"x" * 10)
+        recs = [
+            {"resolved_path": str(f), "size_bytes": None},
+            {"resolved_path": None, "size_bytes": None},        # missing: skip
+            {"resolved_path": str(tmp_path / "gone.png"), "size_bytes": None},
+        ]
+        nxt = assets.stat_sizes_batch(recs, 0, 2)
+        assert nxt == 2
+        assert recs[0]["size_bytes"] == 10
+        assert recs[1]["size_bytes"] is None
+        nxt = assets.stat_sizes_batch(recs, nxt, 5)
+        assert nxt == 3                                          # clamped to len
+        assert recs[2]["size_bytes"] == -1                       # stat failed

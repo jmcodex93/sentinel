@@ -126,3 +126,61 @@ def merge_inventories(texture_records, generic_records):
     records.sort(key=lambda r: (_STATUS_ORDER.get(r["status"], 9),
                                 os.path.basename(r["path"]).lower()))
     return records
+
+
+def format_size(nbytes):
+    """Human-readable file size. None → '—', negative → '?'."""
+    if nbytes is None:
+        return "—"
+    if nbytes < 0:
+        return "?"
+    if nbytes < 1024:
+        return f"{nbytes} B"
+    for unit, div in (("KB", 1024.0), ("MB", 1024.0**2), ("GB", 1024.0**3),
+                      ("TB", 1024.0**4)):
+        val = nbytes / div
+        if val < 1024 or unit == "TB":
+            # Special rule: GB/TB with value < 10 get 2 decimals.
+            if unit in ("GB", "TB") and val < 10:
+                return f"{val:.2f} {unit}"
+            return f"{val:.1f} {unit}" if val < 100 else f"{val:.0f} {unit}"
+    return f"{nbytes} B"
+
+
+def compute_totals(records):
+    """Aggregate stats: count, missing, absolute, total_bytes, unsized, by_type."""
+    totals = {"count": len(records), "missing": 0, "absolute": 0,
+              "total_bytes": 0, "unsized": 0, "by_type": {}}
+    for r in records:
+        st = r.get("status")
+        if st == "missing":
+            totals["missing"] += 1
+        elif st == "absolute":
+            totals["absolute"] += 1
+        t = r.get("asset_type", "other")
+        totals["by_type"][t] = totals["by_type"].get(t, 0) + 1
+        size = r.get("size_bytes")
+        if size is None or size < 0:
+            totals["unsized"] += 1
+        else:
+            totals["total_bytes"] += size
+    return totals
+
+
+def stat_sizes_batch(records, start, count, getsize=os.path.getsize):
+    """Fill size_bytes for records[start:start+count]. Meant to be called
+    from the dialog Timer in small batches so slow network mounts never
+    block the UI. Returns the next start index (== len when done)."""
+    end = min(len(records), start + count)
+    for i in range(start, end):
+        rec = records[i]
+        if rec.get("size_bytes") is not None:
+            continue
+        path = rec.get("resolved_path")
+        if not path:
+            continue
+        try:
+            rec["size_bytes"] = int(getsize(path))
+        except Exception:
+            rec["size_bytes"] = -1
+    return end
