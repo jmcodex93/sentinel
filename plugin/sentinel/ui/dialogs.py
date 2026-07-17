@@ -1026,6 +1026,7 @@ def save_repath_preset(find_str, replace_str):
         safe_print(f"save_repath_preset error: {e}")
 
 
+# Retired from the panel in v1.11 — superseded by AssetHubDialog. Kept one release.
 class TextureRepathingDialog(gui.GeDialog):
     """Modal dialog for the Texture Repathing Tool.
 
