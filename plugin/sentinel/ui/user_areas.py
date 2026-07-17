@@ -1231,8 +1231,10 @@ class AssetListArea(gui.GeUserArea):
                 else:
                     name_col = c4d.Vector(0.83, 0.83, 0.83)
                 self.DrawSetTextCol(name_col, bg)
-                nx, _nw = xs["name"]
-                self.DrawText(os.path.basename(rec["path"]) or rec["path"],
+                nx, nw = xs["name"]
+                name_text = os.path.basename(rec["path"]) or rec["path"]
+                self.DrawText(_format_path_compact(name_text,
+                                                   max_chars=max(10, nw // 7)),
                               nx, y + 5)
                 self.DrawSetTextCol(c4d.Vector(0.6, 0.6, 0.6), bg)
                 self.DrawText(rec["asset_type"], xs["type"][0], y + 5)
@@ -1243,7 +1245,10 @@ class AssetListArea(gui.GeUserArea):
                 if len(owners) > 1:
                     used += f" (+{len(owners) - 1})"
                 self.DrawSetTextCol(c4d.Vector(0.55, 0.65, 0.75), bg)
-                self.DrawText(used, xs["used"][0], y + 5)
+                ux, uw = xs["used"]
+                self.DrawText(_format_path_compact(used,
+                                                   max_chars=max(10, uw // 7)),
+                              ux, y + 5)
                 shown_path = self.pending_changes.get(rec["key"], rec["path"])
                 self.DrawSetTextCol(
                     c4d.Vector(0.51, 0.78, 0.52) if pending

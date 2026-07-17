@@ -1682,7 +1682,7 @@ class AssetHubDialog(gui.GeDialog):
         # zone 2: filters + search
         self.GroupBegin(0, c4d.BFH_SCALEFIT, 6, 0)
         self.GroupSpace(6, 0)
-        self.AddStaticText(0, c4d.BFH_LEFT, 40, 0, "Filter:", 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 60, 0, "Filter:", 0)
         for bid, label in ((self.BTN_FILTER_ALL, "All"),
                            (self.BTN_FILTER_MISSING, "Missing"),
                            (self.BTN_FILTER_ABSOLUTE, "Absolute"),
@@ -1696,7 +1696,8 @@ class AssetHubDialog(gui.GeDialog):
                               c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT,
                               c4d.SCROLLGROUP_VERT | c4d.SCROLLGROUP_AUTOVERT,
                               0, 300)
-        self.AddUserArea(self.USERAREA_LIST, c4d.BFH_SCALEFIT, 700, 420)
+        self.AddUserArea(self.USERAREA_LIST,
+                         c4d.BFH_SCALEFIT | c4d.BFV_TOP, 700, 420)
         if self.list_ua is None:
             self.list_ua = AssetListArea()
         self.AttachUserArea(self.list_ua, self.USERAREA_LIST)
@@ -1710,14 +1711,14 @@ class AssetHubDialog(gui.GeDialog):
         self.GroupBorderSpace(8, 8, 8, 8)
         self.GroupSpace(6, 4)
         self.GroupBegin(0, c4d.BFH_SCALEFIT, 5, 0)
-        self.AddStaticText(0, c4d.BFH_LEFT, 40, 0, "Find:", 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 60, 0, "Find:", 0)
         self.AddEditText(self.EDIT_FIND, c4d.BFH_SCALEFIT, 0, 0)
-        self.AddStaticText(0, c4d.BFH_LEFT, 60, 0, "Replace:", 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 90, 0, "Replace:", 0)
         self.AddEditText(self.EDIT_REPLACE, c4d.BFH_SCALEFIT, 0, 0)
         self.AddButton(self.BTN_PREVIEW, c4d.BFH_LEFT, 0, 0, "Preview")
         self.GroupEnd()
         self.GroupBegin(0, c4d.BFH_SCALEFIT, 4, 0)
-        self.AddStaticText(0, c4d.BFH_LEFT, 40, 0, "Recent:", 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 60, 0, "Recent:", 0)
         self.AddComboBox(self.COMBO_RECENT, c4d.BFH_SCALEFIT, 0, 0)
         self.AddCheckbox(self.CHK_MATCH_CASE, c4d.BFH_LEFT, 0, 0, "Match case")
         self.GroupEnd()
@@ -1747,7 +1748,7 @@ class AssetHubDialog(gui.GeDialog):
         self.AddSeparatorH(8)
         self.GroupBegin(0, c4d.BFH_SCALEFIT, 6, 0, "Deliver")
         self.GroupBorderSpace(8, 6, 8, 6)
-        self.AddStaticText(0, c4d.BFH_LEFT, 60, 0, "Deliver to:", 0)
+        self.AddStaticText(0, c4d.BFH_LEFT, 90, 0, "Deliver to:", 0)
         self.AddEditText(self.EDIT_DEST, c4d.BFH_SCALEFIT, 0, 0)
         self.AddButton(self.BTN_CHOOSE_DEST, c4d.BFH_LEFT, 0, 0, "Choose…")
         self.AddComboBox(self.COMBO_OUTPUT, c4d.BFH_LEFT, 90, 0)
@@ -1822,7 +1823,7 @@ class AssetHubDialog(gui.GeDialog):
         head = (f"{doc_name}   —   {totals['count']} assets · "
                 f"{totals['missing']} missing · {totals['absolute']} absolute"
                 f" · {assets_engine.format_size(totals['total_bytes'])}")
-        if totals["unsized"]:
+        if self._stat_cursor < len(self.records):
             head += " (sizing…)"
         if self.skipped:
             head += f" · {self.skipped} items skipped"
@@ -2000,9 +2001,11 @@ class AssetHubDialog(gui.GeDialog):
         self._save_recent_preset(find, repl)
         self._push_state()
         if matched == 0:
-            case_note = "" if self.GetBool(self.CHK_MATCH_CASE) else \
-                " (matching is case-insensitive)"
-            c4d.gui.MessageDialog(f"No paths contain '{find}'{case_note}.")
+            case_note = ("matching is case-insensitive; "
+                         if not self.GetBool(self.CHK_MATCH_CASE) else "")
+            c4d.gui.MessageDialog(
+                f"No repathable paths contain '{find}' "
+                f"({case_note}read-only assets are not repathed).")
 
     def _make_all_relative(self):
         doc_path = self.doc.GetDocumentPath() or ""
