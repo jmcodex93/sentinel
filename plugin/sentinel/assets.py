@@ -68,14 +68,15 @@ def merge_inventories(texture_records, generic_records):
     """Fuse the structured texture scan (repathable, rich owners) with the
     generic GetAllAssetsNew sweep (exhaustive, read-only). Dedupe by
     normalized path; on collision the texture record wins and only the
-    generic owner is appended."""
+    generic owner is appended. Empty-path records are kept with synthetic keys."""
     by_key = {}
     order = []
 
     for rec in texture_records or []:
         key = normalize_path_key(rec.get("resolved") or rec.get("path"))
+        # Use synthetic key for empty paths so they remain visible as QC signals.
         if not key:
-            continue
+            key = f"__empty__tex__{rec.get('tex_idx')}"
         kind = _OWNER_KIND_BY_SOURCE.get(rec.get("source_type", ""), "material")
         owner = (rec.get("host_name", ""), kind, rec.get("channel", ""))
         if key in by_key:
@@ -97,10 +98,11 @@ def merge_inventories(texture_records, generic_records):
         }
         order.append(key)
 
-    for rec in generic_records or []:
+    for i, rec in enumerate(generic_records or []):
         key = normalize_path_key(rec.get("path"))
+        # Use synthetic key for empty paths so they remain visible as QC signals.
         if not key:
-            continue
+            key = f"__empty__gen__{i}"
         owner = (rec.get("owner_name", ""), rec.get("owner_kind", "object"), "")
         if key in by_key:
             r = by_key[key]

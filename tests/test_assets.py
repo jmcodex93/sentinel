@@ -119,3 +119,20 @@ class TestMergeInventories:
             [_tex("/p/h.exr", src="rs_object_fileref", host="RS Dome")], [])
         assert out[0]["owners"][0][1] == "light"
         assert out[0]["asset_type"] == "hdri"
+
+    def test_empty_texture_path_keeps_status(self):
+        out = assets.merge_inventories([_tex(" ", status="empty", resolved=None, idx=0)], [])
+        assert len(out) == 1
+        r = out[0]
+        assert r["status"] == "empty"
+        assert r["repathable"] is True
+        assert r["tex_idx"] == 0
+        assert r["key"].startswith("__empty__tex__")
+
+    def test_empty_generic_path_keeps_status(self):
+        out = assets.merge_inventories([], [_gen("", exists=False)])
+        assert len(out) == 1
+        r = out[0]
+        assert r["status"] == "empty"
+        assert r["repathable"] is False
+        assert r["key"].startswith("__empty__gen__")
