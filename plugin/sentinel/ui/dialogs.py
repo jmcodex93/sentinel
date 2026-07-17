@@ -1636,6 +1636,11 @@ class AssetHubDialog(gui.GeDialog):
     LBL_PREFLIGHT = 2050
     BTN_PF_FIX, BTN_PF_ACCEPT, BTN_PF_DETAILS = 2051, 2052, 2053
 
+    THUMB_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".tga",
+                  ".exr", ".hdr", ".psd", ".webp"}
+    THUMB_CAP = 200
+    THUMB_BATCH = 8
+
     def __init__(self, doc, focus="assets"):
         super().__init__()
         self.doc = doc
@@ -1806,6 +1811,44 @@ class AssetHubDialog(gui.GeDialog):
                                self.pending)
         self.LayoutChanged(self.SCROLL_LIST)
 
+    def _load_thumbs_batch(self):
+        # Loads up to THUMB_BATCH thumbnails per Timer tick — never from
+        # DrawMsg, which must stay a pure read of thumb_cache (see
+        # AssetListArea.DrawMsg / Task 8). A None cache entry is a
+        # permanent placeholder: a failed/unsupported load is recorded
+        # once and never retried on subsequent ticks.
+        cache = self.list_ua.thumb_cache
+        loaded = 0
+        first, last = self.list_ua.get_visible_range()
+        for idx in self.list_ua.visible[first:last]:
+            rec = self.records[idx]
+            path = rec.get("resolved_path")
+            if (not path or path in cache or rec["status"] == "missing"
+                    or os.path.splitext(path)[1].lower() not in self.THUMB_EXTS):
+                continue
+            try:
+                bmp = c4d.bitmaps.BaseBitmap()
+                if bmp.InitWith(path)[0] == c4d.IMAGERESULT_OK:
+                    small = c4d.bitmaps.BaseBitmap()
+                    small.Init(22, 22)
+                    bmp.ScaleIt(small, 256, True, False)
+                    cache[path] = small
+                else:
+                    cache[path] = None  # permanent placeholder, no retry
+            except Exception:
+                cache[path] = None
+            loaded += 1
+            if loaded >= self.THUMB_BATCH:
+                break
+        # FIFO eviction: dicts preserve insertion order, so the oldest
+        # entries (by first-load order) are the ones dropped first.
+        if len(cache) > self.THUMB_CAP:
+            for k in list(cache.keys())[: len(cache) - self.THUMB_CAP]:
+                del cache[k]
+        if loaded:
+            self.list_ua.Redraw()
+        return loaded
+
     # ── events ──────────────────────────────────────────
     def Timer(self, msg):
         # Skip the rescan while there are pending (un-applied) repathing
@@ -1823,6 +1866,7 @@ class AssetHubDialog(gui.GeDialog):
             self._stat_cursor = assets_engine.stat_sizes_batch(
                 self.records, self._stat_cursor, 12)
             self._push_state()
+        self._load_thumbs_batch()
 
     def CoreMessage(self, cid, msg):
         if cid == c4d.EVMSG_CHANGE:
