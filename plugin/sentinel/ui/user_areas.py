@@ -9,6 +9,7 @@ from c4d import gui
 
 from sentinel.assets import format_size
 from sentinel.common.helpers import safe_print
+from sentinel.common.settings import GlobalSettings
 from sentinel.qc.registry import CHECK_REGISTRY, CheckDisplayView, RowKeysView
 
 def _violation_label(violation):
@@ -1075,6 +1076,12 @@ class AssetListArea(gui.GeUserArea):
     ROW_H = 26
     HEADER_H = 20
 
+    # User-resizable columns (item 3) — status/thumb are small fixed icon
+    # columns and path always takes the remainder, so neither is draggable.
+    RESIZABLE_COLS = ("name", "type", "size", "used")
+    MIN_COL_WIDTH = 40
+    DRAG_HIT_TOLERANCE = 5   # px on either side of a divider that counts as a hit
+
     def __init__(self):
         super().__init__()
         self.records = []
@@ -1087,6 +1094,10 @@ class AssetListArea(gui.GeUserArea):
         self.click_callback = None   # callable(record_key, region)
         self.thumb_cache = {}        # {resolved_path: c4d.bitmaps.BaseBitmap}
         self.font = c4d.FONT_DEFAULT
+        # Persisted per-column widths (item 3) — loaded here with a
+        # per-key validation fallback to defaults, so a malformed/legacy
+        # sentinel_settings.json value never crashes layout.
+        self.col_widths = GlobalSettings.get_asset_hub_col_widths()
 
     # ── state ───────────────────────────────────────
     def set_state(self, records, filter_status=None, search_text="",
@@ -1139,17 +1150,73 @@ class AssetListArea(gui.GeUserArea):
     def _columns(self, w):
         xs = {}
         x = 6
-        # "type" is widened from 64 to 110 to make room for the dim
-        # "read-only" badge drawn after non-repathable records' type text
-        # (item 4) without colliding with the Size column — both the hit
-        # test and the draw pass read this same table, so they stay in sync.
-        for name, cw in (("status", 24), ("thumb", 26), ("name", 210),
-                          ("type", 110), ("size", 64), ("used", 180)):
+        # name/type/size/used read from self.col_widths (item 3, user
+        # resizable — defaults match the original fixed values, "type"
+        # widened 64 -> 110 to make room for the item-4 "read-only" badge).
+        # status/thumb stay fixed icon columns; both the hit test and the
+        # draw pass read this same table, so they stay in sync.
+        for name, cw in (("status", 24), ("thumb", 26),
+                          ("name", self.col_widths["name"]),
+                          ("type", self.col_widths["type"]),
+                          ("size", self.col_widths["size"]),
+                          ("used", self.col_widths["used"])):
             xs[name] = (x, cw)
             x += cw + 6
         xs["path"] = (x, max(60, w - x - 34))
         xs["browse"] = (w - 26, 20)
         return xs
+
+    def _divider_hit(self, lx, ly):
+        """Return the resizable column whose right-edge divider is within
+        DRAG_HIT_TOLERANCE px of lx, or None. Header row only — dividers
+        are not draggable over the data rows."""
+        if ly >= self.HEADER_H:
+            return None
+        xs = self._columns(self.GetWidth())
+        for col in self.RESIZABLE_COLS:
+            cx, cw = xs[col]
+            edge = cx + cw
+            if abs(lx - edge) <= self.DRAG_HIT_TOLERANCE:
+                return col
+        return None
+
+    def _drag_column(self, col, mx, my):
+        """Blocking column-resize drag loop.
+
+        Grounded in the local SDK example
+        `geuserarea_drag_r13.py` (MouseDragStart / MouseDrag / MouseDragEnd):
+        C4D's per-tick deltaX from MouseDrag() is signed opposite to the
+        actual mouse movement, so the example accumulates the true current
+        mouse X via `mouseX -= deltaX` each tick — mirrored here as `mx`.
+        Width is clamped to >= MIN_COL_WIDTH and pushed to col_widths (and
+        therefore _columns/LayoutChanged) on every tick that changes it, so
+        the table visibly resizes live. No cursor feedback: BFM_GETCURSORINFO
+        is not routed to embedded GeUserAreas in C4D 2026 (documented
+        limitation, see CLAUDE.md Known Limitations).
+        """
+        try:
+            start_x = mx
+            start_width = self.col_widths[col]
+            self.MouseDragStart(c4d.KEY_MLEFT, mx, my,
+                                c4d.MOUSEDRAGFLAGS_DONTHIDEMOUSE)
+            while True:
+                result, dx, dy, channels = self.MouseDrag()
+                if result != c4d.MOUSEDRAGRESULT_CONTINUE:
+                    break
+                mx -= dx
+                new_width = max(self.MIN_COL_WIDTH,
+                                int(start_width + (mx - start_x)))
+                if new_width != self.col_widths[col]:
+                    self.col_widths[col] = new_width
+                    self.LayoutChanged()
+                    self.Redraw()
+            self.MouseDragEnd()
+        except Exception as e:
+            safe_print(f"AssetListArea._drag_column error: {e}")
+            return
+        # Persist the whole dict on drag end (cheap; avoids separate
+        # "did it actually change" bookkeeping).
+        GlobalSettings.set_asset_hub_col_widths(self.col_widths)
 
     # ── click detection ─────────────────────────────
     def _hit_test(self, lx, ly):
@@ -1182,6 +1249,14 @@ class AssetListArea(gui.GeUserArea):
             mx = int(msg[c4d.BFM_INPUT_X])
             my = int(msg[c4d.BFM_INPUT_Y])
             lx, ly = _ua_local_coords(self, mx, my)
+
+            # A divider hit takes priority over a header sort click (item 3)
+            # — clicking exactly on a boundary resizes, it never sorts.
+            divider_col = self._divider_hit(lx, ly)
+            if divider_col is not None:
+                self._drag_column(divider_col, mx, my)
+                return True
+
             key, region = self._hit_test(lx, ly)
             if region and isinstance(region, tuple) and region[0] == "header":
                 self.sort_by(region[1])
@@ -1300,11 +1375,12 @@ class AssetListArea(gui.GeUserArea):
 
 
 class AssetHubHeaderArea(gui.GeUserArea):
-    """Colored header for the Asset Hub: scene name + asset totals in one
-    line, replacing a plain StaticText (item 2 of the UI polish pass).
-    Pattern mirrored from ScoreHeader — DrawSetTextCol per segment,
-    measure-then-draw for right-to-left layout is not needed here since
-    everything is left-aligned in reading order.
+    """Colored header for the Asset Hub: "Scene: <name>" left-anchored,
+    asset totals right-anchored — replacing a plain StaticText (item 2 of
+    the UI polish pass). Pattern mirrored from ScoreHeader — measure a
+    segment with DrawGetTextWidth, then DrawSetTextCol + DrawText it; the
+    right-hand block measures its total width first (same _measure per
+    segment) so it can start at GetWidth() - total - margin.
     """
 
     HEIGHT = 20
@@ -1349,9 +1425,15 @@ class AssetHubHeaderArea(gui.GeUserArea):
             text_y = max(2, (h - 12) // 2)
             sep = " · "
             sep_w = self._measure(sep)
+            margin = 8
 
+            # Left: scene identity.
+            left_text = f"Scene: {self.doc_name}" if self.doc_name else "Scene:"
+            self.DrawSetTextCol(_COL_HUB_HEADER_DIM, _COL_HUB_HEADER_BG)
+            self.DrawText(left_text, margin, text_y)
+
+            # Right: summary segments, right-anchored.
             segments = [
-                (self.doc_name, _COL_HUB_HEADER_DIM),
                 (f"{self.count} assets", _COL_HUB_HEADER_TEXT),
                 (f"{self.missing} missing",
                  _COL_HUB_HEADER_RED if self.missing else _COL_HUB_HEADER_DIM),
@@ -1361,12 +1443,14 @@ class AssetHubHeaderArea(gui.GeUserArea):
             ]
             if self.suffix:
                 segments.append((self.suffix, _COL_HUB_HEADER_DIM))
+            segments = [(text, col) for text, col in segments if text]
 
-            x = 4
+            total_w = sum(self._measure(text) for text, _ in segments)
+            total_w += sep_w * max(0, len(segments) - 1)
+
+            x = max(margin, w - total_w - margin)
             first = True
             for text, col in segments:
-                if not text:
-                    continue
                 if not first:
                     self.DrawSetTextCol(_COL_HUB_HEADER_DIM, _COL_HUB_HEADER_BG)
                     self.DrawText(sep, x, text_y)

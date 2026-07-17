@@ -1715,10 +1715,17 @@ class AssetHubDialog(gui.GeDialog):
         self.AddStaticText(0, c4d.BFH_LEFT, 60, 0, "Filter:", 0)
         filter_bc = c4d.BaseContainer()
         filter_bc.SetBool(c4d.QUICKTAB_BAR, False)
+        filter_bc.SetBool(c4d.QUICKTAB_SHOWSINGLE, True)
         filter_bc.SetBool(c4d.QUICKTAB_NOMULTISELECT, True)
+        # Explicit minw: this quicktab shares a row with the "Filter:" label
+        # and the search field (unlike the panel's TAB_BAR, which owns its
+        # whole row — panel.py ~1298-1312). With minw=0 + BFH_LEFT the
+        # widget collapsed to its bare minimum and the tab-style QuickTab
+        # wrapped vertically instead of laying out 4 tabs side by side.
+        # 280px is enough for "All | Missing | Absolute | OK" with padding.
         self._filter_tab = self.AddCustomGui(
             self.FILTER_TAB, c4d.CUSTOMGUI_QUICKTAB, "",
-            c4d.BFH_LEFT, 0, 0, filter_bc)
+            c4d.BFH_LEFT, 280, 0, filter_bc)
         if self._filter_tab is not None:
             self._filter_tab.AppendString(0, "All", self.filter_status is None)
             self._filter_tab.AppendString(1, "Missing", self.filter_status == "missing")
