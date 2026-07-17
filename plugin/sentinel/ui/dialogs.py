@@ -1640,6 +1640,7 @@ class AssetHubDialog(gui.GeDialog):
     BTN_PREVIEW, COMBO_RECENT, CHK_MATCH_CASE = 2032, 2033, 2034
     BTN_SEARCH_FOLDER, BTN_MAKE_RELATIVE, BTN_CLEAR = 2040, 2041, 2042
     LBL_PENDING, BTN_APPLY_ALL = 2043, 2044
+    BTN_RELINK = 2045  # "Relink Selected..." — replaces the removed per-row browse glyph
     LBL_PREFLIGHT = 2050
     BTN_PF_FIX, BTN_PF_ACCEPT, BTN_PF_DETAILS = 2051, 2052, 2053
     EDIT_DEST, BTN_CHOOSE_DEST = 2060, 2061
@@ -1777,9 +1778,17 @@ class AssetHubDialog(gui.GeDialog):
         self.AddComboBox(self.COMBO_RECENT, c4d.BFH_SCALEFIT, 0, 0)
         self.AddCheckbox(self.CHK_MATCH_CASE, c4d.BFH_LEFT, 0, 0, "Match case")
         self.GroupEnd()
-        self.GroupBegin(0, c4d.BFH_SCALEFIT, 6, 0)
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 7, 0)
         self.AddButton(self.BTN_SEARCH_FOLDER, c4d.BFH_LEFT, 0, 0,
                        "Search Folder for Missing…")
+        # Relink a single selected row (Crate reference-UI pattern) — the
+        # per-row "…" glyph it replaces was removed after three rounds of
+        # fixes (fixed slot, drag clamp, fit-to-viewport, scrollbar
+        # padding) still couldn't make it reliably visible. Always
+        # enabled; the handler's own guard messages cover no-selection /
+        # read-only rather than a disabled-state affordance.
+        self.AddButton(self.BTN_RELINK, c4d.BFH_LEFT, 0, 0,
+                       "Relink Selected…")
         self.AddButton(self.BTN_MAKE_RELATIVE, c4d.BFH_LEFT, 0, 0,
                        "Make All Relative")
         self.AddButton(self.BTN_CLEAR, c4d.BFH_LEFT, 0, 0, "Clear Pending")
@@ -2018,6 +2027,8 @@ class AssetHubDialog(gui.GeDialog):
             self._preview_bulk()
         elif cid == self.BTN_SEARCH_FOLDER:
             self._search_folder_for_missing()
+        elif cid == self.BTN_RELINK:
+            self._relink_selected()
         elif cid == self.BTN_MAKE_RELATIVE:
             self._make_all_relative()
         elif cid == self.BTN_CLEAR:
@@ -2048,21 +2059,17 @@ class AssetHubDialog(gui.GeDialog):
         return None
 
     def _on_row_click(self, key, region):
+        # No "browse" region anymore — the per-row "…" glyph was removed
+        # (see AssetListArea's class docstring); relinking is the
+        # dedicated "Relink Selected..." button (_relink_selected) now,
+        # driven by AssetListArea.selected_key instead of a click region.
         rec = self._record_by_key(key)
         if rec is None:
             return
-        if region == "browse" and rec["repathable"]:
-            # Browse opens the file picker — it must NOT also select the
-            # owner in the scene (a single click either browses or
-            # selects, never both).
-            path = c4d.storage.LoadDialog(title="Choose texture file")
-            if path:
-                self.pending[key] = path
-                self._push_state()
-        elif region in ("used_by", "row"):
-            # Clicking anywhere in the row body (not the browse "...")
-            # selects the owning material/object, same as clicking "Used
-            # by" specifically — the highlight itself was already set by
+        if region in ("used_by", "row"):
+            # Clicking anywhere in the row body selects the owning
+            # material/object, same as clicking "Used by" specifically —
+            # the highlight itself was already set by
             # AssetListArea.InputEvent before this callback runs.
             self._select_owner_in_scene(rec)
 
@@ -2090,6 +2097,31 @@ class AssetHubDialog(gui.GeDialog):
         # scan + GetAllAssetsNew + all 12 QC checks) ~1s later.
         self._suppress_ticks = 3
         c4d.EventAdd()
+
+    def _relink_selected(self):
+        """Relink the row currently selected in AssetListArea — replaces
+        the removed per-row "…" browse glyph (Crate reference-UI pattern:
+        a dedicated "Relink Selected..." button instead of a per-row
+        affordance that three rounds of fixes couldn't make reliably
+        visible). Same semantics the browse dots had: stages a pending
+        change, Apply All commits it.
+        """
+        key = self.list_ua.selected_key
+        if key is None:
+            c4d.gui.MessageDialog("Select an asset row first.")
+            return
+        rec = self._record_by_key(key)
+        if rec is None:
+            c4d.gui.MessageDialog("Select an asset row first.")
+            return
+        if not rec["repathable"]:
+            c4d.gui.MessageDialog(
+                "This asset is read-only — it cannot be relinked.")
+            return
+        path = c4d.storage.LoadDialog(title="Choose replacement file")
+        if path:
+            self.pending[key] = path
+            self._push_state()
 
     def _preview_bulk(self):
         import re

@@ -1066,11 +1066,18 @@ _ASSET_SORT_KEYS = {
 
 class AssetListArea(gui.GeUserArea):
     """Flat, sortable asset table for the Asset Hub. Regions per row: 'row'
-    (highlight), 'used_by' (select owner in scene), 'browse' (file picker,
-    repathable only). Header clicks sort the table instead of calling back.
+    (highlight + select owner in scene), 'used_by' (same — click on the
+    "Used by" text). Header clicks sort the table instead of calling back.
     Thumbnails come from self.thumb_cache, filled by the dialog's Timer —
     a None value is a permanent placeholder (nothing is drawn) so a failed
     load is not retried every frame.
+
+    No per-row browse/relink affordance — three rounds of fixes (fixed
+    slot, drag clamp, fit-to-viewport, scrollbar padding) couldn't make a
+    reliably visible per-row "…" glyph. Relinking is a dedicated "Relink
+    Selected..." button in AssetHubDialog instead (the Crate reference UI
+    pattern): select a row here, click the button, it opens the same file
+    picker and stages the same pending change.
     """
 
     ROW_H = 26
@@ -1084,17 +1091,16 @@ class AssetListArea(gui.GeUserArea):
     MIN_COL_WIDTH = ASSET_HUB_COL_WIDTH_MIN
     DRAG_HIT_TOLERANCE = 5   # px on either side of a divider that counts as a hit
 
-    # Browse is a fixed-width slot pinned to the right edge, always — it
-    # never shrinks or gets pushed off-screen by widened columns. Path
-    # fills the gap between the last resizable column and the browse
-    # slot, with a hard floor of PATH_MIN_WIDTH.
-    BROWSE_COL_WIDTH = 26
+    # Path fills the gap between the last resizable column and the right
+    # edge, with a hard floor of PATH_MIN_WIDTH. There is no per-row
+    # browse column anymore (removed — see the class docstring); relink
+    # is a dedicated dialog-level button now.
     PATH_MIN_WIDTH = 60
     # Live-measured: the enclosing ScrollGroup draws its vertical
     # scrollbar over the rightmost ~15-18px of this UserArea whenever the
-    # content scrolls (confirmed on screen — GetWidth() reported 1346 with
-    # browse drawn at x=1320, mathematically inside but visually under the
-    # scrollbar track). Reserve that strip so browse never sits under it.
+    # content scrolls (confirmed on screen — GetWidth() reported 1346).
+    # Reserve that strip so path's own "…" truncation ellipsis (and any
+    # text near the right edge) never sits under it.
     SCROLLBAR_PAD = 18
     # Leading fixed layout before the 4 resizable columns: 6 (left margin)
     # + status(24)+6 + thumb(26)+6 = 68, derived once here so _columns and
@@ -1168,17 +1174,15 @@ class AssetListArea(gui.GeUserArea):
     def _col_budget(self, w):
         """Max total width the 4 resizable columns may occupy at widget
         width `w`, leaving room for the leading fixed columns + gutters,
-        PATH_MIN_WIDTH, the pinned BROWSE_COL_WIDTH slot, and
-        SCROLLBAR_PAD (the ScrollGroup's vertical scrollbar draws over the
-        rightmost strip of this UserArea). Single source of truth for
-        both `_columns`' fit-to-viewport shrink and the drag clamp in
-        `_max_col_width` — derived directly from the layout `_columns()`
-        produces: at the limit, _LEADING_FIXED_WIDTH + sum(4 resizable
-        widths) + 4 gutters (6px each) + 1 gutter before browse (6px) +
-        PATH_MIN_WIDTH + BROWSE_COL_WIDTH + SCROLLBAR_PAD == w.
+        PATH_MIN_WIDTH, and SCROLLBAR_PAD (the ScrollGroup's vertical
+        scrollbar draws over the rightmost strip of this UserArea). Single
+        source of truth for both `_columns`' fit-to-viewport shrink and
+        the drag clamp in `_max_col_width` — derived directly from the
+        layout `_columns()` produces: at the limit, _LEADING_FIXED_WIDTH +
+        sum(4 resizable widths) + 4 gutters (6px each) + PATH_MIN_WIDTH +
+        SCROLLBAR_PAD == w.
         """
-        fixed = (self._LEADING_FIXED_WIDTH + 4 * 6 + 6
-                 + self.BROWSE_COL_WIDTH + self.SCROLLBAR_PAD)
+        fixed = self._LEADING_FIXED_WIDTH + 4 * 6 + self.SCROLLBAR_PAD
         return w - fixed - self.PATH_MIN_WIDTH
 
     # ── column layout (computed once per hit-test / draw from current width)
@@ -1188,8 +1192,8 @@ class AssetListArea(gui.GeUserArea):
         # Fit-to-viewport invariant: self.col_widths may hold values
         # persisted from an EARLIER, wider window (sentinel_settings.json
         # survives across sessions/window sizes). Honoring them verbatim
-        # here would push path/browse off the visible edge on a narrower
-        # window — fit_column_widths (pure, sentinel.assets) shrinks them
+        # here would push path off the visible edge on a narrower window —
+        # fit_column_widths (pure, sentinel.assets) shrinks them
         # proportionally to fit, display-only: the return value is never
         # written back to self.col_widths, so widening the window again
         # restores the user's actual stored widths.
@@ -1204,20 +1208,16 @@ class AssetListArea(gui.GeUserArea):
                           ("size", fitted["size"]), ("used", fitted["used"])):
             xs[name] = (x, cw)
             x += cw + 6
-        # Browse is a fixed slot pinned SCROLLBAR_PAD px inboard of the
-        # right edge — live measurement showed the ScrollGroup's vertical
-        # scrollbar draws over the rightmost ~15-18px of this UserArea
-        # when content scrolls, so a browse slot anchored at the bare
-        # edge (mathematically inside GetWidth()) sat under the
-        # scrollbar track and read as invisible/clipped. Path fills
-        # exactly the gap between the last resizable column and the
-        # browse slot (floor PATH_MIN_WIDTH). Between the fit-to-viewport
-        # shrink above and the drag clamp in _max_col_width, this floor
-        # should never be force-violated in practice; the max() here is
-        # the last-resort guard for windows narrower than GetMinSize.
-        browse_x = w - self.BROWSE_COL_WIDTH - self.SCROLLBAR_PAD
-        xs["browse"] = (browse_x, self.BROWSE_COL_WIDTH)
-        xs["path"] = (x, max(self.PATH_MIN_WIDTH, browse_x - 6 - x))
+        # Path runs from the last resizable column to the right edge minus
+        # SCROLLBAR_PAD (the ScrollGroup's vertical scrollbar draws over
+        # that strip) — no more fixed browse slot at the end (removed;
+        # relinking is a dedicated "Relink Selected..." button on the
+        # dialog now, see the class docstring). Between the fit-to-
+        # viewport shrink above and the drag clamp in _max_col_width, path
+        # should always keep its PATH_MIN_WIDTH floor in practice; the
+        # max() here is the last-resort guard for windows narrower than
+        # GetMinSize.
+        xs["path"] = (x, max(self.PATH_MIN_WIDTH, w - self.SCROLLBAR_PAD - x))
         return xs
 
     def _column_edges(self, xs):
@@ -1241,14 +1241,14 @@ class AssetListArea(gui.GeUserArea):
 
     def _max_col_width(self, col, w):
         """Widest `col` can become while still leaving PATH_MIN_WIDTH free
-        for the path column before the fixed BROWSE_COL_WIDTH slot.
+        for the path column before the right edge (minus SCROLLBAR_PAD).
 
         Belt-and-braces on top of `_columns`' fit-to-viewport shrink:
         "others" is read from the FITTED layout (not the raw, possibly
         oversized stored widths), so the budget for the dragged column
         reflects what the other three columns actually occupy on screen
-        right now — widening one column can never push path/browse off
-        the right edge or into each other.
+        right now — widening one column can never push path off the
+        right edge.
         """
         budget = self._col_budget(w)
         fitted = fit_column_widths(self.col_widths, self.RESIZABLE_COLS,
@@ -1277,10 +1277,9 @@ class AssetListArea(gui.GeUserArea):
         — the upper bound is recomputed every tick from the CURRENT widget
         width, so it tracks a live window resize during the drag and, more
         importantly, guarantees path always keeps its PATH_MIN_WIDTH floor
-        before the fixed browse slot (item 1 of the follow-up UI polish
-        pass — a plain MIN_COL_WIDTH=40 floor alone let name/type/size/used
-        grow large enough to push path under/past browse). The clamped
-        width is pushed to col_widths (and therefore _columns/
+        before the right edge (a plain MIN_COL_WIDTH=40 floor alone let
+        name/type/size/used grow large enough to push path off-screen).
+        The clamped width is pushed to col_widths (and therefore _columns/
         LayoutChanged) on every tick that changes it, so the table visibly
         resizes live. Persistence only fires if the final width differs
         from drag start — a no-movement click writes nothing to settings.
@@ -1337,11 +1336,8 @@ class AssetListArea(gui.GeUserArea):
         rec = self.records[self.visible[row]]
         xs = self._columns(self.GetWidth())
         ux, uw = xs["used"]
-        bx, bw = xs["browse"]
         if ux <= lx <= ux + uw:
             return rec["key"], "used_by"
-        if rec["repathable"] and bx <= lx <= bx + bw:
-            return rec["key"], "browse"
         return rec["key"], "row"
 
     def InputEvent(self, msg):
@@ -1469,9 +1465,6 @@ class AssetListArea(gui.GeUserArea):
                 self.DrawText(_format_path_compact(shown_path,
                                                    max_chars=max(20, pw // 7)),
                               px, y + 5)
-                if rec["repathable"]:
-                    self.DrawSetTextCol(c4d.Vector(0.7, 0.7, 0.7), bg)
-                    self.DrawText("...", xs["browse"][0], y + 5)
                 y += self.ROW_H
 
             # Column dividers (item 2, follow-up UI polish pass) — drawn at
@@ -1486,15 +1479,6 @@ class AssetListArea(gui.GeUserArea):
                 if y > self.HEADER_H:
                     self.DrawSetPen(c4d.Vector(0.18, 0.18, 0.18))
                     self.DrawRectangle(edge, self.HEADER_H, edge + 1, y)
-
-            # Faint divider before the fixed browse slot (item 1 of the
-            # follow-up UI polish pass) — body rows only, so the "…" reads
-            # as its own column instead of running into path's text.
-            if y > self.HEADER_H:
-                browse_edge = xs["browse"][0]
-                self.DrawSetPen(c4d.Vector(0.18, 0.18, 0.18))
-                self.DrawRectangle(browse_edge, self.HEADER_H,
-                                   browse_edge + 1, y)
 
         except Exception as e:
             safe_print(f"Error in AssetListArea.DrawMsg: {e}")
