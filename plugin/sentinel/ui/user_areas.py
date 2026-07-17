@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """Custom Sentinel user areas and row-format helpers."""
 
+import os
 import time
 
 import c4d
 from c4d import gui
 
+from sentinel.assets import format_size
 from sentinel.common.helpers import safe_print
 from sentinel.qc.registry import CHECK_REGISTRY, CheckDisplayView, RowKeysView
 
@@ -1025,3 +1027,235 @@ class TextureListArea(gui.GeUserArea):
 
         except Exception as e:
             safe_print(f"Error in TextureListArea.DrawMsg: {e}")
+
+
+# ---------------- AssetListArea (Sentinel Asset Hub) ----------------
+
+_ASSET_STATUS_COLORS = {
+    "ok":        c4d.Vector(0.30, 0.69, 0.31),
+    "missing":   c4d.Vector(0.90, 0.22, 0.21),
+    "absolute":  c4d.Vector(1.00, 0.60, 0.00),
+    "asset_uri": c4d.Vector(0.47, 0.47, 0.47),
+    "empty":     c4d.Vector(0.47, 0.47, 0.47),
+}
+
+_ASSET_SORT_KEYS = {
+    "status": lambda r: {"missing": 0, "absolute": 1, "empty": 2,
+                          "asset_uri": 3, "ok": 4}.get(r["status"], 9),
+    "name":   lambda r: os.path.basename(r["path"]).lower(),
+    "type":   lambda r: r["asset_type"],
+    "size":   lambda r: -(r["size_bytes"] or 0),
+}
+
+
+class AssetListArea(gui.GeUserArea):
+    """Flat, sortable asset table for the Asset Hub. Regions per row: 'row'
+    (highlight), 'used_by' (select owner in scene), 'browse' (file picker,
+    repathable only). Header clicks sort the table instead of calling back.
+    Thumbnails come from self.thumb_cache, filled by the dialog's Timer —
+    a None value is a permanent placeholder (nothing is drawn) so a failed
+    load is not retried every frame.
+    """
+
+    ROW_H = 26
+    HEADER_H = 20
+
+    def __init__(self):
+        super().__init__()
+        self.records = []
+        self.visible = []            # indices into records after filter/search
+        self.filter_status = None
+        self.search_text = ""
+        self.pending_changes = {}    # {record_key: new_path}
+        self.sort_column = "status"
+        self.selected_key = None
+        self.click_callback = None   # callable(record_key, region)
+        self.thumb_cache = {}        # {resolved_path: c4d.bitmaps.BaseBitmap}
+        self.font = c4d.FONT_DEFAULT
+
+    # ── state ───────────────────────────────────────
+    def set_state(self, records, filter_status=None, search_text="",
+                  pending_changes=None):
+        self.records = records or []
+        self.filter_status = filter_status
+        self.search_text = (search_text or "").lower()
+        self.pending_changes = pending_changes or {}
+        self._recompute_visible()
+        try:
+            self.LayoutChanged()
+        except Exception:
+            pass
+        self.Redraw()
+
+    def sort_by(self, column):
+        if column in _ASSET_SORT_KEYS:
+            self.sort_column = column
+            self._recompute_visible()
+            self.Redraw()
+
+    def _recompute_visible(self):
+        idxs = range(len(self.records))
+        if self.filter_status:
+            idxs = [i for i in idxs
+                    if self.records[i]["status"] == self.filter_status]
+        else:
+            idxs = list(idxs)
+        if self.search_text:
+            idxs = [i for i in idxs
+                    if self.search_text in self.records[i]["path"].lower()
+                    or self.search_text in os.path.basename(
+                        self.records[i]["path"]).lower()]
+        key = _ASSET_SORT_KEYS[self.sort_column]
+        idxs.sort(key=lambda i: key(self.records[i]))
+        self.visible = idxs
+
+    def get_visible_range(self):
+        """All filtered rows (the ScrollGroup clips drawing; thumbnail work
+        is bounded by batching in the dialog Timer, not by this range)."""
+        return (0, len(self.visible))
+
+    def GetMinSize(self):
+        # Report the FULL content height — the enclosing ScrollGroup is the
+        # viewport (same convention as TextureListArea.GetMinSize).
+        h = self.HEADER_H + max(1, len(self.visible)) * self.ROW_H
+        return 700, h
+
+    # ── column layout (computed once per hit-test / draw from current width)
+    def _columns(self, w):
+        xs = {}
+        x = 6
+        for name, cw in (("status", 24), ("thumb", 26), ("name", 210),
+                          ("type", 64), ("size", 64), ("used", 180)):
+            xs[name] = (x, cw)
+            x += cw + 6
+        xs["path"] = (x, max(60, w - x - 34))
+        xs["browse"] = (w - 26, 20)
+        return xs
+
+    # ── click detection ─────────────────────────────
+    def _hit_test(self, lx, ly):
+        if ly < self.HEADER_H:
+            xs = self._columns(self.GetWidth())
+            for col in ("status", "name", "type", "size"):
+                cx, cw = xs[col]
+                if cx <= lx <= cx + cw:
+                    return None, ("header", col)
+            return None, None
+        row = int((ly - self.HEADER_H) // self.ROW_H)
+        if row < 0 or row >= len(self.visible):
+            return None, None
+        rec = self.records[self.visible[row]]
+        xs = self._columns(self.GetWidth())
+        ux, uw = xs["used"]
+        bx, bw = xs["browse"]
+        if ux <= lx <= ux + uw:
+            return rec["key"], "used_by"
+        if rec["repathable"] and bx <= lx <= bx + bw:
+            return rec["key"], "browse"
+        return rec["key"], "row"
+
+    def InputEvent(self, msg):
+        try:
+            device = msg[c4d.BFM_INPUT_DEVICE]
+            channel = msg[c4d.BFM_INPUT_CHANNEL]
+            if device != c4d.BFM_INPUT_MOUSE or channel != c4d.BFM_INPUT_MOUSELEFT:
+                return False
+            mx = int(msg[c4d.BFM_INPUT_X])
+            my = int(msg[c4d.BFM_INPUT_Y])
+            lx, ly = _ua_local_coords(self, mx, my)
+            key, region = self._hit_test(lx, ly)
+            if region and isinstance(region, tuple) and region[0] == "header":
+                self.sort_by(region[1])
+                return True
+            if key is not None:
+                self.selected_key = key
+                self.Redraw()
+                if self.click_callback and region:
+                    self.click_callback(key, region)
+                return True
+        except Exception as e:
+            safe_print(f"AssetListArea.InputEvent error: {e}")
+        return False
+
+    # ── drawing ─────────────────────────────────────
+    def DrawMsg(self, x1, y1, x2, y2, msg):
+        try:
+            self.OffScreenOn()
+            w = self.GetWidth()
+            self.DrawSetPen(c4d.Vector(0.13, 0.13, 0.13))
+            self.DrawRectangle(x1, y1, x2, y2)
+            try:
+                self.DrawSetFont(self.font)
+            except Exception:
+                pass
+            xs = self._columns(w)
+
+            # header
+            self.DrawSetTextCol(c4d.Vector(0.55, 0.55, 0.55),
+                                c4d.Vector(0.13, 0.13, 0.13))
+            labels = (("status", ""), ("name", "Asset"), ("type", "Type"),
+                      ("size", "Size"), ("used", "Used by"), ("path", "Path"))
+            for col, label in labels:
+                cx, _cw = xs[col]
+                mark = " ▾" if col == self.sort_column else ""
+                self.DrawText(label + mark, cx, 3)
+
+            y = self.HEADER_H
+            for row, idx in enumerate(self.visible):
+                rec = self.records[idx]
+                if rec["key"] == self.selected_key:
+                    self.DrawSetPen(c4d.Vector(0.20, 0.25, 0.32))
+                    self.DrawRectangle(0, y, w, y + self.ROW_H - 1)
+                # status dot
+                cx, _ = xs["status"]
+                self.DrawSetPen(_ASSET_STATUS_COLORS.get(
+                    rec["status"], c4d.Vector(0.5, 0.5, 0.5)))
+                self.DrawRectangle(cx + 4, y + 8, cx + 13, y + 17)
+                # thumbnail (None entry in the cache = permanent placeholder,
+                # draw nothing rather than retry every frame)
+                tx, _ = xs["thumb"]
+                bmp = self.thumb_cache.get(rec.get("resolved_path"))
+                if bmp is not None:
+                    self.DrawBitmap(bmp, tx, y + 2, 22, 22, 0, 0,
+                                    bmp.GetBw(), bmp.GetBh(), c4d.BMP_NORMAL)
+                # texts
+                pending = rec["key"] in self.pending_changes
+                bg = (c4d.Vector(0.20, 0.25, 0.32) if
+                      rec["key"] == self.selected_key
+                      else c4d.Vector(0.13, 0.13, 0.13))
+                if pending:
+                    name_col = c4d.Vector(0.51, 0.78, 0.52)
+                elif rec["status"] in ("missing", "absolute"):
+                    name_col = _ASSET_STATUS_COLORS.get(
+                        rec["status"], c4d.Vector(0.8, 0.8, 0.8))
+                else:
+                    name_col = c4d.Vector(0.83, 0.83, 0.83)
+                self.DrawSetTextCol(name_col, bg)
+                nx, _nw = xs["name"]
+                self.DrawText(os.path.basename(rec["path"]) or rec["path"],
+                              nx, y + 5)
+                self.DrawSetTextCol(c4d.Vector(0.6, 0.6, 0.6), bg)
+                self.DrawText(rec["asset_type"], xs["type"][0], y + 5)
+                self.DrawText(format_size(rec["size_bytes"]), xs["size"][0], y + 5)
+                owners = rec["owners"] or [("", "", "")]
+                used = (f"{owners[0][0]} / {owners[0][2]}" if owners[0][2]
+                        else owners[0][0])
+                if len(owners) > 1:
+                    used += f" (+{len(owners) - 1})"
+                self.DrawSetTextCol(c4d.Vector(0.55, 0.65, 0.75), bg)
+                self.DrawText(used, xs["used"][0], y + 5)
+                shown_path = self.pending_changes.get(rec["key"], rec["path"])
+                self.DrawSetTextCol(
+                    c4d.Vector(0.51, 0.78, 0.52) if pending
+                    else c4d.Vector(0.45, 0.45, 0.45), bg)
+                px, pw = xs["path"]
+                self.DrawText(_format_path_compact(shown_path,
+                                                   max_chars=max(20, pw // 7)),
+                              px, y + 5)
+                if rec["repathable"]:
+                    self.DrawSetTextCol(c4d.Vector(0.7, 0.7, 0.7), bg)
+                    self.DrawText("...", xs["browse"][0], y + 5)
+                y += self.ROW_H
+
+        except Exception as e:
+            safe_print(f"Error in AssetListArea.DrawMsg: {e}")
