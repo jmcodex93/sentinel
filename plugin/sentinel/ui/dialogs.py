@@ -38,7 +38,14 @@ from sentinel.textures import (
 
 from .ids import GateTriageIds
 from .reports import build_baseline_artifact_details
-from .user_areas import AssetListArea, TextureListArea, TodoArea, _violation_label
+from .user_areas import (
+    AssetHubHeaderArea,
+    AssetListArea,
+    PreflightStripArea,
+    TextureListArea,
+    TodoArea,
+    _violation_label,
+)
 
 
 def gate_dialog_can_proceed(blocking_items, fixable_items, decisions, reason):
@@ -1626,8 +1633,7 @@ class AssetHubDialog(gui.GeDialog):
 
     LBL_HEADER = 2001
     BTN_RESCAN = 2002
-    BTN_FILTER_ALL, BTN_FILTER_MISSING = 2010, 2011
-    BTN_FILTER_ABSOLUTE, BTN_FILTER_OK = 2012, 2013
+    FILTER_TAB = 2015  # QuickTab CustomGUI: All | Missing | Absolute | OK
     EDIT_SEARCH = 2014
     SCROLL_LIST, USERAREA_LIST = 2020, 2021
     EDIT_FIND, EDIT_REPLACE = 2030, 2031
@@ -1639,6 +1645,9 @@ class AssetHubDialog(gui.GeDialog):
     EDIT_DEST, BTN_CHOOSE_DEST = 2060, 2061
     COMBO_OUTPUT, BTN_COLLECT = 2062, 2063
     LBL_COLLECT_STATUS = 2064
+
+    # FILTER_TAB tab index -> filter_status, in AppendString order (item 1).
+    FILTER_TAB_STATUSES = (None, "missing", "absolute", "ok")
 
     THUMB_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".tga",
                   ".exr", ".hdr", ".psd", ".webp"}
@@ -1657,6 +1666,9 @@ class AssetHubDialog(gui.GeDialog):
         self.skipped = 0
         self.pending = {}          # {record_key: new_path}
         self.list_ua = None
+        self.header_ua = None      # AssetHubHeaderArea (item 2)
+        self.preflight_ua = None   # PreflightStripArea (item 3)
+        self._filter_tab = None    # FILTER_TAB QuickTab CustomGUI (item 1)
         self.filter_status = None
         self._needs_rescan = False
         # Debounce counter for the rescan-on-scene-change path (Timer runs
@@ -1685,21 +1697,33 @@ class AssetHubDialog(gui.GeDialog):
         self.GroupBorderSpace(12, 10, 12, 10)
         self.GroupSpace(0, 6)
 
-        # zone 1: header
+        # zone 1: header — colored UserArea (item 2) instead of a plain
+        # StaticText, same AddUserArea/AttachUserArea pattern as the panel's
+        # ScoreHeader (panel.py ~1290-1292).
         self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
-        self.AddStaticText(self.LBL_HEADER, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+        self.AddUserArea(self.LBL_HEADER, c4d.BFH_SCALEFIT,
+                         0, AssetHubHeaderArea.HEIGHT)
+        if self.header_ua is None:
+            self.header_ua = AssetHubHeaderArea()
+        self.AttachUserArea(self.header_ua, self.LBL_HEADER)
         self.AddButton(self.BTN_RESCAN, c4d.BFH_RIGHT, 0, 0, "↻ Rescan")
         self.GroupEnd()
 
-        # zone 2: filters + search
-        self.GroupBegin(0, c4d.BFH_SCALEFIT, 6, 0)
+        # zone 2: filters (QuickTab, item 1) + search
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 3, 0)
         self.GroupSpace(6, 0)
         self.AddStaticText(0, c4d.BFH_LEFT, 60, 0, "Filter:", 0)
-        for bid, label in ((self.BTN_FILTER_ALL, "All"),
-                           (self.BTN_FILTER_MISSING, "Missing"),
-                           (self.BTN_FILTER_ABSOLUTE, "Absolute"),
-                           (self.BTN_FILTER_OK, "OK")):
-            self.AddButton(bid, c4d.BFH_LEFT, 0, 0, label)
+        filter_bc = c4d.BaseContainer()
+        filter_bc.SetBool(c4d.QUICKTAB_BAR, False)
+        filter_bc.SetBool(c4d.QUICKTAB_NOMULTISELECT, True)
+        self._filter_tab = self.AddCustomGui(
+            self.FILTER_TAB, c4d.CUSTOMGUI_QUICKTAB, "",
+            c4d.BFH_LEFT, 0, 0, filter_bc)
+        if self._filter_tab is not None:
+            self._filter_tab.AppendString(0, "All", self.filter_status is None)
+            self._filter_tab.AppendString(1, "Missing", self.filter_status == "missing")
+            self._filter_tab.AppendString(2, "Absolute", self.filter_status == "absolute")
+            self._filter_tab.AppendString(3, "OK", self.filter_status == "ok")
         self.AddEditText(self.EDIT_SEARCH, c4d.BFH_SCALEFIT, 0, 0)
         self.GroupEnd()
 
@@ -1747,10 +1771,20 @@ class AssetHubDialog(gui.GeDialog):
         self.GroupEnd()
         self.GroupEnd()  # repathing
 
-        # zone 5: pre-flight QC strip (Task 10)
+        # Breathing room between Repathing and Pre-flight QC (item 5) —
+        # mirrors the AddSeparatorH(4) rhythm TextureRepathingDialog uses
+        # between its "Bulk Find & Replace" and "Smart Actions" groups.
+        self.AddSeparatorH(6)
+
+        # zone 5: pre-flight QC strip — colored UserArea (item 3) instead
+        # of a plain StaticText.
         self.GroupBegin(0, c4d.BFH_SCALEFIT, 4, 0, "Pre-flight QC")
         self.GroupBorderSpace(8, 6, 8, 6)
-        self.AddStaticText(self.LBL_PREFLIGHT, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+        self.AddUserArea(self.LBL_PREFLIGHT, c4d.BFH_SCALEFIT,
+                         0, PreflightStripArea.HEIGHT)
+        if self.preflight_ua is None:
+            self.preflight_ua = PreflightStripArea()
+        self.AttachUserArea(self.preflight_ua, self.LBL_PREFLIGHT)
         self.AddButton(self.BTN_PF_FIX, c4d.BFH_RIGHT, 0, 0, "Fix auto-fixables")
         self.AddButton(self.BTN_PF_ACCEPT, c4d.BFH_RIGHT, 0, 0, "Accept…")
         self.AddButton(self.BTN_PF_DETAILS, c4d.BFH_RIGHT, 0, 0, "Details")
@@ -1832,14 +1866,15 @@ class AssetHubDialog(gui.GeDialog):
     def _push_state(self):
         totals = assets_engine.compute_totals(self.records)
         doc_name = self.doc.GetDocumentName() or "(unsaved)"
-        head = (f"{doc_name}   —   {totals['count']} assets · "
-                f"{totals['missing']} missing · {totals['absolute']} absolute"
-                f" · {assets_engine.format_size(totals['total_bytes'])}")
+        suffix_parts = []
         if self._stat_cursor < len(self.records):
-            head += " (sizing…)"
+            suffix_parts.append("sizing…")
         if self.skipped:
-            head += f" · {self.skipped} items skipped"
-        self.SetString(self.LBL_HEADER, head)
+            suffix_parts.append(f"{self.skipped} skipped")
+        self.header_ua.set_header_state(
+            doc_name, totals["count"], totals["missing"], totals["absolute"],
+            assets_engine.format_size(totals["total_bytes"]),
+            " · ".join(suffix_parts))
         self.SetString(self.LBL_PENDING,
                        f"{len(self.pending)} pending changes"
                        if self.pending else "")
@@ -1923,14 +1958,19 @@ class AssetHubDialog(gui.GeDialog):
     def Command(self, cid, msg):
         if cid == self.BTN_RESCAN:
             self._rescan()
-        elif cid == self.BTN_FILTER_ALL:
-            self.filter_status = None; self._push_state()
-        elif cid == self.BTN_FILTER_MISSING:
-            self.filter_status = "missing"; self._push_state()
-        elif cid == self.BTN_FILTER_ABSOLUTE:
-            self.filter_status = "absolute"; self._push_state()
-        elif cid == self.BTN_FILTER_OK:
-            self.filter_status = "ok"; self._push_state()
+        elif cid == self.FILTER_TAB:
+            # QuickTab selection (item 1) — find which tab is selected and
+            # map its index to a filter_status, same IsSelected() scan the
+            # panel's TAB_BAR handler uses (panel.py Command, cid == G.TAB_BAR).
+            if self._filter_tab is not None:
+                for i, status in enumerate(self.FILTER_TAB_STATUSES):
+                    try:
+                        if self._filter_tab.IsSelected(i):
+                            self.filter_status = status
+                            break
+                    except Exception:
+                        pass
+            self._push_state()
         elif cid == self.EDIT_SEARCH:
             self._push_state()
         elif cid == self.COMBO_RECENT:
@@ -2177,7 +2217,7 @@ class AssetHubDialog(gui.GeDialog):
                  if not failing else
                  f"⚠ {score['passed']}/{score['total']} — " +
                  " · ".join(f"{cid}: {n}" for cid, n in failing.items()))
-        self.SetString(self.LBL_PREFLIGHT, label)
+        self.preflight_ua.set_state(not failing, label)
         self.Enable(self.BTN_PF_FIX, bool(failing))
         self.Enable(self.BTN_PF_ACCEPT, bool(failing))
 

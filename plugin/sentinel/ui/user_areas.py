@@ -1039,6 +1039,21 @@ _ASSET_STATUS_COLORS = {
     "empty":     c4d.Vector(0.47, 0.47, 0.47),
 }
 
+# Dim gray (#777777) for the "read-only" badge drawn after non-repathable
+# records' type text — item 4 of the Asset Hub UI polish pass.
+_COL_ASSET_READONLY = c4d.Vector(0.47, 0.47, 0.47)
+
+# Asset Hub header (item 2) and pre-flight strip (item 3) colors.
+_COL_HUB_HEADER_BG = c4d.Vector(0.10, 0.10, 0.10)
+_COL_HUB_HEADER_TEXT = c4d.Vector(0.95, 0.95, 0.95)
+_COL_HUB_HEADER_DIM = c4d.Vector(0.60, 0.60, 0.60)
+_COL_HUB_HEADER_RED = c4d.Vector(0.898, 0.451, 0.451)     # #e57373
+_COL_HUB_HEADER_ORANGE = c4d.Vector(1.00, 0.718, 0.302)   # #ffb74d
+
+_COL_PREFLIGHT_OK_BG = c4d.Vector(0.14, 0.18, 0.14)
+_COL_PREFLIGHT_WARN_BG = c4d.Vector(0.20, 0.17, 0.12)
+_COL_PREFLIGHT_TEXT = c4d.Vector(0.90, 0.90, 0.90)
+
 _ASSET_SORT_KEYS = {
     "status": lambda r: {"missing": 0, "absolute": 1, "empty": 2,
                           "asset_uri": 3, "ok": 4}.get(r["status"], 9),
@@ -1124,8 +1139,12 @@ class AssetListArea(gui.GeUserArea):
     def _columns(self, w):
         xs = {}
         x = 6
+        # "type" is widened from 64 to 110 to make room for the dim
+        # "read-only" badge drawn after non-repathable records' type text
+        # (item 4) without colliding with the Size column — both the hit
+        # test and the draw pass read this same table, so they stay in sync.
         for name, cw in (("status", 24), ("thumb", 26), ("name", 210),
-                          ("type", 64), ("size", 64), ("used", 180)):
+                          ("type", 110), ("size", 64), ("used", 180)):
             xs[name] = (x, cw)
             x += cw + 6
         xs["path"] = (x, max(60, w - x - 34))
@@ -1238,6 +1257,20 @@ class AssetListArea(gui.GeUserArea):
                               nx, y + 5)
                 self.DrawSetTextCol(c4d.Vector(0.6, 0.6, 0.6), bg)
                 self.DrawText(rec["asset_type"], xs["type"][0], y + 5)
+                if not rec["repathable"]:
+                    # Dim "read-only" tag after the type text, budgeted
+                    # inside the widened type column so it never collides
+                    # with Size (item 4).
+                    try:
+                        type_w = int(self.DrawGetTextWidth(rec["asset_type"]))
+                    except Exception:
+                        type_w = len(rec["asset_type"]) * 6
+                    badge_x = xs["type"][0] + type_w + 6
+                    type_end = xs["type"][0] + xs["type"][1]
+                    if badge_x < type_end - 10:
+                        self.DrawSetTextCol(_COL_ASSET_READONLY, bg)
+                        self.DrawText("read-only", badge_x, y + 5)
+                    self.DrawSetTextCol(c4d.Vector(0.6, 0.6, 0.6), bg)
                 self.DrawText(format_size(rec["size_bytes"]), xs["size"][0], y + 5)
                 owners = rec["owners"] or [("", "", "")]
                 used = (f"{owners[0][0]} / {owners[0][2]}" if owners[0][2]
@@ -1264,3 +1297,139 @@ class AssetListArea(gui.GeUserArea):
 
         except Exception as e:
             safe_print(f"Error in AssetListArea.DrawMsg: {e}")
+
+
+class AssetHubHeaderArea(gui.GeUserArea):
+    """Colored header for the Asset Hub: scene name + asset totals in one
+    line, replacing a plain StaticText (item 2 of the UI polish pass).
+    Pattern mirrored from ScoreHeader — DrawSetTextCol per segment,
+    measure-then-draw for right-to-left layout is not needed here since
+    everything is left-aligned in reading order.
+    """
+
+    HEIGHT = 20
+
+    def __init__(self):
+        super().__init__()
+        self.doc_name = ""
+        self.count = 0
+        self.missing = 0
+        self.absolute = 0
+        self.size_text = ""
+        self.suffix = ""
+
+    def GetMinSize(self):
+        return 400, self.HEIGHT
+
+    def set_header_state(self, doc_name, count, missing, absolute,
+                          size_text, suffix=""):
+        self.doc_name = doc_name or ""
+        self.count = max(0, int(count or 0))
+        self.missing = max(0, int(missing or 0))
+        self.absolute = max(0, int(absolute or 0))
+        self.size_text = size_text or ""
+        self.suffix = suffix or ""
+        self.Redraw()
+
+    def _measure(self, text):
+        try:
+            return int(self.DrawGetTextWidth(text))
+        except Exception:
+            return len(text) * 6
+
+    def DrawMsg(self, x1, y1, x2, y2, msg):
+        try:
+            self.OffScreenOn()
+            w = self.GetWidth()
+            h = self.GetHeight()
+
+            self.DrawSetPen(_COL_HUB_HEADER_BG)
+            self.DrawRectangle(0, 0, w, h)
+
+            text_y = max(2, (h - 12) // 2)
+            sep = " · "
+            sep_w = self._measure(sep)
+
+            segments = [
+                (self.doc_name, _COL_HUB_HEADER_DIM),
+                (f"{self.count} assets", _COL_HUB_HEADER_TEXT),
+                (f"{self.missing} missing",
+                 _COL_HUB_HEADER_RED if self.missing else _COL_HUB_HEADER_DIM),
+                (f"{self.absolute} absolute",
+                 _COL_HUB_HEADER_ORANGE if self.absolute else _COL_HUB_HEADER_DIM),
+                (self.size_text, _COL_HUB_HEADER_DIM),
+            ]
+            if self.suffix:
+                segments.append((self.suffix, _COL_HUB_HEADER_DIM))
+
+            x = 4
+            first = True
+            for text, col in segments:
+                if not text:
+                    continue
+                if not first:
+                    self.DrawSetTextCol(_COL_HUB_HEADER_DIM, _COL_HUB_HEADER_BG)
+                    self.DrawText(sep, x, text_y)
+                    x += sep_w
+                self.DrawSetTextCol(col, _COL_HUB_HEADER_BG)
+                self.DrawText(text, x, text_y)
+                x += self._measure(text)
+                first = False
+
+        except Exception as e:
+            safe_print(f"Error in AssetHubHeaderArea.DrawMsg: {e}")
+
+
+class PreflightStripArea(gui.GeUserArea):
+    """Full-width colored strip for the Asset Hub pre-flight QC summary
+    (item 3 of the UI polish pass) — dark green when all checks are clear,
+    dark amber when there are failing checks, with the score/summary text
+    drawn on top and truncated to width (same truncate-to-width technique
+    TodoArea.DrawMsg uses for its row text).
+    """
+
+    HEIGHT = 22
+
+    def __init__(self):
+        super().__init__()
+        self.ok = True
+        self.text = ""
+
+    def GetMinSize(self):
+        return 300, self.HEIGHT
+
+    def set_state(self, ok, text):
+        self.ok = bool(ok)
+        self.text = text or ""
+        self.Redraw()
+
+    def DrawMsg(self, x1, y1, x2, y2, msg):
+        try:
+            self.OffScreenOn()
+            w = self.GetWidth()
+            h = self.GetHeight()
+
+            bg = _COL_PREFLIGHT_OK_BG if self.ok else _COL_PREFLIGHT_WARN_BG
+            self.DrawSetPen(bg)
+            self.DrawRectangle(0, 0, w, h)
+
+            text_y = max(2, (h - 12) // 2)
+            margin = 6
+            avail_w = w - margin * 2
+            truncated = self.text
+            try:
+                if int(self.DrawGetTextWidth(truncated)) > avail_w:
+                    while truncated and int(
+                            self.DrawGetTextWidth(truncated + "...")) > avail_w:
+                        truncated = truncated[:-1]
+                    truncated = (truncated + "..."
+                                 if truncated != self.text else truncated)
+            except Exception:
+                if len(truncated) > 80:
+                    truncated = truncated[:77] + "..."
+
+            self.DrawSetTextCol(_COL_PREFLIGHT_TEXT, bg)
+            self.DrawText(truncated, margin, text_y)
+
+        except Exception as e:
+            safe_print(f"Error in PreflightStripArea.DrawMsg: {e}")
