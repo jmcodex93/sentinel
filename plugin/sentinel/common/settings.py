@@ -107,3 +107,12 @@ class GlobalSettings:
     @staticmethod
     def set_snapshot_slate(enabled):
         return GlobalSettings.set('snapshot_slate', bool(enabled))
+
+    @staticmethod
+    def get_snapshot_watch():
+        """Get whether the snapshot watchfolder auto-convert is enabled (default OFF)."""
+        return bool(GlobalSettings.get('snapshot_watch', False))
+
+    @staticmethod
+    def set_snapshot_watch(enabled):
+        return GlobalSettings.set('snapshot_watch', bool(enabled))

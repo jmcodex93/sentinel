@@ -441,7 +441,7 @@ from sentinel.ui.flows import collect_scene
 
 # ---------------- Snapshot System (moved to sentinel.snapshots + ui.flows) ----------------
 from sentinel import snapshots as snapshot_engine
-from sentinel.ui.flows import snapshot_open_folder, snapshot_save_still
+from sentinel.ui.flows import snapshot_auto_convert, snapshot_open_folder, snapshot_save_still
 from sentinel.ui import scene_tools
 
 # ---------------- UI Widget IDs ----------------
@@ -471,6 +471,12 @@ class YSPanel(gui.GeDialog):
             saved_tab = 0
         self._active_tab = saved_tab
         self._dirty = False  # Set by CoreMessage, consumed by Timer
+
+        # Snapshot watchfolder (auto-convert) — session-only state
+        self._snap_registry = {}       # filename -> (mtime, size, state)
+        self._snap_last_scan = 0.0     # monotonic-ish throttle (time.time)
+        self._snap_watch_primed = False  # skip converting the pre-existing backlog
+        self._snap_watch_caption = ""  # status/alert text for LABEL_SNAPSHOT_WATCH
 
         # Store selection results
         self._lights_bad = []
@@ -683,6 +689,13 @@ class YSPanel(gui.GeDialog):
         self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
         self.AddButton(G.BTN_SNAPSHOT, c4d.BFH_SCALEFIT, 0, 0, "Save Still")
         self.AddButton(G.BTN_OPEN_FOLDER, c4d.BFH_SCALEFIT, 0, 0, "Open Folder")
+        self.GroupEnd()
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 1, 0)
+        self.AddCheckbox(G.CHK_SNAPSHOT_WATCH, c4d.BFH_LEFT, 0, 0,
+                         "Auto-convert snapshots")
+        self.SetBool(G.CHK_SNAPSHOT_WATCH, GlobalSettings.get_snapshot_watch())
+        self.AddStaticText(G.LABEL_SNAPSHOT_WATCH, c4d.BFH_SCALEFIT, 0, 0,
+                           self._snap_watch_caption, 0)
         self.GroupEnd()
 
         # ── Post-Render (U7) ──
@@ -1533,8 +1546,87 @@ class YSPanel(gui.GeDialog):
             c4d.gui.MessageDialog(f"Error opening file:\n\n{e}")
             safe_print(f"Browse Versions LoadFile error: {e}")
 
+    # ── Snapshot watchfolder (auto-convert) ──
+    _SNAP_WATCH_INTERVAL = 2.5  # seconds; throttle independent of Timer cadence
+
+    def _prime_snap_watch(self):
+        """Seed the registry with all existing EXRs marked processed so the
+        pre-existing backlog is NOT converted — only files that land after
+        enabling trigger a conversion."""
+        import time
+        snap_dir = GlobalSettings.get_snapshot_dir()
+        registry = {}
+        try:
+            if snap_dir and os.path.isdir(snap_dir):
+                for e in os.scandir(snap_dir):
+                    try:
+                        if not e.is_file() or e.name.startswith("."):
+                            continue
+                        if not e.name.lower().endswith(".exr"):
+                            continue
+                        st = e.stat()
+                    except OSError:
+                        continue
+                    registry[e.name] = (st.st_mtime, st.st_size, "processed")
+        except OSError:
+            pass
+        self._snap_registry = registry
+        self._snap_watch_primed = True
+        self._snap_last_scan = time.time()
+
+    def _tick_snapshot_watch(self):
+        """Called from Timer. Throttled to ~_SNAP_WATCH_INTERVAL. No-op unless
+        the 'Auto-convert snapshots' toggle is on."""
+        import time
+        if not GlobalSettings.get_snapshot_watch():
+            self._snap_watch_primed = False  # re-prime next time it's enabled
+            return
+
+        if not self._snap_watch_primed:
+            self._prime_snap_watch()
+            return
+
+        now = time.time()
+        if now - self._snap_last_scan < self._SNAP_WATCH_INTERVAL:
+            return
+        self._snap_last_scan = now
+
+        snap_dir = GlobalSettings.get_snapshot_dir()
+        try:
+            ready, registry, non_exr_alert = snapshot_engine.scan_snapshot_candidates(
+                snap_dir, self._snap_registry, now
+            )
+        except Exception as e:
+            safe_print(f"Snapshot watch scan error: {e}")
+            return
+        self._snap_registry = registry
+
+        caption = ""
+        if non_exr_alert:
+            caption = ("Snapshots are not saving as EXR — re-enable "
+                       "'Save snapshots as EXR' in RenderView")
+        for exr_path in ready:
+            doc = c4d.documents.GetActiveDocument()
+            ok, message = snapshot_auto_convert(doc, self._artist_name, exr_path)
+            if ok:
+                caption = f"Auto: converted {os.path.basename(exr_path)} -> {message}"
+            elif not non_exr_alert:
+                caption = f"Auto-convert skipped: {message}"
+
+        if caption and caption != self._snap_watch_caption:
+            self._snap_watch_caption = caption
+            try:
+                self.SetString(G.LABEL_SNAPSHOT_WATCH, caption)
+            except Exception:
+                pass
+
     def Timer(self, msg):
         doc = c4d.documents.GetActiveDocument()
+
+        try:
+            self._tick_snapshot_watch()
+        except Exception as e:
+            safe_print(f"Snapshot watch tick error: {e}")
 
         # Document change detection
         if doc is not self._last_doc:
@@ -1972,6 +2064,20 @@ class YSPanel(gui.GeDialog):
 
         elif cid == G.BTN_SNAPSHOT:
             self._take_renderview_snapshot()
+
+        elif cid == G.CHK_SNAPSHOT_WATCH:
+            enabled = bool(self.GetBool(G.CHK_SNAPSHOT_WATCH))
+            GlobalSettings.set_snapshot_watch(enabled)
+            self._snap_watch_primed = False  # (re)prime the backlog on next tick
+            if enabled:
+                self._prime_snap_watch()
+                self._snap_watch_caption = "Auto-convert on — watching for new EXRs"
+            else:
+                self._snap_watch_caption = ""
+            try:
+                self.SetString(G.LABEL_SNAPSHOT_WATCH, self._snap_watch_caption)
+            except Exception:
+                pass
 
         # Note: Compositor Target and Multi-Part used to live in the Render tab
         # as editable widgets (their ids are now retired). They were moved to

@@ -767,6 +767,7 @@ class SentinelSettingsDialog(gui.GeDialog):
     BTN_SAVE = 1008
     LABEL_STANDARD_FPS = 1009
     EDT_MV_MAX_MOTION = 1010
+    CHK_SLATE = 1011
 
     # FPS choices in the combo
     FPS_OPTIONS = [24, 25, 30, 60]
@@ -804,6 +805,14 @@ class SentinelSettingsDialog(gui.GeDialog):
         self.AddStaticText(0, c4d.BFH_LEFT, 180, 0, "", 0)
         self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0,
                            "↳ change the current scene from the Render tab", 0)
+
+        # Review slate burn-in on snapshots (project rules key "slate" overrides).
+        self.AddStaticText(0, c4d.BFH_LEFT, 180, 0, "", 0)
+        self.AddCheckbox(self.CHK_SLATE, c4d.BFH_LEFT, 0, 0,
+                         "Review slate on snapshots (burn-in)")
+        self.AddStaticText(0, c4d.BFH_LEFT, 180, 0, "", 0)
+        self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0,
+                           "↳ project rules key \"slate\" overrides this", 0)
 
         # Motion Vectors Max Motion for the AE/RSMB path (0 = auto by render width).
         # Compositor must set RSMB "Max Displace" to the same effective value.
@@ -883,6 +892,9 @@ class SentinelSettingsDialog(gui.GeDialog):
         # Multi-Part checkbox
         self.SetBool(self.CHK_MULTIPART, bool(int(GlobalSettings.get('aov_multipart', 1))))
 
+        # Review slate burn-in checkbox
+        self.SetBool(self.CHK_SLATE, GlobalSettings.get_snapshot_slate())
+
         # MV Max Motion (0 = auto by render width)
         try:
             mv_max = int(GlobalSettings.get('mv_max_motion', 0))
@@ -939,6 +951,9 @@ class SentinelSettingsDialog(gui.GeDialog):
 
                 # Multi-Part
                 GlobalSettings.set('aov_multipart', 1 if self.GetBool(self.CHK_MULTIPART) else 0)
+
+                # Review slate burn-in
+                GlobalSettings.set_snapshot_slate(self.GetBool(self.CHK_SLATE))
 
                 # MV Max Motion (0 = auto by render width)
                 mv_max = int(self.GetInt32(self.EDT_MV_MAX_MOTION))

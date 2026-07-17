@@ -99,6 +99,8 @@ class G:
     BTN_DOCTOR = 1311  # Footer: open Sentinel Doctor self-diagnostic (I6)
     BTN_SUPERVISOR = 1312  # Versions tab: open Supervisor folder QC aggregator (I5-A)
     BTN_DELIVERY_SUMMARY = 1313  # Versions tab: Delivery Summary + receiver-side verify (I4)
+    CHK_SNAPSHOT_WATCH = 1314  # Render tab: toggle snapshot watchfolder auto-convert
+    LABEL_SNAPSHOT_WATCH = 1315  # Render tab: auto-convert status/alert caption
 
 
 class GateTriageIds:

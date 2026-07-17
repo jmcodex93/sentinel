@@ -14,6 +14,105 @@ from sentinel.common.helpers import safe_print
 _ROOT = os.path.dirname(os.path.dirname(__file__))
 
 
+# ── Snapshot watchfolder (auto-convert) — pure logic ──────────────────────
+#
+# Registry = dict keyed by filename -> (mtime, size, state), where state is one
+# of "pending" (sighted, awaiting settle confirmation) or "processed" (already
+# handed to conversion). Session memory only; no sidecar. The settle rule is
+# scan-count based (NOT wall-clock): a file is "ready" only when two consecutive
+# scans report an IDENTICAL (mtime, size) — Redshift's write atomicity is
+# undocumented, so a single sighting can be a half-written file.
+
+def scan_snapshot_candidates(snap_dir, registry, now=None):
+    """Scan ``snap_dir`` for EXR snapshots that are ready to auto-convert.
+
+    Pure + importable without c4d. Returns a 3-tuple:
+        (ready_to_convert, updated_registry, non_exr_alert)
+
+    - ``ready_to_convert``: list of absolute paths to EXRs that just settled
+      (stable across two consecutive scans) and were not already processed.
+      A given name+mtime is returned at most once across the session.
+    - ``updated_registry``: the new registry dict to pass into the next scan.
+    - ``non_exr_alert``: True when the newest file in the directory is NOT an
+      .exr and is newer than the newest .exr (Redshift silently switched away
+      from EXR output). False when an EXR is newest, or the dir is empty.
+
+    ``registry`` may be None/empty on the first call. ``now`` is accepted for
+    signature stability but the settle rule does not depend on wall-clock time.
+    Missing/unreadable directory -> ([], registry-as-dict, False); never raises.
+    """
+    registry = dict(registry) if registry else {}
+
+    if not snap_dir or not os.path.isdir(snap_dir):
+        return [], registry, False
+
+    try:
+        entries = list(os.scandir(snap_dir))
+    except OSError:
+        return [], registry, False
+
+    # Collect (name, mtime, size) for regular files, tracking newest overall
+    # and newest .exr for the non-EXR alert.
+    stats = {}
+    newest_any = None       # (mtime, name)
+    newest_exr = None       # (mtime, name)
+    for e in entries:
+        try:
+            if not e.is_file():
+                continue
+            st = e.stat()
+        except OSError:
+            continue
+        name = e.name
+        m, s = st.st_mtime, st.st_size
+        is_exr = name.lower().endswith(".exr")
+        # Ignore obvious hidden/partial dotfiles for the alert + settle logic.
+        if name.startswith("."):
+            continue
+        if newest_any is None or m > newest_any[0]:
+            newest_any = (m, name)
+        if is_exr:
+            stats[name] = (m, s)
+            if newest_exr is None or m > newest_exr[0]:
+                newest_exr = (m, name)
+
+    ready = []
+    updated = {}
+    for name, (m, s) in stats.items():
+        prev = registry.get(name)
+        if prev is None:
+            # First sighting — never ready.
+            updated[name] = (m, s, "pending")
+            continue
+        pm, ps, pstate = prev
+        if pstate == "processed":
+            if (m, s) == (pm, ps):
+                updated[name] = prev  # already converted; never again
+            else:
+                # File changed after processing (a new snapshot reused the
+                # name) — re-arm the settle cycle.
+                updated[name] = (m, s, "pending")
+            continue
+        # pstate == "pending"
+        if (m, s) == (pm, ps):
+            updated[name] = (m, s, "processed")
+            ready.append(os.path.join(snap_dir, name))
+        else:
+            # Changed since last scan — settle reset.
+            updated[name] = (m, s, "pending")
+
+    # Non-EXR alert: newest file overall is a non-EXR and strictly newer than
+    # the newest EXR (or there is no EXR at all but a non-EXR exists).
+    non_exr_alert = False
+    if newest_any is not None:
+        if newest_exr is None:
+            non_exr_alert = True
+        elif newest_any[0] > newest_exr[0] and newest_any[1] != newest_exr[1]:
+            non_exr_alert = True
+
+    return ready, updated, non_exr_alert
+
+
 def _get_stills_dir(doc, artist_name):
     """Get output directory: project_root/output/stills/Artist/YYMMDD/"""
     from datetime import datetime

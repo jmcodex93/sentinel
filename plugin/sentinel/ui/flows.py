@@ -959,6 +959,45 @@ def snapshot_save_still(doc, artist_name):
     safe_print(f"Still saved: {png_path}")
 
 
+def snapshot_auto_convert(doc, artist_name, exr_path):
+    """Silent watchfolder conversion — same pipeline as snapshot_save_still but
+    NO MessageDialogs and NO Picture Viewer (modal/blocking calls would pause
+    the driving Timer). Returns (success, message) where message is the PNG
+    basename on success or a short error string on failure. Never raises.
+    """
+    if not artist_name:
+        return False, "no artist name set"
+    if not exr_path or not os.path.exists(exr_path):
+        return False, "EXR vanished before convert"
+
+    try:
+        output_dir = _get_stills_dir(doc, artist_name)
+        doc_name = (doc.GetDocumentName() if doc else "") or "untitled"
+        scene_name = os.path.splitext(doc_name)[0]
+        png_path = os.path.join(output_dir, f"{scene_name}.png")
+
+        # Resolve opt-in review slate (project rules > machine setting > default OFF)
+        slate_data = None
+        try:
+            rules_context = _active_rules_for_doc(doc)
+            if bool(rules_context.params.get("slate", False)):
+                slate_data = build_slate_data(doc, artist_name)
+        except Exception as e:
+            safe_print(f"Auto-convert slate resolution skipped: {e}")
+
+        success, error = _convert_exr_to_png(exr_path, png_path, slate_data=slate_data)
+        if not success:
+            safe_print(f"Auto-convert failed for {os.path.basename(exr_path)}: {error}")
+            return False, "conversion failed"
+
+        msg = f"{os.path.basename(exr_path)} -> {os.path.basename(png_path)}"
+        safe_print(f"Auto: converted {msg}")
+        return True, os.path.basename(png_path)
+    except Exception as e:
+        safe_print(f"Auto-convert error: {e}")
+        return False, "conversion error"
+
+
 def snapshot_open_folder(doc, artist_name):
     """Open the artist's stills folder"""
     if not artist_name:
