@@ -191,6 +191,51 @@ class TestMergeInventories:
         assert r["repathable"] is True
         assert ("floor", "object", "") in r["owners"]
 
+    def test_real_pair_missing_relative_resolves_absolute_anchored_by_base_dir(self):
+        # Residual dupe found live after the first canonical-key fix: for a
+        # MISSING relative texture, textures.py's classify_texture_path
+        # returns the doc-joined ABSOLUTE "expected location" as
+        # `resolved` (used as the texture record's merge key), while
+        # GetAllAssetsNew reports the bare relative filename for the same
+        # file — absolute vs bare-relative keys don't converge without
+        # anchoring the relative one to the doc directory.
+        tex_path = "relative:///white_plaster_03_ao_4k_1.jpg"
+        resolved = "/Users/x/scene/white_plaster_03_ao_4k_1.jpg"
+        gen_path = "white_plaster_03_ao_4k_1.jpg"
+        out = assets.merge_inventories(
+            [_tex(tex_path, status="missing", resolved=resolved)],
+            [_gen(gen_path, exists=False, owner_name="floor", owner_kind="object")],
+            base_dir="/Users/x/scene")
+        assert len(out) == 1
+        r = out[0]
+        assert r["repathable"] is True
+        assert r["status"] == "missing"
+        assert ("floor", "object", "") in r["owners"]
+
+    def test_same_pair_without_base_dir_keeps_old_unanchored_behavior(self):
+        # base_dir defaults to "" (falsy) — old behavior is preserved:
+        # an absolute "expected location" key and a bare-relative key
+        # don't converge, so the pair stays two rows.
+        tex_path = "relative:///white_plaster_03_ao_4k_1.jpg"
+        resolved = "/Users/x/scene/white_plaster_03_ao_4k_1.jpg"
+        gen_path = "white_plaster_03_ao_4k_1.jpg"
+        out = assets.merge_inventories(
+            [_tex(tex_path, status="missing", resolved=resolved)],
+            [_gen(gen_path, exists=False, owner_name="floor", owner_kind="object")])
+        assert len(out) == 2
+
+    def test_absolute_paths_unaffected_by_base_dir(self):
+        # An already-absolute texture path/key must not be re-anchored
+        # even when a (irrelevant) base_dir is supplied.
+        tex_path = "/Users/x/scene/tex/wood.png"
+        gen_path = "/Users/x/scene/tex/wood.png"
+        out = assets.merge_inventories(
+            [_tex(tex_path, status="ok")],
+            [_gen(gen_path, exists=True)],
+            base_dir="/some/unrelated/dir")
+        assert len(out) == 1
+        assert out[0]["key"] == "/users/x/scene/tex/wood.png"
+
 
 class TestCanonicalAssetKey:
     """canonical_asset_key — the dedupe key merge_inventories uses instead
@@ -235,6 +280,44 @@ class TestCanonicalAssetKey:
     def test_windows_drive_at_start_is_left_alone(self):
         assert (assets.canonical_asset_key("D:/tex/a.jpg")
                 == "d:/tex/a.jpg")
+
+    def test_base_dir_none_keeps_old_behavior(self):
+        assert (assets.canonical_asset_key("white_plaster.jpg", base_dir=None)
+                == "white_plaster.jpg")
+
+    def test_base_dir_empty_string_keeps_old_behavior(self):
+        assert (assets.canonical_asset_key("white_plaster.jpg", base_dir="")
+                == "white_plaster.jpg")
+
+    def test_base_dir_anchors_relative_path(self):
+        assert (assets.canonical_asset_key(
+                    "white_plaster.jpg", base_dir="/Users/x/scene")
+                == "/users/x/scene/white_plaster.jpg")
+
+    def test_base_dir_does_not_affect_absolute_posix_path(self):
+        assert (assets.canonical_asset_key(
+                    "/Users/x/scene/white_plaster.jpg", base_dir="/Other/Dir")
+                == "/users/x/scene/white_plaster.jpg")
+
+    def test_base_dir_does_not_affect_windows_absolute_path(self):
+        assert (assets.canonical_asset_key("D:/tex/a.jpg", base_dir="/Other/Dir")
+                == "d:/tex/a.jpg")
+
+    def test_base_dir_anchoring_converges_relative_url_and_bare_filename(self):
+        # The exact residual-dupe pair, verified at the canonical_asset_key
+        # level (merge_inventories-level coverage lives in TestMergeInventories).
+        anchored_relative = assets.canonical_asset_key(
+            "relative:///white_plaster_03_ao_4k_1.jpg", base_dir="/Users/x/scene")
+        anchored_bare = assets.canonical_asset_key(
+            "white_plaster_03_ao_4k_1.jpg", base_dir="/Users/x/scene")
+        assert anchored_relative == anchored_bare == \
+            "/users/x/scene/white_plaster_03_ao_4k_1.jpg"
+
+    def test_base_dir_anchoring_is_idempotent(self):
+        once = assets.canonical_asset_key(
+            "white_plaster.jpg", base_dir="/Users/x/scene")
+        twice = assets.canonical_asset_key(once, base_dir="/Users/x/scene")
+        assert once == twice
 
     def test_idempotent(self):
         for path in (

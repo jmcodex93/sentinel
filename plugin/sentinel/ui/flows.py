@@ -1184,6 +1184,13 @@ def scan_scene_assets(doc):
         safe_print(f"Asset Hub: GetAllAssetsNew failed: {e}")
         skipped += 1
 
-    records = assets_engine.merge_inventories(tex_flat, generic)
+    # base_dir anchors a still-relative canonical_asset_key (e.g. a bare
+    # filename from GetAllAssetsNew) to the doc directory, so it converges
+    # with the texture scanner's absolute "expected location" for the
+    # same missing relative asset. doc_own_path is already
+    # doc.GetDocumentPath() or "" (computed above for the self-reference
+    # filter) — reused here rather than calling GetDocumentPath() twice.
+    records = assets_engine.merge_inventories(
+        tex_flat, generic, base_dir=doc_own_path)
     return records, tex_records, skipped
 

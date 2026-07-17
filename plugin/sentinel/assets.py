@@ -35,21 +35,25 @@ def normalize_path_key(path):
 _WIN_DRIVE_RE = re.compile(r"[a-z]:/")
 
 
-def canonical_asset_key(path):
+def canonical_asset_key(path, base_dir=None):
     """Dedupe key that collapses different SCANNER STRING FORMS of the
     SAME on-disk asset — normalize_path_key alone is not enough: the
     structured texture scan and the generic GetAllAssetsNew sweep can
     report the identical file as different literal strings (URL-scheme
     prefixes, a doc-relative "./" C4D prepends to an absolute Windows
-    path it can't resolve on this platform, etc). normalize_path_key
-    itself is left UNCHANGED — other callers rely on its exact output;
-    this only changes the key merge_inventories dedupes on.
+    path it can't resolve on this platform, a still-relative bare
+    filename vs. the texture scanner's absolute "expected location" for
+    a missing relative path, etc). normalize_path_key itself is left
+    UNCHANGED — other callers rely on its exact output; this only
+    changes the key merge_inventories dedupes on.
 
     Real production pairs this fixes (same scene, two scanners):
       - texture (absolute) `D:/.../file.jpg` vs
         generic (missing) `./D:/.../file.jpg`.
       - texture `file:///X:/.../file.png` vs generic `/X:/.../file.png`.
-      - texture `relative:///file.jpg` vs generic `file.jpg`.
+      - texture `relative:///file.jpg` (resolved to the doc-joined
+        absolute "expected location" when missing) vs generic bare
+        `file.jpg` — fixed by the base_dir anchor below.
     """
     key = normalize_path_key(path)
     if not key:
@@ -81,6 +85,26 @@ def canonical_asset_key(path):
     match = _WIN_DRIVE_RE.search(key)
     if match and match.start() > 0:
         key = key[match.start():]
+
+    # (e) Anchor a still-relative key to the document directory. For a
+    # MISSING relative texture, textures.py's classify_texture_path
+    # returns the "expected location" — the ABSOLUTE doc_dir-joined
+    # path — as `resolved`, which merge_inventories keys texture
+    # records on; GetAllAssetsNew instead reports the bare relative
+    # string for the same file. Without anchoring, those two forms
+    # (absolute vs bare-relative) never converge to the same key.
+    # Skipped when the key is already absolute (leading "/") or a
+    # Windows drive path (checked at the very start via .match, not
+    # .search — an embedded drive letter deeper in the string was
+    # already promoted to the front by step (d) above).
+    if (base_dir and key and not key.startswith("/")
+            and not _WIN_DRIVE_RE.match(key)):
+        base_key = normalize_path_key(base_dir)
+        if base_key:
+            joined = base_key.rstrip("/") + "/" + key
+            # Collapse any "./" segment left over at the join point or
+            # already embedded in either half.
+            key = "/".join(p for p in joined.split("/") if p != ".")
 
     return key
 
@@ -119,15 +143,19 @@ _OWNER_KIND_BY_SOURCE = {
 _STATUS_ORDER = {"missing": 0, "absolute": 1, "empty": 2, "asset_uri": 3, "ok": 4}
 
 
-def merge_inventories(texture_records, generic_records):
+def merge_inventories(texture_records, generic_records, base_dir=""):
     """Fuse the structured texture scan (repathable, rich owners) with the
     generic GetAllAssetsNew sweep (exhaustive, read-only). Dedupe by
     canonical_asset_key (not the plainer normalize_path_key — the two
     scanners can report the identical on-disk file as different literal
-    strings, e.g. a URL-scheme prefix or a doc-relative "./" C4D glues
-    onto an unresolvable absolute path); on collision the texture record
-    wins and only the generic owner is appended. Empty-path records are
-    kept with synthetic keys.
+    strings, e.g. a URL-scheme prefix, a doc-relative "./" C4D glues onto
+    an unresolvable absolute path, or a still-relative bare filename vs.
+    the texture scanner's absolute "expected location" for a missing
+    relative path); on collision the texture record wins and only the
+    generic owner is appended. `base_dir` (typically doc.GetDocumentPath())
+    anchors any still-relative key so it converges with its absolute
+    counterpart — pass "" (default) to keep the old, unanchored behavior.
+    Empty-path records are kept with synthetic keys.
 
     Multiple texture records can collapse into one row when they share a
     path (e.g. 3 materials referencing the same file) — "tex_idx" keeps the
@@ -137,7 +165,7 @@ def merge_inventories(texture_records, generic_records):
     order = []
 
     for rec in texture_records or []:
-        key = canonical_asset_key(rec.get("resolved") or rec.get("path"))
+        key = canonical_asset_key(rec.get("resolved") or rec.get("path"), base_dir)
         # Use synthetic key for empty paths so they remain visible as QC signals.
         if not key:
             key = f"__empty__tex__{rec.get('tex_idx')}"
@@ -167,7 +195,7 @@ def merge_inventories(texture_records, generic_records):
         order.append(key)
 
     for i, rec in enumerate(generic_records or []):
-        key = canonical_asset_key(rec.get("path"))
+        key = canonical_asset_key(rec.get("path"), base_dir)
         # Use synthetic key for empty paths so they remain visible as QC signals.
         if not key:
             key = f"__empty__gen__{i}"
