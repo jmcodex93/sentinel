@@ -1084,6 +1084,17 @@ class AssetListArea(gui.GeUserArea):
     MIN_COL_WIDTH = ASSET_HUB_COL_WIDTH_MIN
     DRAG_HIT_TOLERANCE = 5   # px on either side of a divider that counts as a hit
 
+    # Browse is a fixed-width slot pinned to the right edge, always — it
+    # never shrinks or gets pushed off-screen by widened columns. Path
+    # fills the gap between the last resizable column and the browse
+    # slot, with a hard floor of PATH_MIN_WIDTH.
+    BROWSE_COL_WIDTH = 26
+    PATH_MIN_WIDTH = 60
+    # Leading fixed layout before the 4 resizable columns: 6 (left margin)
+    # + status(24)+6 + thumb(26)+6 = 68, derived once here so _columns and
+    # _max_col_width (the drag clamp) can never drift apart.
+    _LEADING_FIXED_WIDTH = 6 + 24 + 6 + 26 + 6
+
     def __init__(self):
         super().__init__()
         self.records = []
@@ -1164,8 +1175,15 @@ class AssetListArea(gui.GeUserArea):
                           ("used", self.col_widths["used"])):
             xs[name] = (x, cw)
             x += cw + 6
-        xs["path"] = (x, max(60, w - x - 34))
-        xs["browse"] = (w - 26, 20)
+        # Browse is a fixed slot pinned to the right edge, always — path
+        # fills exactly the gap between the last resizable column and the
+        # browse slot (floor PATH_MIN_WIDTH). The drag clamp in
+        # _max_col_width keeps this floor from ever being force-violated,
+        # so path and browse never overlap regardless of how the user has
+        # widened name/type/size/used.
+        browse_x = w - self.BROWSE_COL_WIDTH
+        xs["browse"] = (browse_x, self.BROWSE_COL_WIDTH)
+        xs["path"] = (x, max(self.PATH_MIN_WIDTH, browse_x - 6 - x))
         return xs
 
     def _column_edges(self, xs):
@@ -1187,6 +1205,25 @@ class AssetListArea(gui.GeUserArea):
                 return col
         return None
 
+    def _max_col_width(self, col, w):
+        """Widest `col` can become while still leaving PATH_MIN_WIDTH free
+        for the path column before the fixed BROWSE_COL_WIDTH slot, given
+        the other three resizable columns' CURRENT widths.
+
+        Derived directly from the layout `_columns()` produces: at the
+        limit, _LEADING_FIXED_WIDTH + sum(4 resizable widths) + 4 gutters
+        (6px each) + 1 gutter before browse (6px) + PATH_MIN_WIDTH +
+        BROWSE_COL_WIDTH == w. Solving for this column's width with the
+        other three held constant gives the budget below — used by the
+        drag loop so widening one column can never push path/browse off
+        the right edge or into each other (only the ~40px MIN_COL_WIDTH
+        floor was enforced before, which was not enough).
+        """
+        others = sum(self.col_widths[c] for c in self.RESIZABLE_COLS if c != col)
+        budget = (w - self._LEADING_FIXED_WIDTH - 4 * 6 - 6
+                  - self.PATH_MIN_WIDTH - self.BROWSE_COL_WIDTH - others)
+        return max(self.MIN_COL_WIDTH, budget)
+
     def _drag_column(self, col, mx, my):
         """Blocking column-resize drag loop.
 
@@ -1204,13 +1241,20 @@ class AssetListArea(gui.GeUserArea):
         - MouseDragEnd() is called from `finally` (not just after a clean
           break), matching the example's unconditional call — any
           exception mid-drag still releases the mouse capture.
-        Width is clamped to >= MIN_COL_WIDTH and pushed to col_widths (and
-        therefore _columns/LayoutChanged) on every tick that changes it, so
-        the table visibly resizes live. Persistence only fires if the
-        final width differs from drag start — a no-movement click writes
-        nothing to settings. No cursor feedback: BFM_GETCURSORINFO is not
-        routed to embedded GeUserAreas in C4D 2026 (documented limitation,
-        see CLAUDE.md Known Limitations).
+        Width is clamped to [MIN_COL_WIDTH, _max_col_width(col, GetWidth())]
+        — the upper bound is recomputed every tick from the CURRENT widget
+        width, so it tracks a live window resize during the drag and, more
+        importantly, guarantees path always keeps its PATH_MIN_WIDTH floor
+        before the fixed browse slot (item 1 of the follow-up UI polish
+        pass — a plain MIN_COL_WIDTH=40 floor alone let name/type/size/used
+        grow large enough to push path under/past browse). The clamped
+        width is pushed to col_widths (and therefore _columns/
+        LayoutChanged) on every tick that changes it, so the table visibly
+        resizes live. Persistence only fires if the final width differs
+        from drag start — a no-movement click writes nothing to settings.
+        No cursor feedback: BFM_GETCURSORINFO is not routed to embedded
+        GeUserAreas in C4D 2026 (documented limitation, see CLAUDE.md
+        Known Limitations).
         """
         start_x = mx
         start_width = self.col_widths[col]
@@ -1231,8 +1275,9 @@ class AssetListArea(gui.GeUserArea):
                     is_first_tick = False
                     continue
                 mx -= dx
+                max_w = self._max_col_width(col, self.GetWidth())
                 new_width = max(self.MIN_COL_WIDTH,
-                                int(start_width + (mx - start_x)))
+                                min(max_w, int(start_width + (mx - start_x))))
                 if new_width != self.col_widths[col]:
                     self.col_widths[col] = new_width
                     self.LayoutChanged()
@@ -1409,6 +1454,15 @@ class AssetListArea(gui.GeUserArea):
                 if y > self.HEADER_H:
                     self.DrawSetPen(c4d.Vector(0.18, 0.18, 0.18))
                     self.DrawRectangle(edge, self.HEADER_H, edge + 1, y)
+
+            # Faint divider before the fixed browse slot (item 1 of the
+            # follow-up UI polish pass) — body rows only, so the "…" reads
+            # as its own column instead of running into path's text.
+            if y > self.HEADER_H:
+                browse_edge = xs["browse"][0]
+                self.DrawSetPen(c4d.Vector(0.18, 0.18, 0.18))
+                self.DrawRectangle(browse_edge, self.HEADER_H,
+                                   browse_edge + 1, y)
 
         except Exception as e:
             safe_print(f"Error in AssetListArea.DrawMsg: {e}")

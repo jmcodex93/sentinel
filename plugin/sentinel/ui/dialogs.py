@@ -2031,19 +2031,38 @@ class AssetHubDialog(gui.GeDialog):
         if rec is None:
             return
         if region == "browse" and rec["repathable"]:
+            # Browse opens the file picker — it must NOT also select the
+            # owner in the scene (a single click either browses or
+            # selects, never both).
             path = c4d.storage.LoadDialog(title="Choose texture file")
             if path:
                 self.pending[key] = path
                 self._push_state()
-        elif region == "used_by" and rec["tex_idx"] is not None:
-            host = self.tex_records[rec["tex_idx"]].get("host")
-            if host is None:
-                return
-            if isinstance(host, c4d.BaseMaterial):
-                self.doc.SetActiveMaterial(host)
-            else:
-                self.doc.SetActiveObject(host)
-            c4d.EventAdd()
+        elif region in ("used_by", "row"):
+            # Clicking anywhere in the row body (not the browse "...")
+            # selects the owning material/object, same as clicking "Used
+            # by" specifically — the highlight itself was already set by
+            # AssetListArea.InputEvent before this callback runs.
+            self._select_owner_in_scene(rec)
+
+    def _select_owner_in_scene(self, rec):
+        """Select the record's owning material/object in the scene.
+
+        Rows with no tex_idx (generic GetAllAssetsNew entries that aren't
+        backed by a structured TextureRecord — e.g. some Alembic caches)
+        are a no-op: highlight only, no owner_ref is retained for them to
+        select (known debt, see assets.merge_asset_records).
+        """
+        if rec["tex_idx"] is None:
+            return
+        host = self.tex_records[rec["tex_idx"]].get("host")
+        if host is None:
+            return
+        if isinstance(host, c4d.BaseMaterial):
+            self.doc.SetActiveMaterial(host)
+        else:
+            self.doc.SetActiveObject(host)
+        c4d.EventAdd()
 
     def _preview_bulk(self):
         import re
