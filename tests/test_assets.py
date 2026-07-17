@@ -146,6 +146,107 @@ class TestMergeInventories:
         assert r["repathable"] is False
         assert r["key"].startswith("__empty__gen__")
 
+    # ── Real production pairs: same on-disk asset, two different scanner
+    # string forms — must merge to ONE repathable row (texture wins),
+    # generic owner appended. Reproduces a real dedupe bug where these
+    # showed up as two separate rows because merge_inventories dedupe'd
+    # on the literal normalize_path_key string.
+
+    def test_real_pair_doc_relative_prefix_on_unresolvable_windows_path(self):
+        tex_path = ("D:/RSRCS/C4D/GSG/gobos/Gobos Lines/Textures/"
+                    "GSG_Gobos_Lines_Lines_03.jpg")
+        gen_path = ("./D:/RSRCS/C4D/GSG/gobos/Gobos Lines/Textures/"
+                    "GSG_Gobos_Lines_Lines_03.jpg")
+        out = assets.merge_inventories(
+            [_tex(tex_path, status="absolute")],
+            [_gen(gen_path, exists=False, owner_name="doc", owner_kind="object")])
+        assert len(out) == 1
+        r = out[0]
+        assert r["repathable"] is True
+        assert r["status"] == "absolute"          # texture record wins
+        assert ("doc", "object", "") in r["owners"]   # generic owner appended
+
+    def test_real_pair_file_url_vs_generic_slash_drive_path(self):
+        tex_path = ("file:///X:/99 WORK/LOK GEN 2/c4d/PALAS_GEN2_COLLECTED/"
+                    "tex/LOK CINTA EMPUÑADURA.png")
+        gen_path = ("/X:/99 WORK/LOK GEN 2/c4d/PALAS_GEN2_COLLECTED/"
+                    "tex/LOK CINTA EMPUÑADURA.png")
+        out = assets.merge_inventories(
+            [_tex(tex_path, status="absolute")],
+            [_gen(gen_path, exists=False, owner_name="doc", owner_kind="object")])
+        assert len(out) == 1
+        r = out[0]
+        assert r["repathable"] is True
+        assert r["status"] == "absolute"
+        assert ("doc", "object", "") in r["owners"]
+
+    def test_real_pair_relative_url_vs_bare_filename(self):
+        tex_path = "relative:///white_plaster_03_ao_4k_1.jpg"
+        gen_path = "white_plaster_03_ao_4k_1.jpg"
+        out = assets.merge_inventories(
+            [_tex(tex_path, status="ok")],
+            [_gen(gen_path, exists=True, owner_name="floor", owner_kind="object")])
+        assert len(out) == 1
+        r = out[0]
+        assert r["repathable"] is True
+        assert ("floor", "object", "") in r["owners"]
+
+
+class TestCanonicalAssetKey:
+    """canonical_asset_key — the dedupe key merge_inventories uses instead
+    of the plainer normalize_path_key (which is left unchanged for its
+    other callers)."""
+
+    def test_plain_posix_path_passes_through_like_normalize_path_key(self):
+        path = "/Users/Artist/Project/Tex/Wood_Diffuse.PNG"
+        assert (assets.canonical_asset_key(path)
+                == assets.normalize_path_key(path))
+
+    def test_none_and_empty(self):
+        assert assets.canonical_asset_key(None) == ""
+        assert assets.canonical_asset_key("") == ""
+        assert assets.canonical_asset_key("   ") == ""
+
+    def test_file_url_strips_scheme_and_windows_leading_slash(self):
+        assert (assets.canonical_asset_key("file:///X:/tex/a.png")
+                == "x:/tex/a.png")
+
+    def test_file_url_posix_absolute_no_drive_fix_needed(self):
+        assert (assets.canonical_asset_key("file:///Users/x/tex/a.png")
+                == "/users/x/tex/a.png")
+
+    def test_relative_url_strips_scheme_and_leading_slashes(self):
+        assert assets.canonical_asset_key("relative:///a.jpg") == "a.jpg"
+
+    def test_collapses_leading_dot_slash(self):
+        assert (assets.canonical_asset_key("./tex/a.png")
+                == "tex/a.png")
+
+    def test_windows_drive_after_doc_relative_prefix_is_cut(self):
+        assert (assets.canonical_asset_key("./D:/rsrcs/tex/a.jpg")
+                == "d:/rsrcs/tex/a.jpg")
+
+    def test_windows_drive_embedded_deeper_is_cut(self):
+        # e.g. C4D prepending an absolute doc directory to an
+        # unresolvable absolute Windows path from a different machine.
+        assert (assets.canonical_asset_key("/users/doc/d:/tex/a.jpg")
+                == "d:/tex/a.jpg")
+
+    def test_windows_drive_at_start_is_left_alone(self):
+        assert (assets.canonical_asset_key("D:/tex/a.jpg")
+                == "d:/tex/a.jpg")
+
+    def test_idempotent(self):
+        for path in (
+            "./D:/RSRCS/C4D/GSG/gobos/Gobos Lines/Textures/x.jpg",
+            "file:///X:/99 WORK/LOK GEN 2/tex/y.png",
+            "relative:///white_plaster_03_ao_4k_1.jpg",
+            "/Users/artist/project/tex/wood.png",
+        ):
+            once = assets.canonical_asset_key(path)
+            twice = assets.canonical_asset_key(once)
+            assert once == twice
+
 
 class TestTotalsAndSizes:
     def test_format_size(self):

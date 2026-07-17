@@ -4,6 +4,7 @@ Stdlib only. NEVER import c4d here: C4D reads live in the thin adapter in
 ui/flows.py (same pattern as manifest.py / postrender.py).
 """
 import os
+import re
 import zipfile
 
 # Extension → asset_type. Lowercase, no dot.
@@ -29,6 +30,59 @@ def normalize_path_key(path):
     if not path:
         return ""
     return str(path).strip().replace("\\", "/").lower()
+
+
+_WIN_DRIVE_RE = re.compile(r"[a-z]:/")
+
+
+def canonical_asset_key(path):
+    """Dedupe key that collapses different SCANNER STRING FORMS of the
+    SAME on-disk asset — normalize_path_key alone is not enough: the
+    structured texture scan and the generic GetAllAssetsNew sweep can
+    report the identical file as different literal strings (URL-scheme
+    prefixes, a doc-relative "./" C4D prepends to an absolute Windows
+    path it can't resolve on this platform, etc). normalize_path_key
+    itself is left UNCHANGED — other callers rely on its exact output;
+    this only changes the key merge_inventories dedupes on.
+
+    Real production pairs this fixes (same scene, two scanners):
+      - texture (absolute) `D:/.../file.jpg` vs
+        generic (missing) `./D:/.../file.jpg`.
+      - texture `file:///X:/.../file.png` vs generic `/X:/.../file.png`.
+      - texture `relative:///file.jpg` vs generic `file.jpg`.
+    """
+    key = normalize_path_key(path)
+    if not key:
+        return key
+
+    # (a) Maxon Url: file:// — same Windows-drive leading-slash fix as
+    # textures.py's classify_texture_path (file:///x:/... -> x:/...).
+    if key.startswith("file://"):
+        key = key[len("file://"):]
+        if key.startswith("/") and len(key) > 3 and key[2] == ":":
+            key = key.lstrip("/")
+
+    # (b) Maxon Url: relative:// — strip the scheme + any leading
+    # slashes (relative:///foo.jpg -> foo.jpg).
+    elif key.startswith("relative://"):
+        key = key[len("relative://"):].lstrip("/")
+
+    # (c) Collapse leading "./" segments — C4D's doc-relative prefix
+    # glued onto an otherwise-absolute path it couldn't resolve
+    # (e.g. "./d:/...").
+    while key.startswith("./"):
+        key = key[2:]
+
+    # (d) A Windows drive letter (e.g. "d:/") appearing past the very
+    # start of the key means an unrelated prefix (doc dir, or a "./"
+    # not caught above once embedded deeper) was glued onto an
+    # otherwise-absolute Windows path — cut it off so both scanner
+    # forms key on the same drive-rooted path.
+    match = _WIN_DRIVE_RE.search(key)
+    if match and match.start() > 0:
+        key = key[match.start():]
+
+    return key
 
 
 def infer_type(path, owner_kind="", channel=""):
@@ -68,8 +122,12 @@ _STATUS_ORDER = {"missing": 0, "absolute": 1, "empty": 2, "asset_uri": 3, "ok": 
 def merge_inventories(texture_records, generic_records):
     """Fuse the structured texture scan (repathable, rich owners) with the
     generic GetAllAssetsNew sweep (exhaustive, read-only). Dedupe by
-    normalized path; on collision the texture record wins and only the
-    generic owner is appended. Empty-path records are kept with synthetic keys.
+    canonical_asset_key (not the plainer normalize_path_key — the two
+    scanners can report the identical on-disk file as different literal
+    strings, e.g. a URL-scheme prefix or a doc-relative "./" C4D glues
+    onto an unresolvable absolute path); on collision the texture record
+    wins and only the generic owner is appended. Empty-path records are
+    kept with synthetic keys.
 
     Multiple texture records can collapse into one row when they share a
     path (e.g. 3 materials referencing the same file) — "tex_idx" keeps the
@@ -79,7 +137,7 @@ def merge_inventories(texture_records, generic_records):
     order = []
 
     for rec in texture_records or []:
-        key = normalize_path_key(rec.get("resolved") or rec.get("path"))
+        key = canonical_asset_key(rec.get("resolved") or rec.get("path"))
         # Use synthetic key for empty paths so they remain visible as QC signals.
         if not key:
             key = f"__empty__tex__{rec.get('tex_idx')}"
@@ -109,7 +167,7 @@ def merge_inventories(texture_records, generic_records):
         order.append(key)
 
     for i, rec in enumerate(generic_records or []):
-        key = normalize_path_key(rec.get("path"))
+        key = canonical_asset_key(rec.get("path"))
         # Use synthetic key for empty paths so they remain visible as QC signals.
         if not key:
             key = f"__empty__gen__{i}"
