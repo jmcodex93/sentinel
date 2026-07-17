@@ -451,8 +451,6 @@ def smart_save_version(doc, comment, run_qc=True, artist_name="", status=None):
 
 def collect_scene(doc, artist_name):
     """Pre-flight QC + Save Project with Assets + Verify + Manifest"""
-    from datetime import datetime
-
     if not doc:
         c4d.gui.MessageDialog("No active document!")
         return
@@ -464,39 +462,16 @@ def collect_scene(doc, artist_name):
 
     original_full_path = _doc_full_path(doc)
 
-    # Capture original metadata BEFORE SaveProject runs — SaveProject changes
-    # the doc's path/name to the delivery folder, losing the original identity.
-    original_doc_name = doc.GetDocumentName() or "scene.c4d"
-    original_name_no_ext = os.path.splitext(original_doc_name)[0]
-    original_base, original_version_int, original_status = parse_version_filename(original_name_no_ext)
-    if not original_base:
-        original_base = original_name_no_ext
-    # The "clean" delivery name strips _v###[_status] — pure scene identity.
-    delivery_filename = f"{original_base}.c4d"
-
-    # Capture the notes sidecar path/data BEFORE SaveProject so we don't lose them.
-    original_notes_path = get_notes_path(doc)
-    original_notes_data = None
-    if original_notes_path and os.path.exists(original_notes_path):
-        try:
-            original_notes_data = load_notes(original_notes_path)
-        except Exception as e:
-            safe_print(f"Scene Collector: Could not pre-load notes: {e}")
-
-    # Capture the client report sidecar (<base>_report.html) before SaveProject
-    # moves the doc — its base is already version-stripped, so it copies into the
-    # delivery under the clean <original_base>_report.html name unchanged.
-    from sentinel.versioning import report_html_path
-    original_report_path = report_html_path(original_full_path)
-    if original_report_path and not os.path.exists(original_report_path):
-        original_report_path = None
-
-    original_baseline_path = _baseline_path_for_doc(doc, only_existing=True)
-    original_baseline_entries = []
-    if original_baseline_path:
-        entries, status = baseline.load_baseline(original_baseline_path)
+    # Baseline snapshot used both by the quality gate below (which may accept
+    # violations and change it) and by the manifest generated in the pipeline —
+    # captured here, before any SaveProject/gate side effects, and forwarded
+    # via preflight_payload.
+    baseline_path_for_payload = _baseline_path_for_doc(doc, only_existing=True)
+    baseline_entries_for_payload = []
+    if baseline_path_for_payload:
+        entries, status = baseline.load_baseline(baseline_path_for_payload)
         if status == baseline.STATUS_OK:
-            original_baseline_entries = entries
+            baseline_entries_for_payload = entries
         else:
             safe_print(f"Scene Collector: baseline sidecar not loaded ({status})")
 
@@ -577,12 +552,10 @@ def collect_scene(doc, artist_name):
             refreshed_path = gate_result.get("baseline_path") or baseline.get_baseline_path(original_full_path)
             refreshed_entries, refreshed_status = baseline.load_baseline(refreshed_path)
             if refreshed_status == baseline.STATUS_OK:
-                original_baseline_path = refreshed_path
-                original_baseline_entries = refreshed_entries
+                baseline_path_for_payload = refreshed_path
+                baseline_entries_for_payload = refreshed_entries
 
-    # ── Phase 2: Collect via C4D native ──
-    safe_print("Scene Collector: Running Save Project with Assets...")
-
+    # ── Phase 2: target folder (Hub — Task 12 — will choose it and skip this) ──
     target_dir = c4d.storage.LoadDialog(
         title="Select folder to collect project into",
         flags=c4d.FILESELECT_DIRECTORY
@@ -590,6 +563,117 @@ def collect_scene(doc, artist_name):
     if not target_dir:
         safe_print("Scene Collector: No folder selected")
         return
+
+    preflight_payload = {
+        "issues": issues,
+        "preflight_score": preflight_score,
+        "rules_context": rules_context,
+        "gate_overrides": gate_overrides,
+        "gate_evaluated": gate_evaluated,
+        "baseline_path": baseline_path_for_payload,
+        "baseline_entries": baseline_entries_for_payload,
+    }
+
+    pipeline_result = run_collect_pipeline(
+        doc, artist_name, target_dir, preflight_payload=preflight_payload)
+    if pipeline_result is None:
+        return
+
+    manifest = pipeline_result["manifest"]
+    assets_collected = pipeline_result["assets_collected"]
+    assets_missing = pipeline_result["assets_missing"]
+
+    # ── Summary ──
+    msg = f"Scene Collected!\n\n"
+    msg += f"Location: {pipeline_result['target_dir']}\n"
+    msg += f"Assets: {assets_collected} collected"
+    if assets_missing:
+        msg += f"\nMissing: {assets_missing} (check manifest)"
+    msg += f"\nSize: {manifest['total_size_mb']} MB"
+    msg += f"\nManifest: sentinel_manifest.json"
+
+    summary = manifest.get("asset_summary", {})
+    if manifest.get("scan_status") == "failed":
+        msg += "\n\n⚠ RE-SCAN FAILED — manifest has no asset verification!"
+    else:
+        msg += (f"\n\nPackage re-scan: {summary.get('total', 0)} assets — "
+                f"{summary.get('collected', 0)} in package, "
+                f"{summary.get('missing', 0)} missing, "
+                f"{summary.get('external', 0)} external")
+        if summary.get("missing", 0) or summary.get("external", 0):
+            problem = [e["path"] for e in manifest.get("assets", [])
+                       if e["state"] != "collected"][:10]
+            msg += "\n  " + "\n  ".join(problem)
+
+    notes_pending = pipeline_result.get("pending_todos", 0)
+    if notes_pending:
+        msg += f"\n⚠ {notes_pending} pending TODO(s) in scene notes"
+
+    c4d.gui.MessageDialog(msg)
+    safe_print("Scene Collector: Complete")
+
+
+def run_collect_pipeline(doc, artist_name, target_dir, make_zip=False,
+                          on_status=None, preflight_payload=None):
+    """Phases 2 onward of Scene Collector: SaveProject with assets, clean
+    delivery rename, re-scan of the collected package, manifest generation,
+    sidecar copies, and an optional zip archive.
+
+    target_dir is chosen by the caller (no LoadDialog here); pre-flight/gate
+    results are supplied via preflight_payload — a dict with keys `issues`,
+    `preflight_score`, `rules_context`, `gate_overrides`, `gate_evaluated`,
+    `baseline_path`, `baseline_entries` (all optional; the manifest degrades
+    gracefully when a key is absent).
+
+    Returns a result dict, or None if SaveProject failed / errored.
+    """
+    from datetime import datetime
+
+    def _status(msg):
+        safe_print(f"Collect: {msg}")
+        if on_status:
+            on_status(msg)
+
+    payload = preflight_payload or {}
+    issues = payload.get("issues", [])
+    preflight_score = payload.get("preflight_score", {})
+    rules_context = payload.get("rules_context")
+    gate_overrides = payload.get("gate_overrides", [])
+    gate_evaluated = payload.get("gate_evaluated", False)
+    original_baseline_path = payload.get("baseline_path")
+    original_baseline_entries = payload.get("baseline_entries") or []
+
+    original_full_path = _doc_full_path(doc)
+
+    # Capture original metadata BEFORE SaveProject runs — SaveProject changes
+    # the doc's path/name to the delivery folder, losing the original identity.
+    original_doc_name = doc.GetDocumentName() or "scene.c4d"
+    original_name_no_ext = os.path.splitext(original_doc_name)[0]
+    original_base, original_version_int, original_status = parse_version_filename(original_name_no_ext)
+    if not original_base:
+        original_base = original_name_no_ext
+    # The "clean" delivery name strips _v###[_status] — pure scene identity.
+    delivery_filename = f"{original_base}.c4d"
+
+    # Capture the notes sidecar path/data BEFORE SaveProject so we don't lose them.
+    original_notes_path = get_notes_path(doc)
+    original_notes_data = None
+    if original_notes_path and os.path.exists(original_notes_path):
+        try:
+            original_notes_data = load_notes(original_notes_path)
+        except Exception as e:
+            safe_print(f"Scene Collector: Could not pre-load notes: {e}")
+
+    # Capture the client report sidecar (<base>_report.html) before SaveProject
+    # moves the doc — its base is already version-stripped, so it copies into the
+    # delivery under the clean <original_base>_report.html name unchanged.
+    from sentinel.versioning import report_html_path
+    original_report_path = report_html_path(original_full_path)
+    if original_report_path and not os.path.exists(original_report_path):
+        original_report_path = None
+
+    # ── Phase 2: Collect via C4D native ──
+    _status("Saving project with assets…")
 
     assets = []
     missing_assets = []
@@ -605,12 +689,12 @@ def collect_scene(doc, artist_name):
         if not result:
             c4d.gui.MessageDialog("Save Project failed!\n\nCheck console for details.")
             safe_print("Scene Collector: SaveProject returned False")
-            return
+            return None
 
     except Exception as e:
         c4d.gui.MessageDialog(f"Save Project error:\n{e}")
         safe_print(f"Scene Collector error: {e}")
-        return
+        return None
 
     safe_print(f"Scene Collector: Collected {len(assets)} assets")
     if missing_assets:
@@ -647,7 +731,7 @@ def collect_scene(doc, artist_name):
             safe_print(f"Scene Collector: expected file {saved_folder_basename} not found after SaveProject")
 
     # ── Phase 2.6: Re-scan the collected package (Collect Confiable, I4) ──
-    safe_print("Scene Collector: Re-scanning collected package...")
+    _status("Re-scanning package…")
     # saved_at only survives when the rename to the clean delivery name was
     # refused (a stale delivery already sat in target_dir) — in that case it
     # is the FRESH SaveProject output and must win, or the re-scan would
@@ -657,7 +741,7 @@ def collect_scene(doc, artist_name):
         _rescan_collected_package(delivered_c4d, target_dir)
 
     # ── Phase 3: Generate manifest ──
-    safe_print("Scene Collector: Generating manifest...")
+    _status("Writing manifest…")
 
     manifest = {
         "sentinel_manifest": True,
@@ -680,7 +764,7 @@ def collect_scene(doc, artist_name):
     if gate_evaluated:
         manifest["gate_overrides"] = gate_overrides
     baseline_collection_active = bool(original_baseline_path)
-    rules_collection_active = bool(rules_context.rules_path)
+    rules_collection_active = bool(rules_context and rules_context.rules_path)
     if rules_collection_active:
         manifest["ruleset"] = {
             "source": rules_context.source,
@@ -801,34 +885,31 @@ def collect_scene(doc, artist_name):
     else:
         safe_print(f"Scene Collector: Manifest saved to {manifest_path}")
 
-    # ── Summary ──
-    msg = f"Scene Collected!\n\n"
-    msg += f"Location: {target_dir}\n"
-    msg += f"Assets: {len(assets)} collected"
-    if missing_assets:
-        msg += f"\nMissing: {len(missing_assets)} (check manifest)"
-    msg += f"\nSize: {manifest['total_size_mb']} MB"
-    msg += f"\nManifest: sentinel_manifest.json"
+    # ── Optional zip archive ──
+    zip_result = None
+    zip_error = None
+    if make_zip:
+        _status("Zipping…")
+        from sentinel import assets as assets_engine
+        try:
+            zip_result = assets_engine.create_zip_archive(
+                target_dir,
+                on_progress=lambda i, n: _status(f"Zipping {i}/{n}…"))
+        except Exception as e:
+            zip_error = str(e)
+            safe_print(f"Scene Collector: Zip failed: {e}")
 
-    summary = manifest.get("asset_summary", {})
-    if manifest.get("scan_status") == "failed":
-        msg += "\n\n⚠ RE-SCAN FAILED — manifest has no asset verification!"
-    else:
-        msg += (f"\n\nPackage re-scan: {summary.get('total', 0)} assets — "
-                f"{summary.get('collected', 0)} in package, "
-                f"{summary.get('missing', 0)} missing, "
-                f"{summary.get('external', 0)} external")
-        if summary.get("missing", 0) or summary.get("external", 0):
-            problem = [e["path"] for e in manifest.get("assets", [])
-                       if e["state"] != "collected"][:10]
-            msg += "\n  " + "\n  ".join(problem)
-
-    notes_pending = manifest.get("notes", {}).get("pending_count", 0)
-    if notes_pending:
-        msg += f"\n⚠ {notes_pending} pending TODO(s) in scene notes"
-
-    c4d.gui.MessageDialog(msg)
-    safe_print("Scene Collector: Complete")
+    return {
+        "target_dir": target_dir,
+        "delivery_filename": delivery_filename,
+        "assets_collected": len(assets),
+        "assets_missing": len(missing_assets),
+        "manifest_path": manifest_path,
+        "manifest": manifest,
+        "zip": zip_result,
+        "zip_error": zip_error,
+        "pending_todos": manifest.get("notes", {}).get("pending_count", 0),
+    }
 
 
 def _rescan_collected_package(delivery_c4d_path, target_dir):
