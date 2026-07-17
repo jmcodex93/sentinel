@@ -58,3 +58,64 @@ class TestClassifyGeneric:
 
     def test_not_exists_is_missing(self):
         assert assets.classify_generic("/proj/tex/a.png", False) == "missing"
+
+
+def _tex(path, status="ok", resolved=None, host="RS_Mat", src="rs_node",
+         channel="Base Color", idx=0):
+    return {"path": path, "resolved": resolved or path, "status": status,
+            "host_name": host, "source_type": src, "channel": channel,
+            "tex_idx": idx}
+
+
+def _gen(path, exists=True, owner_name="obj", owner_kind="object"):
+    return {"path": path, "exists": exists,
+            "owner_name": owner_name, "owner_kind": owner_kind}
+
+
+class TestMergeInventories:
+    def test_texture_only_is_repathable(self):
+        out = assets.merge_inventories([_tex("/p/tex/a.png")], [])
+        assert len(out) == 1
+        r = out[0]
+        assert r["repathable"] is True
+        assert r["tex_idx"] == 0
+        assert r["owners"] == [("RS_Mat", "material", "Base Color")]
+        assert r["asset_type"] == "texture"
+
+    def test_generic_only_is_readonly(self):
+        out = assets.merge_inventories([], [_gen("/p/luts/show.cube")])
+        r = out[0]
+        assert r["repathable"] is False
+        assert r["tex_idx"] is None
+        assert r["asset_type"] == "lut_ocio"
+        assert r["status"] == "ok"
+
+    def test_same_path_merges_texture_wins(self):
+        out = assets.merge_inventories(
+            [_tex("/p/tex/a.png", status="absolute")],
+            [_gen("/P/TEX/A.PNG", owner_name="dome", owner_kind="light")])
+        assert len(out) == 1
+        r = out[0]
+        assert r["status"] == "absolute"          # texture record wins
+        assert r["repathable"] is True
+        assert ("dome", "light", "") in r["owners"]   # generic owner added
+
+    def test_n_uses_one_row_n_owners(self):
+        out = assets.merge_inventories(
+            [_tex("/p/a.png", host="M1", idx=0), _tex("/p/a.png", host="M2", idx=1)],
+            [])
+        assert len(out) == 1
+        names = [o[0] for o in out[0]["owners"]]
+        assert names == ["M1", "M2"]
+
+    def test_sort_missing_first(self):
+        out = assets.merge_inventories(
+            [_tex("/p/z_ok.png"), _tex("/p/a_missing.png", status="missing")],
+            [])
+        assert [r["status"] for r in out] == ["missing", "ok"]
+
+    def test_source_type_maps_owner_kind(self):
+        out = assets.merge_inventories(
+            [_tex("/p/h.exr", src="rs_object_fileref", host="RS Dome")], [])
+        assert out[0]["owners"][0][1] == "light"
+        assert out[0]["asset_type"] == "hdri"

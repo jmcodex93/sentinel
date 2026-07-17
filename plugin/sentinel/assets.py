@@ -51,3 +51,76 @@ def classify_generic(path, exists):
     if s.startswith("asset:") or s.startswith("preset:"):
         return "asset_uri"
     return "ok" if exists else "missing"
+
+
+# TextureRecord.source_type → owner_kind shown in the "Used by" column.
+_OWNER_KIND_BY_SOURCE = {
+    "classic_shader": "material", "octane_shader": "material",
+    "rs_node": "material", "arnold_node": "material", "bc_param": "material",
+    "object_bc": "object", "alembic": "object",
+    "rs_object_fileref": "light",
+}
+
+_STATUS_ORDER = {"missing": 0, "absolute": 1, "empty": 2, "asset_uri": 3, "ok": 4}
+
+
+def merge_inventories(texture_records, generic_records):
+    """Fuse the structured texture scan (repathable, rich owners) with the
+    generic GetAllAssetsNew sweep (exhaustive, read-only). Dedupe by
+    normalized path; on collision the texture record wins and only the
+    generic owner is appended."""
+    by_key = {}
+    order = []
+
+    for rec in texture_records or []:
+        key = normalize_path_key(rec.get("resolved") or rec.get("path"))
+        if not key:
+            continue
+        kind = _OWNER_KIND_BY_SOURCE.get(rec.get("source_type", ""), "material")
+        owner = (rec.get("host_name", ""), kind, rec.get("channel", ""))
+        if key in by_key:
+            r = by_key[key]
+            if owner not in r["owners"]:
+                r["owners"].append(owner)
+            continue
+        by_key[key] = {
+            "key": key,
+            "path": rec.get("path", ""),
+            "resolved_path": rec.get("resolved"),
+            "status": rec.get("status", "ok"),
+            "asset_type": infer_type(rec.get("path", ""), kind,
+                                     rec.get("channel", "")),
+            "size_bytes": None,
+            "owners": [owner],
+            "repathable": True,
+            "tex_idx": rec.get("tex_idx"),
+        }
+        order.append(key)
+
+    for rec in generic_records or []:
+        key = normalize_path_key(rec.get("path"))
+        if not key:
+            continue
+        owner = (rec.get("owner_name", ""), rec.get("owner_kind", "object"), "")
+        if key in by_key:
+            r = by_key[key]
+            if owner not in r["owners"]:
+                r["owners"].append(owner)
+            continue
+        by_key[key] = {
+            "key": key,
+            "path": rec.get("path", ""),
+            "resolved_path": rec.get("path") if rec.get("exists") else None,
+            "status": classify_generic(rec.get("path"), rec.get("exists")),
+            "asset_type": infer_type(rec.get("path", ""), owner[1], ""),
+            "size_bytes": None,
+            "owners": [owner],
+            "repathable": False,
+            "tex_idx": None,
+        }
+        order.append(key)
+
+    records = [by_key[k] for k in order]
+    records.sort(key=lambda r: (_STATUS_ORDER.get(r["status"], 9),
+                                os.path.basename(r["path"]).lower()))
+    return records
