@@ -173,3 +173,37 @@ class TestTotalsAndSizes:
         nxt = assets.stat_sizes_batch(recs, nxt, 5)
         assert nxt == 3                                          # clamped to len
         assert recs[2]["size_bytes"] == -1                       # stat failed
+
+
+class TestSearchFolderForMissing:
+    def test_build_index_and_cap(self, tmp_path):
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "a.png").write_bytes(b"x")
+        (tmp_path / "sub" / "B.PNG").write_bytes(b"x")
+        idx, truncated = assets.build_file_index(str(tmp_path))
+        assert truncated is False
+        assert len(idx["a.png"]) == 1
+        assert len(idx["b.png"]) == 1          # case-insensitive key
+
+    def test_cap_marks_truncated(self, tmp_path):
+        for i in range(5):
+            (tmp_path / f"f{i}.png").write_bytes(b"x")
+        idx, truncated = assets.build_file_index(str(tmp_path), cap=3)
+        assert truncated is True
+        assert sum(len(v) for v in idx.values()) == 3
+
+    def test_match_unique_and_ambiguous_and_none(self):
+        recs = [
+            {"key": "k1", "status": "missing", "path": "old/tex/wood.png"},
+            {"key": "k2", "status": "missing", "path": "old/rock.png"},
+            {"key": "k3", "status": "missing", "path": "old/gone.png"},
+            {"key": "k4", "status": "ok", "path": "tex/fine.png"},
+        ]
+        idx = {"wood.png": ["/new/tex/wood.png"],
+               "rock.png": ["/a/rock.png", "/b/rock.png"],
+               "fine.png": ["/x/fine.png"]}
+        m = assets.match_missing_in_folder(recs, idx)
+        assert m["k1"] == {"match": "/new/tex/wood.png"}
+        assert m["k2"] == {"ambiguous": ["/a/rock.png", "/b/rock.png"]}
+        assert "k3" not in m
+        assert "k4" not in m                    # never touches non-missing

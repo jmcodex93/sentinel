@@ -184,3 +184,40 @@ def stat_sizes_batch(records, start, count, getsize=os.path.getsize):
         except Exception:
             rec["size_bytes"] = -1
     return end
+
+
+def build_file_index(root, walk=os.walk, cap=50000):
+    """Index a folder tree by lowercase basename. Caps at `cap` files so a
+    mis-picked root (e.g. '/') can't hang the UI; truncated=True tells the
+    dialog to warn."""
+    index = {}
+    n = 0
+    truncated = False
+    for dirpath, _dirs, files in walk(root):
+        for name in files:
+            if n >= cap:
+                truncated = True
+                return index, truncated
+            index.setdefault(name.lower(), []).append(
+                os.path.join(dirpath, name))
+            n += 1
+    return index, truncated
+
+
+def match_missing_in_folder(records, index):
+    """Match missing records against a folder index by basename
+    (case-insensitive). 2+ candidates → ambiguous: the user picks, we never
+    auto-choose."""
+    out = {}
+    for rec in records:
+        if rec.get("status") != "missing":
+            continue
+        base = os.path.basename(str(rec.get("path", ""))).lower()
+        candidates = index.get(base)
+        if not candidates:
+            continue
+        if len(candidates) == 1:
+            out[rec["key"]] = {"match": candidates[0]}
+        else:
+            out[rec["key"]] = {"ambiguous": list(candidates)}
+    return out
