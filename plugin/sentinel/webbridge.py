@@ -70,6 +70,15 @@ class MainThreadQueue:
         Returns whatever ``dispatch`` produced — including an error dict if
         dispatch raised (see ``drain``). Raises ``TimeoutError`` only if the
         main thread never drains in time; never raises for dispatch errors.
+
+        Invariant: a timed-out request is NOT removed from the queue — it
+        stays there and ``drain`` will still dispatch it on a later Timer
+        tick, whenever the main thread gets to it. Its result is computed
+        but discarded (nothing is waiting on the Event anymore). This means
+        every ``dispatch`` handler (and everything ``api_handler`` calls
+        through it) must be safe to run even when nobody is listening
+        anymore: read-only or idempotent, no reliance on the caller still
+        being there to consume side effects exactly once.
         """
         request = _QueuedRequest(payload)
         self._queue.put(request)
@@ -79,10 +88,14 @@ class MainThreadQueue:
 
     def drain(self, dispatch):
         """Called from the main thread (the Timer). Processes EVERY item
-        currently queued, in order. ``dispatch(payload) -> dict`` runs once
-        per item; an exception from ``dispatch`` becomes the result
-        ``{"error": str(exc), "traceback": <format_exc>}`` instead of
-        propagating. This method itself never raises.
+        currently queued, in order — including requests whose ``submit``
+        already timed out and returned (see the invariant on ``submit``);
+        ``drain`` has no way to know that and dispatches them anyway. Its
+        result is then discarded (nothing is waiting on that Event). Keep
+        ``dispatch`` read-only/idempotent for this reason. ``dispatch(payload)
+        -> dict`` runs once per item; an exception from ``dispatch`` becomes
+        the result ``{"error": str(exc), "traceback": <format_exc>}`` instead
+        of propagating. This method itself never raises.
         """
         while True:
             try:
@@ -192,7 +205,14 @@ class _RequestHandler(http.server.BaseHTTPRequestHandler):
 
     @staticmethod
     def _is_inside_root(candidate, root):
-        return candidate == root or candidate.startswith(root + os.sep)
+        # realpath (not just normpath) so a symlink living inside web_root
+        # that points outside it (e.g. web_root/evil -> /etc/passwd) is
+        # rejected too — normpath alone only collapses ".."/"." segments in
+        # the literal path string, it does not follow symlinks.
+        real_candidate = os.path.realpath(candidate)
+        real_root = os.path.realpath(root)
+        return (real_candidate == real_root
+                or real_candidate.startswith(real_root + os.sep))
 
     def _send_plain(self, code, body):
         self.send_response(code)

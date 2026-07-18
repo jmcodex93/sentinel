@@ -232,6 +232,27 @@ class TestStaticServing:
         finally:
             live.close()
 
+    def test_symlink_inside_root_pointing_outside_is_blocked(self, tmp_path, web_root):
+        # A symlink physically inside web_root but resolving OUTSIDE it
+        # (e.g. web_root/leak -> ../secret.txt) must not be served — the
+        # containment check has to follow the symlink (realpath), not just
+        # normalize the literal request path.
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET VIA SYMLINK", encoding="utf-8")
+        leak = web_root / "leak.txt"
+        try:
+            leak.symlink_to(secret)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks not supported on this filesystem")
+
+        live = _LiveServer(web_root)
+        try:
+            resp, body = live.get("/leak.txt")
+            assert b"TOP SECRET VIA SYMLINK" not in body
+            assert resp.status in (200, 404)
+        finally:
+            live.close()
+
     def test_missing_web_root_or_index_returns_plain_404(self, tmp_path):
         empty_root = tmp_path / "empty"
         empty_root.mkdir()
