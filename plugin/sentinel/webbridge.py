@@ -272,3 +272,133 @@ def stop_server(server):
         server.server_close()
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Delivery report payload — sentinel_manifest.json -> SPA contract
+# ---------------------------------------------------------------------------
+
+# source_type values (see manifest.py / textures.py docstrings) that come
+# from a material's shader/node graph. rs_object_fileref is deliberately
+# NOT here: it is an object-level file reference (dome HDR, light gobo) and
+# its ``channel`` is already a human label ("Dome HDR", "Light texture").
+_MATERIAL_SOURCE_TYPES = frozenset({
+    "rs_node", "arnold_node", "classic_shader", "octane_shader", "bc_param",
+})
+
+
+def _asset_provenance(entry):
+    """Human-readable origin for one manifest asset entry, e.g.
+    ``"material · Body Shell"`` — built from source_type/channel/host, the
+    only fields manifest.py's ``build_asset_entries`` records for this.
+    Never raises: every field defaults to "" and missing pieces are simply
+    omitted from the joined string.
+    """
+    source_type = entry.get("source_type") or ""
+    channel = entry.get("channel") or ""
+    host = entry.get("host") or ""
+
+    if source_type in _MATERIAL_SOURCE_TYPES:
+        category = "material"
+    elif source_type == "object_bc":
+        category = "object"
+    elif source_type == "alembic":
+        category = "alembic cache"
+    elif source_type == "rs_object_fileref":
+        # channel is already descriptive here ("Dome HDR", "Light texture").
+        category = channel or "object"
+    else:
+        category = source_type or "asset"
+
+    return f"{category} · {host}" if host else category
+
+
+def _delivery_asset(entry):
+    return {
+        "path": entry.get("path") or "",
+        "status": entry.get("state") or "",
+        "provenance": _asset_provenance(entry),
+    }
+
+
+def _delivery_version(manifest_dict):
+    """Format ``original_version`` (an int or None in the manifest, see
+    ui/flows.py) as the SPA's "v022"-style string, or None if unknown."""
+    raw = manifest_dict.get("original_version")
+    if raw is None:
+        return None
+    try:
+        return f"v{int(raw):03d}"
+    except (TypeError, ValueError):
+        return None
+
+
+def _delivery_qc(manifest_dict):
+    """The manifest only carries a "qc" section when project rules were
+    active at collect time (see ui/flows.py) — absent otherwise, never a
+    KeyError."""
+    qc = manifest_dict.get("qc")
+    if not isinstance(qc, dict):
+        return None
+    return {
+        "score": qc.get("score") or "",
+        "passed": qc.get("passed", 0),
+        "total": qc.get("total", 0),
+    }
+
+
+def _delivery_summary(manifest_dict):
+    summary = manifest_dict.get("asset_summary")
+    if not isinstance(summary, dict):
+        summary = {}
+    return {
+        "total": summary.get("total", 0),
+        "collected": summary.get("collected", 0),
+        "missing": summary.get("missing", 0),
+        "external": summary.get("external", 0),
+    }
+
+
+def _delivery_zip(manifest_dict):
+    """The manifest currently never persists a "zip" section (the zip
+    archive is a return value of the collect flow, not written to the
+    sidecar — see ui/flows.py run_collect_pipeline). Mapped defensively in
+    case a future version adds one."""
+    zip_raw = manifest_dict.get("zip")
+    if not isinstance(zip_raw, dict):
+        return None
+    path = zip_raw.get("path") or zip_raw.get("zip_path") or ""
+    if not path:
+        return None
+    return {"path": path, "bytes": zip_raw.get("bytes", 0)}
+
+
+def delivery_report_payload(manifest_dict, manifest_path):
+    """Map a loaded ``sentinel_manifest.json`` dict to the exact SPA
+    contract consumed by ``GET /api/report/delivery``
+    (web/src/lib/api.ts + web/src/types.ts DeliveryReport).
+
+    Pure: no c4d, no filesystem access — ``manifest_dict`` is whatever
+    ``manifest.load_manifest_json`` returned, ``manifest_path`` is the path
+    it was loaded from (passed through, not read from the dict). Never
+    raises on a partial/legacy manifest — every field falls back to a
+    sensible null/empty default instead of a KeyError.
+    """
+    manifest_dict = manifest_dict or {}
+    notes = manifest_dict.get("notes")
+    if not isinstance(notes, dict):
+        notes = {}
+    assets = manifest_dict.get("assets") or []
+
+    return {
+        "scene": manifest_dict.get("scene") or "",
+        "collected_at": manifest_dict.get("timestamp") or "",
+        "artist": manifest_dict.get("artist") or "",
+        "version": _delivery_version(manifest_dict),
+        "qc": _delivery_qc(manifest_dict),
+        "summary": _delivery_summary(manifest_dict),
+        "zip": _delivery_zip(manifest_dict),
+        "assets": [_delivery_asset(entry) for entry in assets],
+        "pending_todos": notes.get("pending_count", 0),
+        "manifest_path": manifest_path or "",
+    }

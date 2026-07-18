@@ -349,6 +349,140 @@ class TestPortSelection:
             s2.close()
 
 
+# ---------------------------------------------------------------------------
+# delivery_report_payload — sentinel_manifest.json -> SPA contract
+# ---------------------------------------------------------------------------
+
+def _manifest_fixture(**overrides):
+    """A manifest dict shaped like a real v1.10+ sentinel_manifest.json
+    (anonymized: real field names/shapes, fictional shot/artist names) —
+    mirrors plugin/sentinel/ui/flows.py's ``manifest`` dict after
+    ``manifest_engine.merge_into_manifest``."""
+    base = {
+        "sentinel_manifest": True,
+        "version": "Sentinel v1.13.0",
+        "timestamp": "2026-07-16 18:42:07",
+        "scene": "robot_010.c4d",
+        "original_filename": "robot_010_v022_FINAL.c4d",
+        "original_version": 22,
+        "original_status": "FINAL",
+        "artist": "Motioneer",
+        "shot_id": "Main",
+        "collected_to": "/Users/artist/Desktop/Sentinel/CollectedHUB",
+        "assets_collected": 11,
+        "assets_missing": 2,
+        "missing_list": [],
+        "pre_flight_issues": [],
+        "qc": {"score": "9/12", "passed": 9, "total": 12, "new": 3,
+               "accepted": 0, "stale": 0, "schema": 2,
+               "disabled_checks": [], "disabled_count": 0, "checks": []},
+        "notes": {"summary": "Notes: 2 TODOs", "text": "", "todos": [],
+                   "pending_count": 2, "updated": ""},
+        "total_size_mb": 12.4,
+        "assets_schema": 1,
+        "scan_status": "ok",
+        "assets": [
+            {"path": "tex/body_basecolor.jpg", "original_path": "relative:///body_basecolor.jpg",
+             "source_type": "rs_node", "channel": "path", "host": "Body Shell",
+             "state": "collected", "hash": None},
+            {"path": "file:///X:/assets/robot_gen2/tex/grip_detail.png",
+             "original_path": "file:///X:/assets/robot_gen2/tex/grip_detail.png",
+             "source_type": "rs_node", "channel": "path", "host": "Hand Grip",
+             "state": "missing", "hash": None},
+            {"path": "D:/library/hdri/studio_soft_4k.hdr",
+             "original_path": "D:/library/hdri/studio_soft_4k.hdr",
+             "source_type": "rs_object_fileref", "channel": "Dome HDR",
+             "host": "HDR Key", "state": "missing", "hash": None},
+            {"path": "/Volumes/Shared/refs/robot_010_turntable.abc",
+             "original_path": "/Volumes/Shared/refs/robot_010_turntable.abc",
+             "source_type": "alembic", "channel": "cache",
+             "host": "Turntable Rig", "state": "external", "hash": None},
+        ],
+        "asset_summary": {"total": 4, "collected": 1, "missing": 2, "external": 1},
+        "required_plugins": [{"plugin_id": 1036222, "name": "RS Object"}],
+        "plugin_inventory_scope": "objects+tags+materials",
+    }
+    base.update(overrides)
+    return base
+
+
+class TestDeliveryReportPayload:
+    def test_full_manifest_maps_every_field(self):
+        manifest_dict = _manifest_fixture()
+        payload = webbridge.delivery_report_payload(
+            manifest_dict, "/Users/artist/Desktop/Sentinel/CollectedHUB/sentinel_manifest.json")
+
+        assert payload["scene"] == "robot_010.c4d"
+        assert payload["collected_at"] == "2026-07-16 18:42:07"
+        assert payload["artist"] == "Motioneer"
+        assert payload["version"] == "v022"
+        assert payload["qc"] == {"score": "9/12", "passed": 9, "total": 12}
+        assert payload["summary"] == {"total": 4, "collected": 1, "missing": 2, "external": 1}
+        assert payload["zip"] is None
+        assert payload["pending_todos"] == 2
+        assert payload["manifest_path"] == (
+            "/Users/artist/Desktop/Sentinel/CollectedHUB/sentinel_manifest.json")
+
+    def test_assets_mapped_with_status_and_provenance(self):
+        payload = webbridge.delivery_report_payload(_manifest_fixture(), "path")
+        assets = payload["assets"]
+        assert len(assets) == 4
+
+        assert assets[0] == {
+            "path": "tex/body_basecolor.jpg",
+            "status": "collected",
+            "provenance": "material · Body Shell",
+        }
+        assert assets[1]["status"] == "missing"
+        assert assets[1]["provenance"] == "material · Hand Grip"
+        # rs_object_fileref: channel ("Dome HDR") stands in for the category.
+        assert assets[2]["provenance"] == "Dome HDR · HDR Key"
+        assert assets[3]["provenance"] == "alembic cache · Turntable Rig"
+
+    def test_missing_qc_section_maps_to_none_not_keyerror(self):
+        manifest_dict = _manifest_fixture()
+        del manifest_dict["qc"]
+        payload = webbridge.delivery_report_payload(manifest_dict, "path")
+        assert payload["qc"] is None
+
+    def test_missing_original_version_maps_to_none(self):
+        payload = webbridge.delivery_report_payload(
+            _manifest_fixture(original_version=None), "path")
+        assert payload["version"] is None
+
+    def test_empty_manifest_dict_never_raises_and_fills_defaults(self):
+        payload = webbridge.delivery_report_payload({}, "/some/path.json")
+        assert payload == {
+            "scene": "",
+            "collected_at": "",
+            "artist": "",
+            "version": None,
+            "qc": None,
+            "summary": {"total": 0, "collected": 0, "missing": 0, "external": 0},
+            "zip": None,
+            "assets": [],
+            "pending_todos": 0,
+            "manifest_path": "/some/path.json",
+        }
+
+    def test_none_manifest_dict_never_raises(self):
+        payload = webbridge.delivery_report_payload(None, "/some/path.json")
+        assert payload["scene"] == ""
+        assert payload["assets"] == []
+
+    def test_zip_section_mapped_when_present(self):
+        manifest_dict = _manifest_fixture(
+            zip={"zip_path": "/deliveries/robot_010.zip", "files": 4, "bytes": 123456})
+        payload = webbridge.delivery_report_payload(manifest_dict, "path")
+        assert payload["zip"] == {"path": "/deliveries/robot_010.zip", "bytes": 123456}
+
+    def test_notes_missing_defaults_pending_todos_to_zero(self):
+        manifest_dict = _manifest_fixture()
+        del manifest_dict["notes"]
+        payload = webbridge.delivery_report_payload(manifest_dict, "path")
+        assert payload["pending_todos"] == 0
+
+
 class TestServerLifecycle:
     def test_start_server_thread_returns_daemon_thread(self, web_root):
         live = _LiveServer(web_root)

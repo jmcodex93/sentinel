@@ -2275,7 +2275,7 @@ class YSPanel(gui.GeDialog):
             self._handle_edit_notes(doc)
 
         elif cid == G.BTN_DELIVERY_SUMMARY:
-            self._show_delivery_summary(doc)
+            self._open_reports(doc)
 
         elif cid == G.TAB_BAR:
             # Tab clicked — find which one is selected and switch
@@ -2317,6 +2317,33 @@ class YSPanel(gui.GeDialog):
         # Solo manifiestos con sección de assets (I4+); los antiguos no
         # ofrecen nada que verificar.
         return bool(data and data.get("assets_schema"))
+
+    def _open_reports(self, doc):
+        """Open the Sentinel Reports dialog (HTML-based Delivery Summary,
+        UI Foundation Task 4) — replaces the legacy text-dialog summary as
+        the button's primary action. Retains a reference to the dialog
+        (same pattern as ``_open_asset_hub``/``self._asset_hub``) so it
+        isn't garbage-collected while open.
+
+        If the Reports server fails to start (e.g. the SPA build is
+        missing from this install, or every port in its range is busy),
+        the old ``_show_delivery_summary`` text-dialog flow stays reachable
+        as a fallback — it is untouched, not removed.
+        """
+        try:
+            from sentinel.ui.reports_dialog import open_reports
+            existing = getattr(self, "_reports", None)
+            if existing is not None:
+                try:
+                    if existing.IsOpen():
+                        existing.Close()
+                except Exception:
+                    pass
+            self._reports = open_reports(doc)
+        except Exception as e:
+            safe_print(f"Reports dialog failed to open ({e}); "
+                       f"falling back to legacy Delivery Summary")
+            self._show_delivery_summary(doc)
 
     def _show_delivery_summary(self, doc):
         """Show the collect-time delivery summary and offer a receiver-side
