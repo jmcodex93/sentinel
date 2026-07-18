@@ -5,3 +5,10 @@ __pycache__/
 
 # Local backups (not tracked)
 c4d/backup/
+
+# Reports SPA source deps/build artifacts — plugin/web/ (the committed
+# build) is what ships, web/node_modules is never checked in.
+web/node_modules/
+web/dist/
+web/node_modules/.tmp/
+
