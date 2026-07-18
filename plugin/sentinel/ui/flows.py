@@ -27,6 +27,8 @@ from sentinel.snapshots import (
     _find_latest_exr,
     _get_stills_dir,
     build_slate_data,
+    next_snapshot_name,
+    parse_rv_snapshot_dir,
 )
 from sentinel.versioning import (
     _sanitize_status,
@@ -995,6 +997,33 @@ def _rescan_collected_package(delivery_c4d_path, target_dir):
                 pass
 
 
+def detect_rv_snapshot_dir():
+    """Auto-detect Redshift RenderView's current snapshot directory.
+
+    Reads ``<C4D prefs>/redshift_rv.cfg`` and extracts "snapshotDir" via
+    sentinel.snapshots.parse_rv_snapshot_dir. RenderView only (re)writes this
+    file when it quits, not live while snapshots are being taken, so this is
+    best-effort live-follow, not a real-time watch — the caller re-detects
+    once per watch "prime" rather than every Timer tick.
+
+    Returns the path only if it parses AND still exists as a directory (a
+    stale/renamed folder falls back to the manual picker instead of silently
+    watching a dead path). None on any error. Never raises.
+    """
+    try:
+        prefs_dir = c4d.storage.GeGetC4DPath(c4d.C4D_PATH_PREFS)
+        cfg_path = os.path.join(prefs_dir, "redshift_rv.cfg")
+        with open(cfg_path, "r", encoding="utf-8", errors="replace") as handle:
+            cfg_text = handle.read()
+    except Exception:
+        return None
+
+    snap_dir = parse_rv_snapshot_dir(cfg_text)
+    if snap_dir and os.path.isdir(snap_dir):
+        return snap_dir
+    return None
+
+
 def snapshot_save_still(doc, artist_name):
     """Main entry point: find latest EXR, convert with ACES, save to project"""
     if not artist_name:
@@ -1042,40 +1071,67 @@ def snapshot_save_still(doc, artist_name):
     safe_print(f"Still saved: {png_path}")
 
 
-def snapshot_auto_convert(doc, artist_name, exr_path):
-    """Silent watchfolder conversion — same pipeline as snapshot_save_still but
+def snapshot_auto_convert(doc, artist_name, snap_path):
+    """Silent watchfolder handling — same output dir as snapshot_save_still but
     NO MessageDialogs and NO Picture Viewer (modal/blocking calls would pause
-    the driving Timer). Returns (success, message) where message is the PNG
-    basename on success or a short error string on failure. Never raises.
+    the driving Timer). EXR snapshots get the full ACES convert. Display-
+    referred snapshots (.png/.jpg/.tif/... — Redshift wrote these because
+    "Save snapshots as EXR" is off) are already viewable, so they are
+    passthrough-copied into the stills dir instead: no slate burn-in, no ACES
+    grade, because the source is display-referred (already tonemapped), not
+    scene-linear — running it through the ACES pipeline would double-grade
+    it. Each output gets a unique "<scene>_snap_NNN<ext>" name (via
+    next_snapshot_name) so repeated same-session snapshots never overwrite
+    each other, and a .png convert and a copied .jpg share one counter.
+
+    Returns (success, message). On success, message is "converted <name>" or
+    "copied <name>" so the caller can build a verb-appropriate caption
+    without re-deriving it from the source extension. On failure, message is
+    a short error string. Never raises.
     """
     if not artist_name:
         return False, "no artist name set"
-    if not exr_path or not os.path.exists(exr_path):
-        return False, "EXR vanished before convert"
+    if not snap_path or not os.path.exists(snap_path):
+        return False, "snapshot vanished before convert"
 
     try:
         output_dir = _get_stills_dir(doc, artist_name)
         doc_name = (doc.GetDocumentName() if doc else "") or "untitled"
         scene_name = os.path.splitext(doc_name)[0]
-        png_path = os.path.join(output_dir, f"{scene_name}.png")
+        is_exr = snap_path.lower().endswith(".exr")
 
-        # Resolve opt-in review slate (project rules > machine setting > default OFF)
-        slate_data = None
-        try:
-            rules_context = _active_rules_for_doc(doc)
-            if bool(rules_context.params.get("slate", False)):
-                slate_data = build_slate_data(doc, artist_name)
-        except Exception as e:
-            safe_print(f"Auto-convert slate resolution skipped: {e}")
+        existing = os.listdir(output_dir) if os.path.isdir(output_dir) else []
+        out_ext = ".png" if is_exr else (os.path.splitext(snap_path)[1] or ".png")
+        out_name = next_snapshot_name(existing, scene_name, ext=out_ext)
+        out_path = os.path.join(output_dir, out_name)
 
-        success, error = _convert_exr_to_png(exr_path, png_path, slate_data=slate_data)
-        if not success:
-            safe_print(f"Auto-convert failed for {os.path.basename(exr_path)}: {error}")
-            return False, "conversion failed"
+        if is_exr:
+            # Resolve opt-in review slate (project rules > machine setting > default OFF)
+            slate_data = None
+            try:
+                rules_context = _active_rules_for_doc(doc)
+                if bool(rules_context.params.get("slate", False)):
+                    slate_data = build_slate_data(doc, artist_name)
+            except Exception as e:
+                safe_print(f"Auto-convert slate resolution skipped: {e}")
 
-        msg = f"{os.path.basename(exr_path)} -> {os.path.basename(png_path)}"
-        safe_print(f"Auto: converted {msg}")
-        return True, os.path.basename(png_path)
+            success, error = _convert_exr_to_png(snap_path, out_path, slate_data=slate_data)
+            if not success:
+                safe_print(f"Auto-convert failed for {os.path.basename(snap_path)}: {error}")
+                return False, "conversion failed"
+            verb = "converted"
+        else:
+            import shutil
+            try:
+                shutil.copy2(snap_path, out_path)
+            except OSError as e:
+                safe_print(f"Auto-copy failed for {os.path.basename(snap_path)}: {e}")
+                return False, "copy failed"
+            verb = "copied"
+
+        dest_name = os.path.basename(out_path)
+        safe_print(f"Auto: {verb} {os.path.basename(snap_path)} -> {dest_name}")
+        return True, f"{verb} {dest_name}"
     except Exception as e:
         safe_print(f"Auto-convert error: {e}")
         return False, "conversion error"

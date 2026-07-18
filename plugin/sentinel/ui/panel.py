@@ -439,7 +439,12 @@ def check_cross_aspect_safe_area(doc, sample_strategy="keyframes", rules_context
 
 # ---------------- Snapshot System (moved to sentinel.snapshots + ui.flows) ----------------
 from sentinel import snapshots as snapshot_engine
-from sentinel.ui.flows import snapshot_auto_convert, snapshot_open_folder, snapshot_save_still
+from sentinel.ui.flows import (
+    detect_rv_snapshot_dir,
+    snapshot_auto_convert,
+    snapshot_open_folder,
+    snapshot_save_still,
+)
 from sentinel.ui import scene_tools
 
 # ---------------- UI Widget IDs ----------------
@@ -475,6 +480,7 @@ class YSPanel(gui.GeDialog):
         self._snap_last_scan = 0.0     # monotonic-ish throttle (time.time)
         self._snap_watch_primed = False  # skip converting the pre-existing backlog
         self._snap_watch_caption = ""  # status/alert text for LABEL_SNAPSHOT_WATCH
+        self._snap_watch_dir = None    # detected/fallback dir, cached per prime
 
         # Store selection results
         self._lights_bad = []
@@ -1548,11 +1554,17 @@ class YSPanel(gui.GeDialog):
     _SNAP_WATCH_INTERVAL = 2.5  # seconds; throttle independent of Timer cadence
 
     def _prime_snap_watch(self):
-        """Seed the registry with all existing EXRs marked processed so the
-        pre-existing backlog is NOT converted — only files that land after
-        enabling trigger a conversion."""
+        """Seed the registry with all existing snapshots (EXR + display-
+        referred) marked processed so the pre-existing backlog is NOT
+        converted — only files that land after enabling trigger a
+        conversion/copy. Also (re)detects the RenderView snapshot dir here,
+        once per prime rather than every tick — cfg reads every ~2.5s would
+        be pointless, and RenderView only rewrites redshift_rv.cfg on quit
+        anyway, so this is best-effort live-follow, not real-time. Falls back
+        to the manual picker (GlobalSettings) when detection fails."""
         import time
-        snap_dir = GlobalSettings.get_snapshot_dir()
+        snap_dir = detect_rv_snapshot_dir() or GlobalSettings.get_snapshot_dir()
+        self._snap_watch_dir = snap_dir
         registry = {}
         try:
             if snap_dir and os.path.isdir(snap_dir):
@@ -1560,7 +1572,7 @@ class YSPanel(gui.GeDialog):
                     try:
                         if not e.is_file() or e.name.startswith("."):
                             continue
-                        if not e.name.lower().endswith(".exr"):
+                        if not e.name.lower().endswith(snapshot_engine.SNAPSHOT_EXTS):
                             continue
                         st = e.stat()
                     except OSError:
@@ -1574,7 +1586,9 @@ class YSPanel(gui.GeDialog):
 
     def _tick_snapshot_watch(self):
         """Called from Timer. Throttled to ~_SNAP_WATCH_INTERVAL. No-op unless
-        the 'Auto-convert snapshots' toggle is on."""
+        the 'Auto-convert snapshots' toggle is on. Uses the snapshot dir
+        cached at the last prime (see _prime_snap_watch) rather than
+        re-detecting it every tick."""
         import time
         if not GlobalSettings.get_snapshot_watch():
             self._snap_watch_primed = False  # re-prime next time it's enabled
@@ -1589,7 +1603,7 @@ class YSPanel(gui.GeDialog):
             return
         self._snap_last_scan = now
 
-        snap_dir = GlobalSettings.get_snapshot_dir()
+        snap_dir = self._snap_watch_dir
         try:
             ready, registry, non_exr_alert = snapshot_engine.scan_snapshot_candidates(
                 snap_dir, self._snap_registry, now
@@ -1601,13 +1615,23 @@ class YSPanel(gui.GeDialog):
 
         caption = ""
         if non_exr_alert:
-            caption = ("Snapshots are not saving as EXR — re-enable "
-                       "'Save snapshots as EXR' in RenderView")
-        for exr_path in ready:
+            # Informational, not an error: display-referred snapshots are
+            # still watched and copied (see below) — this just explains why
+            # they aren't ACES-converted.
+            caption = ("Snapshot format is display-referred (non-EXR) — "
+                       "Sentinel still copies stills; enable 'Save snapshots "
+                       "as EXR' in RenderView for ACES-correct convert")
+        for snap_path in ready:
             doc = c4d.documents.GetActiveDocument()
-            ok, message = snapshot_auto_convert(doc, self._artist_name, exr_path)
+            ok, message = snapshot_auto_convert(doc, self._artist_name, snap_path)
             if ok:
-                caption = f"Auto: converted {os.path.basename(exr_path)} -> {message}"
+                if message.startswith("copied "):
+                    dest_name = message[len("copied "):]
+                    caption = (f"Copied {dest_name} (display-referred — "
+                               "enable 'Save snapshots as EXR' in RenderView "
+                               "for ACES-correct stills)")
+                else:
+                    caption = f"Auto: {message}"
             elif not non_exr_alert:
                 caption = f"Auto-convert skipped: {message}"
 
@@ -2069,7 +2093,7 @@ class YSPanel(gui.GeDialog):
             self._snap_watch_primed = False  # (re)prime the backlog on next tick
             if enabled:
                 self._prime_snap_watch()
-                self._snap_watch_caption = "Auto-convert on — watching for new EXRs"
+                self._snap_watch_caption = "Auto-convert on — watching for new snapshots"
             else:
                 self._snap_watch_caption = ""
             try:

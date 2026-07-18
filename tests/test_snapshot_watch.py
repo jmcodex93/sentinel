@@ -1,13 +1,19 @@
 # -*- coding: utf-8 -*-
-"""Tests for the snapshot watchfolder pure logic (scan_snapshot_candidates).
+"""Tests for the snapshot watchfolder pure logic (scan_snapshot_candidates,
+parse_rv_snapshot_dir, next_snapshot_name).
 
 The engine lives in sentinel.snapshots and is importable outside C4D (conftest
 stubs the c4d module). These tests exercise only the pure settle/registry +
-non-EXR-alert semantics; the Timer wiring and captions need live C4D.
+non-EXR-alert semantics, the redshift_rv.cfg parser, and the unique-naming
+helper; the Timer wiring and captions need live C4D.
 """
 import os
 
-from sentinel.snapshots import scan_snapshot_candidates
+from sentinel.snapshots import (
+    next_snapshot_name,
+    parse_rv_snapshot_dir,
+    scan_snapshot_candidates,
+)
 
 
 def _write(path, content=b"x", mtime=None):
@@ -95,6 +101,17 @@ def test_reused_name_new_mtime_reconverts(tmp_path):
     assert len(ready4) == 1                   # settled -> converts again
 
 
+# NOTE on the three tests below: since the streamlined-flow change, non-EXR
+# files (b_image.png) now ALSO enter the settle registry (previously only
+# .exr files were tracked at all — a non-EXR file was invisible to the
+# registry and only fed the newest_any/newest_exr alert bookkeeping). These
+# tests still discard the registry/ready values (`_`) and only assert on
+# non_exr_alert, whose semantics are UNCHANGED by design (still "newest file
+# overall is non-EXR and newer than the newest EXR") — so the assertions
+# below are unchanged even though the engine now does more work per scan.
+# Coverage for the new "non-EXR also settles" behavior lives in
+# test_png_settles_and_becomes_ready below.
+
 def test_non_exr_newer_than_newest_exr_alerts(tmp_path):
     d = str(tmp_path)
     _touch_exr(d, "a_image.exr", mtime=1000.0)
@@ -116,6 +133,40 @@ def test_no_exr_at_all_but_non_exr_present_alerts(tmp_path):
     _write(os.path.join(d, "b_image.png"), mtime=1000.0)
     _, _, alert = scan_snapshot_candidates(d, {})
     assert alert is True
+
+
+def test_png_settles_and_becomes_ready(tmp_path):
+    """New contract: display-referred exts (.png/.jpg/.jpeg/.tif/.tiff) go
+    through the SAME two-scan settle rule as .exr, so a stable PNG becomes
+    ready just like a stable EXR (streamlined flow: these are copied instead
+    of ACES-converted, but the watchfolder settle logic is identical)."""
+    d = str(tmp_path)
+    p = _write(os.path.join(d, "a_image.png"), mtime=1000.0)
+
+    ready1, reg1, _ = scan_snapshot_candidates(d, {})
+    assert ready1 == []
+    assert reg1["a_image.png"][2] == "pending"
+
+    ready2, reg2, _ = scan_snapshot_candidates(d, reg1)
+    assert ready2 == [p]
+    assert reg2["a_image.png"][2] == "processed"
+
+    ready3, _, _ = scan_snapshot_candidates(d, reg2)
+    assert ready3 == []  # already processed; never returned again
+
+
+def test_mixed_exts_settle_independently(tmp_path):
+    """A .exr and a .jpg in the same directory each go through their own
+    settle cycle but share one registry dict (no cross-contamination)."""
+    d = str(tmp_path)
+    exr = _touch_exr(d, "a_image.exr", mtime=1000.0)
+    jpg = _write(os.path.join(d, "b_image.jpg"), mtime=1000.0)
+
+    _, reg1, _ = scan_snapshot_candidates(d, {})
+    ready2, reg2, _ = scan_snapshot_candidates(d, reg1)
+    assert sorted(ready2) == sorted([exr, jpg])
+    assert reg2["a_image.exr"][2] == "processed"
+    assert reg2["b_image.jpg"][2] == "processed"
 
 
 def test_empty_dir_no_crash_no_alert(tmp_path):
@@ -141,6 +192,83 @@ def test_none_registry_ok(tmp_path):
     ready, reg, alert = scan_snapshot_candidates(d, None)
     assert ready == []
     assert isinstance(reg, dict)
+
+
+# ── parse_rv_snapshot_dir ───────────────────────────────────────────────
+
+def test_parse_rv_snapshot_dir_real_format_line():
+    """VERIFIED real redshift_rv.cfg shape (JSON-like, tab-indented, trailing
+    comma) — the regex fallback handles this since a trailing comma makes
+    the whole text invalid strict JSON."""
+    cfg_text = (
+        "{\n"
+        "\t\"someOtherKey\" : 1,\n"
+        "\t\t\"snapshotDir\" : \"/Users/javiermelgar/Documents/RS Snapshots\",\n"
+        "\t\"yetAnotherKey\" : false,\n"
+        "}\n"
+    )
+    assert parse_rv_snapshot_dir(cfg_text) == "/Users/javiermelgar/Documents/RS Snapshots"
+
+
+def test_parse_rv_snapshot_dir_full_json_variant():
+    """Strict JSON (no trailing comma) — takes the json.loads fast path."""
+    cfg_text = '{"snapshotDir": "/Users/artist/Snaps", "other": 1}'
+    assert parse_rv_snapshot_dir(cfg_text) == "/Users/artist/Snaps"
+
+
+def test_parse_rv_snapshot_dir_absent_key():
+    cfg_text = '{"someOtherKey": "value", "another": 42}'
+    assert parse_rv_snapshot_dir(cfg_text) is None
+
+
+def test_parse_rv_snapshot_dir_empty_value():
+    cfg_text = '{"snapshotDir": ""}'
+    assert parse_rv_snapshot_dir(cfg_text) is None
+
+
+def test_parse_rv_snapshot_dir_malformed_text():
+    cfg_text = "this is not json or anything parseable {{{ garbage ]]"
+    assert parse_rv_snapshot_dir(cfg_text) is None
+
+
+def test_parse_rv_snapshot_dir_empty_or_none():
+    assert parse_rv_snapshot_dir("") is None
+    assert parse_rv_snapshot_dir(None) is None
+
+
+# ── next_snapshot_name ──────────────────────────────────────────────────
+
+def test_next_snapshot_name_empty_dir():
+    assert next_snapshot_name([], "myscene") == "myscene_snap_001.png"
+
+
+def test_next_snapshot_name_increments_past_highest():
+    existing = ["myscene_snap_001.png", "myscene_snap_002.png"]
+    assert next_snapshot_name(existing, "myscene") == "myscene_snap_003.png"
+
+
+def test_next_snapshot_name_mixed_exts_share_counter():
+    """A .png and a copied .jpg for the same scene must never collide on
+    the same index — the counter scans ALL extensions."""
+    existing = ["myscene_snap_001.png", "myscene_snap_002.jpg"]
+    assert next_snapshot_name(existing, "myscene") == "myscene_snap_003.png"
+    assert next_snapshot_name(existing, "myscene", ext=".jpg") == "myscene_snap_003.jpg"
+
+
+def test_next_snapshot_name_ignores_unrelated_files():
+    existing = ["othershot_snap_005.png", "random.txt", "myscene_notes.json"]
+    assert next_snapshot_name(existing, "myscene") == "myscene_snap_001.png"
+
+
+def test_next_snapshot_name_scene_with_regex_special_chars():
+    """Scene names may contain regex-special characters (parens, brackets,
+    dots) — the prefix match is plain string comparison, not a regex built
+    from scene_name, so it must not crash or mis-match."""
+    scene = "shot (v2).cool[1]"
+    existing = [f"{scene}_snap_001.png"]
+    assert next_snapshot_name(existing, scene) == f"{scene}_snap_002.png"
+    # And an empty dir with a special-char scene name still starts at 001.
+    assert next_snapshot_name([], scene) == f"{scene}_snap_001.png"
 
 
 def test_settings_watch_roundtrip():

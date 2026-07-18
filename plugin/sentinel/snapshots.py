@@ -23,19 +23,32 @@ _ROOT = os.path.dirname(os.path.dirname(__file__))
 # scans report an IDENTICAL (mtime, size) — Redshift's write atomicity is
 # undocumented, so a single sighting can be a half-written file.
 
+# Display-referred snapshot exts RenderView can write when "Save snapshots as
+# EXR" is off. Tracked through the SAME settle registry as .exr so a stable
+# PNG/JPG/TIFF also becomes "ready" (streamlined flow: passthrough-copy these
+# instead of treating them as an error state — see ui.flows.snapshot_auto_convert).
+DISPLAY_REFERRED_EXTS = (".png", ".jpg", ".jpeg", ".tif", ".tiff")
+SNAPSHOT_EXTS = (".exr",) + DISPLAY_REFERRED_EXTS
+
+
 def scan_snapshot_candidates(snap_dir, registry, now=None):
-    """Scan ``snap_dir`` for EXR snapshots that are ready to auto-convert.
+    """Scan ``snap_dir`` for snapshots that are ready to auto-convert/copy.
 
     Pure + importable without c4d. Returns a 3-tuple:
         (ready_to_convert, updated_registry, non_exr_alert)
 
-    - ``ready_to_convert``: list of absolute paths to EXRs that just settled
-      (stable across two consecutive scans) and were not already processed.
-      A given name+mtime is returned at most once across the session.
+    - ``ready_to_convert``: list of absolute paths to snapshots (.exr AND
+      display-referred exts in SNAPSHOT_EXTS) that just settled (stable
+      across two consecutive scans) and were not already processed. A given
+      name+mtime is returned at most once across the session. Mixed exts
+      share one settle registry.
     - ``updated_registry``: the new registry dict to pass into the next scan.
     - ``non_exr_alert``: True when the newest file in the directory is NOT an
       .exr and is newer than the newest .exr (Redshift silently switched away
       from EXR output). False when an EXR is newest, or the dir is empty.
+      This is now an informational flag for the caller (display-referred
+      snapshots are still handled, just copied instead of ACES-converted),
+      not an error condition.
 
     ``registry`` may be None/empty on the first call. ``now`` is accepted for
     signature stability but the settle rule does not depend on wall-clock time.
@@ -65,14 +78,19 @@ def scan_snapshot_candidates(snap_dir, registry, now=None):
             continue
         name = e.name
         m, s = st.st_mtime, st.st_size
-        is_exr = name.lower().endswith(".exr")
+        lname = name.lower()
+        is_exr = lname.endswith(".exr")
+        is_snapshot = lname.endswith(SNAPSHOT_EXTS)
         # Ignore obvious hidden/partial dotfiles for the alert + settle logic.
         if name.startswith("."):
             continue
         if newest_any is None or m > newest_any[0]:
             newest_any = (m, name)
-        if is_exr:
+        if is_snapshot:
+            # Both .exr and display-referred exts feed the same settle
+            # registry — a stable PNG/JPG is just as "ready" as a stable EXR.
             stats[name] = (m, s)
+        if is_exr:
             if newest_exr is None or m > newest_exr[0]:
                 newest_exr = (m, name)
 
@@ -111,6 +129,73 @@ def scan_snapshot_candidates(snap_dir, registry, now=None):
             non_exr_alert = True
 
     return ready, updated, non_exr_alert
+
+
+# ── RenderView snapshot dir auto-detect — pure parser ─────────────────────
+
+def parse_rv_snapshot_dir(cfg_text):
+    """Extract the "snapshotDir" value from a redshift_rv.cfg dump.
+
+    Pure + importable without c4d. The file is JSON-LIKE (tab-indented,
+    verified real-world line shape:
+        \t\t"snapshotDir" : "/Users/artist/Documents/RS Snapshots",
+    ) but not always strict JSON (trailing commas appear in some builds), so
+    a whole-text json.loads is tried first (fast path when the file happens
+    to be valid JSON) and a regex scan for the "snapshotDir" key is the
+    fallback for the more common malformed/older cfg shape. Returns None
+    when the key is absent, its value is empty, or the text can't be parsed
+    at all. Never raises.
+    """
+    if not cfg_text:
+        return None
+
+    try:
+        import json
+        data = json.loads(cfg_text)
+        if isinstance(data, dict):
+            value = data.get("snapshotDir")
+            if isinstance(value, str) and value:
+                return value
+    except (ValueError, TypeError):
+        pass
+
+    import re
+    match = re.search(r'"snapshotDir"\s*:\s*"([^"]*)"', cfg_text)
+    if match and match.group(1):
+        return match.group(1)
+    return None
+
+
+# ── Unique still naming — pure logic ───────────────────────────────────────
+
+def next_snapshot_name(existing_names, scene_name, ext=".png"):
+    """Return the next unique "<scene>_snap_NNN<ext>" name for a stills dir.
+
+    Pure + importable without c4d. Scans ``existing_names`` (typically
+    ``os.listdir()`` of the output dir) for any file belonging to this scene
+    (``<scene>_snap_`` prefix) REGARDLESS of extension — a prior .png and a
+    freshly-copied .jpg must not collide on the same index — and returns the
+    next zero-padded 3-digit index. Uses a plain string prefix match (not a
+    regex built from ``scene_name``) so scene names containing regex-special
+    characters (parentheses, brackets, dots...) are handled safely. Unrelated
+    filenames (no matching prefix, or a non-digit suffix) are ignored.
+    """
+    prefix = f"{scene_name}_snap_"
+    highest = 0
+    for name in existing_names or ():
+        if not name.startswith(prefix):
+            continue
+        rest = name[len(prefix):]
+        digits = ""
+        for ch in rest:
+            if not ch.isdigit():
+                break
+            digits += ch
+        if digits:
+            idx = int(digits)
+            if idx > highest:
+                highest = idx
+    return f"{prefix}{highest + 1:03d}{ext}"
 
 
 def _get_stills_dir(doc, artist_name):
