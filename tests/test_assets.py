@@ -146,6 +146,190 @@ class TestMergeInventories:
         assert r["repathable"] is False
         assert r["key"].startswith("__empty__gen__")
 
+    # ── Real production pairs: same on-disk asset, two different scanner
+    # string forms — must merge to ONE repathable row (texture wins),
+    # generic owner appended. Reproduces a real dedupe bug where these
+    # showed up as two separate rows because merge_inventories dedupe'd
+    # on the literal normalize_path_key string.
+
+    def test_real_pair_doc_relative_prefix_on_unresolvable_windows_path(self):
+        tex_path = ("D:/RSRCS/C4D/GSG/gobos/Gobos Lines/Textures/"
+                    "GSG_Gobos_Lines_Lines_03.jpg")
+        gen_path = ("./D:/RSRCS/C4D/GSG/gobos/Gobos Lines/Textures/"
+                    "GSG_Gobos_Lines_Lines_03.jpg")
+        out = assets.merge_inventories(
+            [_tex(tex_path, status="absolute")],
+            [_gen(gen_path, exists=False, owner_name="doc", owner_kind="object")])
+        assert len(out) == 1
+        r = out[0]
+        assert r["repathable"] is True
+        assert r["status"] == "absolute"          # texture record wins
+        assert ("doc", "object", "") in r["owners"]   # generic owner appended
+
+    def test_real_pair_file_url_vs_generic_slash_drive_path(self):
+        tex_path = ("file:///X:/99 WORK/LOK GEN 2/c4d/PALAS_GEN2_COLLECTED/"
+                    "tex/LOK CINTA EMPUÑADURA.png")
+        gen_path = ("/X:/99 WORK/LOK GEN 2/c4d/PALAS_GEN2_COLLECTED/"
+                    "tex/LOK CINTA EMPUÑADURA.png")
+        out = assets.merge_inventories(
+            [_tex(tex_path, status="absolute")],
+            [_gen(gen_path, exists=False, owner_name="doc", owner_kind="object")])
+        assert len(out) == 1
+        r = out[0]
+        assert r["repathable"] is True
+        assert r["status"] == "absolute"
+        assert ("doc", "object", "") in r["owners"]
+
+    def test_real_pair_relative_url_vs_bare_filename(self):
+        tex_path = "relative:///white_plaster_03_ao_4k_1.jpg"
+        gen_path = "white_plaster_03_ao_4k_1.jpg"
+        out = assets.merge_inventories(
+            [_tex(tex_path, status="ok")],
+            [_gen(gen_path, exists=True, owner_name="floor", owner_kind="object")])
+        assert len(out) == 1
+        r = out[0]
+        assert r["repathable"] is True
+        assert ("floor", "object", "") in r["owners"]
+
+    def test_real_pair_missing_relative_resolves_absolute_anchored_by_base_dir(self):
+        # Residual dupe found live after the first canonical-key fix: for a
+        # MISSING relative texture, textures.py's classify_texture_path
+        # returns the doc-joined ABSOLUTE "expected location" as
+        # `resolved` (used as the texture record's merge key), while
+        # GetAllAssetsNew reports the bare relative filename for the same
+        # file — absolute vs bare-relative keys don't converge without
+        # anchoring the relative one to the doc directory.
+        tex_path = "relative:///white_plaster_03_ao_4k_1.jpg"
+        resolved = "/Users/x/scene/white_plaster_03_ao_4k_1.jpg"
+        gen_path = "white_plaster_03_ao_4k_1.jpg"
+        out = assets.merge_inventories(
+            [_tex(tex_path, status="missing", resolved=resolved)],
+            [_gen(gen_path, exists=False, owner_name="floor", owner_kind="object")],
+            base_dir="/Users/x/scene")
+        assert len(out) == 1
+        r = out[0]
+        assert r["repathable"] is True
+        assert r["status"] == "missing"
+        assert ("floor", "object", "") in r["owners"]
+
+    def test_same_pair_without_base_dir_keeps_old_unanchored_behavior(self):
+        # base_dir defaults to "" (falsy) — old behavior is preserved:
+        # an absolute "expected location" key and a bare-relative key
+        # don't converge, so the pair stays two rows.
+        tex_path = "relative:///white_plaster_03_ao_4k_1.jpg"
+        resolved = "/Users/x/scene/white_plaster_03_ao_4k_1.jpg"
+        gen_path = "white_plaster_03_ao_4k_1.jpg"
+        out = assets.merge_inventories(
+            [_tex(tex_path, status="missing", resolved=resolved)],
+            [_gen(gen_path, exists=False, owner_name="floor", owner_kind="object")])
+        assert len(out) == 2
+
+    def test_absolute_paths_unaffected_by_base_dir(self):
+        # An already-absolute texture path/key must not be re-anchored
+        # even when a (irrelevant) base_dir is supplied.
+        tex_path = "/Users/x/scene/tex/wood.png"
+        gen_path = "/Users/x/scene/tex/wood.png"
+        out = assets.merge_inventories(
+            [_tex(tex_path, status="ok")],
+            [_gen(gen_path, exists=True)],
+            base_dir="/some/unrelated/dir")
+        assert len(out) == 1
+        assert out[0]["key"] == "/users/x/scene/tex/wood.png"
+
+
+class TestCanonicalAssetKey:
+    """canonical_asset_key — the dedupe key merge_inventories uses instead
+    of the plainer normalize_path_key (which is left unchanged for its
+    other callers)."""
+
+    def test_plain_posix_path_passes_through_like_normalize_path_key(self):
+        path = "/Users/Artist/Project/Tex/Wood_Diffuse.PNG"
+        assert (assets.canonical_asset_key(path)
+                == assets.normalize_path_key(path))
+
+    def test_none_and_empty(self):
+        assert assets.canonical_asset_key(None) == ""
+        assert assets.canonical_asset_key("") == ""
+        assert assets.canonical_asset_key("   ") == ""
+
+    def test_file_url_strips_scheme_and_windows_leading_slash(self):
+        assert (assets.canonical_asset_key("file:///X:/tex/a.png")
+                == "x:/tex/a.png")
+
+    def test_file_url_posix_absolute_no_drive_fix_needed(self):
+        assert (assets.canonical_asset_key("file:///Users/x/tex/a.png")
+                == "/users/x/tex/a.png")
+
+    def test_relative_url_strips_scheme_and_leading_slashes(self):
+        assert assets.canonical_asset_key("relative:///a.jpg") == "a.jpg"
+
+    def test_collapses_leading_dot_slash(self):
+        assert (assets.canonical_asset_key("./tex/a.png")
+                == "tex/a.png")
+
+    def test_windows_drive_after_doc_relative_prefix_is_cut(self):
+        assert (assets.canonical_asset_key("./D:/rsrcs/tex/a.jpg")
+                == "d:/rsrcs/tex/a.jpg")
+
+    def test_windows_drive_embedded_deeper_is_cut(self):
+        # e.g. C4D prepending an absolute doc directory to an
+        # unresolvable absolute Windows path from a different machine.
+        assert (assets.canonical_asset_key("/users/doc/d:/tex/a.jpg")
+                == "d:/tex/a.jpg")
+
+    def test_windows_drive_at_start_is_left_alone(self):
+        assert (assets.canonical_asset_key("D:/tex/a.jpg")
+                == "d:/tex/a.jpg")
+
+    def test_base_dir_none_keeps_old_behavior(self):
+        assert (assets.canonical_asset_key("white_plaster.jpg", base_dir=None)
+                == "white_plaster.jpg")
+
+    def test_base_dir_empty_string_keeps_old_behavior(self):
+        assert (assets.canonical_asset_key("white_plaster.jpg", base_dir="")
+                == "white_plaster.jpg")
+
+    def test_base_dir_anchors_relative_path(self):
+        assert (assets.canonical_asset_key(
+                    "white_plaster.jpg", base_dir="/Users/x/scene")
+                == "/users/x/scene/white_plaster.jpg")
+
+    def test_base_dir_does_not_affect_absolute_posix_path(self):
+        assert (assets.canonical_asset_key(
+                    "/Users/x/scene/white_plaster.jpg", base_dir="/Other/Dir")
+                == "/users/x/scene/white_plaster.jpg")
+
+    def test_base_dir_does_not_affect_windows_absolute_path(self):
+        assert (assets.canonical_asset_key("D:/tex/a.jpg", base_dir="/Other/Dir")
+                == "d:/tex/a.jpg")
+
+    def test_base_dir_anchoring_converges_relative_url_and_bare_filename(self):
+        # The exact residual-dupe pair, verified at the canonical_asset_key
+        # level (merge_inventories-level coverage lives in TestMergeInventories).
+        anchored_relative = assets.canonical_asset_key(
+            "relative:///white_plaster_03_ao_4k_1.jpg", base_dir="/Users/x/scene")
+        anchored_bare = assets.canonical_asset_key(
+            "white_plaster_03_ao_4k_1.jpg", base_dir="/Users/x/scene")
+        assert anchored_relative == anchored_bare == \
+            "/users/x/scene/white_plaster_03_ao_4k_1.jpg"
+
+    def test_base_dir_anchoring_is_idempotent(self):
+        once = assets.canonical_asset_key(
+            "white_plaster.jpg", base_dir="/Users/x/scene")
+        twice = assets.canonical_asset_key(once, base_dir="/Users/x/scene")
+        assert once == twice
+
+    def test_idempotent(self):
+        for path in (
+            "./D:/RSRCS/C4D/GSG/gobos/Gobos Lines/Textures/x.jpg",
+            "file:///X:/99 WORK/LOK GEN 2/tex/y.png",
+            "relative:///white_plaster_03_ao_4k_1.jpg",
+            "/Users/artist/project/tex/wood.png",
+        ):
+            once = assets.canonical_asset_key(path)
+            twice = assets.canonical_asset_key(once)
+            assert once == twice
+
 
 class TestTotalsAndSizes:
     def test_format_size(self):
@@ -252,3 +436,69 @@ class TestCreateZip:
         out = str(tmp_path / "custom.zip")
         result = assets.create_zip_archive(str(d), zip_path=out)
         assert result["zip_path"] == out and os.path.exists(out)
+
+
+class TestFitColumnWidths:
+    """AssetListArea's fit-to-viewport invariant (Asset Hub UI polish):
+    stored column widths may come from an earlier, wider window and must
+    never be honored verbatim past the current viewport budget."""
+
+    ORDER = ("name", "type", "size", "used")
+
+    def test_under_budget_passes_through_unchanged(self):
+        stored = {"name": 210, "type": 110, "size": 64, "used": 180}  # sum=564
+        out = assets.fit_column_widths(stored, self.ORDER, budget=700, min_width=40)
+        assert out == stored
+        # Must be a copy, not the same object — caller mutates it freely
+        # without corrupting the source dict.
+        assert out is not stored
+
+    def test_exact_budget_passes_through_unchanged(self):
+        stored = {"name": 100, "type": 100, "size": 100, "used": 100}  # sum=400
+        out = assets.fit_column_widths(stored, self.ORDER, budget=400, min_width=40)
+        assert out == stored
+
+    def test_over_budget_shrinks_proportionally_and_fits(self):
+        # sum=564, must fit into budget=400 -> shrink each proportionally,
+        # no column needs the min-width floor, so it fits on the first try.
+        stored = {"name": 210, "type": 110, "size": 64, "used": 180}
+        out = assets.fit_column_widths(stored, self.ORDER, budget=400, min_width=40)
+        assert out == {"name": 148, "type": 78, "size": 45, "used": 127}
+        assert sum(out.values()) <= 400
+        # Proportional: relative order of the stored widths is preserved
+        # (name > used > type > size, same as the input).
+        assert out["name"] > out["used"] > out["type"] > out["size"]
+
+    def test_over_budget_result_never_exceeds_budget_when_it_fits(self):
+        # A budget comfortably above 4 * min_width always yields a result
+        # that fits, whether or not the min-width floor engages.
+        stored = {"name": 500, "type": 400, "size": 300, "used": 300}  # sum=1500
+        for budget in (1200, 800, 400):
+            out = assets.fit_column_widths(stored, self.ORDER, budget, min_width=40)
+            assert sum(out.values()) <= budget
+            assert all(out[c] >= 40 for c in self.ORDER)
+
+    def test_does_not_mutate_stored_dict(self):
+        stored = {"name": 500, "type": 400, "size": 300, "used": 300}
+        original = dict(stored)
+        assets.fit_column_widths(stored, self.ORDER, budget=200, min_width=40)
+        assert stored == original
+
+    def test_degenerate_budget_floors_everything_at_min(self):
+        # Even 4 * min_width doesn't fit -> every column floors at min,
+        # accepting the residual overlap (no valid layout exists).
+        stored = {"name": 500, "type": 400, "size": 300, "used": 300}
+        out = assets.fit_column_widths(stored, self.ORDER, budget=50, min_width=40)
+        assert out == {c: 40 for c in self.ORDER}
+
+    def test_zero_or_negative_budget_floors_everything_at_min(self):
+        stored = {"name": 210, "type": 110, "size": 64, "used": 180}
+        for budget in (0, -50):
+            out = assets.fit_column_widths(stored, self.ORDER, budget, min_width=40)
+            assert out == {c: 40 for c in self.ORDER}
+
+    def test_missing_keys_in_stored_default_to_min_width(self):
+        out = assets.fit_column_widths({"name": 100}, self.ORDER,
+                                       budget=700, min_width=40)
+        assert out["name"] == 100
+        assert out["type"] == out["size"] == out["used"] == 40

@@ -10,6 +10,12 @@ import c4d
 from .constants import LEGACY_SETTINGS_FILE, SETTINGS_FILE
 from .helpers import safe_print
 
+# Asset Hub column-resize defaults (AssetListArea, item 3 of the UI polish
+# pass). Only the four user-resizable columns are stored — status/thumb are
+# small fixed icon columns and path always takes the remainder.
+ASSET_HUB_COL_WIDTHS_DEFAULT = {"name": 210, "type": 110, "size": 64, "used": 180}
+ASSET_HUB_COL_WIDTH_MIN = 40
+
 
 class GlobalSettings:
     """Manages computer-level settings (not scene-specific)"""
@@ -116,3 +122,28 @@ class GlobalSettings:
     @staticmethod
     def set_snapshot_watch(enabled):
         return GlobalSettings.set('snapshot_watch', bool(enabled))
+
+    @staticmethod
+    def get_asset_hub_col_widths():
+        """Get persisted Asset Hub table column widths, or the defaults.
+
+        Per-key validation: a missing key, a non-numeric value, or a value
+        below the drag-clamp floor falls back to that key's default
+        individually — a malformed or legacy `sentinel_settings.json`
+        value never crashes `AssetListArea.CreateLayout`/`_columns`.
+        """
+        defaults = dict(ASSET_HUB_COL_WIDTHS_DEFAULT)
+        raw = GlobalSettings.get('asset_hub_col_widths', {})
+        if not isinstance(raw, dict):
+            return defaults
+        widths = dict(defaults)
+        for key in defaults:
+            value = raw.get(key)
+            if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and value >= ASSET_HUB_COL_WIDTH_MIN):
+                widths[key] = int(value)
+        return widths
+
+    @staticmethod
+    def set_asset_hub_col_widths(widths):
+        return GlobalSettings.set('asset_hub_col_widths', dict(widths or {}))

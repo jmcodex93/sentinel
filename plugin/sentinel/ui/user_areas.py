@@ -7,8 +7,9 @@ import time
 import c4d
 from c4d import gui
 
-from sentinel.assets import format_size
+from sentinel.assets import fit_column_widths, format_size
 from sentinel.common.helpers import safe_print
+from sentinel.common.settings import ASSET_HUB_COL_WIDTH_MIN, GlobalSettings
 from sentinel.qc.registry import CHECK_REGISTRY, CheckDisplayView, RowKeysView
 
 def _violation_label(violation):
@@ -1039,6 +1040,21 @@ _ASSET_STATUS_COLORS = {
     "empty":     c4d.Vector(0.47, 0.47, 0.47),
 }
 
+# Dim gray (#777777) for the "read-only" badge drawn after non-repathable
+# records' type text — item 4 of the Asset Hub UI polish pass.
+_COL_ASSET_READONLY = c4d.Vector(0.47, 0.47, 0.47)
+
+# Asset Hub header (item 2) and pre-flight strip (item 3) colors.
+_COL_HUB_HEADER_BG = c4d.Vector(0.10, 0.10, 0.10)
+_COL_HUB_HEADER_TEXT = c4d.Vector(0.95, 0.95, 0.95)
+_COL_HUB_HEADER_DIM = c4d.Vector(0.60, 0.60, 0.60)
+_COL_HUB_HEADER_RED = c4d.Vector(0.898, 0.451, 0.451)     # #e57373
+_COL_HUB_HEADER_ORANGE = c4d.Vector(1.00, 0.718, 0.302)   # #ffb74d
+
+_COL_PREFLIGHT_OK_BG = c4d.Vector(0.14, 0.18, 0.14)
+_COL_PREFLIGHT_WARN_BG = c4d.Vector(0.20, 0.17, 0.12)
+_COL_PREFLIGHT_TEXT = c4d.Vector(0.90, 0.90, 0.90)
+
 _ASSET_SORT_KEYS = {
     "status": lambda r: {"missing": 0, "absolute": 1, "empty": 2,
                           "asset_uri": 3, "ok": 4}.get(r["status"], 9),
@@ -1050,15 +1066,46 @@ _ASSET_SORT_KEYS = {
 
 class AssetListArea(gui.GeUserArea):
     """Flat, sortable asset table for the Asset Hub. Regions per row: 'row'
-    (highlight), 'used_by' (select owner in scene), 'browse' (file picker,
-    repathable only). Header clicks sort the table instead of calling back.
+    (highlight + select owner in scene), 'used_by' (same — click on the
+    "Used by" text). Header clicks sort the table instead of calling back.
     Thumbnails come from self.thumb_cache, filled by the dialog's Timer —
     a None value is a permanent placeholder (nothing is drawn) so a failed
     load is not retried every frame.
+
+    No per-row browse/relink affordance — three rounds of fixes (fixed
+    slot, drag clamp, fit-to-viewport, scrollbar padding) couldn't make a
+    reliably visible per-row "…" glyph. Relinking is a dedicated "Relink
+    Selected..." button in AssetHubDialog instead (the Crate reference UI
+    pattern): select a row here, click the button, it opens the same file
+    picker and stages the same pending change.
     """
 
     ROW_H = 26
     HEADER_H = 20
+
+    # User-resizable columns (item 3) — status/thumb are small fixed icon
+    # columns and path always takes the remainder, so neither is draggable.
+    RESIZABLE_COLS = ("name", "type", "size", "used")
+    # Shared with settings.py's per-key validation floor — one constant,
+    # not two independently-maintained "40"s.
+    MIN_COL_WIDTH = ASSET_HUB_COL_WIDTH_MIN
+    DRAG_HIT_TOLERANCE = 5   # px on either side of a divider that counts as a hit
+
+    # Path fills the gap between the last resizable column and the right
+    # edge, with a hard floor of PATH_MIN_WIDTH. There is no per-row
+    # browse column anymore (removed — see the class docstring); relink
+    # is a dedicated dialog-level button now.
+    PATH_MIN_WIDTH = 60
+    # Live-measured: the enclosing ScrollGroup draws its vertical
+    # scrollbar over the rightmost ~15-18px of this UserArea whenever the
+    # content scrolls (confirmed on screen — GetWidth() reported 1346).
+    # Reserve that strip so path's own "…" truncation ellipsis (and any
+    # text near the right edge) never sits under it.
+    SCROLLBAR_PAD = 18
+    # Leading fixed layout before the 4 resizable columns: 6 (left margin)
+    # + status(24)+6 + thumb(26)+6 = 68, derived once here so _columns and
+    # _max_col_width (the drag clamp) can never drift apart.
+    _LEADING_FIXED_WIDTH = 6 + 24 + 6 + 26 + 6
 
     def __init__(self):
         super().__init__()
@@ -1072,6 +1119,10 @@ class AssetListArea(gui.GeUserArea):
         self.click_callback = None   # callable(record_key, region)
         self.thumb_cache = {}        # {resolved_path: c4d.bitmaps.BaseBitmap}
         self.font = c4d.FONT_DEFAULT
+        # Persisted per-column widths (item 3) — loaded here with a
+        # per-key validation fallback to defaults, so a malformed/legacy
+        # sentinel_settings.json value never crashes layout.
+        self.col_widths = GlobalSettings.get_asset_hub_col_widths()
 
     # ── state ───────────────────────────────────────
     def set_state(self, records, filter_status=None, search_text="",
@@ -1120,17 +1171,155 @@ class AssetListArea(gui.GeUserArea):
         h = self.HEADER_H + max(1, len(self.visible)) * self.ROW_H
         return 700, h
 
+    def _col_budget(self, w):
+        """Max total width the 4 resizable columns may occupy at widget
+        width `w`, leaving room for the leading fixed columns + gutters,
+        PATH_MIN_WIDTH, and SCROLLBAR_PAD (the ScrollGroup's vertical
+        scrollbar draws over the rightmost strip of this UserArea). Single
+        source of truth for both `_columns`' fit-to-viewport shrink and
+        the drag clamp in `_max_col_width` — derived directly from the
+        layout `_columns()` produces: at the limit, _LEADING_FIXED_WIDTH +
+        sum(4 resizable widths) + 4 gutters (6px each) + PATH_MIN_WIDTH +
+        SCROLLBAR_PAD == w.
+        """
+        fixed = self._LEADING_FIXED_WIDTH + 4 * 6 + self.SCROLLBAR_PAD
+        return w - fixed - self.PATH_MIN_WIDTH
+
     # ── column layout (computed once per hit-test / draw from current width)
     def _columns(self, w):
         xs = {}
         x = 6
-        for name, cw in (("status", 24), ("thumb", 26), ("name", 210),
-                          ("type", 64), ("size", 64), ("used", 180)):
+        # Fit-to-viewport invariant: self.col_widths may hold values
+        # persisted from an EARLIER, wider window (sentinel_settings.json
+        # survives across sessions/window sizes). Honoring them verbatim
+        # here would push path off the visible edge on a narrower window —
+        # fit_column_widths (pure, sentinel.assets) shrinks them
+        # proportionally to fit, display-only: the return value is never
+        # written back to self.col_widths, so widening the window again
+        # restores the user's actual stored widths.
+        fitted = fit_column_widths(self.col_widths, self.RESIZABLE_COLS,
+                                    self._col_budget(w), self.MIN_COL_WIDTH)
+        # status/thumb stay fixed icon columns; both the hit test and the
+        # draw pass read this same table, so they stay in sync. "type" is
+        # widened 64 -> 110 by default to make room for the item-4
+        # "read-only" badge.
+        for name, cw in (("status", 24), ("thumb", 26),
+                          ("name", fitted["name"]), ("type", fitted["type"]),
+                          ("size", fitted["size"]), ("used", fitted["used"])):
             xs[name] = (x, cw)
             x += cw + 6
-        xs["path"] = (x, max(60, w - x - 34))
-        xs["browse"] = (w - 26, 20)
+        # Path runs from the last resizable column to the right edge minus
+        # SCROLLBAR_PAD (the ScrollGroup's vertical scrollbar draws over
+        # that strip) — no more fixed browse slot at the end (removed;
+        # relinking is a dedicated "Relink Selected..." button on the
+        # dialog now, see the class docstring). Between the fit-to-
+        # viewport shrink above and the drag clamp in _max_col_width, path
+        # should always keep its PATH_MIN_WIDTH floor in practice; the
+        # max() here is the last-resort guard for windows narrower than
+        # GetMinSize.
+        xs["path"] = (x, max(self.PATH_MIN_WIDTH, w - self.SCROLLBAR_PAD - x))
         return xs
+
+    def _column_edges(self, xs):
+        """Right-edge x for each resizable column, from an already-computed
+        `_columns()` table. Single source of truth for both the drag hit
+        test and the drawn divider lines — what the user sees is exactly
+        where they grab (item 2 of the follow-up UI polish pass)."""
+        return {col: xs[col][0] + xs[col][1] for col in self.RESIZABLE_COLS}
+
+    def _divider_hit(self, lx, ly):
+        """Return the resizable column whose right-edge divider is within
+        DRAG_HIT_TOLERANCE px of lx, or None. Header row only — dividers
+        are not draggable over the data rows."""
+        if ly >= self.HEADER_H:
+            return None
+        xs = self._columns(self.GetWidth())
+        for col, edge in self._column_edges(xs).items():
+            if abs(lx - edge) <= self.DRAG_HIT_TOLERANCE:
+                return col
+        return None
+
+    def _max_col_width(self, col, w):
+        """Widest `col` can become while still leaving PATH_MIN_WIDTH free
+        for the path column before the right edge (minus SCROLLBAR_PAD).
+
+        Belt-and-braces on top of `_columns`' fit-to-viewport shrink:
+        "others" is read from the FITTED layout (not the raw, possibly
+        oversized stored widths), so the budget for the dragged column
+        reflects what the other three columns actually occupy on screen
+        right now — widening one column can never push path off the
+        right edge.
+        """
+        budget = self._col_budget(w)
+        fitted = fit_column_widths(self.col_widths, self.RESIZABLE_COLS,
+                                    budget, self.MIN_COL_WIDTH)
+        others = sum(fitted[c] for c in self.RESIZABLE_COLS if c != col)
+        return max(self.MIN_COL_WIDTH, budget - others)
+
+    def _drag_column(self, col, mx, my):
+        """Blocking column-resize drag loop.
+
+        Grounded in the local SDK example `geuserarea_drag_r13.py`
+        (MouseDragStart / MouseDrag / MouseDragEnd):
+        - C4D's per-tick deltaX from MouseDrag() is signed opposite to the
+          actual mouse movement, so the example accumulates the true
+          current mouse X via `mouseX -= deltaX` each tick — mirrored here
+          as `mx`.
+        - The FIRST MouseDrag() tick reports a synthetic dx/dy of 4.0 from
+          the click itself (example lines 283-298), so it is skipped via
+          the same `is_first_tick` guard — without it every drag starts
+          4px off, and a plain click near a divider (no real movement)
+          would still shrink the column.
+        - MouseDragEnd() is called from `finally` (not just after a clean
+          break), matching the example's unconditional call — any
+          exception mid-drag still releases the mouse capture.
+        Width is clamped to [MIN_COL_WIDTH, _max_col_width(col, GetWidth())]
+        — the upper bound is recomputed every tick from the CURRENT widget
+        width, so it tracks a live window resize during the drag and, more
+        importantly, guarantees path always keeps its PATH_MIN_WIDTH floor
+        before the right edge (a plain MIN_COL_WIDTH=40 floor alone let
+        name/type/size/used grow large enough to push path off-screen).
+        The clamped width is pushed to col_widths (and therefore _columns/
+        LayoutChanged) on every tick that changes it, so the table visibly
+        resizes live. Persistence only fires if the final width differs
+        from drag start — a no-movement click writes nothing to settings.
+        No cursor feedback: BFM_GETCURSORINFO is not routed to embedded
+        GeUserAreas in C4D 2026 (documented limitation, see CLAUDE.md
+        Known Limitations).
+        """
+        start_x = mx
+        start_width = self.col_widths[col]
+        try:
+            # DONTHIDEMOUSE keeps the pointer visible (no OS-level cursor
+            # feedback anyway, per the limitation above); NOMOVE keeps the
+            # OS cursor pinned at the click position during the drag,
+            # matching the SDK example exactly.
+            self.MouseDragStart(
+                c4d.KEY_MLEFT, mx, my,
+                c4d.MOUSEDRAGFLAGS_DONTHIDEMOUSE | c4d.MOUSEDRAGFLAGS_NOMOVE)
+            is_first_tick = True
+            while True:
+                result, dx, dy, channels = self.MouseDrag()
+                if result != c4d.MOUSEDRAGRESULT_CONTINUE:
+                    break
+                if is_first_tick:
+                    is_first_tick = False
+                    continue
+                mx -= dx
+                max_w = self._max_col_width(col, self.GetWidth())
+                new_width = max(self.MIN_COL_WIDTH,
+                                min(max_w, int(start_width + (mx - start_x))))
+                if new_width != self.col_widths[col]:
+                    self.col_widths[col] = new_width
+                    self.LayoutChanged()
+                    self.Redraw()
+        except Exception as e:
+            safe_print(f"AssetListArea._drag_column error: {e}")
+        finally:
+            self.MouseDragEnd()
+        # Persist only if the width actually moved off drag start.
+        if self.col_widths[col] != start_width:
+            GlobalSettings.set_asset_hub_col_widths(self.col_widths)
 
     # ── click detection ─────────────────────────────
     def _hit_test(self, lx, ly):
@@ -1147,11 +1336,8 @@ class AssetListArea(gui.GeUserArea):
         rec = self.records[self.visible[row]]
         xs = self._columns(self.GetWidth())
         ux, uw = xs["used"]
-        bx, bw = xs["browse"]
         if ux <= lx <= ux + uw:
             return rec["key"], "used_by"
-        if rec["repathable"] and bx <= lx <= bx + bw:
-            return rec["key"], "browse"
         return rec["key"], "row"
 
     def InputEvent(self, msg):
@@ -1163,6 +1349,14 @@ class AssetListArea(gui.GeUserArea):
             mx = int(msg[c4d.BFM_INPUT_X])
             my = int(msg[c4d.BFM_INPUT_Y])
             lx, ly = _ua_local_coords(self, mx, my)
+
+            # A divider hit takes priority over a header sort click (item 3)
+            # — clicking exactly on a boundary resizes, it never sorts.
+            divider_col = self._divider_hit(lx, ly)
+            if divider_col is not None:
+                self._drag_column(divider_col, mx, my)
+                return True
+
             key, region = self._hit_test(lx, ly)
             if region and isinstance(region, tuple) and region[0] == "header":
                 self.sort_by(region[1])
@@ -1238,6 +1432,20 @@ class AssetListArea(gui.GeUserArea):
                               nx, y + 5)
                 self.DrawSetTextCol(c4d.Vector(0.6, 0.6, 0.6), bg)
                 self.DrawText(rec["asset_type"], xs["type"][0], y + 5)
+                if not rec["repathable"]:
+                    # Dim "read-only" tag after the type text, budgeted
+                    # inside the widened type column so it never collides
+                    # with Size (item 4).
+                    try:
+                        type_w = int(self.DrawGetTextWidth(rec["asset_type"]))
+                    except Exception:
+                        type_w = len(rec["asset_type"]) * 6
+                    badge_x = xs["type"][0] + type_w + 6
+                    type_end = xs["type"][0] + xs["type"][1]
+                    if badge_x < type_end - 10:
+                        self.DrawSetTextCol(_COL_ASSET_READONLY, bg)
+                        self.DrawText("read-only", badge_x, y + 5)
+                    self.DrawSetTextCol(c4d.Vector(0.6, 0.6, 0.6), bg)
                 self.DrawText(format_size(rec["size_bytes"]), xs["size"][0], y + 5)
                 owners = rec["owners"] or [("", "", "")]
                 used = (f"{owners[0][0]} / {owners[0][2]}" if owners[0][2]
@@ -1257,10 +1465,181 @@ class AssetListArea(gui.GeUserArea):
                 self.DrawText(_format_path_compact(shown_path,
                                                    max_chars=max(20, pw // 7)),
                               px, y + 5)
-                if rec["repathable"]:
-                    self.DrawSetTextCol(c4d.Vector(0.7, 0.7, 0.7), bg)
-                    self.DrawText("...", xs["browse"][0], y + 5)
                 y += self.ROW_H
+
+            # Column dividers (item 2, follow-up UI polish pass) — drawn at
+            # the exact same x as _divider_hit's boundary (both derive from
+            # `xs` via _column_edges), so what the user sees is exactly
+            # where they grab. Visible 1px line across the header; a
+            # fainter line continues down the body rows for column
+            # separation.
+            for col, edge in self._column_edges(xs).items():
+                self.DrawSetPen(c4d.Vector(0.32, 0.32, 0.32))
+                self.DrawRectangle(edge, 0, edge + 1, self.HEADER_H)
+                if y > self.HEADER_H:
+                    self.DrawSetPen(c4d.Vector(0.18, 0.18, 0.18))
+                    self.DrawRectangle(edge, self.HEADER_H, edge + 1, y)
 
         except Exception as e:
             safe_print(f"Error in AssetListArea.DrawMsg: {e}")
+
+
+class AssetHubHeaderArea(gui.GeUserArea):
+    """Colored header for the Asset Hub: "Scene: <name>" left-anchored,
+    asset totals right-anchored — replacing a plain StaticText (item 2 of
+    the UI polish pass). Pattern mirrored from ScoreHeader — measure a
+    segment with DrawGetTextWidth, then DrawSetTextCol + DrawText it; the
+    right-hand block measures its total width first (same _measure per
+    segment) so it can start at GetWidth() - total - margin.
+    """
+
+    HEIGHT = 20
+
+    def __init__(self):
+        super().__init__()
+        self.doc_name = ""
+        self.count = 0
+        self.missing = 0
+        self.absolute = 0
+        self.size_text = ""
+        self.suffix = ""
+
+    def GetMinSize(self):
+        return 400, self.HEIGHT
+
+    def set_header_state(self, doc_name, count, missing, absolute,
+                          size_text, suffix=""):
+        self.doc_name = doc_name or ""
+        self.count = max(0, int(count or 0))
+        self.missing = max(0, int(missing or 0))
+        self.absolute = max(0, int(absolute or 0))
+        self.size_text = size_text or ""
+        self.suffix = suffix or ""
+        self.Redraw()
+
+    def _measure(self, text):
+        try:
+            return int(self.DrawGetTextWidth(text))
+        except Exception:
+            return len(text) * 6
+
+    def DrawMsg(self, x1, y1, x2, y2, msg):
+        try:
+            self.OffScreenOn()
+            w = self.GetWidth()
+            h = self.GetHeight()
+
+            self.DrawSetPen(_COL_HUB_HEADER_BG)
+            self.DrawRectangle(0, 0, w, h)
+
+            text_y = max(2, (h - 12) // 2)
+            sep = " · "
+            sep_w = self._measure(sep)
+            margin = 8
+
+            # Right: summary segments, measured first so the left side
+            # knows how much room it has before it would overlap them.
+            segments = [
+                (f"{self.count} assets", _COL_HUB_HEADER_TEXT),
+                (f"{self.missing} missing",
+                 _COL_HUB_HEADER_RED if self.missing else _COL_HUB_HEADER_DIM),
+                (f"{self.absolute} absolute",
+                 _COL_HUB_HEADER_ORANGE if self.absolute else _COL_HUB_HEADER_DIM),
+                (self.size_text, _COL_HUB_HEADER_DIM),
+            ]
+            if self.suffix:
+                segments.append((self.suffix, _COL_HUB_HEADER_DIM))
+            segments = [(text, col) for text, col in segments if text]
+
+            total_w = sum(self._measure(text) for text, _ in segments)
+            total_w += sep_w * max(0, len(segments) - 1)
+            right_start = max(margin, w - total_w - margin)
+
+            # Left: scene identity, clipped so a long scene name can never
+            # overlap the right-anchored summary — same truncate-to-width
+            # loop TodoArea/PreflightStripArea use (shrink + ellipsis until
+            # it fits the room between the left margin and right_start).
+            left_text = f"Scene: {self.doc_name}" if self.doc_name else "Scene:"
+            avail_w = max(0, right_start - margin)
+            truncated = left_text
+            try:
+                if self._measure(truncated) > avail_w:
+                    while truncated and self._measure(truncated + "...") > avail_w:
+                        truncated = truncated[:-1]
+                    truncated = (truncated + "..."
+                                 if truncated != left_text else truncated)
+            except Exception:
+                if len(truncated) > 40:
+                    truncated = truncated[:37] + "..."
+            self.DrawSetTextCol(_COL_HUB_HEADER_DIM, _COL_HUB_HEADER_BG)
+            self.DrawText(truncated, margin, text_y)
+
+            x = right_start
+            first = True
+            for text, col in segments:
+                if not first:
+                    self.DrawSetTextCol(_COL_HUB_HEADER_DIM, _COL_HUB_HEADER_BG)
+                    self.DrawText(sep, x, text_y)
+                    x += sep_w
+                self.DrawSetTextCol(col, _COL_HUB_HEADER_BG)
+                self.DrawText(text, x, text_y)
+                x += self._measure(text)
+                first = False
+
+        except Exception as e:
+            safe_print(f"Error in AssetHubHeaderArea.DrawMsg: {e}")
+
+
+class PreflightStripArea(gui.GeUserArea):
+    """Full-width colored strip for the Asset Hub pre-flight QC summary
+    (item 3 of the UI polish pass) — dark green when all checks are clear,
+    dark amber when there are failing checks, with the score/summary text
+    drawn on top and truncated to width (same truncate-to-width technique
+    TodoArea.DrawMsg uses for its row text).
+    """
+
+    HEIGHT = 22
+
+    def __init__(self):
+        super().__init__()
+        self.ok = True
+        self.text = ""
+
+    def GetMinSize(self):
+        return 300, self.HEIGHT
+
+    def set_state(self, ok, text):
+        self.ok = bool(ok)
+        self.text = text or ""
+        self.Redraw()
+
+    def DrawMsg(self, x1, y1, x2, y2, msg):
+        try:
+            self.OffScreenOn()
+            w = self.GetWidth()
+            h = self.GetHeight()
+
+            bg = _COL_PREFLIGHT_OK_BG if self.ok else _COL_PREFLIGHT_WARN_BG
+            self.DrawSetPen(bg)
+            self.DrawRectangle(0, 0, w, h)
+
+            text_y = max(2, (h - 12) // 2)
+            margin = 6
+            avail_w = w - margin * 2
+            truncated = self.text
+            try:
+                if int(self.DrawGetTextWidth(truncated)) > avail_w:
+                    while truncated and int(
+                            self.DrawGetTextWidth(truncated + "...")) > avail_w:
+                        truncated = truncated[:-1]
+                    truncated = (truncated + "..."
+                                 if truncated != self.text else truncated)
+            except Exception:
+                if len(truncated) > 80:
+                    truncated = truncated[:77] + "..."
+
+            self.DrawSetTextCol(_COL_PREFLIGHT_TEXT, bg)
+            self.DrawText(truncated, margin, text_y)
+
+        except Exception as e:
+            safe_print(f"Error in PreflightStripArea.DrawMsg: {e}")

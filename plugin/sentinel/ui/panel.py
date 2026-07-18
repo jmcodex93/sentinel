@@ -2566,7 +2566,7 @@ class YSPanel(gui.GeDialog):
             dlg = AssetHubDialog(doc, focus=focus)
             dlg._artist_name = self._artist_name
             self._asset_hub = dlg
-            dlg.Open(c4d.DLG_TYPE_ASYNC, defaultw=980, defaulth=720)
+            dlg.Open(c4d.DLG_TYPE_ASYNC, defaultw=980, defaulth=560)
         except Exception as e:
             c4d.gui.MessageDialog(f"Asset Hub failed to open:\n{e}")
             safe_print(f"Asset Hub error: {e}")

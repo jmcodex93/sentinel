@@ -38,7 +38,14 @@ from sentinel.textures import (
 
 from .ids import GateTriageIds
 from .reports import build_baseline_artifact_details
-from .user_areas import AssetListArea, TextureListArea, TodoArea, _violation_label
+from .user_areas import (
+    AssetHubHeaderArea,
+    AssetListArea,
+    PreflightStripArea,
+    TextureListArea,
+    TodoArea,
+    _violation_label,
+)
 
 
 def gate_dialog_can_proceed(blocking_items, fixable_items, decisions, reason):
@@ -1626,19 +1633,22 @@ class AssetHubDialog(gui.GeDialog):
 
     LBL_HEADER = 2001
     BTN_RESCAN = 2002
-    BTN_FILTER_ALL, BTN_FILTER_MISSING = 2010, 2011
-    BTN_FILTER_ABSOLUTE, BTN_FILTER_OK = 2012, 2013
+    FILTER_TAB = 2015  # QuickTab CustomGUI: All | Missing | Absolute | OK
     EDIT_SEARCH = 2014
     SCROLL_LIST, USERAREA_LIST = 2020, 2021
     EDIT_FIND, EDIT_REPLACE = 2030, 2031
     BTN_PREVIEW, COMBO_RECENT, CHK_MATCH_CASE = 2032, 2033, 2034
     BTN_SEARCH_FOLDER, BTN_MAKE_RELATIVE, BTN_CLEAR = 2040, 2041, 2042
     LBL_PENDING, BTN_APPLY_ALL = 2043, 2044
+    BTN_RELINK = 2045  # "Relink Selected..." — replaces the removed per-row browse glyph
     LBL_PREFLIGHT = 2050
     BTN_PF_FIX, BTN_PF_ACCEPT, BTN_PF_DETAILS = 2051, 2052, 2053
     EDIT_DEST, BTN_CHOOSE_DEST = 2060, 2061
     COMBO_OUTPUT, BTN_COLLECT = 2062, 2063
     LBL_COLLECT_STATUS = 2064
+
+    # FILTER_TAB tab index -> filter_status, in AppendString order (item 1).
+    FILTER_TAB_STATUSES = (None, "missing", "absolute", "ok")
 
     THUMB_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".tga",
                   ".exr", ".hdr", ".psd", ".webp"}
@@ -1657,6 +1667,9 @@ class AssetHubDialog(gui.GeDialog):
         self.skipped = 0
         self.pending = {}          # {record_key: new_path}
         self.list_ua = None
+        self.header_ua = None      # AssetHubHeaderArea (item 2)
+        self.preflight_ua = None   # PreflightStripArea (item 3)
+        self._filter_tab = None    # FILTER_TAB QuickTab CustomGUI (item 1)
         self.filter_status = None
         self._needs_rescan = False
         # Debounce counter for the rescan-on-scene-change path (Timer runs
@@ -1668,6 +1681,16 @@ class AssetHubDialog(gui.GeDialog):
         # the scene has been quiet for QUIET_TICKS_THRESHOLD ticks
         # (~1s) — a trailing-edge debounce.
         self._quiet_ticks = 0
+        # Self-inflicted-event suppression: a row click's
+        # SetActiveMaterial/SetActiveObject + EventAdd (_select_owner_in_scene)
+        # makes C4D broadcast EVMSG_CHANGE right back at us, which would
+        # otherwise arm _needs_rescan and trigger a full rescan (texture
+        # scan + GetAllAssetsNew + all 12 QC checks) ~1s after every single
+        # row click. Set to a few Timer ticks right before our own
+        # EventAdd(); CoreMessage consumes EVMSG_CHANGE silently (without
+        # arming _needs_rescan) while this is > 0. The manual Rescan
+        # button is unaffected — it calls _rescan() directly.
+        self._suppress_ticks = 0
         self._stat_cursor = 0      # batched size stat progress
         self._recent_presets = []
         # Zone 5 pre-flight QC payload, refreshed by _refresh_preflight().
@@ -1685,21 +1708,42 @@ class AssetHubDialog(gui.GeDialog):
         self.GroupBorderSpace(12, 10, 12, 10)
         self.GroupSpace(0, 6)
 
-        # zone 1: header
+        # zone 1: header — colored UserArea (item 2) instead of a plain
+        # StaticText, same AddUserArea/AttachUserArea pattern as the panel's
+        # ScoreHeader (panel.py ~1290-1292).
         self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
-        self.AddStaticText(self.LBL_HEADER, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+        self.AddUserArea(self.LBL_HEADER, c4d.BFH_SCALEFIT,
+                         0, AssetHubHeaderArea.HEIGHT)
+        if self.header_ua is None:
+            self.header_ua = AssetHubHeaderArea()
+        self.AttachUserArea(self.header_ua, self.LBL_HEADER)
         self.AddButton(self.BTN_RESCAN, c4d.BFH_RIGHT, 0, 0, "↻ Rescan")
         self.GroupEnd()
 
-        # zone 2: filters + search
-        self.GroupBegin(0, c4d.BFH_SCALEFIT, 6, 0)
+        # zone 2: filters (QuickTab, item 1) + search
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 3, 0)
         self.GroupSpace(6, 0)
         self.AddStaticText(0, c4d.BFH_LEFT, 60, 0, "Filter:", 0)
-        for bid, label in ((self.BTN_FILTER_ALL, "All"),
-                           (self.BTN_FILTER_MISSING, "Missing"),
-                           (self.BTN_FILTER_ABSOLUTE, "Absolute"),
-                           (self.BTN_FILTER_OK, "OK")):
-            self.AddButton(bid, c4d.BFH_LEFT, 0, 0, label)
+        filter_bc = c4d.BaseContainer()
+        filter_bc.SetBool(c4d.QUICKTAB_BAR, False)
+        filter_bc.SetBool(c4d.QUICKTAB_SHOWSINGLE, True)
+        filter_bc.SetBool(c4d.QUICKTAB_NOMULTISELECT, True)
+        # Explicit minw: this quicktab shares a row with the "Filter:" label
+        # and the search field (unlike the panel's TAB_BAR, which owns its
+        # whole row — panel.py ~1298-1312). With minw=0 + BFH_LEFT the
+        # widget collapsed to its bare minimum and the tab-style QuickTab
+        # wrapped vertically instead of laying out 4 tabs side by side.
+        # 280px still wrapped "OK" to a second row at real font size;
+        # 400px fits all 4 tabs ("All | Missing | Absolute | OK") on one
+        # horizontal row (verified against the panel's own TAB_BAR pattern).
+        self._filter_tab = self.AddCustomGui(
+            self.FILTER_TAB, c4d.CUSTOMGUI_QUICKTAB, "",
+            c4d.BFH_LEFT, 400, 0, filter_bc)
+        if self._filter_tab is not None:
+            self._filter_tab.AppendString(0, "All", self.filter_status is None)
+            self._filter_tab.AppendString(1, "Missing", self.filter_status == "missing")
+            self._filter_tab.AppendString(2, "Absolute", self.filter_status == "absolute")
+            self._filter_tab.AppendString(3, "OK", self.filter_status == "ok")
         self.AddEditText(self.EDIT_SEARCH, c4d.BFH_SCALEFIT, 0, 0)
         self.GroupEnd()
 
@@ -1734,9 +1778,17 @@ class AssetHubDialog(gui.GeDialog):
         self.AddComboBox(self.COMBO_RECENT, c4d.BFH_SCALEFIT, 0, 0)
         self.AddCheckbox(self.CHK_MATCH_CASE, c4d.BFH_LEFT, 0, 0, "Match case")
         self.GroupEnd()
-        self.GroupBegin(0, c4d.BFH_SCALEFIT, 6, 0)
+        self.GroupBegin(0, c4d.BFH_SCALEFIT, 7, 0)
         self.AddButton(self.BTN_SEARCH_FOLDER, c4d.BFH_LEFT, 0, 0,
                        "Search Folder for Missing…")
+        # Relink a single selected row (Crate reference-UI pattern) — the
+        # per-row "…" glyph it replaces was removed after three rounds of
+        # fixes (fixed slot, drag clamp, fit-to-viewport, scrollbar
+        # padding) still couldn't make it reliably visible. Always
+        # enabled; the handler's own guard messages cover no-selection /
+        # read-only rather than a disabled-state affordance.
+        self.AddButton(self.BTN_RELINK, c4d.BFH_LEFT, 0, 0,
+                       "Relink Selected…")
         self.AddButton(self.BTN_MAKE_RELATIVE, c4d.BFH_LEFT, 0, 0,
                        "Make All Relative")
         self.AddButton(self.BTN_CLEAR, c4d.BFH_LEFT, 0, 0, "Clear Pending")
@@ -1747,10 +1799,20 @@ class AssetHubDialog(gui.GeDialog):
         self.GroupEnd()
         self.GroupEnd()  # repathing
 
-        # zone 5: pre-flight QC strip (Task 10)
+        # Breathing room between Repathing and Pre-flight QC (item 5) —
+        # mirrors the AddSeparatorH(4) rhythm TextureRepathingDialog uses
+        # between its "Bulk Find & Replace" and "Smart Actions" groups.
+        self.AddSeparatorH(6)
+
+        # zone 5: pre-flight QC strip — colored UserArea (item 3) instead
+        # of a plain StaticText.
         self.GroupBegin(0, c4d.BFH_SCALEFIT, 4, 0, "Pre-flight QC")
         self.GroupBorderSpace(8, 6, 8, 6)
-        self.AddStaticText(self.LBL_PREFLIGHT, c4d.BFH_SCALEFIT, 0, 0, "", 0)
+        self.AddUserArea(self.LBL_PREFLIGHT, c4d.BFH_SCALEFIT,
+                         0, PreflightStripArea.HEIGHT)
+        if self.preflight_ua is None:
+            self.preflight_ua = PreflightStripArea()
+        self.AttachUserArea(self.preflight_ua, self.LBL_PREFLIGHT)
         self.AddButton(self.BTN_PF_FIX, c4d.BFH_RIGHT, 0, 0, "Fix auto-fixables")
         self.AddButton(self.BTN_PF_ACCEPT, c4d.BFH_RIGHT, 0, 0, "Accept…")
         self.AddButton(self.BTN_PF_DETAILS, c4d.BFH_RIGHT, 0, 0, "Details")
@@ -1832,14 +1894,15 @@ class AssetHubDialog(gui.GeDialog):
     def _push_state(self):
         totals = assets_engine.compute_totals(self.records)
         doc_name = self.doc.GetDocumentName() or "(unsaved)"
-        head = (f"{doc_name}   —   {totals['count']} assets · "
-                f"{totals['missing']} missing · {totals['absolute']} absolute"
-                f" · {assets_engine.format_size(totals['total_bytes'])}")
+        suffix_parts = []
         if self._stat_cursor < len(self.records):
-            head += " (sizing…)"
+            suffix_parts.append("sizing…")
         if self.skipped:
-            head += f" · {self.skipped} items skipped"
-        self.SetString(self.LBL_HEADER, head)
+            suffix_parts.append(f"{self.skipped} skipped")
+        self.header_ua.set_header_state(
+            doc_name, totals["count"], totals["missing"], totals["absolute"],
+            assets_engine.format_size(totals["total_bytes"]),
+            " · ".join(suffix_parts))
         self.SetString(self.LBL_PENDING,
                        f"{len(self.pending)} pending changes"
                        if self.pending else "")
@@ -1888,6 +1951,12 @@ class AssetHubDialog(gui.GeDialog):
 
     # ── events ──────────────────────────────────────────
     def Timer(self, msg):
+        # Decrement the self-inflicted-event suppression window (see the
+        # comment on self._suppress_ticks in __init__) — independent of
+        # the pending-edits early return below, so it counts down even
+        # while a repathing preview is in progress.
+        if self._suppress_ticks > 0:
+            self._suppress_ticks -= 1
         # Skip the rescan while there are pending (un-applied) repathing
         # edits, same guard as TextureRepathingDialog.Timer — otherwise an
         # unrelated scene change (or even our own Apply All mid-batch)
@@ -1913,6 +1982,11 @@ class AssetHubDialog(gui.GeDialog):
 
     def CoreMessage(self, cid, msg):
         if cid == c4d.EVMSG_CHANGE:
+            if self._suppress_ticks > 0:
+                # Self-echo from our own row-click selection
+                # (_select_owner_in_scene's EventAdd) — consume silently,
+                # do NOT arm _needs_rescan. See self._suppress_ticks.
+                return gui.GeDialog.CoreMessage(self, cid, msg)
             self._needs_rescan = True
             # Any new change restarts the quiet period — the rescan only
             # fires after QUIET_TICKS_THRESHOLD ticks with no further
@@ -1923,14 +1997,19 @@ class AssetHubDialog(gui.GeDialog):
     def Command(self, cid, msg):
         if cid == self.BTN_RESCAN:
             self._rescan()
-        elif cid == self.BTN_FILTER_ALL:
-            self.filter_status = None; self._push_state()
-        elif cid == self.BTN_FILTER_MISSING:
-            self.filter_status = "missing"; self._push_state()
-        elif cid == self.BTN_FILTER_ABSOLUTE:
-            self.filter_status = "absolute"; self._push_state()
-        elif cid == self.BTN_FILTER_OK:
-            self.filter_status = "ok"; self._push_state()
+        elif cid == self.FILTER_TAB:
+            # QuickTab selection (item 1) — find which tab is selected and
+            # map its index to a filter_status, same IsSelected() scan the
+            # panel's TAB_BAR handler uses (panel.py Command, cid == G.TAB_BAR).
+            if self._filter_tab is not None:
+                for i, status in enumerate(self.FILTER_TAB_STATUSES):
+                    try:
+                        if self._filter_tab.IsSelected(i):
+                            self.filter_status = status
+                            break
+                    except Exception:
+                        pass
+            self._push_state()
         elif cid == self.EDIT_SEARCH:
             self._push_state()
         elif cid == self.COMBO_RECENT:
@@ -1948,6 +2027,8 @@ class AssetHubDialog(gui.GeDialog):
             self._preview_bulk()
         elif cid == self.BTN_SEARCH_FOLDER:
             self._search_folder_for_missing()
+        elif cid == self.BTN_RELINK:
+            self._relink_selected()
         elif cid == self.BTN_MAKE_RELATIVE:
             self._make_all_relative()
         elif cid == self.BTN_CLEAR:
@@ -1978,23 +2059,69 @@ class AssetHubDialog(gui.GeDialog):
         return None
 
     def _on_row_click(self, key, region):
+        # No "browse" region anymore — the per-row "…" glyph was removed
+        # (see AssetListArea's class docstring); relinking is the
+        # dedicated "Relink Selected..." button (_relink_selected) now,
+        # driven by AssetListArea.selected_key instead of a click region.
         rec = self._record_by_key(key)
         if rec is None:
             return
-        if region == "browse" and rec["repathable"]:
-            path = c4d.storage.LoadDialog(title="Choose texture file")
-            if path:
-                self.pending[key] = path
-                self._push_state()
-        elif region == "used_by" and rec["tex_idx"] is not None:
-            host = self.tex_records[rec["tex_idx"]].get("host")
-            if host is None:
-                return
-            if isinstance(host, c4d.BaseMaterial):
-                self.doc.SetActiveMaterial(host)
-            else:
-                self.doc.SetActiveObject(host)
-            c4d.EventAdd()
+        if region in ("used_by", "row"):
+            # Clicking anywhere in the row body selects the owning
+            # material/object, same as clicking "Used by" specifically —
+            # the highlight itself was already set by
+            # AssetListArea.InputEvent before this callback runs.
+            self._select_owner_in_scene(rec)
+
+    def _select_owner_in_scene(self, rec):
+        """Select the record's owning material/object in the scene.
+
+        Rows with no tex_idx (generic GetAllAssetsNew entries that aren't
+        backed by a structured TextureRecord — e.g. some Alembic caches)
+        are a no-op: highlight only, no owner_ref is retained for them to
+        select (known debt, see assets.merge_asset_records).
+        """
+        if rec["tex_idx"] is None:
+            return
+        host = self.tex_records[rec["tex_idx"]].get("host")
+        if host is None:
+            return
+        if isinstance(host, c4d.BaseMaterial):
+            self.doc.SetActiveMaterial(host)
+        else:
+            self.doc.SetActiveObject(host)
+        # Arm the self-inflicted-event suppression window right before our
+        # own EventAdd() — the SetActive* call above makes C4D broadcast
+        # EVMSG_CHANGE back at us via CoreMessage; without this, every row
+        # click would arm _needs_rescan and trigger a full rescan (texture
+        # scan + GetAllAssetsNew + all 12 QC checks) ~1s later.
+        self._suppress_ticks = 3
+        c4d.EventAdd()
+
+    def _relink_selected(self):
+        """Relink the row currently selected in AssetListArea — replaces
+        the removed per-row "…" browse glyph (Crate reference-UI pattern:
+        a dedicated "Relink Selected..." button instead of a per-row
+        affordance that three rounds of fixes couldn't make reliably
+        visible). Same semantics the browse dots had: stages a pending
+        change, Apply All commits it.
+        """
+        key = self.list_ua.selected_key
+        if key is None:
+            c4d.gui.MessageDialog("Select an asset row first.")
+            return
+        rec = self._record_by_key(key)
+        if rec is None:
+            c4d.gui.MessageDialog("Select an asset row first.")
+            return
+        if not rec["repathable"]:
+            c4d.gui.MessageDialog(
+                "This asset is read-only — it cannot be relinked.")
+            return
+        path = c4d.storage.LoadDialog(title="Choose replacement file")
+        if path:
+            self.pending[key] = path
+            self._push_state()
 
     def _preview_bulk(self):
         import re
@@ -2177,7 +2304,7 @@ class AssetHubDialog(gui.GeDialog):
                  if not failing else
                  f"⚠ {score['passed']}/{score['total']} — " +
                  " · ".join(f"{cid}: {n}" for cid, n in failing.items()))
-        self.SetString(self.LBL_PREFLIGHT, label)
+        self.preflight_ua.set_state(not failing, label)
         self.Enable(self.BTN_PF_FIX, bool(failing))
         self.Enable(self.BTN_PF_ACCEPT, bool(failing))
 

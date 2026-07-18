@@ -4,6 +4,7 @@ Stdlib only. NEVER import c4d here: C4D reads live in the thin adapter in
 ui/flows.py (same pattern as manifest.py / postrender.py).
 """
 import os
+import re
 import zipfile
 
 # Extension → asset_type. Lowercase, no dot.
@@ -29,6 +30,83 @@ def normalize_path_key(path):
     if not path:
         return ""
     return str(path).strip().replace("\\", "/").lower()
+
+
+_WIN_DRIVE_RE = re.compile(r"[a-z]:/")
+
+
+def canonical_asset_key(path, base_dir=None):
+    """Dedupe key that collapses different SCANNER STRING FORMS of the
+    SAME on-disk asset — normalize_path_key alone is not enough: the
+    structured texture scan and the generic GetAllAssetsNew sweep can
+    report the identical file as different literal strings (URL-scheme
+    prefixes, a doc-relative "./" C4D prepends to an absolute Windows
+    path it can't resolve on this platform, a still-relative bare
+    filename vs. the texture scanner's absolute "expected location" for
+    a missing relative path, etc). normalize_path_key itself is left
+    UNCHANGED — other callers rely on its exact output; this only
+    changes the key merge_inventories dedupes on.
+
+    Real production pairs this fixes (same scene, two scanners):
+      - texture (absolute) `D:/.../file.jpg` vs
+        generic (missing) `./D:/.../file.jpg`.
+      - texture `file:///X:/.../file.png` vs generic `/X:/.../file.png`.
+      - texture `relative:///file.jpg` (resolved to the doc-joined
+        absolute "expected location" when missing) vs generic bare
+        `file.jpg` — fixed by the base_dir anchor below.
+    """
+    key = normalize_path_key(path)
+    if not key:
+        return key
+
+    # (a) Maxon Url: file:// — same Windows-drive leading-slash fix as
+    # textures.py's classify_texture_path (file:///x:/... -> x:/...).
+    if key.startswith("file://"):
+        key = key[len("file://"):]
+        if key.startswith("/") and len(key) > 3 and key[2] == ":":
+            key = key.lstrip("/")
+
+    # (b) Maxon Url: relative:// — strip the scheme + any leading
+    # slashes (relative:///foo.jpg -> foo.jpg).
+    elif key.startswith("relative://"):
+        key = key[len("relative://"):].lstrip("/")
+
+    # (c) Collapse leading "./" segments — C4D's doc-relative prefix
+    # glued onto an otherwise-absolute path it couldn't resolve
+    # (e.g. "./d:/...").
+    while key.startswith("./"):
+        key = key[2:]
+
+    # (d) A Windows drive letter (e.g. "d:/") appearing past the very
+    # start of the key means an unrelated prefix (doc dir, or a "./"
+    # not caught above once embedded deeper) was glued onto an
+    # otherwise-absolute Windows path — cut it off so both scanner
+    # forms key on the same drive-rooted path.
+    match = _WIN_DRIVE_RE.search(key)
+    if match and match.start() > 0:
+        key = key[match.start():]
+
+    # (e) Anchor a still-relative key to the document directory. For a
+    # MISSING relative texture, textures.py's classify_texture_path
+    # returns the "expected location" — the ABSOLUTE doc_dir-joined
+    # path — as `resolved`, which merge_inventories keys texture
+    # records on; GetAllAssetsNew instead reports the bare relative
+    # string for the same file. Without anchoring, those two forms
+    # (absolute vs bare-relative) never converge to the same key.
+    # Skipped when the key is already absolute (leading "/") or a
+    # Windows drive path (checked at the very start via .match, not
+    # .search — an embedded drive letter deeper in the string was
+    # already promoted to the front by step (d) above).
+    if (base_dir and key and not key.startswith("/")
+            and not _WIN_DRIVE_RE.match(key)):
+        base_key = normalize_path_key(base_dir)
+        if base_key:
+            joined = base_key.rstrip("/") + "/" + key
+            # Collapse any "./" segment left over at the join point or
+            # already embedded in either half.
+            key = "/".join(p for p in joined.split("/") if p != ".")
+
+    return key
 
 
 def infer_type(path, owner_kind="", channel=""):
@@ -65,11 +143,19 @@ _OWNER_KIND_BY_SOURCE = {
 _STATUS_ORDER = {"missing": 0, "absolute": 1, "empty": 2, "asset_uri": 3, "ok": 4}
 
 
-def merge_inventories(texture_records, generic_records):
+def merge_inventories(texture_records, generic_records, base_dir=""):
     """Fuse the structured texture scan (repathable, rich owners) with the
     generic GetAllAssetsNew sweep (exhaustive, read-only). Dedupe by
-    normalized path; on collision the texture record wins and only the
-    generic owner is appended. Empty-path records are kept with synthetic keys.
+    canonical_asset_key (not the plainer normalize_path_key — the two
+    scanners can report the identical on-disk file as different literal
+    strings, e.g. a URL-scheme prefix, a doc-relative "./" C4D glues onto
+    an unresolvable absolute path, or a still-relative bare filename vs.
+    the texture scanner's absolute "expected location" for a missing
+    relative path); on collision the texture record wins and only the
+    generic owner is appended. `base_dir` (typically doc.GetDocumentPath())
+    anchors any still-relative key so it converges with its absolute
+    counterpart — pass "" (default) to keep the old, unanchored behavior.
+    Empty-path records are kept with synthetic keys.
 
     Multiple texture records can collapse into one row when they share a
     path (e.g. 3 materials referencing the same file) — "tex_idx" keeps the
@@ -79,7 +165,7 @@ def merge_inventories(texture_records, generic_records):
     order = []
 
     for rec in texture_records or []:
-        key = normalize_path_key(rec.get("resolved") or rec.get("path"))
+        key = canonical_asset_key(rec.get("resolved") or rec.get("path"), base_dir)
         # Use synthetic key for empty paths so they remain visible as QC signals.
         if not key:
             key = f"__empty__tex__{rec.get('tex_idx')}"
@@ -109,7 +195,7 @@ def merge_inventories(texture_records, generic_records):
         order.append(key)
 
     for i, rec in enumerate(generic_records or []):
-        key = normalize_path_key(rec.get("path"))
+        key = canonical_asset_key(rec.get("path"), base_dir)
         # Use synthetic key for empty paths so they remain visible as QC signals.
         if not key:
             key = f"__empty__gen__{i}"
@@ -176,6 +262,48 @@ def compute_totals(records):
         else:
             totals["total_bytes"] += size
     return totals
+
+
+def fit_column_widths(stored, order, budget, min_width):
+    """Shrink a table's resizable column widths so they always sum to at
+    most `budget`, without ever mutating the caller's persisted widths.
+
+    Used by AssetListArea._columns (the Asset Hub table, item 3/5 of the
+    UI polish pass) to enforce a fit-to-viewport invariant: stored widths
+    can come from an EARLIER, wider window (persisted to
+    sentinel_settings.json), so honoring them verbatim on a narrower
+    window pushes later columns (path, the fixed browse "…" slot) off the
+    visible edge. This function is pure and display-only — callers must
+    never write its return value back to storage, so re-widening the
+    window restores the user's actual stored widths.
+
+    Args:
+        stored: {col: width} for every column in `order` (extra keys ignored).
+        order: the fixed column order, e.g. ("name", "type", "size", "used").
+        budget: max total width the columns in `order` may occupy.
+        min_width: floor for every individual column.
+
+    Returns:
+        A NEW {col: width} dict. Under budget: passed through unchanged
+        (still a copy). Over budget: shrunk proportionally to each
+        column's share of `stored`, each clamped to >= min_width. If even
+        the min-width floors don't fit inside `budget` (an absurdly
+        narrow viewport), every column floors at min_width and the
+        caller accepts the residual overlap — there is no narrower valid
+        layout to produce.
+    """
+    widths = {c: int(stored.get(c, min_width)) for c in order}
+    total = sum(widths.values())
+    if total <= budget:
+        return widths
+    if budget <= 0:
+        return {c: min_width for c in order}
+    shrunk = {c: max(min_width, int(widths[c] * budget / total)) for c in order}
+    if sum(shrunk.values()) > budget:
+        # Proportional shrink still doesn't fit once the floors kicked in
+        # — no valid layout exists inside this budget, floor everything.
+        return {c: min_width for c in order}
+    return shrunk
 
 
 def stat_sizes_batch(records, start, count, getsize=os.path.getsize):
