@@ -61,7 +61,8 @@ typography:
 rounded:
   sm: 4px
   md: 6px
-  lg: 10px
+  lg: 8px
+  xl: 10px
 
 spacing:
   unit: 8px
@@ -86,6 +87,7 @@ components:
     textColor: "{colors.ink}"
     typography: "{typography.body}"
     padding: "{spacing.section}"
+    rounded: "{rounded.xl}"
   report-page-header:
     backgroundColor: "{colors.surface-1}"
     textColor: "{colors.ink}"
@@ -96,7 +98,7 @@ components:
     backgroundColor: "{colors.surface-1}"
     textColor: "{colors.ink}"
     typography: "{typography.body-lg}"
-    rounded: "{rounded.md}"
+    rounded: "{rounded.lg}"
     padding: "{spacing.md}"
     border: "1px {colors.hairline}"
   table-row:
@@ -187,6 +189,7 @@ Two flavors of one system live side by side:
 | `QuickTab` | `segmented-control` | `colors.primary` (active), `colors.surface-1` |
 | `AssetListArea` | table (`table-row` × N) | `spacing.table-row` (32px), `colors.hairline` |
 | result caption (`GeDialog` static text) | `toast` | `colors.surface-2`, `typography.body`, 4s duration |
+| native `GeDialog` button (`BFH_SCALEFIT` etc.) | `button-primary` / `button-secondary` | none yet — native buttons keep OS chrome; no token bridge exists for them |
 
 ### Native token reference (`c4d.Vector`)
 
@@ -210,6 +213,15 @@ closest opaque color a hairline reads as when composited over `{colors.canvas}`.
 | `colors.status-warn` | `#ffb74d` | `c4d.Vector(1.000, 0.718, 0.302)` |
 | `colors.status-pass` | `#68b06a` | `c4d.Vector(0.408, 0.690, 0.416)` |
 | `colors.status-neutral` | `#8a8a8a` | `c4d.Vector(0.541, 0.541, 0.541)` |
+| `colors.hairline` (flat) | `#1e1f21` | `c4d.Vector(0.118, 0.122, 0.129)` |
+| `colors.hairline-strong` (flat) | `#232426` | `c4d.Vector(0.137, 0.141, 0.149)` |
+
+The two hairline rows are not literal token values — `hairline`/`hairline-strong`
+are alpha overlays (6%/8% white) in HTML, and `DrawSetPen` has no alpha
+channel natively. Each flat hex is `{colors.canvas}` composited with white at
+that alpha (`result = alpha*255 + (1-alpha)*canvas_channel` per channel) —
+the opaque color a hairline reads as once it's actually drawn over the
+canvas, since in practice every hairline in this system sits on `canvas`.
 
 **Known drift (not fixed by this task — docs only):** the existing Asset Hub
 constants in `plugin/sentinel/ui/user_areas.py` predate this system and are
@@ -357,8 +369,17 @@ share color/spacing/radius tokens but never font rendering.
 | Token | Value | Use |
 |---|---|---|
 | `{rounded.sm}` | 4px | Badges, status chips |
-| `{rounded.md}` | 6px | Buttons, KPI cards, segmented-control track |
-| `{rounded.lg}` | 10px | Toast |
+| `{rounded.md}` | 6px | Buttons, inputs, segmented-control track |
+| `{rounded.lg}` | 8px | Cards — `kpi-card`, `toast` |
+| `{rounded.xl}` | 10px | `report-page` container, native dialog-hosted surfaces |
+
+**Reconciliation note:** the controlling spec says "radius 8-10px" (a
+surface-level range); the task brief's control scale said `sm 4 / md 6-8 /
+lg 10`. This 4-step scale resolves both: `sm`/`md` stay tight for
+interactive chrome (4-6px, unchanged from the brief), while `lg`/`xl` land
+inside the spec's 8-10px surface range — cards at 8px, page-level containers
+at 10px — instead of collapsing every non-interactive surface onto a single
+10px value.
 
 Sentinel never uses pill radius — badges and buttons stay rectangular with
 `{rounded.sm}`/`{rounded.md}` corners, matching the native `GeUserArea` rows
@@ -372,7 +393,9 @@ next to the panel).
 
 The container for every Sentinel Reports page (Delivery Summary, QC Report,
 Doctor, Supervisor). `report-page` is the scroll container — `{colors.canvas}`
-background, `{spacing.section}` outer padding. `report-page-header` is a
+background, `{spacing.section}` outer padding, `{rounded.xl}` corners on the
+outer frame (relevant when hosted inside a dockable/floating window; a
+full-bleed page has no visible corner). `report-page-header` is a
 `{colors.surface-1}` band pinned at the top — scene/delivery identity in
 `{typography.title}`, a `{colors.hairline-strong}` bottom rule separating it
 from the content below. Native equivalent: `AssetHubHeaderArea`.
@@ -380,7 +403,7 @@ from the content below. Native equivalent: `AssetHubHeaderArea`.
 ### `kpi-card`
 
 A single stat tile (e.g. "12 assets · 2 missing"). `{colors.surface-1}`
-background, `{rounded.md}` corners, `{spacing.md}` padding, 1px
+background, `{rounded.lg}` corners, `{spacing.md}` padding, 1px
 `{colors.hairline}` border. Value text is `{typography.body-lg}`; label
 underneath is `{typography.caption}` in `{colors.ink-secondary}`. The value
 itself is only status-colored when it represents a count of that status
