@@ -662,6 +662,12 @@ Items menores identificados en la review final de rama de Asset Hub (feat/asset-
 - Marcar visualmente las filas `ambiguous` del Search-Folder-for-Missing en la tabla (hoy solo se resuelven desde el diálogo de selección)
 - Unlink del zip parcial cuando `create_zip_archive` falla a mitad de camino (hoy puede dejar un `.zip` truncado en disco)
 
+Añadidos en la review final de la pasada de pulido (feat/hub-polish, v1.11.1):
+
+- La ventana de supresión del rescan (selección de fila) puede tragarse un cambio legítimo de escena hecho en <1s tras el click; se auto-corrige con el siguiente cambio o con Rescan manual
+- Heurística de letra de unidad en `canonical_asset_key` (`.search` de `[a-z]:/`): un path POSIX con un segmento tipo `a:/` se truncaría; solo afecta a la clave de dedupe, nunca a los writers
+- Al arrastrar una columna muy ancha, el fit-to-viewport encoge visualmente las demás hacia el mínimo (display-only, se recupera al soltar; documentado en el docstring)
+
 ---
 
 ## Research Notes
