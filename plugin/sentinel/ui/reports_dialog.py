@@ -365,6 +365,139 @@ class ReportsDialog(gui.GeDialog):
         pass
 
 
+# Per-page default window size for FormDialog (Phase 4 Task 4) — sized to
+# fit each form comfortably without scrolling on a typical desktop; the
+# artist can still resize like any other C4D async dialog. "palette" isn't
+# a form/* op page (no state/submit ops of its own — see web_ops.py
+# palette/actions + palette/run) but shares the same host/sizing table
+# since it is also opened via ``open_form``.
+_FORM_SIZES = {
+    "form/save_version": (520, 480),
+    "form/notes": (560, 620),
+    "form/settings": (560, 560),
+    "form/gate": (640, 600),
+    "palette": (560, 420),
+}
+
+_FORM_TITLES = {
+    "form/save_version": "Sentinel — Save Version",
+    "form/notes": "Sentinel — Notes",
+    "form/settings": "Sentinel — Settings",
+    "form/gate": "Sentinel — Quality Gate",
+    "palette": "Sentinel — Command Palette",
+}
+
+
+class FormDialog(gui.GeDialog):
+    """Dockable async dialog hosting one SPA form/* page (or the command
+    palette) in its own right-sized window — the Task 4 counterpart to
+    ``ReportsDialog`` above. Same architecture, deliberately duplicated
+    rather than parameterized into one class: ``ReportsDialog`` always
+    lands on the Sidebar-driven Reports shell (``ReportsApp`` in
+    App.tsx) with a fixed 1080x760 size, while a form page is
+    full-bleed/no-sidebar (``FormApp``) and each page has its own natural
+    size — the two host different SPA shells, not just different
+    ``?page=`` values, so sharing one class would need a
+    ``has_sidebar``-style branch for no real benefit at this size.
+
+    Server/queue lifecycle, HtmlViewer/browser fallback, and the
+    Timer-driven ``MainThreadQueue.drain`` are identical to
+    ``ReportsDialog`` — see its docstring. Multiple ``FormDialog``/
+    ``ReportsDialog`` instances (e.g. the panel's Save Version form open
+    at the same time as a Reports QC page, or two form windows opened
+    back to back) safely share the one module-level ``_queue``: each
+    instance's own ``Timer`` calls ``_queue.drain(_dispatch)``, and
+    ``MainThreadQueue.drain`` is a plain ``queue.Queue.get_nowait()`` loop
+    that always runs on the single C4D main thread (Timer callbacks are
+    never concurrent with each other) — whichever dialog's Timer fires
+    first simply drains every currently-queued request, including ones
+    submitted by a different dialog's HTTP request; the result is routed
+    back to the right waiting HTTP thread via that request's own
+    threading.Event, not by which dialog drained it. So N open dialogs
+    draining one queue is equivalent to 1 dialog draining it N times as
+    often — never a double-dispatch, never a starved request.
+    """
+
+    ID_HTML = 3001
+    ID_NOTICE = 3002
+
+    def __init__(self, port, page, title=None):
+        super().__init__()
+        self._port = port
+        self._page = page
+        self._title = title or _FORM_TITLES.get(page, "Sentinel")
+        self._html = None
+
+    def _url(self):
+        return f"http://127.0.0.1:{self._port}/?page={self._page}"
+
+    def CreateLayout(self):
+        self.SetTitle(self._title)
+        self._html = self.AddCustomGui(
+            self.ID_HTML, c4d.CUSTOMGUI_HTMLVIEWER, "form",
+            c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT, 0, 0, c4d.BaseContainer())
+
+        if self._html is None:
+            # No HtmlViewer gadget on this platform/build — open the form
+            # in the system browser instead and explain the empty window
+            # (same degraded path ReportsDialog takes).
+            url = self._url()
+            webbrowser.open(url)
+            self.AddStaticText(
+                self.ID_NOTICE, c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT, 0, 0,
+                "HTML viewer is not available in this Cinema 4D build.\n"
+                f"Opened in your default browser instead: {url}", 0)
+
+        self.SetTimer(25)
+        return True
+
+    def InitValues(self):
+        if self._html is not None:
+            self._html.SetUrl(self._url(), c4d.URL_ENCODING_UTF16)
+        return True
+
+    def Timer(self, msg):
+        if _queue is not None:
+            _queue.drain(_dispatch)
+        return True
+
+    def DestroyWindow(self):
+        # Server/queue are module-level and outlive this dialog instance —
+        # see the lifecycle note in the module docstring. Nothing to clean
+        # up here.
+        pass
+
+
+def open_form(doc, page, defaultw=None, defaulth=None):
+    """Ensure the Reports/Forms server is running and open ``page`` (one of
+    ``form/save_version``, ``form/notes``, ``form/settings``, ``form/gate``,
+    or ``palette``) in its own right-sized ``FormDialog`` window.
+
+    ``doc`` is accepted for call-site symmetry with ``open_reports`` (see
+    its docstring) — every op re-reads ``GetActiveDocument()`` at dispatch
+    time instead of capturing ``doc`` now.
+
+    ``defaultw``/``defaulth`` override the per-page size table
+    (``_FORM_SIZES``) when given; omit them to use the table's default for
+    ``page`` (falling back to 560x480 for an unrecognized page — should not
+    happen with the callers in this codebase, but keeps this function total
+    rather than raising a KeyError on a typo).
+
+    Raises on failure (missing web build, or a server bind failure) exactly
+    like ``open_reports`` — callers catch this and fall back to the native
+    modal dialog + engine call the page replaces (``SaveVersionDialog`` +
+    ``smart_save_version``, ``NotesDialog``, ``SentinelSettingsDialog``;
+    there is no native equivalent for ``palette``, so its caller's fallback
+    is just an error message).
+    """
+    port = ensure_server()
+    table_w, table_h = _FORM_SIZES.get(page, (560, 480))
+    dlg = FormDialog(port, page)
+    dlg.Open(c4d.DLG_TYPE_ASYNC,
+              defaultw=defaultw or table_w, defaulth=defaulth or table_h)
+    return dlg
+
+
 def open_reports(doc, page=None):
     """Ensure the Reports server is running and open the dialog.
 

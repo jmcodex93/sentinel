@@ -187,7 +187,28 @@ def _gate_fix_payload(check_id, registry_results, gate_result):
 
 
 def _run_quality_gate(doc, rules_context, artist_name, doc_full_path):
-    """Run the modal quality gate. Returns a result dict or abort marker."""
+    """Run the modal quality gate. Returns a result dict or abort marker.
+
+    Phase 4 Task 4 grounding note (FormDialog host + panel rewiring): this
+    stays on the native ``GateTriageDialog`` (``c4d.DLG_TYPE_MODAL``) on
+    purpose — both call sites (``smart_save_version`` below, and the
+    Collect preflight in ``ui/dialogs.py`` ``AssetHubDialog``) consult its
+    return value SYNCHRONOUSLY to decide whether the save/collect proceeds
+    at all (``if not gate_result.get("proceed"): return``), and the loop
+    here re-evaluates the gate in place across fix/accept iterations before
+    returning. An HTML ``form/gate`` page hosted by the async ``FormDialog``
+    cannot slot in here without redesigning that control flow: opening an
+    async dialog doesn't block the calling function, and dispatching the
+    page's mutations through ``MainThreadQueue`` from INSIDE this call would
+    deadlock (the queue is drained by a ``Timer`` on the very main thread
+    this function is already running on). ``form/gate`` (``web_ops.py``
+    ``_op_form_gate_state/_submit``) is real and reachable — as a
+    STANDALONE pre-save/pre-collect triage tool, wired to the command
+    palette's ``gate_triage`` action (``webbridge.PALETTE_ACTIONS``) — but
+    it is a second, independent way to fix/accept violations ahead of time,
+    not a replacement for the synchronous gate below. Do not redesign the
+    save/collect flow to fit the async form; that is out of scope here.
+    """
     snapshot = _compute_gate_snapshot(doc, rules_context, doc_full_path)
     gate_result = snapshot["gate_result"]
     gate_overrides = []

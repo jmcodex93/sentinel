@@ -103,6 +103,7 @@ class G:
     BTN_DELIVERY_SUMMARY = 1313  # Deliver tab: Delivery Summary + receiver-side verify (I4)
     CHK_SNAPSHOT_WATCH = 1314  # Render tab: toggle snapshot watchfolder auto-convert
     LABEL_SNAPSHOT_WATCH = 1315  # Render tab: auto-convert status/alert caption
+    BTN_COMMAND_PALETTE = 1316  # Help menu: open the Sentinel Command Palette (Phase 4 Task 4)
 
 
 class GateTriageIds:

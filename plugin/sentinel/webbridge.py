@@ -1162,6 +1162,8 @@ PALETTE_ACTIONS = (
      "requires_saved": True},
     {"id": "settings", "label": "Settings…", "group": "Scene",
      "kind": "navigate", "page": "form/settings", "requires_doc": False},
+    {"id": "gate_triage", "label": "Quality Gate Triage…", "group": "Scene",
+     "kind": "navigate", "page": "form/gate", "requires_doc": True},
     {"id": "fix_lights", "label": "Fix: Group stray lights", "group": "Quick Fix",
      "kind": "run", "requires_doc": True, "check_id": "lights"},
     {"id": "fix_cameras", "label": "Fix: Reset camera shift", "group": "Quick Fix",

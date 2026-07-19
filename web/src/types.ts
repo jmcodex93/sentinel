@@ -438,3 +438,39 @@ export interface GateSubmitResponse {
    * never needs a second round trip. */
   state?: GateState;
 }
+
+/**
+ * Command Palette contract — mirrors `palette_actions_payload` in
+ * plugin/sentinel/webbridge.py (`PALETTE_ACTIONS`) and `_op_palette_run` in
+ * plugin/sentinel/ui/web_ops.py. Produced by `GET /api/palette/actions`,
+ * actions run via `POST /api/palette/run`.
+ */
+
+export interface PaletteAction {
+  id: string;
+  label: string;
+  group: string;
+  enabled: boolean;
+  reason: string | null;
+  /** True for the two DECISIÓN-classified destructive Quick Fix actions
+   * (delete unused materials, rewrite FPS/frame range) — see the
+   * `PALETTE_ACTIONS` comment in webbridge.py. The palette must show
+   * `confirm_label` as an explicit yes/no step and resubmit
+   * `palette/run` with `confirm: true` before the action actually runs. */
+  requires_confirm: boolean;
+  confirm_label: string | null;
+}
+
+export type PaletteActionsResult =
+  | { kind: "ok"; data: PaletteAction[] }
+  | { kind: "error"; message: string };
+
+export interface PaletteRunResponse {
+  ok: boolean;
+  error?: string;
+  /** Toast-able result message for a `kind: "run"` action. */
+  message?: string;
+  /** Present for a `kind: "navigate"` action — the SPA page (a `FormPage`,
+   * e.g. "form/save_version") to switch to client-side. */
+  navigate?: string;
+}

@@ -4,6 +4,7 @@ import mockGate from "../mock/form-gate.json";
 import mockNotes from "../mock/form-notes.json";
 import mockSaveVersion from "../mock/form-save-version.json";
 import mockSettings from "../mock/form-settings.json";
+import mockPaletteActions from "../mock/palette-actions.json";
 import mockQcReport from "../mock/qc-report.json";
 import mockRenderValidationReport from "../mock/render-validation.json";
 import mockSupervisorReport from "../mock/supervisor-report.json";
@@ -20,6 +21,9 @@ import type {
   NotesStateResult,
   NotesSubmitPayload,
   NotesSubmitResponse,
+  PaletteAction,
+  PaletteActionsResult,
+  PaletteRunResponse,
   QcReport,
   QcReportResult,
   RenderValidationReport,
@@ -351,4 +355,68 @@ export async function submitGate(action: GateSubmitAction): Promise<GateSubmitRe
     return mockGateSubmit(action);
   }
   return postForm<GateSubmitResponse>("/api/form/gate/submit", action);
+}
+
+// ---------------------------------------------------------------------------
+// Command palette (Phase 4 Task 4) — see web_ops.py `_op_palette_actions` /
+// `_op_palette_run` and the `PALETTE_ACTIONS` registry in webbridge.py.
+// ---------------------------------------------------------------------------
+
+/** `GET /api/palette/actions` — never returns a `{"error": <code>}` empty
+ * sentinel (the registry always has entries; per-action `enabled` carries
+ * the "nothing to do right now" state instead), so an error dict here is
+ * always an unexpected dispatch failure, same reasoning as Doctor/Settings. */
+export async function fetchPaletteActions(): Promise<PaletteActionsResult> {
+  if (isMock()) {
+    return { kind: "ok", data: mockPaletteActions as PaletteAction[] };
+  }
+  const result = await fetchReport<PaletteAction[]>("/api/palette/actions", {});
+  return result.kind === "empty" ? { kind: "error", message: result.reason } : result;
+}
+
+/** Client-only mock for `palette/run` — used ONLY in `?mock=1` mode (see
+ * `mockSaveVersionSubmit` above for the same reasoning). Mirrors the real
+ * op's shape closely enough to exercise the confirm step and navigate
+ * flow in a mock/screenshot session: a `requires_confirm` action without
+ * `confirm: true` is rejected, a `navigate`-kind id echoes back its page
+ * from `PALETTE_ACTIONS`' `kind`/`page` (hardcoded here since the mock
+ * action list itself doesn't carry `kind`/`page`, only what the SPA reads),
+ * everything else returns a canned toast message. */
+const MOCK_NAVIGATE_PAGES: Record<string, string> = {
+  save_version: "form/save_version",
+  edit_notes: "form/notes",
+  settings: "form/settings",
+  gate_triage: "form/gate",
+};
+
+function mockPaletteRun(id: string, confirm?: boolean): PaletteRunResponse {
+  const action = (mockPaletteActions as PaletteAction[]).find((a) => a.id === id);
+  if (!action) {
+    return { ok: false, error: `unknown palette action: ${id}` };
+  }
+  if (action.requires_confirm && !confirm) {
+    return { ok: false, error: "confirm_required" };
+  }
+  const navigate = MOCK_NAVIGATE_PAGES[id];
+  if (navigate) {
+    return { ok: true, navigate };
+  }
+  if (id.startsWith("open_reports") || id === "open_hub") {
+    return { ok: true, message: "Opened." };
+  }
+  if (id === "rescan_qc") {
+    return { ok: true, message: "QC cache cleared" };
+  }
+  return { ok: true, message: `${action.label} — done` };
+}
+
+/** `POST /api/palette/run` — `{"id": <action id>}`, optionally
+ * `{"confirm": true}` to pass a `requires_confirm` action's contract gate
+ * (see `_op_palette_run`'s docstring for why this is a round trip instead
+ * of a native modal). */
+export async function runPaletteAction(id: string, confirm?: boolean): Promise<PaletteRunResponse> {
+  if (isMock()) {
+    return mockPaletteRun(id, confirm);
+  }
+  return postForm<PaletteRunResponse>("/api/palette/run", confirm ? { id, confirm: true } : { id });
 }

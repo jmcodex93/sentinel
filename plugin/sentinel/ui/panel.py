@@ -1283,6 +1283,12 @@ class YSPanel(gui.GeDialog):
         self.MenuSubBegin("Help")
         self.MenuAddString(G.BTN_GITHUB, "GitHub")
         self.MenuAddString(G.BTN_BUG_REPORT, "Report Bug")
+        # Phase 4 Task 4: opens the SPA command palette (FormDialog host,
+        # page="palette"). No default C4D shortcut is registered for the
+        # "Sentinel: Command Palette" CommandData (sentinel_panel.pyp) — the
+        # hint below is the only place that tells the artist how to bind one.
+        self.MenuAddString(G.BTN_COMMAND_PALETTE,
+                            "Command Palette (assign a shortcut in Preferences)")
         self.MenuSubEnd()
         self.MenuFinished()
 
@@ -2266,23 +2272,21 @@ class YSPanel(gui.GeDialog):
                     "check-level detail in the meantime."))
 
         elif cid == G.BTN_SETTINGS:
-            # Open the Sentinel Settings modal dialog
-            dlg = SentinelSettingsDialog()
-            dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=480, defaulth=380)
-            if dlg.confirmed:
-                safe_print("Settings saved")
-                # Sync runtime values that aren't read on-demand
-                try:
-                    self._history_max_rows = int(GlobalSettings.get('history_max_rows', 5))
-                except Exception:
-                    self._history_max_rows = 5
-                # Update labels that may have changed
-                self._update_snapshot_dir_label()
-                # Rebuild active tab so combos/info reflect new settings AND force
-                # a full QC refresh (FPS standard may have changed → check #11)
-                self._set_active_tab(self._active_tab)
-            else:
-                safe_print("Settings edit cancelled")
+            # Open the Sentinel Settings form (Phase 4 Task 4); legacy modal
+            # dialog is the fallback (_open_settings_dialog_legacy).
+            self._open_form(doc, "form/settings",
+                            fallback=self._open_settings_dialog_legacy)
+
+        elif cid == G.BTN_COMMAND_PALETTE:
+            # Help menu / CommandData shortcut: open the SPA command
+            # palette (Phase 4 Task 4). No native equivalent exists (new
+            # feature, not a migration) — the fallback is just an error.
+            self._open_form(
+                doc, "palette",
+                fallback=lambda: c4d.gui.MessageDialog(
+                    "Sentinel Command Palette could not open.\n\n"
+                    "The web UI (plugin/web/) may be missing from this "
+                    "install, or every local port it tries is busy."))
 
         # ── Export QC Report ──
         elif cid == G.BTN_EXPORT_QC:
@@ -2314,10 +2318,32 @@ class YSPanel(gui.GeDialog):
             self._open_asset_hub(doc, focus="deliver")
 
         elif cid == G.BTN_SAVE_VERSION:
-            self._handle_save_version(doc)
+            # Save Version form (Phase 4 Task 4); native SaveVersionDialog +
+            # smart_save_version (_handle_save_version) is the fallback.
+            # Doc guard kept up front (native parity) — an empty-scene form
+            # would just show an EmptyState telling the artist to open one,
+            # but a plain MessageDialog here is the smaller surprise for a
+            # case that was always a no-op before this redesign.
+            if not doc:
+                c4d.gui.MessageDialog("No active document.")
+            else:
+                self._open_form(doc, "form/save_version",
+                                fallback=lambda: self._handle_save_version(doc))
 
         elif cid == G.BTN_EDIT_NOTES:
-            self._handle_edit_notes(doc)
+            # Notes form (Phase 4 Task 4); native NotesDialog
+            # (_handle_edit_notes) is the fallback. The "no scene path yet"
+            # gate (_handle_edit_notes's own MessageDialog) is intentionally
+            # NOT duplicated here — form/notes/state's "no_scene_path"
+            # error renders as an inline EmptyState in the SPA instead,
+            # which is the whole point of the redesign (DESIGN.md's
+            # anti-popup rule); only the "no document at all" guard stays
+            # up front, same reasoning as Save Version above.
+            if not doc:
+                c4d.gui.MessageDialog("No active document.")
+            else:
+                self._open_form(doc, "form/notes",
+                                fallback=lambda: self._handle_edit_notes(doc))
 
         elif cid == G.BTN_DELIVERY_SUMMARY:
             self._open_reports(doc)
@@ -2398,6 +2424,68 @@ class YSPanel(gui.GeDialog):
                 fallback()
             else:
                 self._show_delivery_summary(doc)
+
+    def _open_form(self, doc, page, fallback=None):
+        """Open a Sentinel form page (Phase 4 Task 4) — the ``FormDialog``
+        host (``ui/reports_dialog.py`` ``open_form``) for Save Version /
+        Edit Notes / Settings / the Command Palette. Same lifecycle pattern
+        as ``_open_reports``: reuses the module-level Reports/Forms server,
+        closes any previous instance of THIS SAME page the panel has open
+        (keyed by ``page`` in ``self._forms``, mirroring the single
+        ``self._reports`` slot), and calls ``fallback`` (a zero-arg
+        callable — the native modal dialog + engine call the page
+        replaces) if the server can't start (missing web build, every port
+        busy, ...).
+
+        Unlike ``_open_reports``, opening a form is fire-and-forget: the
+        mutation (save/notes/settings) happens inside the SPA's own submit
+        op on the C4D main thread, not here, so there is no synchronous
+        result to react to — the panel's own cached labels (Last Version
+        pillbox, Notes summary, Settings-derived captions) pick up the
+        change on the panel's next normal refresh, same as any other
+        external document edit. No caller currently needs a callback for
+        "form closed with X result" and none is added speculatively.
+        """
+        forms = getattr(self, "_forms", None)
+        if forms is None:
+            forms = {}
+            self._forms = forms
+
+        try:
+            from sentinel.ui.reports_dialog import open_form
+            existing = forms.get(page)
+            if existing is not None:
+                try:
+                    if existing.IsOpen():
+                        existing.Close()
+                except Exception:
+                    pass
+            forms[page] = open_form(doc, page)
+        except Exception as e:
+            safe_print(f"Sentinel form '{page}' failed to open ({e}); "
+                       f"falling back to native dialog")
+            if fallback is not None:
+                fallback()
+
+    def _open_settings_dialog_legacy(self):
+        """Legacy fallback for the Settings button (Phase 4 Task 4) — the
+        pre-form modal Settings dialog, unchanged."""
+        dlg = SentinelSettingsDialog()
+        dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=480, defaulth=380)
+        if dlg.confirmed:
+            safe_print("Settings saved")
+            # Sync runtime values that aren't read on-demand
+            try:
+                self._history_max_rows = int(GlobalSettings.get('history_max_rows', 5))
+            except Exception:
+                self._history_max_rows = 5
+            # Update labels that may have changed
+            self._update_snapshot_dir_label()
+            # Rebuild active tab so combos/info reflect new settings AND force
+            # a full QC refresh (FPS standard may have changed → check #11)
+            self._set_active_tab(self._active_tab)
+        else:
+            safe_print("Settings edit cancelled")
 
     def _open_doctor_dialog_legacy(self):
         """Legacy fallback for the Doctor button — the pre-Reports modal
@@ -2804,3 +2892,32 @@ class YSPanelCmd(plugins.CommandData):
             self.dlg = YSPanel()
         # Restore the dialog with the plugin ID
         return self.dlg.Restore(pluginid=PLUGIN_ID, secret=sec_ref)
+
+
+class SentinelPaletteCmd(plugins.CommandData):
+    """Registers "Sentinel: Command Palette" (Phase 4 Task 4,
+    sentinel_panel.pyp ``SENTINEL_PALETTE_PLUGIN_ID``) as its own C4D
+    command so the artist can assign a keyboard shortcut to it via
+    Preferences > Customize Commands — Sentinel does not ship a default
+    binding itself (see the panel's Help menu entry, which carries the same
+    hint). Opens ``FormDialog`` on the ``palette`` SPA page — a small,
+    reusable async dialog, not the main docked panel, so this needs no
+    ``RestoreLayout``/layout persistence like ``YSPanelCmd`` above.
+
+    No native/legacy equivalent exists for this command (the palette is a
+    new Phase 4 feature, not a migration of an old modal) — a failure to
+    open just surfaces as a plain ``MessageDialog``.
+    """
+
+    def Execute(self, doc):
+        try:
+            from sentinel.ui.reports_dialog import open_form
+            open_form(doc, "palette")
+        except Exception as e:
+            safe_print(f"Command Palette failed to open: {e}")
+            c4d.gui.MessageDialog(
+                "Sentinel Command Palette could not open.\n\n"
+                "The web UI (plugin/web/) may be missing from this "
+                "install, or every local port it tries is busy."
+            )
+        return True
