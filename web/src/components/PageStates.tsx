@@ -29,12 +29,20 @@ export function LoadingState() {
   );
 }
 
-export function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
+interface ErrorStateProps {
+  message: string;
+  onRetry: () => void;
+  /** Defaults to the Delivery Summary wording — other report pages pass
+   * their own ("Couldn't load the QC Report", ...). */
+  title?: string;
+}
+
+export function ErrorState({ message, onRetry, title = "Couldn't load the Delivery Summary" }: ErrorStateProps) {
   return (
     <StateCard>
       <AlertTriangle size={28} style={{ color: "var(--color-status-fail)" }} className="mx-auto" />
       <p className="text-body-lg mt-3" style={{ color: "var(--color-ink)" }}>
-        Couldn't load the Delivery Summary
+        {title}
       </p>
       <p className="text-body mt-2" style={{ color: "var(--color-ink-secondary)" }}>
         {message}
@@ -54,12 +62,19 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry: () 
   );
 }
 
-export function EmptyState({ reason }: { reason: string }) {
+interface EmptyStateProps {
+  reason: string;
+  /** Defaults to the Delivery Summary wording — other report pages pass
+   * their own ("No QC data yet", "No render validation report yet", ...). */
+  title?: string;
+}
+
+export function EmptyState({ reason, title = "No delivery package open" }: EmptyStateProps) {
   return (
     <StateCard>
       <FolderOpen size={28} style={{ color: "var(--color-status-neutral)" }} className="mx-auto" />
       <p className="text-body-lg mt-3" style={{ color: "var(--color-ink)" }}>
-        No delivery package open
+        {title}
       </p>
       <p className="text-body mt-2" style={{ color: "var(--color-ink-secondary)" }}>
         {reason}

@@ -1,0 +1,57 @@
+{
+  "report_path": "/projects/demo/robot_010/robot_010_sentinel_render_report.json",
+  "generated_at": "2026-07-19T18:42:07Z",
+  "passed": false,
+  "context": {
+    "take_name": "16x9",
+    "version": "v022",
+    "frame_start": 1001,
+    "frame_end": 1100,
+    "frame_mode": "Manual"
+  },
+  "summary": { "failures": 2, "warnings": 2, "streams": 3 },
+  "checks": [
+    {
+      "id": "missing",
+      "label": "Missing frames",
+      "status": "FAIL",
+      "count": 2,
+      "items": [
+        { "frame": 1050, "stream": "Beauty" },
+        { "frame": 1051, "stream": "Beauty" }
+      ]
+    },
+    {
+      "id": "zero_byte",
+      "label": "Zero-byte frames",
+      "status": "OK",
+      "count": 0,
+      "items": []
+    },
+    {
+      "id": "stale",
+      "label": "Stale frames",
+      "status": "WARN",
+      "count": 1,
+      "items": [
+        { "frame": 1002, "stream": "Beauty" }
+      ]
+    },
+    {
+      "id": "size_outliers",
+      "label": "Size outliers",
+      "status": "WARN",
+      "count": 1,
+      "items": [
+        { "frame": 1075, "stream": "Beauty", "bytes": 128044 }
+      ]
+    },
+    {
+      "id": "aov_presence",
+      "label": "AOV presence",
+      "status": "OK",
+      "count": 0,
+      "items": []
+    }
+  ]
+}

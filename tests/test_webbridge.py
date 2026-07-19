@@ -483,6 +483,371 @@ class TestDeliveryReportPayload:
         assert payload["pending_todos"] == 0
 
 
+# ---------------------------------------------------------------------------
+# qc_report_payload — qc.score.compute_score() -> SPA contract
+# ---------------------------------------------------------------------------
+
+def _violation(check_id, path, message, sibling_index=0, guid=None, extras=None):
+    """One qc/results.py Violation.to_dict()-shaped dict."""
+    v = {
+        "check_id": check_id,
+        "identity": {"type": "object", "path": path, "sibling_index": sibling_index,
+                     "guid": guid},
+        "message": message,
+    }
+    if extras is not None:
+        v["extras"] = extras
+    return v
+
+
+def _structured(check_id, violations):
+    """A CheckResult-shaped plain dict (CheckResult IS a dict subclass)."""
+    return {"check_id": check_id, "violations": violations, "metadata": {}}
+
+
+def _legacy_score_fixture(counts=None, disabled=None):
+    """Shaped like qc.score._legacy_score()'s return (no baseline sidecar)."""
+    counts = counts or {}
+    disabled = disabled or []
+    total = 12 - len(disabled)
+    passed = total - sum(1 for v in counts.values() if v)
+    return {
+        "score": f"{passed}/{total}",
+        "pass": passed == total,
+        "passed": passed,
+        "total": total,
+        "counts": counts,
+        "disabled": disabled,
+        "disabled_count": len(disabled),
+    }
+
+
+class TestQcReportPayload:
+    def test_all_checks_mapped_from_registry_order(self):
+        score = _legacy_score_fixture()
+        payload = webbridge.qc_report_payload("robot_010.c4d", {}, score, {})
+        assert payload["scene"] == "robot_010.c4d"
+        assert [c["id"] for c in payload["checks"]] == [
+            "lights", "vis", "keys", "cam", "rdc", "textures", "unused_mats",
+            "names", "output", "takes", "fps_range", "cross_aspect",
+        ]
+        assert payload["score"] == {
+            "score": "12/12", "passed": 12, "total": 12,
+            "disabled_count": 0, "baseline_status": None,
+        }
+        assert payload["disabled"] == []
+
+    def test_failing_check_status_and_severity_from_registry(self):
+        score = _legacy_score_fixture(counts={"lights": 3})
+        structured = {"lights": _structured("lights", [
+            _violation("lights", "/Rig/Key Light", "Light outside lights group"),
+        ])}
+        payload = webbridge.qc_report_payload("scene.c4d", {}, score, structured)
+        lights_row = next(c for c in payload["checks"] if c["id"] == "lights")
+        assert lights_row["status"] == "fail"
+        assert lights_row["severity"] == "FAIL"  # registry default for "lights"
+        assert lights_row["has_fix"] is True
+        assert lights_row["count"] == 3
+        assert lights_row["new"] is None  # no baseline in this fixture
+        assert lights_row["accepted"] is None
+        assert lights_row["details"] == [
+            {"label": "/Rig/Key Light", "message": "Light outside lights group",
+             "extras": None},
+        ]
+
+    def test_passing_check_status_ok_and_no_details(self):
+        score = _legacy_score_fixture(counts={"lights": 0})
+        payload = webbridge.qc_report_payload("scene.c4d", {}, score, {})
+        lights_row = next(c for c in payload["checks"] if c["id"] == "lights")
+        assert lights_row["status"] == "ok"
+        assert lights_row["details"] == []
+
+    def test_disabled_check_status_and_null_counts(self):
+        score = _legacy_score_fixture(disabled=["takes"])
+        payload = webbridge.qc_report_payload("scene.c4d", {}, score, {})
+        assert payload["disabled"] == ["takes"]
+        takes_row = next(c for c in payload["checks"] if c["id"] == "takes")
+        assert takes_row["status"] == "disabled"
+        assert takes_row["count"] is None
+        assert takes_row["new"] is None
+        assert takes_row["accepted"] is None
+        assert takes_row["details"] == []
+
+    def test_baseline_present_uses_new_counts_and_baseline_matches(self):
+        score = {
+            "score": "11/12", "pass": False, "passed": 11, "total": 12,
+            "counts": {"lights": 1}, "new_counts": {"lights": 1},
+            "accepted_counts": {"lights": 2}, "stale_counts": {"lights": 0},
+            "baseline_matches": {
+                "lights": {
+                    "new": [_violation("lights", "/Rig/New Light", "New violation")],
+                    "accepted": [
+                        _violation("lights", "/Rig/Old A", "accepted 1"),
+                        _violation("lights", "/Rig/Old B", "accepted 2"),
+                    ],
+                },
+            },
+            "baseline_status": "ok", "baseline_path": "/scene_baseline.json",
+            "disabled": [], "disabled_count": 0, "schema": 2,
+            "new": 1, "accepted": 2, "stale": 0,
+        }
+        structured = {"lights": _structured("lights", [
+            _violation("lights", "/Rig/New Light", "New violation"),
+            _violation("lights", "/Rig/Old A", "accepted 1"),
+            _violation("lights", "/Rig/Old B", "accepted 2"),
+        ])}
+        payload = webbridge.qc_report_payload("scene.c4d", {}, score, structured)
+        assert payload["score"]["baseline_status"] == "ok"
+        lights_row = next(c for c in payload["checks"] if c["id"] == "lights")
+        assert lights_row["count"] == 1
+        assert lights_row["new"] == 1
+        assert lights_row["accepted"] == 2
+        # Only the "new" baseline diff surfaces in details, not the accepted ones.
+        assert len(lights_row["details"]) == 1
+        assert lights_row["details"][0]["label"] == "/Rig/New Light"
+
+    def test_ruleset_mapped_with_severity_override(self):
+        score = _legacy_score_fixture(counts={"vis": 1})
+        ruleset = {
+            "name": "sentinel_rules.json", "path": "/project/sentinel_rules.json",
+            "shadowed": ["/parent/sentinel_rules.json"],
+            "severity_overrides": {"vis": "FAIL"},
+        }
+        payload = webbridge.qc_report_payload("scene.c4d", ruleset, score, {})
+        assert payload["ruleset"] == {
+            "name": "sentinel_rules.json", "path": "/project/sentinel_rules.json",
+            "shadowed": ["/parent/sentinel_rules.json"],
+        }
+        vis_row = next(c for c in payload["checks"] if c["id"] == "vis")
+        assert vis_row["severity"] == "FAIL"  # overridden from registry default WARN
+
+    def test_no_ruleset_defaults_to_defaults_name(self):
+        score = _legacy_score_fixture()
+        payload = webbridge.qc_report_payload("scene.c4d", None, score, None)
+        assert payload["ruleset"] == {"name": "defaults", "path": None, "shadowed": []}
+
+    def test_details_capped_at_fifty(self):
+        violations = [
+            _violation("names", f"/Cube.{i}", "Default name") for i in range(75)
+        ]
+        score = _legacy_score_fixture(counts={"names": 75})
+        structured = {"names": _structured("names", violations)}
+        payload = webbridge.qc_report_payload("scene.c4d", {}, score, structured)
+        names_row = next(c for c in payload["checks"] if c["id"] == "names")
+        assert names_row["count"] == 75
+        assert len(names_row["details"]) == 50
+
+    def test_non_dict_violation_never_raises(self):
+        score = _legacy_score_fixture(counts={"lights": 1})
+        structured = {"lights": _structured("lights", ["not-a-dict"])}
+        payload = webbridge.qc_report_payload("scene.c4d", {}, score, structured)
+        lights_row = next(c for c in payload["checks"] if c["id"] == "lights")
+        assert lights_row["details"] == [
+            {"label": "", "message": "not-a-dict", "extras": None}]
+
+    def test_empty_score_never_raises(self):
+        payload = webbridge.qc_report_payload("", None, {}, None)
+        assert payload["scene"] == ""
+        assert len(payload["checks"]) == 12
+        assert payload["disabled"] == []
+
+
+# ---------------------------------------------------------------------------
+# doctor_report_payload — doctor.run_all_diagnostics() -> SPA contract
+# ---------------------------------------------------------------------------
+
+def _doctor_items_fixture():
+    """Shaped like doctor.py's item builders (_item()) — anonymized values."""
+    return [
+        {"id": "c4d_version", "label": "Cinema 4D version", "status": "ok",
+         "detail": "Cinema 4D 2026 (raw 2026301)", "hint": "Tested and supported."},
+        {"id": "payload", "label": "Plugin payload integrity", "status": "fail",
+         "detail": "Missing at /opt/sentinel: res/description", "hint": "Reinstall."},
+        {"id": "renderers", "label": "Renderers detected", "status": "info",
+         "detail": "No supported renderer detected.", "hint": ""},
+    ]
+
+
+def _doctor_meta_fixture():
+    """Shaped like doctor.run_all_diagnostics()'s meta dict."""
+    return {
+        "sentinel_version": "1.13.0",
+        "c4d_version": "2026",
+        "os": "macOS 15.1 (arm64)",
+        "renderers": "",
+        "settings_path": "/Users/artist/Library/Preferences/Sentinel/sentinel_settings.json",
+    }
+
+
+class TestDoctorReportPayload:
+    def test_items_and_meta_mapped(self):
+        payload = webbridge.doctor_report_payload(_doctor_items_fixture(), _doctor_meta_fixture())
+        assert payload["meta"]["sentinel_version"] == "1.13.0"
+        assert payload["meta"]["os"] == "macOS 15.1 (arm64)"
+        assert len(payload["items"]) == 3
+        assert payload["items"][1] == {
+            "id": "payload", "label": "Plugin payload integrity", "status": "fail",
+            "detail": "Missing at /opt/sentinel: res/description", "hint": "Reinstall.",
+        }
+
+    def test_empty_items_and_meta_never_raises(self):
+        payload = webbridge.doctor_report_payload([], {})
+        assert payload["items"] == []
+        assert payload["meta"] == {
+            "sentinel_version": "", "c4d_version": "", "os": "",
+            "renderers": "", "settings_path": "",
+        }
+
+    def test_none_inputs_never_raise(self):
+        payload = webbridge.doctor_report_payload(None, None)
+        assert payload["items"] == []
+        assert payload["meta"]["sentinel_version"] == ""
+
+
+# ---------------------------------------------------------------------------
+# supervisor_report_payload — supervisor.scan_folder() -> SPA contract
+# ---------------------------------------------------------------------------
+
+def _supervisor_shots_fixture():
+    """Shaped like supervisor.build_shot_summary()'s return — anonymized."""
+    return [
+        {
+            "base": "robot_010", "folder": "/projects/demo/robot_010",
+            "history_path": "/projects/demo/robot_010/robot_010_history.json",
+            "version_count": 5, "last_version": "v005", "status": "TR",
+            "score": "10/12", "qc_label": "10/12", "todos_total": 3,
+            "todos_pending": 1, "notes_text": "waiting on client notes",
+            "days_idle": 1, "last_timestamp": "2026-07-15 10:00:00",
+            "artist": "Motioneer", "flags": ["regression"],
+            "version_rows": [{"version": "v005", "status": "TR", "score": "10/12",
+                              "qc_label": "10/12"}],
+            "trajectory": [{"from_version": "v004", "to_version": "v005",
+                            "broke": ["Lights"], "recovered": [], "no_data": False}],
+        },
+        {
+            "base": "robot_020", "folder": "/projects/demo/robot_020",
+            "history_path": "/projects/demo/robot_020/robot_020_history.json",
+            "version_count": 1, "last_version": "v001", "status": "",
+            "score": "12/12", "qc_label": "12/12", "todos_total": 0,
+            "todos_pending": 0, "notes_text": "", "days_idle": 9,
+            "last_timestamp": "2026-07-07 09:00:00", "artist": "Motioneer",
+            "flags": ["stale"], "version_rows": [], "trajectory": [],
+        },
+    ]
+
+
+def _supervisor_meta_fixture():
+    return {"folder": "/projects/demo", "generated": "2026-07-16 18:00:00",
+            "shot_count": 2, "warnings": []}
+
+
+class TestSupervisorReportPayload:
+    def test_folder_and_shots_mapped(self):
+        payload = webbridge.supervisor_report_payload(
+            _supervisor_shots_fixture(), _supervisor_meta_fixture())
+        assert payload["folder"] == "/projects/demo"
+        assert payload["generated_at"] == "2026-07-16 18:00:00"
+        assert payload["shot_count"] == 2
+        assert payload["warnings"] == []
+        assert len(payload["shots"]) == 2
+        first = payload["shots"][0]
+        assert first["base"] == "robot_010"
+        assert first["last_version"] == "v005"
+        assert first["status"] == "TR"
+        assert first["flags"] == ["regression"]
+        assert first["trajectory"] == [
+            {"from_version": "v004", "to_version": "v005",
+             "broke": ["Lights"], "recovered": [], "no_data": False}]
+        # Dropped on purpose (see docstring): not part of the mapped shot.
+        assert "history_path" not in first
+        assert "notes_text" not in first
+
+    def test_warnings_and_empty_scan_mapped(self):
+        payload = webbridge.supervisor_report_payload(
+            [], {"folder": "/projects/empty", "generated": "2026-07-16 18:00:00",
+                 "shot_count": 0, "warnings": ["Corrupted: /projects/empty/x_history.json"]})
+        assert payload["shots"] == []
+        assert payload["warnings"] == ["Corrupted: /projects/empty/x_history.json"]
+
+    def test_none_inputs_never_raise(self):
+        payload = webbridge.supervisor_report_payload(None, None)
+        assert payload["shots"] == []
+        assert payload["folder"] == ""
+
+
+# ---------------------------------------------------------------------------
+# render_validation_payload — postrender.build_report() -> SPA contract
+# ---------------------------------------------------------------------------
+
+def _render_report_fixture(**overrides):
+    """Shaped exactly like postrender.build_report()'s return."""
+    base = {
+        "schema": 1,
+        "type": "sentinel_render_report",
+        "generated_at": "2026-07-16T18:42:07Z",
+        "passed": False,
+        "summary": {"failures": 2, "warnings": 1, "streams": 3, "manifest_entries": 3},
+        "context": {"take_name": "16x9", "version": "v022", "frame_start": 1001,
+                     "frame_end": 1100, "frame_mode": "Manual", "manifest_entries": 3},
+        "checks": {
+            "missing": {"status": "FAIL", "count": 2, "label": "Missing frames",
+                        "items": [{"frame": 1050, "stream": "Beauty"},
+                                  {"frame": 1051, "stream": "Beauty"}]},
+            "stale": {"status": "WARN", "count": 1, "label": "Stale frames",
+                      "items": [{"frame": 1002, "stream": "Beauty"}]},
+            "zero_byte": {"status": "OK", "count": 0, "label": "Zero-byte frames",
+                          "items": []},
+        },
+    }
+    base.update(overrides)
+    return base
+
+
+class TestRenderValidationPayload:
+    def test_full_report_mapped(self):
+        payload = webbridge.render_validation_payload(
+            _render_report_fixture(), "/projects/demo/robot_010_sentinel_render_report.json")
+        assert payload["report_path"] == (
+            "/projects/demo/robot_010_sentinel_render_report.json")
+        assert payload["generated_at"] == "2026-07-16T18:42:07Z"
+        assert payload["passed"] is False
+        assert payload["context"] == {
+            "take_name": "16x9", "version": "v022", "frame_start": 1001,
+            "frame_end": 1100, "frame_mode": "Manual",
+        }
+        assert payload["summary"] == {"failures": 2, "warnings": 1, "streams": 3}
+        checks_by_id = {c["id"]: c for c in payload["checks"]}
+        assert checks_by_id["missing"]["status"] == "FAIL"
+        assert checks_by_id["missing"]["count"] == 2
+        assert len(checks_by_id["missing"]["items"]) == 2
+        assert checks_by_id["zero_byte"]["status"] == "OK"
+
+    def test_passed_report_mapped(self):
+        payload = webbridge.render_validation_payload(
+            _render_report_fixture(passed=True, summary={"failures": 0, "warnings": 0,
+                                                          "streams": 1, "manifest_entries": 1}),
+            "path")
+        assert payload["passed"] is True
+        assert payload["summary"]["failures"] == 0
+
+    def test_empty_report_never_raises(self):
+        payload = webbridge.render_validation_payload({}, "/some/path.json")
+        assert payload == {
+            "report_path": "/some/path.json",
+            "generated_at": "",
+            "passed": False,
+            "context": {"take_name": "", "version": "", "frame_start": None,
+                        "frame_end": None, "frame_mode": ""},
+            "summary": {"failures": 0, "warnings": 0, "streams": 0},
+            "checks": [],
+        }
+
+    def test_none_report_never_raises(self):
+        payload = webbridge.render_validation_payload(None, "/some/path.json")
+        assert payload["passed"] is False
+        assert payload["checks"] == []
+
+
 class TestServerLifecycle:
     def test_start_server_thread_returns_daemon_thread(self, web_root):
         live = _LiveServer(web_root)

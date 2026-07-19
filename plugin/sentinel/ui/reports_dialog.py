@@ -21,9 +21,16 @@ if a browser tab (fallback path) is still open. There is also no
 found none — so the daemon thread simply dies with the C4D process. That is
 an accepted tradeoff (one thread, one localhost socket) rather than a
 tracked gap.
+
+Op inventory (Phase 2 Task 1 adds report/qc, report/doctor,
+report/supervisor, report/render_validation alongside report/delivery).
+Every op is dispatched from ``MainThreadQueue.drain`` — see its docstring
+for the read-only/idempotent invariant every handler below must honor
+(a timed-out request is still dispatched later with nobody listening).
 """
 import c4d
 from c4d import documents, gui
+import json
 import os
 import sys
 import webbrowser
@@ -32,14 +39,31 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+from sentinel import doctor
 from sentinel import manifest as manifest_engine
+from sentinel import postrender
+from sentinel import supervisor
 from sentinel.common.helpers import safe_print
+from sentinel.common.settings import GlobalSettings
+from sentinel.qc.score import compute_score, run_all_checks
+from sentinel.rules_context import active_rules_for_doc
 from sentinel.webbridge import (
     MainThreadQueue,
     create_server,
     delivery_report_payload,
+    doctor_report_payload,
+    qc_report_payload,
+    render_validation_payload,
     start_server_thread,
+    supervisor_report_payload,
 )
+
+# Same key ui/dialogs.py's SupervisorDialog persists the last-scanned folder
+# under (GlobalSettings-backed, machine-local — see CLAUDE.md "Saved Per
+# Computer/User"). Shared literal, not imported from dialogs.py, to avoid
+# pulling that module's whole (2800+ line) import chain into the report
+# server for one string constant.
+_SUPERVISOR_LAST_FOLDER_KEY = "supervisor_last_folder"
 
 # Web root for the built SPA — ../../web relative to this file
 # (plugin/sentinel/ui/reports_dialog.py -> plugin/web), same
@@ -75,7 +99,7 @@ def ensure_server():
                 "Sentinel Reports: no build found at\n\n"
                 f"{_WEB_ROOT}\n\n"
                 "The SPA (plugin/web/) is missing from this install. "
-                "Falling back to the legacy Delivery Summary dialog."
+                "Falling back to the legacy native dialog."
             )
         raise RuntimeError(f"Reports web build not found at {_WEB_ROOT}")
 
@@ -121,9 +145,140 @@ def _op_report_delivery(payload):
     return delivery_report_payload(manifest_dict, manifest_path)
 
 
-# op name (as the SPA requests it, "report/delivery") -> handler(payload).
+def _op_report_qc(payload):
+    """``report/qc`` — run the 12 QC checks on the active document and map
+    the result to the SPA's QcReport contract.
+
+    Runs QC exactly the way ``ui/dialogs.py`` ``AssetHubDialog._refresh_preflight``
+    does (its own docstring names this as the source of truth: "Re-run QC +
+    score the same way `collect_scene` does"): ``active_rules_for_doc`` ->
+    ``run_all_checks`` -> ``compute_score``, with the baseline kwargs added
+    only when a baseline sidecar already exists on disk. ``_baseline_path_for_doc``
+    and ``_current_module`` are private to ``ui.flows`` and imported locally
+    here for the exact same reason ``ui/dialogs.py`` does it locally: avoids
+    a module-load-time cycle (``ui.flows`` imports ``ui.dialogs`` at module
+    scope for ``GateTriageDialog``). No dialog is opened and nothing is
+    mutated — read-only, satisfies the MainThreadQueue invariant.
+    """
+    from sentinel.ui.flows import _baseline_path_for_doc, _current_module
+
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"error": "no_document"}
+
+    rules_context = active_rules_for_doc(doc)
+    registry_results = run_all_checks(doc, _current_module(), rules_context)
+    baseline_path = _baseline_path_for_doc(doc, only_existing=True)
+    score_kwargs = {"baseline_path": baseline_path,
+                     "current_params": rules_context.params} if baseline_path else {}
+    score = compute_score(registry_results, rules_context, **score_kwargs)
+
+    structured_by_check = {
+        check_id: pair.get("structured_result")
+        for check_id, pair in registry_results.items()
+    }
+    ruleset = {
+        "name": (os.path.basename(rules_context.rules_path)
+                 if rules_context.rules_path else "defaults"),
+        "path": rules_context.rules_path,
+        "shadowed": list(rules_context.shadowed_paths or []),
+        "severity_overrides": (rules_context.params or {}).get("check_severity", {}),
+    }
+    scene_name = doc.GetDocumentName() or "Untitled"
+
+    return qc_report_payload(scene_name, ruleset, score, structured_by_check)
+
+
+def _op_report_doctor(payload):
+    """``report/doctor`` — run Sentinel Doctor's non-network diagnostics and
+    map them to the SPA's DoctorReport contract.
+
+    Only ``run_all_diagnostics()`` — the explicit, opt-in ``check_for_update``
+    (network call, see doctor.py's own docstring: "invoked only on explicit
+    user action") is deliberately NOT run here, keeping this op fast and
+    fully read-only/idempotent like every other MainThreadQueue dispatch.
+    """
+    items, meta = doctor.run_all_diagnostics()
+    return doctor_report_payload(items, meta)
+
+
+def _op_report_supervisor(payload):
+    """``report/supervisor`` — scan a project folder's version/notes
+    sidecars (no ``.c4d`` ever opened) and map the result to the SPA's
+    SupervisorReport contract.
+
+    Folder resolution: an explicit ``payload["folder"]`` wins, else the last
+    folder scanned from the native Supervisor dialog (or a previous SPA
+    scan) — ``GlobalSettings`` key ``supervisor_last_folder``, the same one
+    ``ui/dialogs.py`` ``SupervisorDialog`` reads/writes. No folder resolved
+    at all -> ``{"error": "no_folder"}``.
+
+    Persisting the folder back to settings on every explicit scan is an
+    idempotent write (same folder in -> same value stored, repeatable any
+    number of times including a re-dispatch of a timed-out request) so it
+    is allowed under the MainThreadQueue invariant even though it is
+    technically a write — it only ever mirrors ``payload["folder"]``, never
+    derives new state.
+
+    Timing note: this walks the folder tree for every ``*_history.json``
+    (depth-capped at 6, see ``supervisor.MAX_WALK_DEPTH``) and reads each
+    sidecar's small JSON — cheap for a normal shot count, but on a very
+    large/deep project tree this read-only I/O runs synchronously on the
+    C4D main thread (via the Timer -> ``MainThreadQueue.drain`` hand-off)
+    like every other op; there is no background/async scan here.
+    """
+    folder = payload.get("folder") or GlobalSettings.get(_SUPERVISOR_LAST_FOLDER_KEY, "")
+    if not folder:
+        return {"error": "no_folder"}
+
+    if payload.get("folder"):
+        GlobalSettings.set(_SUPERVISOR_LAST_FOLDER_KEY, folder)
+
+    shots, meta = supervisor.scan_folder(folder)
+    return supervisor_report_payload(shots, meta)
+
+
+def _op_report_render_validation(payload):
+    """``report/render_validation`` — locate and load the last saved render
+    validation report for the active document and map it to the SPA's
+    RenderValidationReport contract.
+
+    The report path is deterministic from the saved document path alone
+    (``postrender.report_path_for_doc``: ``<scene_folder>/<base>_sentinel_render_report.json``,
+    version/status-stripped — it does NOT depend on which render-output
+    folder was audited), so no dialog or folder picker is needed here. An
+    unsaved document, or a saved one that has never run "Validate Render
+    Output..." (``ui/scene_tools.py`` ``_handle_validate_render``), has no
+    deterministic report path/file yet -> ``{"error": "no_report"}``, same
+    as ``report/delivery``'s ``no_manifest``.
+    """
+    doc = documents.GetActiveDocument()
+    doc_path = doc.GetDocumentPath() if doc else ""
+    doc_name = doc.GetDocumentName() if doc else ""
+    if not doc or not doc_path or not doc_name:
+        return {"error": "no_report"}
+
+    doc_full_path = os.path.join(doc_path, doc_name)
+    report_path = postrender.report_path_for_doc(doc_full_path, "")
+    if not report_path or not os.path.isfile(report_path):
+        return {"error": "no_report"}
+
+    try:
+        with open(report_path, "r", encoding="utf-8") as handle:
+            report = json.load(handle)
+    except Exception:
+        return {"error": "no_report"}
+
+    return render_validation_payload(report, report_path)
+
+
+# op name (as the SPA requests it, e.g. "report/delivery") -> handler(payload).
 _OPS = {
     "report/delivery": _op_report_delivery,
+    "report/qc": _op_report_qc,
+    "report/doctor": _op_report_doctor,
+    "report/supervisor": _op_report_supervisor,
+    "report/render_validation": _op_report_render_validation,
 }
 
 
@@ -149,10 +304,18 @@ class ReportsDialog(gui.GeDialog):
     ID_HTML = 3001
     ID_NOTICE = 3002
 
-    def __init__(self, port):
+    def __init__(self, port, page=None):
         super().__init__()
         self._port = port
+        # Deep-link into a specific SPA page (e.g. "doctor", "qc") via a
+        # `?page=` query param the SPA reads once at mount (web/src/App.tsx
+        # initialPage()) — None keeps the SPA's own default (Delivery).
+        self._page = page
         self._html = None
+
+    def _url(self):
+        base = f"http://127.0.0.1:{self._port}/"
+        return f"{base}?page={self._page}" if self._page else base
 
     def CreateLayout(self):
         self.SetTitle("Sentinel Reports")
@@ -163,7 +326,7 @@ class ReportsDialog(gui.GeDialog):
         if self._html is None:
             # No HtmlViewer gadget on this platform/build — open the report
             # in the system browser instead and explain the empty window.
-            url = f"http://127.0.0.1:{self._port}/"
+            url = self._url()
             webbrowser.open(url)
             self.AddStaticText(
                 self.ID_NOTICE, c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT, 0, 0,
@@ -178,8 +341,7 @@ class ReportsDialog(gui.GeDialog):
 
     def InitValues(self):
         if self._html is not None:
-            self._html.SetUrl(f"http://127.0.0.1:{self._port}/",
-                               c4d.URL_ENCODING_UTF16)
+            self._html.SetUrl(self._url(), c4d.URL_ENCODING_UTF16)
         return True
 
     def Timer(self, msg):
@@ -194,7 +356,7 @@ class ReportsDialog(gui.GeDialog):
         pass
 
 
-def open_reports(doc):
+def open_reports(doc, page=None):
     """Ensure the Reports server is running and open the dialog.
 
     ``doc`` is accepted (not read here) for call-site symmetry with the
@@ -205,11 +367,15 @@ def open_reports(doc):
     later (on a Timer tick, possibly after the user switched documents) and
     should reflect whichever document is active *then*.
 
+    ``page`` optionally deep-links straight to one of the SPA's pages
+    ("qc", "doctor", "supervisor", "render") instead of its default
+    Delivery Summary landing page — see ``ReportsDialog._url``.
+
     Raises on failure (missing web build, or a server bind failure such as
     every port in range being busy) — the panel's button handler catches
-    this and falls back to the legacy text-dialog Delivery Summary.
+    this and falls back to a legacy native dialog.
     """
     port = ensure_server()
-    dlg = ReportsDialog(port)
+    dlg = ReportsDialog(port, page=page)
     dlg.Open(c4d.DLG_TYPE_ASYNC, defaultw=1080, defaulth=760)
     return dlg

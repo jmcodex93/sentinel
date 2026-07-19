@@ -1,0 +1,162 @@
+{
+  "scene": "robot_010_v022_TR.c4d",
+  "ruleset": {
+    "name": "sentinel_rules.json",
+    "path": "/projects/demo/robot_010/sentinel_rules.json",
+    "shadowed": []
+  },
+  "score": {
+    "score": "8/11",
+    "passed": 8,
+    "total": 11,
+    "disabled_count": 1,
+    "baseline_status": "ok"
+  },
+  "checks": [
+    {
+      "id": "lights",
+      "label": "Lights",
+      "severity": "FAIL",
+      "has_fix": true,
+      "status": "fail",
+      "count": 3,
+      "new": 1,
+      "accepted": 2,
+      "details": [
+        { "label": "/Rig/Key Light", "message": "Light outside lights group", "extras": null }
+      ]
+    },
+    {
+      "id": "vis",
+      "label": "Visibility",
+      "severity": "WARN",
+      "has_fix": false,
+      "status": "ok",
+      "count": 0,
+      "new": 0,
+      "accepted": 0,
+      "details": []
+    },
+    {
+      "id": "keys",
+      "label": "Keyframes",
+      "severity": "WARN",
+      "has_fix": false,
+      "status": "fail",
+      "count": 2,
+      "new": 2,
+      "accepted": 0,
+      "details": [
+        { "label": "/Rig/Body_L01", "message": "Multi-axis keyframe on Rotation", "extras": null },
+        { "label": "/Rig/Body_R01", "message": "Multi-axis keyframe on Rotation", "extras": null }
+      ]
+    },
+    {
+      "id": "cam",
+      "label": "Cameras",
+      "severity": "FAIL",
+      "has_fix": true,
+      "status": "ok",
+      "count": 0,
+      "new": 0,
+      "accepted": 0,
+      "details": []
+    },
+    {
+      "id": "rdc",
+      "label": "Presets",
+      "severity": "FAIL",
+      "has_fix": false,
+      "status": "fail",
+      "count": 1,
+      "new": 1,
+      "accepted": 0,
+      "details": [
+        { "label": "Render Settings", "message": "Unapproved render preset \"test_draft\"", "extras": null }
+      ]
+    },
+    {
+      "id": "textures",
+      "label": "Assets",
+      "severity": "FAIL",
+      "has_fix": false,
+      "status": "fail",
+      "count": 2,
+      "new": 0,
+      "accepted": 2,
+      "details": []
+    },
+    {
+      "id": "unused_mats",
+      "label": "Materials",
+      "severity": "WARN",
+      "has_fix": true,
+      "status": "ok",
+      "count": 0,
+      "new": 0,
+      "accepted": 0,
+      "details": []
+    },
+    {
+      "id": "names",
+      "label": "Naming",
+      "severity": "WARN",
+      "has_fix": false,
+      "status": "fail",
+      "count": 4,
+      "new": 4,
+      "accepted": 0,
+      "details": [
+        { "label": "/Cube", "message": "Default name \"Cube\"", "extras": null },
+        { "label": "/Cube.1", "message": "Default name \"Cube.1\"", "extras": null },
+        { "label": "/Null", "message": "Default name \"Null\"", "extras": null },
+        { "label": "/Null.1", "message": "Default name \"Null.1\"", "extras": null }
+      ]
+    },
+    {
+      "id": "output",
+      "label": "Output",
+      "severity": "FAIL",
+      "has_fix": false,
+      "status": "ok",
+      "count": 0,
+      "new": 0,
+      "accepted": 0,
+      "details": []
+    },
+    {
+      "id": "takes",
+      "label": "Takes",
+      "severity": "FAIL",
+      "has_fix": false,
+      "status": "disabled",
+      "count": null,
+      "new": null,
+      "accepted": null,
+      "details": []
+    },
+    {
+      "id": "fps_range",
+      "label": "FPS/Range",
+      "severity": "FAIL",
+      "has_fix": true,
+      "status": "ok",
+      "count": 0,
+      "new": 0,
+      "accepted": 0,
+      "details": []
+    },
+    {
+      "id": "cross_aspect",
+      "label": "Safe Area",
+      "severity": "WARN",
+      "has_fix": false,
+      "status": "ok",
+      "count": 0,
+      "new": 0,
+      "accepted": 0,
+      "details": []
+    }
+  ],
+  "disabled": ["takes"]
+}

@@ -54,6 +54,7 @@ class G:
 
     # Export
     BTN_EXPORT_QC = 1150
+    BTN_OPEN_QC_REPORT = 1316  # QC tab: open the Reports QC page (Phase 2 Task 3)
 
     # Render preset
     PRESET_DROPDOWN = 1002

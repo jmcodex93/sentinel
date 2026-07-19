@@ -628,7 +628,10 @@ class YSPanel(gui.GeDialog):
         self.GroupEnd()  # status row
 
         self.AddSeparatorH(4)
+        self.GroupBegin(41, c4d.BFH_SCALEFIT, 2, 0)
         self.AddButton(G.BTN_EXPORT_QC, c4d.BFH_SCALEFIT, 0, 0, "Export QC Report")
+        self.AddButton(G.BTN_OPEN_QC_REPORT, c4d.BFH_SCALEFIT, 0, 0, "Open QC Report")
+        self.GroupEnd()
 
         # Spacer absorbs remaining vertical space
         self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 0, 0, "", 0)
@@ -1446,7 +1449,11 @@ class YSPanel(gui.GeDialog):
             self._last_check_time = 0
             self._dirty = True
             self._refresh()
-            c4d.gui.MessageDialog(f"Accepted {written} violation(s) for {row_label}.")
+            # Popup triage (fase 2): result surfaces via the QC row/StatusArea
+            # (_refresh() above already re-ran the checks) + StatusSetText echo.
+            msg = f"Accepted {written} violation(s) for {row_label}."
+            safe_print(msg)
+            c4d.gui.StatusSetText(msg)
             return True
 
         if dlg.action == "retire":
@@ -1456,7 +1463,11 @@ class YSPanel(gui.GeDialog):
             self._dirty = True
             self._refresh()
             if ok:
-                c4d.gui.MessageDialog(f"Acceptances retired for {row_label}.")
+                # Popup triage (fase 2): result surfaces via the QC row/StatusArea
+                # (_refresh() above already re-ran the checks) + StatusSetText echo.
+                msg = f"Acceptances retired for {row_label}."
+                safe_print(msg)
+                c4d.gui.StatusSetText(msg)
             else:
                 c4d.gui.MessageDialog("Could not update the baseline sidecar.")
             return True
@@ -1506,7 +1517,8 @@ class YSPanel(gui.GeDialog):
             try:
                 cur_full = os.path.join(current.GetDocumentPath() or "", current.GetDocumentName() or "")
                 if os.path.normcase(os.path.normpath(cur_full)) == os.path.normcase(os.path.normpath(path)):
-                    c4d.gui.MessageDialog(f"Already viewing {filename}.")
+                    # Popup triage (fase 2): result surfaces via c4d.gui.StatusSetText
+                    c4d.gui.StatusSetText(f"Already viewing {filename}.")
                     return
             except Exception:
                 pass
@@ -1745,8 +1757,9 @@ class YSPanel(gui.GeDialog):
             if c4d.gui.QuestionDialog(info_msg):
                 self._open_asset_hub(doc)
         else:
-            c4d.gui.MessageDialog(
-                "All assets OK. No absolute paths or missing files.")
+            # Popup triage (fase 2): result surfaces via c4d.gui.StatusSetText
+            # (the QC row already shows [ OK ] for this check)
+            c4d.gui.StatusSetText("All assets OK. No absolute paths or missing files.")
 
     def _qc_select_unused_mats(self, doc):
         if self._unused_mats_bad:
@@ -1913,17 +1926,21 @@ class YSPanel(gui.GeDialog):
             preview += "Continue?"
 
             if c4d.gui.QuestionDialog(preview):
+                # Result reported via console + status bar, matching the
+                # sibling fixes (_qc_fix_lights/_qc_fix_cam/_qc_fix_unused_mats)
+                # — the confirm dialog above is the decision point; the
+                # itemized list is detail, not something the user must
+                # dismiss a second popup to see (popup triage, Phase 2 Task 3).
                 fixes = fix_fps_range(doc)
                 if fixes:
-                    fix_msg = f"Applied {len(fixes)} fix(es):\n\n"
-                    for f in fixes[:25]:
-                        fix_msg += f"  - {f}\n"
-                    if len(fixes) > 25:
-                        fix_msg += f"  ... and {len(fixes) - 25} more\n"
-                    c4d.gui.MessageDialog(fix_msg)
+                    safe_print(f"FPS/range fix: applied {len(fixes)} fix(es):")
+                    for f in fixes:
+                        safe_print(f"  - {f}")
+                    c4d.gui.StatusSetText(
+                        f"FPS/range: applied {len(fixes)} fix(es) — see console for details")
                     self._dirty = True
                 else:
-                    c4d.gui.MessageDialog("No fixes were applied.")
+                    c4d.gui.StatusSetText("FPS/range: no fixes were applied")
             else:
                 safe_print("FPS/range fix cancelled by user")
         else:
@@ -2114,7 +2131,8 @@ class YSPanel(gui.GeDialog):
             if not result["available"]:
                 c4d.gui.MessageDialog("Redshift module not available.\n\nMake sure Redshift is installed and active.")
             elif not result["aovs"]:
-                c4d.gui.MessageDialog("No AOVs configured.\n\nUse 'Essentials' or 'Production' to add passes.")
+                # Popup triage (fase 2): result surfaces via c4d.gui.StatusSetText
+                c4d.gui.StatusSetText("No AOVs configured. Use 'Essentials' or 'Production' to add passes.")
             else:
                 target_name = "Nuke" if int(GlobalSettings.get('comp_target', 0)) == 0 else "After Effects"
                 lg_status = "ON" if _is_lg_active_on_beauty(doc) else "OFF"
@@ -2212,16 +2230,27 @@ class YSPanel(gui.GeDialog):
             safe_print(f"Opening bug report page: {bug_url}")
 
         elif cid == G.BTN_DOCTOR:
-            # Open the Sentinel Doctor self-diagnostic (I6)
-            dlg = SentinelDoctorDialog()
-            dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=560, defaulth=560)
-            safe_print("Sentinel Doctor closed")
+            # Open the Sentinel Doctor self-diagnostic (I6) via Reports;
+            # legacy modal dialog is the fallback (Phase 2 Task 3).
+            self._open_reports(doc, page="doctor",
+                               fallback=self._open_doctor_dialog_legacy)
 
         elif cid == G.BTN_SUPERVISOR:
-            # Open the Supervisor folder-QC aggregator (I5-A)
-            dlg = SupervisorDialog()
-            dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=680, defaulth=560)
-            safe_print("Supervisor closed")
+            # Open the Supervisor folder-QC aggregator (I5-A) via Reports;
+            # legacy modal dialog is the fallback (Phase 2 Task 3).
+            self._open_reports(doc, page="supervisor",
+                               fallback=self._open_supervisor_dialog_legacy)
+
+        elif cid == G.BTN_OPEN_QC_REPORT:
+            # QC tab: open the Reports QC page (Phase 2 Task 3). No modal
+            # legacy equivalent exists for the full report — each QC row's
+            # own Info button remains available if Reports can't open.
+            self._open_reports(
+                doc, page="qc",
+                fallback=lambda: c4d.gui.MessageDialog(
+                    "Sentinel Reports could not open.\n\n"
+                    "Use each check row's Info button below for "
+                    "check-level detail in the meantime."))
 
         elif cid == G.BTN_SETTINGS:
             # Open the Sentinel Settings modal dialog
@@ -2262,8 +2291,11 @@ class YSPanel(gui.GeDialog):
             }
             save_path = export_qc_report(doc, results, self._artist_name, self._qc_summary)
             if save_path:
+                # Popup triage (fase 2): result surfaces via safe_print (console,
+                # full path) + c4d.gui.StatusSetText (already-printed path was
+                # duplicated verbatim in the popup)
                 safe_print(f"QC report saved to: {save_path}")
-                c4d.gui.MessageDialog(f"QC Report saved!\n\n{save_path}")
+                c4d.gui.StatusSetText(f"QC Report saved: {save_path}")
 
         elif cid == G.BTN_COLLECT_SCENE:
             self._open_asset_hub(doc, focus="deliver")
@@ -2318,17 +2350,23 @@ class YSPanel(gui.GeDialog):
         # ofrecen nada que verificar.
         return bool(data and data.get("assets_schema"))
 
-    def _open_reports(self, doc):
-        """Open the Sentinel Reports dialog (HTML-based Delivery Summary,
-        UI Foundation Task 4) — replaces the legacy text-dialog summary as
-        the button's primary action. Retains a reference to the dialog
+    def _open_reports(self, doc, page=None, fallback=None):
+        """Open the Sentinel Reports dialog (HTML-based, UI Foundation
+        Task 4 / Phase 2 Task 3) — replaces per-feature legacy text dialogs
+        as each button's primary action. Retains a reference to the dialog
         (same pattern as ``_open_asset_hub``/``self._asset_hub``) so it
         isn't garbage-collected while open.
 
+        ``page`` deep-links to a specific SPA page ("qc", "doctor",
+        "supervisor", "render") instead of the default Delivery Summary
+        landing page — see ``reports_dialog.open_reports``.
+
         If the Reports server fails to start (e.g. the SPA build is
         missing from this install, or every port in its range is busy),
-        the old ``_show_delivery_summary`` text-dialog flow stays reachable
-        as a fallback — it is untouched, not removed.
+        ``fallback`` (a zero-arg callable) is invoked instead. Defaults to
+        the original ``_show_delivery_summary`` text-dialog flow, which
+        stays reachable and untouched — every call site that predates the
+        ``page``/``fallback`` params keeps its exact old behavior.
         """
         try:
             from sentinel.ui.reports_dialog import open_reports
@@ -2339,11 +2377,28 @@ class YSPanel(gui.GeDialog):
                         existing.Close()
                 except Exception:
                     pass
-            self._reports = open_reports(doc)
+            self._reports = open_reports(doc, page=page)
         except Exception as e:
             safe_print(f"Reports dialog failed to open ({e}); "
-                       f"falling back to legacy Delivery Summary")
-            self._show_delivery_summary(doc)
+                       f"falling back to legacy dialog")
+            if fallback is not None:
+                fallback()
+            else:
+                self._show_delivery_summary(doc)
+
+    def _open_doctor_dialog_legacy(self):
+        """Legacy fallback for the Doctor button — the pre-Reports modal
+        self-diagnostic dialog, unchanged (Phase 2 Task 3)."""
+        dlg = SentinelDoctorDialog()
+        dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=560, defaulth=560)
+        safe_print("Sentinel Doctor closed")
+
+    def _open_supervisor_dialog_legacy(self):
+        """Legacy fallback for the Supervisor button — the pre-Reports
+        modal folder-QC aggregator dialog, unchanged (Phase 2 Task 3)."""
+        dlg = SupervisorDialog()
+        dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=680, defaulth=560)
+        safe_print("Supervisor closed")
 
     def _show_delivery_summary(self, doc):
         """Show the collect-time delivery summary and offer a receiver-side
@@ -2522,7 +2577,16 @@ class YSPanel(gui.GeDialog):
                             f"{cont.get('message','unknown error')}"
                         )
             else:
-                c4d.gui.MessageDialog(base_msg)
+                # WIP save: the "Last version" pillbox above the Save
+                # Version button already reflects this save on the next
+                # refresh tick (self._dirty=True above), so a modal repeating
+                # the same version/status/QC facts is redundant — status bar
+                # + console instead (popup triage, Phase 2 Task 3; verified
+                # via _update_last_version_label, called whenever self._dirty
+                # is serviced).
+                if qc:
+                    safe_print(f"Save Version: QC {qc.get('score','')} [{status_word}]")
+                c4d.gui.StatusSetText(base_msg.replace("\n", "  ·  "))
         else:
             c4d.gui.MessageDialog(f"Save Version failed:\n\n{result.get('message','unknown error')}")
             safe_print(f"Save Version failed: {result.get('message')}")
@@ -2570,11 +2634,22 @@ class YSPanel(gui.GeDialog):
         # refreshes on a full tab rebuild — the same path a tab switch takes,
         # which is why switching tabs "fixed" the stale text.
         self._set_active_tab(self._active_tab)
-        c4d.gui.MessageDialog(
-            f"Multi-Part EXR: {'ON' if target else 'OFF'} — applied to scene.")
+        # Popup triage (fase 2): result surfaces via LABEL_AOV_INFO (already
+        # refreshed synchronously by _set_active_tab above) + StatusSetText echo.
+        msg = f"Multi-Part EXR: {'ON' if target else 'OFF'} — applied to scene."
+        safe_print(msg)
+        c4d.gui.StatusSetText(msg)
 
     def _handle_validate_render(self, doc):
-        scene_tools._handle_validate_render(doc)
+        """Run post-render validation, then open the Reports render page
+        (Phase 2 Task 3) instead of the old result MessageDialog. Falls
+        back to that legacy dialog if the Reports server can't open."""
+        result = scene_tools._handle_validate_render(doc)
+        if result is None:
+            return
+        self._open_reports(
+            doc, page="render",
+            fallback=lambda: c4d.gui.MessageDialog(result["message"]))
 
     def _open_artist_folder(self):
         scene_tools._open_artist_folder(self._artist_name)

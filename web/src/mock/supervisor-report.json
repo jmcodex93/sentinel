@@ -1,0 +1,58 @@
+{
+  "folder": "/projects/demo",
+  "generated_at": "2026-07-19 18:00:00",
+  "shot_count": 3,
+  "warnings": ["Corrupted: /projects/demo/robot_040/robot_040_history.json"],
+  "shots": [
+    {
+      "base": "robot_010",
+      "folder": "/projects/demo/robot_010",
+      "version_count": 5,
+      "last_version": "v005",
+      "status": "TR",
+      "score": "10/12",
+      "qc_label": "10/12",
+      "todos_total": 3,
+      "todos_pending": 1,
+      "days_idle": 1,
+      "last_timestamp": "2026-07-18 10:00:00",
+      "artist": "Motioneer",
+      "flags": ["regression"],
+      "trajectory": [
+        { "from_version": "v004", "to_version": "v005", "broke": ["Lights"], "recovered": [], "no_data": false }
+      ]
+    },
+    {
+      "base": "robot_020",
+      "folder": "/projects/demo/robot_020",
+      "version_count": 1,
+      "last_version": "v001",
+      "status": "",
+      "score": "12/12",
+      "qc_label": "12/12",
+      "todos_total": 0,
+      "todos_pending": 0,
+      "days_idle": 9,
+      "last_timestamp": "2026-07-10 09:00:00",
+      "artist": "Motioneer",
+      "flags": ["stale"],
+      "trajectory": []
+    },
+    {
+      "base": "robot_030",
+      "folder": "/projects/demo/robot_030",
+      "version_count": 8,
+      "last_version": "v008_FINAL",
+      "status": "FINAL",
+      "score": "12/12",
+      "qc_label": "12/12",
+      "todos_total": 2,
+      "todos_pending": 0,
+      "days_idle": 0,
+      "last_timestamp": "2026-07-19 16:30:00",
+      "artist": "Motioneer",
+      "flags": [],
+      "trajectory": []
+    }
+  ]
+}
