@@ -1,0 +1,21 @@
+/*
+ * Inter, packaged locally (no CDN / network fetch — see web/public/fonts/,
+ * OFL license alongside the woff2 files). Variable font: one file covers
+ * weights 100-900, so a single @font-face per style (roman/italic) is
+ * enough — Sentinel only ever uses 400/500/600 (see DESIGN.md typography).
+ */
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/InterVariable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/InterVariable-Italic.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: swap;
+}

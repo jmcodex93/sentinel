@@ -1,0 +1,83 @@
+{
+  "scene": "robot_010.c4d",
+  "collected_at": "2026-07-16 18:42:07",
+  "artist": "Motioneer",
+  "version": "v022",
+  "qc": { "score": "9/12", "passed": 9, "total": 12 },
+  "summary": { "total": 14, "collected": 11, "missing": 2, "external": 1 },
+  "zip": null,
+  "pending_todos": 2,
+  "manifest_path": "/Users/artist/Desktop/Sentinel/CollectedHUB/sentinel_manifest.json",
+  "assets": [
+    {
+      "path": "tex/robot_body_basecolor.jpg",
+      "status": "collected",
+      "provenance": "material · Body Shell"
+    },
+    {
+      "path": "tex/robot_body_normal.jpg",
+      "status": "collected",
+      "provenance": "material · Body Shell"
+    },
+    {
+      "path": "tex/robot_body_roughness.jpg",
+      "status": "collected",
+      "provenance": "material · Body Shell"
+    },
+    {
+      "path": "tex/robot_visor_emissive.png",
+      "status": "collected",
+      "provenance": "material · Visor"
+    },
+    {
+      "path": "tex/robot_visor_normal.png",
+      "status": "collected",
+      "provenance": "material · Visor"
+    },
+    {
+      "path": "tex/robot_joint_metal_basecolor.png",
+      "status": "collected",
+      "provenance": "material · Joint Plating"
+    },
+    {
+      "path": "tex/robot_joint_metal_metallic.png",
+      "status": "collected",
+      "provenance": "material · Joint Plating"
+    },
+    {
+      "path": "tex/robot_decal_alpha.png",
+      "status": "collected",
+      "provenance": "material · Decal Panel"
+    },
+    {
+      "path": "tex/scratches_overlay_4k.png",
+      "status": "collected",
+      "provenance": "material · Body Shell"
+    },
+    {
+      "path": "tex/ground_plane_basecolor.jpg",
+      "status": "collected",
+      "provenance": "material · Ground Plane"
+    },
+    {
+      "path": "tex/ground_plane_normal.jpg",
+      "status": "collected",
+      "provenance": "material · Ground Plane"
+    },
+    {
+      "path": "file:///X:/assets/robot_gen2/tex/grip_detail.png",
+      "status": "missing",
+      "provenance": "material · Hand Grip"
+    },
+    {
+      "path": "D:/library/hdri/studio_soft_4k.hdr",
+      "status": "missing",
+      "provenance": "RS Dome Light · HDR Key"
+    },
+    {
+      "path": "/Volumes/Shared/refs/robot_010_turntable.abc",
+      "status": "external",
+      "provenance": "alembic cache · Turntable Rig"
+    }
+  ]
+}

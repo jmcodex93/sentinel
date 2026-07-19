@@ -1,0 +1,97 @@
+@import "tailwindcss";
+@import "./tokens.css";
+@import "./fonts.css";
+
+/*
+ * Tailwind v4 theme extension — maps the hand-authored tokens.css vars
+ * into Tailwind's theme namespace so utilities like `bg-canvas`,
+ * `text-ink-secondary`, `rounded-lg`, `font-sans` resolve to the exact
+ * DESIGN.md values instead of Tailwind's stock palette/scale. Spacing
+ * intentionally stays on Tailwind's default 4px-unit numeric scale
+ * (p-4 = 16px, p-6 = 24px, p-8 = 32px, ...) since it already lands on
+ * every 8px-grid value DESIGN.md defines — no named spacing tokens
+ * needed on top of it.
+ */
+@theme inline {
+  --color-canvas: var(--color-canvas);
+  --color-surface-1: var(--color-surface-1);
+  --color-surface-2: var(--color-surface-2);
+  --color-hairline: var(--color-hairline);
+  --color-hairline-strong: var(--color-hairline-strong);
+
+  --color-ink: var(--color-ink);
+  --color-ink-secondary: var(--color-ink-secondary);
+  --color-muted: var(--color-muted);
+
+  --color-primary: var(--color-primary);
+  --color-primary-hover: var(--color-primary-hover);
+  --color-on-primary: var(--color-on-primary);
+
+  --color-status-fail: var(--color-status-fail);
+  --color-status-warn: var(--color-status-warn);
+  --color-status-pass: var(--color-status-pass);
+  --color-status-neutral: var(--color-status-neutral);
+
+  --font-sans: var(--font-family);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-family);
+  font-size: var(--text-body-size);
+  line-height: var(--text-body-line);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/*
+ * Typography utility classes, one per DESIGN.md type token. Kept as plain
+ * classes (not Tailwind arbitrary values repeated at every call site)
+ * since the scale (12.5px labels, -0.01em title tracking, ...) doesn't
+ * land on Tailwind's default text scale.
+ */
+.text-title {
+  font-size: var(--text-title-size);
+  font-weight: var(--text-title-weight);
+  line-height: var(--text-title-line);
+  letter-spacing: var(--text-title-tracking);
+}
+.text-subhead {
+  font-size: var(--text-subhead-size);
+  font-weight: var(--text-subhead-weight);
+  line-height: var(--text-subhead-line);
+  letter-spacing: var(--text-subhead-tracking);
+}
+.text-body-lg {
+  font-size: var(--text-body-lg-size);
+  font-weight: var(--text-body-lg-weight);
+  line-height: var(--text-body-lg-line);
+}
+.text-body {
+  font-size: var(--text-body-size);
+  font-weight: var(--text-body-weight);
+  line-height: var(--text-body-line);
+}
+.text-label {
+  font-size: var(--text-label-size);
+  font-weight: var(--text-label-weight);
+  line-height: var(--text-label-line);
+}
+.text-caption {
+  font-size: var(--text-caption-size);
+  font-weight: var(--text-caption-weight);
+  line-height: var(--text-caption-line);
+}
