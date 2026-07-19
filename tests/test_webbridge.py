@@ -980,3 +980,395 @@ class TestServerLifecycle:
         # forever on shutdown()'s wait for a loop that will never notice it.
         server, _port = webbridge.create_server(str(web_root), _echo_handler)
         webbridge.stop_server(server)
+
+
+# ---------------------------------------------------------------------------
+# Save Version form — validate_save_version_submit / resolve_save_version_status
+# ---------------------------------------------------------------------------
+
+class TestResolveSaveVersionStatus:
+    def test_custom_status_wins_over_combo_status(self):
+        assert webbridge.resolve_save_version_status("TR", "pitch v2") == "PITCHV2"
+
+    def test_falls_back_to_combo_status_when_custom_empty(self):
+        assert webbridge.resolve_save_version_status("CR", "   ") == "CR"
+
+    def test_both_empty_is_wip(self):
+        assert webbridge.resolve_save_version_status("", "") == ""
+        assert webbridge.resolve_save_version_status(None, None) == ""
+
+
+class TestValidateSaveVersionSubmit:
+    def test_empty_comment_is_rejected(self):
+        result = webbridge.validate_save_version_submit({"comment": "   "})
+        assert result == {
+            "ok": False,
+            "error": "Please enter a comment describing this version.",
+        }
+
+    def test_missing_comment_key_is_rejected(self):
+        result = webbridge.validate_save_version_submit({})
+        assert result["ok"] is False
+
+    def test_valid_comment_normalizes_fields(self):
+        result = webbridge.validate_save_version_submit({
+            "comment": "  rim lights pass  ",
+            "status": "TR",
+            "custom_status": "",
+            "run_qc": False,
+        })
+        assert result == {
+            "ok": True,
+            "comment": "rim lights pass",
+            "status": "TR",
+            "run_qc": False,
+            "warning": None,
+        }
+
+    def test_run_qc_defaults_true_when_absent(self):
+        result = webbridge.validate_save_version_submit({"comment": "ok"})
+        assert result["run_qc"] is True
+
+    def test_final_in_comment_is_a_non_blocking_warning(self):
+        result = webbridge.validate_save_version_submit({
+            "comment": "This is the FINAL pass",
+        })
+        assert result["ok"] is True
+        assert result["warning"] == webbridge.SAVE_VERSION_FINAL_HINT
+
+    def test_final_substring_case_insensitive(self):
+        result = webbridge.validate_save_version_submit({"comment": "final."})
+        assert result["warning"] is not None
+
+    def test_no_final_no_warning(self):
+        result = webbridge.validate_save_version_submit({"comment": "lookdev pass"})
+        assert result["warning"] is None
+
+    def test_custom_status_takes_priority_in_full_submit(self):
+        result = webbridge.validate_save_version_submit({
+            "comment": "ok", "status": "TR", "custom_status": "PITCH",
+        })
+        assert result["status"] == "PITCH"
+
+
+class TestSaveVersionStatusOptions:
+    def test_matches_versioning_status_options(self):
+        options = webbridge.save_version_status_options()
+        assert options[0] == {"label": "Work in Progress (WIP)", "suffix": ""}
+        assert {"label": "Final Delivery", "suffix": "FINAL"} in options
+        assert len(options) == 4
+
+
+# ---------------------------------------------------------------------------
+# Notes form — merge_notes_submission
+# ---------------------------------------------------------------------------
+
+def _notes_fixture():
+    return {
+        "scene": "robot_010",
+        "updated": "2026-07-01 10:00:00",
+        "notes": "old text",
+        "todos": [
+            {"id": 1, "text": "rig fix", "done": False, "added": "2026-07-01 10:00:00"},
+            {"id": 2, "text": "already done", "done": True,
+             "added": "2026-07-01 09:00:00", "completed": "2026-07-01 09:30:00"},
+        ],
+    }
+
+
+class TestMergeNotesSubmission:
+    def test_notes_text_replaced_and_stripped(self):
+        merged = webbridge.merge_notes_submission(_notes_fixture(), "  new text  ", [])
+        assert merged["notes"] == "new text"
+
+    def test_none_original_falls_back_to_empty_notes(self):
+        merged = webbridge.merge_notes_submission(None, "hello", [])
+        assert merged["notes"] == "hello"
+        assert merged["todos"] == []
+
+    def test_does_not_mutate_original(self):
+        original = _notes_fixture()
+        webbridge.merge_notes_submission(original, "changed", [])
+        assert original["notes"] == "old text"
+
+    def test_existing_todo_text_is_never_edited(self):
+        submitted = [{"id": 1, "text": "renamed text", "done": False}]
+        merged = webbridge.merge_notes_submission(_notes_fixture(), "x", submitted)
+        assert merged["todos"][0]["text"] == "rig fix"
+
+    def test_toggling_done_stamps_completed(self):
+        submitted = [
+            {"id": 1, "text": "rig fix", "done": True},
+            {"id": 2, "text": "already done", "done": True},
+        ]
+        merged = webbridge.merge_notes_submission(_notes_fixture(), "x", submitted)
+        todo1 = next(t for t in merged["todos"] if t["id"] == 1)
+        assert todo1["done"] is True
+        assert "completed" in todo1
+        # id 2 was already done and submitted done=True -> untouched.
+        todo2 = next(t for t in merged["todos"] if t["id"] == 2)
+        assert todo2["completed"] == "2026-07-01 09:30:00"
+
+    def test_toggling_done_to_false_removes_completed(self):
+        submitted = [
+            {"id": 1, "text": "rig fix", "done": False},
+            {"id": 2, "text": "already done", "done": False},
+        ]
+        merged = webbridge.merge_notes_submission(_notes_fixture(), "x", submitted)
+        todo2 = next(t for t in merged["todos"] if t["id"] == 2)
+        assert "completed" not in todo2
+
+    def test_id_missing_from_submission_is_deleted(self):
+        submitted = [{"id": 1, "text": "rig fix", "done": False}]
+        merged = webbridge.merge_notes_submission(_notes_fixture(), "x", submitted)
+        assert [t["id"] for t in merged["todos"]] == [1]
+
+    def test_new_todo_without_id_is_added(self):
+        submitted = [
+            {"id": 1, "text": "rig fix", "done": False},
+            {"id": 2, "text": "already done", "done": True},
+            {"text": "brand new todo", "done": False},
+        ]
+        merged = webbridge.merge_notes_submission(_notes_fixture(), "x", submitted)
+        assert len(merged["todos"]) == 3
+        new_todo = merged["todos"][-1]
+        assert new_todo["text"] == "brand new todo"
+        assert new_todo["id"] == 3
+        assert new_todo["done"] is False
+
+    def test_new_todo_submitted_already_done_is_toggled_on(self):
+        submitted = [{"text": "born done", "done": True}]
+        merged = webbridge.merge_notes_submission(_notes_fixture(), "x", submitted)
+        # existing ids 1+2 dropped (not in submission), only the new one remains
+        assert len(merged["todos"]) == 1
+        new_todo = merged["todos"][0]
+        assert new_todo["done"] is True
+        assert "completed" in new_todo
+
+    def test_blank_text_items_are_skipped(self):
+        submitted = [{"text": "   ", "done": False}]
+        merged = webbridge.merge_notes_submission(_notes_fixture(), "x", submitted)
+        assert merged["todos"] == []
+
+    def test_non_dict_item_is_skipped_never_raises(self):
+        merged = webbridge.merge_notes_submission(_notes_fixture(), "x", ["not-a-dict", None])
+        assert merged["todos"] == []
+
+    def test_string_id_from_json_is_normalized(self):
+        # A JS client could round-trip an id as a string; must still match.
+        submitted = [{"id": "1", "text": "rig fix", "done": False}]
+        merged = webbridge.merge_notes_submission(_notes_fixture(), "x", submitted)
+        assert len(merged["todos"]) == 1
+        assert merged["todos"][0]["id"] == 1
+
+    def test_empty_original_and_empty_submission_returns_empty_todos(self):
+        merged = webbridge.merge_notes_submission(_notes_fixture(), "", [])
+        assert merged["todos"] == []
+        assert merged["notes"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Settings form — validate_settings_submit
+# ---------------------------------------------------------------------------
+
+class TestValidateSettingsSubmit:
+    def test_full_valid_payload_maps_every_field(self):
+        updates = webbridge.validate_settings_submit({
+            "fps": 30,
+            "compositor": 1,
+            "multipart_default": True,
+            "slate": True,
+            "mv_max_motion": 42,
+            "snapshot_dir": "/Volumes/cache/snaps",
+            "history_max": 10,
+        })
+        assert updates == {
+            "standard_fps": 30,
+            "comp_target": 1,
+            "aov_multipart": 1,
+            "snapshot_slate": True,
+            "mv_max_motion": 42,
+            "snapshot_dir": "/Volumes/cache/snaps",
+            "history_max_rows": 10,
+        }
+
+    def test_fps_locked_never_writes_standard_fps(self):
+        updates = webbridge.validate_settings_submit({"fps": 60}, fps_locked=True)
+        assert "standard_fps" not in updates
+
+    def test_snapshot_dir_locked_never_writes_snapshot_dir(self):
+        updates = webbridge.validate_settings_submit(
+            {"snapshot_dir": "/tmp/x"}, snapshot_dir_locked=True)
+        assert "snapshot_dir" not in updates
+
+    def test_out_of_range_fps_is_skipped_not_errored(self):
+        updates = webbridge.validate_settings_submit({"fps": 23})
+        assert "standard_fps" not in updates
+
+    def test_non_numeric_fps_is_skipped(self):
+        updates = webbridge.validate_settings_submit({"fps": "not-a-number"})
+        assert "standard_fps" not in updates
+
+    def test_out_of_range_compositor_is_skipped(self):
+        updates = webbridge.validate_settings_submit({"compositor": 5})
+        assert "comp_target" not in updates
+
+    def test_out_of_range_history_max_is_skipped(self):
+        updates = webbridge.validate_settings_submit({"history_max": 999})
+        assert "history_max_rows" not in updates
+
+    def test_negative_mv_max_motion_is_clamped_to_zero(self):
+        updates = webbridge.validate_settings_submit({"mv_max_motion": -5})
+        assert updates["mv_max_motion"] == 0
+
+    def test_blank_snapshot_dir_never_overwrites(self):
+        updates = webbridge.validate_settings_submit({"snapshot_dir": "   "})
+        assert "snapshot_dir" not in updates
+
+    def test_multipart_default_false_still_written(self):
+        updates = webbridge.validate_settings_submit({"multipart_default": False})
+        assert updates["aov_multipart"] == 0
+
+    def test_empty_payload_yields_no_updates(self):
+        assert webbridge.validate_settings_submit({}) == {}
+
+
+# ---------------------------------------------------------------------------
+# Gate form — gate_state_payload / gate_can_proceed
+# ---------------------------------------------------------------------------
+
+def _gate_item(check_id, new_count=1, blocks=False, violations=None):
+    return {
+        "check_id": check_id,
+        "nivel": "x",
+        "blocks": blocks,
+        "new_count": new_count,
+        "violations": violations or [],
+    }
+
+
+class TestGateStatePayload:
+    def test_maps_bucket_label_severity_and_violations(self):
+        gate_result = {
+            "fixable": [_gate_item("lights", new_count=2, blocks=True,
+                                    violations=[_violation("lights", "Null/Cube", "stray light")])],
+            "blocking": [],
+            "advisory": [],
+            "passed": False,
+        }
+        payload = webbridge.gate_state_payload(gate_result, sidecar_invalid=False)
+        assert payload["passed"] is False
+        assert payload["sidecar_invalid"] is False
+        assert len(payload["checks"]) == 1
+        check = payload["checks"][0]
+        assert check["check_id"] == "lights"
+        assert check["label"] == "Lights"
+        assert check["severity"] == "FAIL"
+        assert check["bucket"] == "fixable"
+        assert check["blocks"] is True
+        assert check["has_fix"] is True
+        assert check["new_count"] == 2
+        assert check["violations"][0]["label"] == "Null/Cube"
+
+    def test_unknown_check_id_falls_back_to_raw_id(self):
+        gate_result = {"fixable": [], "blocking": [_gate_item("not_a_real_check")],
+                        "advisory": [], "passed": False}
+        payload = webbridge.gate_state_payload(gate_result)
+        check = payload["checks"][0]
+        assert check["label"] == "not_a_real_check"
+        assert check["severity"] == ""
+        assert check["has_fix"] is False
+
+    def test_empty_gate_result_never_raises(self):
+        payload = webbridge.gate_state_payload({})
+        assert payload == {"passed": True, "sidecar_invalid": False, "checks": []}
+
+    def test_none_gate_result_never_raises(self):
+        payload = webbridge.gate_state_payload(None)
+        assert payload["checks"] == []
+
+
+class TestGateCanProceed:
+    def test_passes_when_no_blocking_and_no_blocking_fixable(self):
+        gate_result = {
+            "blocking": [],
+            "fixable": [_gate_item("unused_mats", blocks=False)],
+            "advisory": [_gate_item("vis", blocks=False)],
+        }
+        assert webbridge.gate_can_proceed(gate_result) is True
+
+    def test_blocked_by_blocking_bucket(self):
+        gate_result = {"blocking": [_gate_item("output")], "fixable": [], "advisory": []}
+        assert webbridge.gate_can_proceed(gate_result) is False
+
+    def test_blocked_by_fixable_item_that_blocks(self):
+        gate_result = {
+            "blocking": [],
+            "fixable": [_gate_item("lights", blocks=True)],
+            "advisory": [],
+        }
+        assert webbridge.gate_can_proceed(gate_result) is False
+
+    def test_fixable_item_that_does_not_block_is_fine(self):
+        gate_result = {
+            "blocking": [],
+            "fixable": [_gate_item("unused_mats", blocks=False)],
+            "advisory": [],
+        }
+        assert webbridge.gate_can_proceed(gate_result) is True
+
+    def test_empty_result_can_proceed(self):
+        assert webbridge.gate_can_proceed({}) is True
+        assert webbridge.gate_can_proceed(None) is True
+
+
+# ---------------------------------------------------------------------------
+# Command palette — palette_actions_payload
+# ---------------------------------------------------------------------------
+
+class TestPaletteActionsPayload:
+    def _by_id(self, actions):
+        return {a["id"]: a for a in actions}
+
+    def test_every_registered_action_id_present(self):
+        actions = webbridge.palette_actions_payload(doc_present=True, doc_saved=True)
+        ids = {a["id"] for a in actions}
+        assert ids == {a["id"] for a in webbridge.PALETTE_ACTIONS}
+
+    def test_no_doc_disables_doc_requiring_actions(self):
+        actions = self._by_id(
+            webbridge.palette_actions_payload(doc_present=False))
+        assert actions["open_hub"]["enabled"] is False
+        assert actions["open_hub"]["reason"] == "No active document"
+        assert actions["fix_lights"]["enabled"] is False
+        # Doesn't require a doc -> stays enabled even with no doc.
+        assert actions["open_reports_qc"]["enabled"] is True
+        assert actions["settings"]["enabled"] is True
+
+    def test_unsaved_doc_disables_edit_notes_only(self):
+        actions = self._by_id(webbridge.palette_actions_payload(
+            doc_present=True, doc_saved=False))
+        assert actions["edit_notes"]["enabled"] is False
+        assert actions["edit_notes"]["reason"] == "Save the scene to a folder first"
+        # save_version only requires a doc, not a saved path.
+        assert actions["save_version"]["enabled"] is True
+
+    def test_quick_fix_disabled_when_nothing_to_fix(self):
+        actions = self._by_id(webbridge.palette_actions_payload(
+            doc_present=True, doc_saved=True,
+            qc_counts={"lights": 0, "cam": 3, "unused_mats": 0, "fps_range": 0}))
+        assert actions["fix_lights"]["enabled"] is False
+        assert actions["fix_lights"]["reason"] == "Nothing to fix"
+        assert actions["fix_cameras"]["enabled"] is True
+        assert actions["fix_cameras"]["reason"] is None
+        assert actions["fix_materials"]["enabled"] is False
+
+    def test_missing_check_id_in_qc_counts_treated_as_zero(self):
+        actions = self._by_id(webbridge.palette_actions_payload(
+            doc_present=True, doc_saved=True, qc_counts={}))
+        assert actions["fix_fps"]["enabled"] is False
+
+    def test_rescan_qc_only_needs_a_document(self):
+        actions = self._by_id(webbridge.palette_actions_payload(
+            doc_present=True, doc_saved=False, qc_counts={}))
+        assert actions["rescan_qc"]["enabled"] is True

@@ -23,10 +23,15 @@ an accepted tradeoff (one thread, one localhost socket) rather than a
 tracked gap.
 
 Op inventory (Phase 2 Task 1 adds report/qc, report/doctor,
-report/supervisor, report/render_validation alongside report/delivery).
-Every op is dispatched from ``MainThreadQueue.drain`` — see its docstring
-for the read-only/idempotent invariant every handler below must honor
-(a timed-out request is still dispatched later with nobody listening).
+report/supervisor, report/render_validation alongside report/delivery;
+Phase 4 Task 2 adds the form/* + palette/* ops, implemented in the sibling
+``ui/web_ops.py`` and merged into ``_OPS`` below — split out once this
+file's op count grew past the ~600 line guideline). Every op is dispatched
+from ``MainThreadQueue.drain`` — see its docstring for the mutation-safe
+invariant every handler below must honor: post-commit 69d7a7a a handler MAY
+mutate the document (a client-abandoned/timed-out request is guaranteed
+never dispatched late), but must still tolerate the client retrying the
+same mutation after its own timeout.
 """
 import c4d
 from c4d import documents, gui
@@ -47,6 +52,7 @@ from sentinel.common.helpers import safe_print
 from sentinel.common.settings import GlobalSettings
 from sentinel.qc.score import compute_score, run_all_checks
 from sentinel.rules_context import active_rules_for_doc
+from sentinel.ui.web_ops import FORM_OPS
 from sentinel.webbridge import (
     MainThreadQueue,
     create_server,
@@ -273,12 +279,15 @@ def _op_report_render_validation(payload):
 
 
 # op name (as the SPA requests it, e.g. "report/delivery") -> handler(payload).
+# form/* and palette/* ops are defined in the sibling ui/web_ops.py (FORM_OPS)
+# and merged in here so the server still has a single op table.
 _OPS = {
     "report/delivery": _op_report_delivery,
     "report/qc": _op_report_qc,
     "report/doctor": _op_report_doctor,
     "report/supervisor": _op_report_supervisor,
     "report/render_validation": _op_report_render_validation,
+    **FORM_OPS,
 }
 
 
