@@ -1,0 +1,78 @@
+<h2>Sección 3 (v2) — Design System sabor Linear</h2>
+<p class="subtitle">Tokens Linear-style + el mismo Delivery Summary re-renderizado + los dos patrones nuevos (toasts, command palette). Compara con la versión anterior.</p>
+
+<style>
+  .lin { background:#0e0f11; border:1px solid rgba(255,255,255,.08); border-radius:10px; padding:18px; color:#b6b9be; font-size:13px; font-family:-apple-system,'Inter',sans-serif; }
+  .lin h3 { color:#ededee; font-size:15px; font-weight:600; margin:0; letter-spacing:-.01em; }
+  .lin .meta { color:#6b6f76; font-size:12px; margin:3px 0 14px; }
+  .lkpis { display:flex; gap:8px; margin-bottom:14px; }
+  .lkpi { flex:1; background:#141518; border:1px solid rgba(255,255,255,.06); border-radius:8px; padding:10px 12px; transition:border-color .12s; }
+  .lkpi:hover { border-color:rgba(255,255,255,.16); }
+  .lkpi b { display:block; font-size:18px; color:#ededee; font-weight:600; }
+  .lkpi span { font-size:11px; color:#6b6f76; }
+  .lkpi.ok b { color:#68b06a; } .lkpi.err b { color:#e0655f; }
+  .ltable { width:100%; border-collapse:collapse; font-size:12.5px; }
+  .ltable th { text-align:left; color:#6b6f76; font-weight:500; padding:6px 10px; border-bottom:1px solid rgba(255,255,255,.07); }
+  .ltable td { padding:7px 10px; border-bottom:1px solid rgba(255,255,255,.04); color:#b6b9be; height:32px; box-sizing:border-box; }
+  .ltable tr { transition:background .1s; }
+  .ltable tr:hover td { background:rgba(255,255,255,.03); }
+  .lb { border-radius:4px; padding:1.5px 7px; font-size:11px; font-weight:500; }
+  .lb.ok { background:rgba(104,176,106,.14); color:#68b06a; } .lb.miss { background:rgba(224,101,95,.14); color:#e0655f; }
+  .toast { position:relative; background:#17181b; border:1px solid rgba(255,255,255,.1); border-radius:8px; padding:10px 14px; display:flex; gap:10px; align-items:center; width:340px; box-shadow:0 8px 24px rgba(0,0,0,.4); }
+  .toast .ic { color:#68b06a; }
+  .toast small { color:#6b6f76; display:block; }
+  .cmdk { background:#141518; border:1px solid rgba(255,255,255,.1); border-radius:10px; max-width:460px; overflow:hidden; box-shadow:0 16px 48px rgba(0,0,0,.5); }
+  .cmdk input { width:100%; box-sizing:border-box; background:transparent; border:none; border-bottom:1px solid rgba(255,255,255,.07); color:#ededee; padding:12px 14px; font-size:14px; outline:none; }
+  .cmdk .it { display:flex; justify-content:space-between; padding:8px 14px; color:#b6b9be; font-size:13px; }
+  .cmdk .it.sel { background:rgba(94,106,210,.12); color:#ededee; }
+  .cmdk kbd { background:rgba(255,255,255,.06); border-radius:4px; padding:1px 6px; font-size:11px; color:#6b6f76; }
+  .accent { color:#5e6ad2; }
+</style>
+
+<div class="section lin">
+  <h3>Delivery Summary <span style="color:#6b6f76;font-weight:400">— robot_010.c4d</span></h3>
+  <div class="meta">Collected hoy 18:40 · Sentinel v1.12.0 · Motioneer · QC sellado 10/12</div>
+  <div class="lkpis">
+    <div class="lkpi ok"><b>35</b><span>collected</span></div>
+    <div class="lkpi err"><b>4</b><span>missing</span></div>
+    <div class="lkpi"><b>0</b><span>external</span></div>
+    <div class="lkpi"><b>590 MB</b><span>zip</span></div>
+  </div>
+  <table class="ltable">
+    <tr><th>Asset</th><th>Estado</th><th>Ruta</th></tr>
+    <tr><td>CARBON GEN 2 HYPE PALA.png</td><td><span class="lb ok">collected</span></td><td>tex/CARBON GEN 2 HYPE PALA.png</td></tr>
+    <tr><td>LOK CINTA EMPUÑADURA.png</td><td><span class="lb miss">missing</span></td><td>X:/99 WORK/…</td></tr>
+    <tr><td>int_oseana_bridge_2014.hdr</td><td><span class="lb miss">missing</span></td><td>D:/Inspiration/…</td></tr>
+  </table>
+</div>
+
+<div class="split" style="margin-top:14px">
+  <div class="lin">
+    <h3 style="margin-bottom:10px">Toast <span style="color:#6b6f76;font-weight:400">(mata popups)</span></h3>
+    <div class="toast"><span class="ic">✓</span><div>Version saved — <b style="color:#ededee">v008 TR</b><small>QC 10/12 · history updated</small></div></div>
+    <p style="font-size:11.5px;color:#6b6f76;margin:10px 0 0">Resultado de acción → toast 4s, clicable para detalle. Modal solo si hay decisión.</p>
+  </div>
+  <div class="lin">
+    <h3 style="margin-bottom:10px">Command palette <span class="accent">⌘K</span></h3>
+    <div class="cmdk">
+      <input value="col" readonly>
+      <div class="it sel">Collect scene…<kbd>Deliver</kbd></div>
+      <div class="it">Open asset hub<kbd>Deliver</kbd></div>
+      <div class="it">Fix: lights → group<kbd>QC</kbd></div>
+    </div>
+    <p style="font-size:11.5px;color:#6b6f76;margin:10px 0 0">Toda acción del plugin, buscable. Respuesta directa a "encontrar las cosas".</p>
+  </div>
+</div>
+
+<h3 style="margin-top:20px">Decisión: stack de la SPA</h3>
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content"><h3>React + TS + Tailwind + Radix (Recomendado)</h3><p>El mainstream: máximo ecosistema (virtual lists, cmdk, primitivas accesibles), máxima asistencia de IA para mantenerlo, contratación/futuro trivial. Bundle mayor (~150KB gz) — irrelevante en localhost.</p></div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content"><h3>Svelte + TS</h3><p>Más ligero y menos boilerplate; ecosistema menor (menos primitivas listas, menos ejemplos). Buen gusto, más artesanal.</p></div>
+  </div>
+</div>
+<p class="subtitle">Click y dime en la terminal si el sabor Linear te convence como dirección visual.</p>

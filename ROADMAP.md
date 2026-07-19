@@ -645,6 +645,15 @@ Notify channel on Collect Scene or QC pass. Low effort, nice-to-have.
 #### Comp Tag Manager
 Bulk view/edit Object Buffer IDs, detect duplicates.
 
+### Rediseño UI/UX — fases pendientes (spec 2026-07-18)
+
+Fase 1 (fundación: DESIGN.md + webbridge + Reports/Delivery Summary) entregada en v1.13.0. Pendientes:
+
+- **Fase 2 — Reports completo**: QC Report, Doctor, Supervisor y resúmenes de collect/validate-render a Sentinel Reports; triage de los ~112 popups (informativos → toast/caption/Reports; decisiones → modal)
+- **Fase 3 — Consolidación IA nativa**: snapshots (auto-detect + fallback solo en Settings, quitar Browse del panel), Multi-Part EXR una sola vez, pestaña Versions → Deliver, footer limpio (GitHub/Report Bug al burger)
+- **Fase 4 — Formularios a SPA** (spike Cmd+Z VERDE en macOS; falta verificar motor del gadget en Windows): Save Version, Settings, Notes, Gate Triage; toasts; command palette ⌘K
+- **Fase 5 — Asset Hub en SPA**: tabla virtualizada para escenas grandes; decidir con datos de fases 2-4
+
 ### Deuda conocida (Asset Hub v1.11)
 
 Items menores identificados en la review final de rama de Asset Hub (feat/asset-hub) que no bloquean el merge pero quedan anotados para no perderse:

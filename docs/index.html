@@ -1,0 +1,677 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sentinel — real-time QC watchdog for Cinema 4D + Redshift</title>
+<meta name="description" content="Sentinel v1.9.0 — a real-time quality-control watchdog for Cinema 4D and Redshift. Twelve continuous checks, opinionated AOVs, versioned saves, and delivery validation.">
+<script>
+/* pre-paint theme: no flash */
+(function(){try{var t=localStorage.getItem('sentinel-theme');if(t){document.documentElement.setAttribute('data-theme',t);}}catch(e){}document.documentElement.classList.add('js');}());
+</script>
+<style>
+:root{
+  --bg-0:#0B0D10; --bg-1:#11141A; --bg-2:#171C23;
+  --line-1:#232933; --line-2:#39424E;
+  --text-1:#E9EDF2; --text-2:#A6B0BC; --text-3:#5F6B78;
+  --accent:#FFB224; --accent-hi:#FFCB6B; --accent-dim:rgba(255,178,36,.10); --accent-glow:rgba(255,178,36,.22);
+  --accent-bright:#FFB224;
+  --pass:#45D183; --pass-dim:rgba(69,209,131,.12);
+  --warn:#FFB224; --warn-dim:rgba(255,178,36,.12);
+  --fail:#FF6161; --fail-dim:rgba(255,97,97,.12);
+  --btn-text:#14100A;
+  --fmt-169:#E9EDF2; --fmt-916:#FF8A3D; --fmt-11:#45C4D6; --fmt-45:#D65CC0; --fmt-219:#E8C547;
+  --font-sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --font-serif:ui-serif,"New York","Iowan Old Style",Georgia,serif;
+  --font-mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,"Cascadia Code",Consolas,monospace;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme:light){
+  :root:not([data-theme]){
+    --bg-0:#F6F5F1; --bg-1:#FFFFFF; --bg-2:#ECEAE3;
+    --line-1:#DCD9D0; --line-2:#B9B4A7;
+    --text-1:#1A1B1E; --text-2:#565B63; --text-3:#8D9199;
+    --accent:#8A5C00; --accent-hi:#6B4700; --accent-dim:rgba(154,103,0,.10); --accent-glow:rgba(224,145,18,.18);
+    --accent-bright:#E09112;
+    --pass:#157F3D; --pass-dim:rgba(21,127,61,.10);
+    --warn:#8A5C00; --warn-dim:rgba(154,103,0,.10);
+    --fail:#C42B30; --fail-dim:rgba(196,43,48,.10);
+    --btn-text:#FFFFFF;
+    --fmt-169:#565B63; --fmt-916:#C2571B; --fmt-11:#0F7E8E; --fmt-45:#A83A96; --fmt-219:#9A7B00;
+    color-scheme:light;
+  }
+}
+[data-theme="light"]{
+  --bg-0:#F6F5F1; --bg-1:#FFFFFF; --bg-2:#ECEAE3;
+  --line-1:#DCD9D0; --line-2:#B9B4A7;
+  --text-1:#1A1B1E; --text-2:#565B63; --text-3:#8D9199;
+  --accent:#8A5C00; --accent-hi:#6B4700; --accent-dim:rgba(154,103,0,.10); --accent-glow:rgba(224,145,18,.18);
+  --accent-bright:#E09112;
+  --pass:#157F3D; --pass-dim:rgba(21,127,61,.10);
+  --warn:#8A5C00; --warn-dim:rgba(154,103,0,.10);
+  --fail:#C42B30; --fail-dim:rgba(196,43,48,.10);
+  --btn-text:#FFFFFF;
+  --fmt-169:#565B63; --fmt-916:#C2571B; --fmt-11:#0F7E8E; --fmt-45:#A83A96; --fmt-219:#9A7B00;
+  color-scheme:light;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  background:var(--bg-0);color:var(--text-1);font-family:var(--font-sans);
+  font-size:16px;line-height:1.65;-webkit-font-smoothing:antialiased;
+  transition:background-color .2s ease,color .2s ease;
+  overflow-x:hidden;
+}
+a{color:var(--accent);text-decoration:underline;text-underline-offset:3px;text-decoration-thickness:1px}
+a:hover{color:var(--accent-hi)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:2px}
+img,svg{display:block;max-width:100%}
+
+/* ---------- typography ---------- */
+.eyebrow{font-family:var(--font-mono);font-weight:500;text-transform:uppercase;font-size:.72rem;letter-spacing:.16em;color:var(--text-3)}
+.serif{font-family:var(--font-serif)}
+h1{font-family:var(--font-serif);font-weight:600;font-size:clamp(2.75rem,2rem + 4.5vw,5rem);line-height:1.04;letter-spacing:-.01em}
+h2{font-family:var(--font-serif);font-weight:600;font-size:clamp(1.9rem,1.5rem + 2vw,2.75rem);line-height:1.12;letter-spacing:-.005em}
+h3{font-weight:650;font-size:clamp(1.2rem,1.1rem + .5vw,1.375rem);line-height:1.3;letter-spacing:-.01em}
+h4{font-weight:600;font-size:1rem;line-height:1.4}
+.mono{font-family:var(--font-mono)}
+code,.val{font-family:var(--font-mono);font-size:.85em;color:var(--text-1)}
+.tnum{font-variant-numeric:tabular-nums}
+
+/* ---------- layout ---------- */
+.wrap{max-width:1120px;margin-inline:auto;padding-inline:clamp(20px,5vw,48px)}
+main{padding-top:14px}
+section{padding-block:clamp(72px,10vw,120px);border-bottom:1px solid var(--line-1);position:relative}
+section:target{scroll-margin-top:76px}
+.standfirst{color:var(--text-2);font-size:1.05rem;max-width:64ch;margin-top:16px}
+
+/* slate header */
+.slate{display:flex;align-items:center;gap:14px;margin-bottom:22px}
+.slate .idx{font-family:var(--font-mono);font-weight:600;font-size:.8rem;color:var(--accent);letter-spacing:.05em}
+.slate .tick{width:26px;height:1px;background:var(--line-2)}
+.slate .kick{font-family:var(--font-mono);text-transform:uppercase;font-size:.72rem;letter-spacing:.16em;color:var(--text-3)}
+
+/* ---------- frame chrome ---------- */
+.frame{position:fixed;inset:14px;border:1px solid var(--line-1);pointer-events:none;z-index:60;opacity:.85}
+.frame .cnr{position:absolute;width:13px;height:13px;color:var(--text-3)}
+.frame .tl{top:-1px;left:-1px}.frame .tr{top:-1px;right:-1px}.frame .bl{bottom:-1px;left:-1px}.frame .br{bottom:-1px;right:-1px}
+.hud{position:fixed;z-index:61;font-family:var(--font-mono);font-size:.6875rem;letter-spacing:.08em;color:var(--text-3);opacity:.7;text-transform:uppercase}
+.hud.tl{top:22px;left:26px}.hud.bl{bottom:22px;left:26px}.hud.br{bottom:22px;right:26px}
+.hud.tr{top:19px;right:24px;opacity:.85;pointer-events:auto}
+.themebtn{font-family:var(--font-mono);font-size:.6875rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text-2);
+  background:transparent;border:1px solid var(--line-2);border-radius:4px;padding:5px 9px;cursor:pointer;transition:border-color .14s,color .14s}
+.themebtn:hover{border-color:var(--accent);color:var(--accent)}
+@media (max-width:1023px){.frame,.hud.tl,.hud.bl,.hud.br{display:none}.hud.tr{top:auto;bottom:16px;right:16px}}
+
+/* ---------- nav ---------- */
+nav{position:sticky;top:0;z-index:50;height:52px;display:flex;align-items:center;
+  background:color-mix(in srgb,var(--bg-0) 78%,transparent);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--line-1)}
+nav .wrap{display:flex;align-items:center;justify-content:space-between;width:100%;gap:20px}
+.wordmark{font-family:var(--font-mono);font-weight:600;font-size:.95rem;letter-spacing:.02em;color:var(--text-1);text-decoration:none}
+.wordmark b{color:var(--accent);font-weight:600}
+.navlinks{display:flex;gap:18px;overflow-x:auto;scrollbar-width:none}
+.navlinks::-webkit-scrollbar{display:none}
+.navlinks a{font-family:var(--font-mono);font-size:.75rem;text-transform:uppercase;letter-spacing:.12em;color:var(--text-2);
+  text-decoration:none;white-space:nowrap;padding-bottom:2px;border-bottom:2px solid transparent}
+.navlinks a:hover{color:var(--text-1)}
+.navlinks a.active{color:var(--accent);border-bottom-color:var(--accent)}
+@media (max-width:720px){.navlinks{gap:14px;-webkit-mask-image:linear-gradient(90deg,transparent,#000 12px,#000 92%,transparent)}}
+
+/* ---------- chips / buttons ---------- */
+.chiprow{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.ochip{font-family:var(--font-mono);font-size:.6875rem;text-transform:uppercase;letter-spacing:.1em;color:var(--text-3);
+  border:1px solid var(--line-2);border-radius:2px;padding:3px 8px}
+.status{display:inline-flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:.6875rem;font-weight:500;
+  text-transform:uppercase;letter-spacing:.08em;padding:3px 8px;border-radius:2px;border:1px solid}
+.status .dot{width:8px;height:8px;border-radius:50%;flex:none}
+.status.pass{background:var(--pass-dim);border-color:color-mix(in srgb,var(--pass) 35%,transparent);color:var(--pass)}
+.status.pass .dot{background:var(--pass)}
+.status.warn{background:var(--warn-dim);border-color:color-mix(in srgb,var(--warn) 35%,transparent);color:var(--warn)}
+.status.warn .dot{background:var(--warn)}
+.status.fail{background:var(--fail-dim);border-color:color-mix(in srgb,var(--fail) 35%,transparent);color:var(--fail)}
+.status.fail .dot{background:var(--fail)}
+.btnrow{display:flex;flex-wrap:wrap;gap:12px;margin-top:32px}
+.btn{font-family:var(--font-mono);font-size:.8rem;text-transform:uppercase;letter-spacing:.08em;text-decoration:none;
+  padding:11px 18px;border-radius:4px;display:inline-flex;align-items:center;gap:8px;transition:filter .14s,border-color .14s,color .14s,background-color .14s}
+.btn.primary{background:var(--accent);color:var(--btn-text);border:1px solid var(--accent)}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.ghost{background:transparent;color:var(--text-1);border:1px solid var(--line-2)}
+.btn.ghost:hover{border-color:var(--accent);color:var(--accent)}
+
+/* ---------- hero ---------- */
+.hero{border-bottom:1px solid var(--line-1);position:relative;overflow:hidden}
+.hero .grid-bg{position:absolute;inset:0;z-index:0;
+  background-image:repeating-linear-gradient(0deg,var(--line-1) 0 1px,transparent 1px 64px),repeating-linear-gradient(90deg,var(--line-1) 0 1px,transparent 1px 64px);
+  opacity:.04;pointer-events:none}
+.hero .glow{position:absolute;top:-120px;right:-120px;width:520px;height:520px;border-radius:50%;
+  background:radial-gradient(circle,var(--accent-glow),transparent 62%);pointer-events:none;z-index:0}
+.hero .wrap{position:relative;z-index:1;padding-block:clamp(64px,10vw,110px)}
+.herogrid{display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center}
+.hero h1{margin-top:20px}
+.hero .est{font-family:var(--font-mono);font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--text-3);margin-top:20px}
+.aperture{width:100%;max-width:420px;margin-inline:auto;aspect-ratio:1}
+@media (max-width:860px){.herogrid{grid-template-columns:1fr;gap:36px}.hero .aperture{max-width:320px;order:-1}}
+
+/* readout strip */
+.readout{display:flex;flex-wrap:wrap;border-top:1px solid var(--line-1);margin-top:clamp(40px,6vw,64px)}
+.readout .cell{flex:1 1 160px;padding:20px 22px;border-left:1px solid var(--line-1)}
+.readout .cell:first-child{border-left:none}
+.readout .tick{width:12px;height:2px;background:var(--accent);margin-bottom:10px}
+.readout .num{font-family:var(--font-mono);font-weight:500;font-size:clamp(1.7rem,3vw,2.4rem);line-height:1;color:var(--text-1);font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.readout .lbl{font-family:var(--font-mono);font-size:.68rem;text-transform:uppercase;letter-spacing:.12em;color:var(--text-3);margin-top:8px}
+@media (max-width:640px){.readout .cell{flex-basis:45%}}
+
+/* ---------- QC board ---------- */
+.board{border:1px solid var(--line-1);border-radius:6px;background:var(--bg-1);overflow:hidden;margin-top:8px}
+.board .bhead{display:flex;align-items:center;gap:16px;padding:16px 20px;border-bottom:1px solid var(--line-1);flex-wrap:wrap;background:var(--bg-2)}
+.board .score{font-family:var(--font-mono);font-weight:600;font-size:.95rem;color:var(--text-1)}
+.segbar{display:flex;gap:2px;flex:1;min-width:160px}
+.seg{height:6px;flex:1;border-radius:1px;background:var(--bg-0);transform-origin:left center}
+.seg.pass{background:var(--pass)}.seg.warn{background:var(--warn)}.seg.fail{background:var(--fail)}
+.js .reveal .seg{transform:scaleX(0)}
+.js .reveal.in .seg{transform:scaleX(1);transition:transform .3s cubic-bezier(.22,.61,.36,1)}
+.tally{font-family:var(--font-mono);font-size:.72rem;letter-spacing:.06em;color:var(--text-2)}
+.tally .w{color:var(--warn)}.tally .f{color:var(--fail)}
+.qcrow{display:grid;grid-template-columns:auto 150px 1fr auto;gap:16px;align-items:center;padding:13px 20px;border-bottom:1px solid var(--line-1);border-left:2px solid transparent;transition:background-color .14s}
+.qcrow:last-child{border-bottom:none}
+.qcrow:hover{background:var(--bg-2)}
+.qcrow.pass:hover{border-left-color:var(--pass)}.qcrow.warn:hover{border-left-color:var(--warn)}.qcrow.fail:hover{border-left-color:var(--fail)}
+.qcrow .nm{font-weight:600;color:var(--text-1)}
+.qcrow .ds{color:var(--text-2);font-size:.9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.caps{display:flex;gap:5px}
+.cap{font-family:var(--font-mono);font-size:.625rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-3);border:1px solid var(--line-2);border-radius:2px;padding:2px 6px}
+@media (max-width:760px){.qcrow{grid-template-columns:auto 1fr auto}.qcrow .ds{display:none}}
+@media (max-width:520px){.qcrow{grid-template-columns:auto 1fr}.caps{display:none}}
+
+/* ---------- generic grids / cards ---------- */
+.grid{display:grid;gap:16px;margin-top:28px}
+.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media (max-width:820px){.g3,.g4{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:540px){.g2,.g3,.g4{grid-template-columns:1fr}}
+.cell{background:var(--bg-1);border:1px solid var(--line-1);border-radius:6px;padding:24px;transition:border-color .14s}
+.cell:hover{border-color:var(--line-2)}
+.cell .ico{color:var(--text-2);margin-bottom:16px}
+.cell:hover .ico .ac{stroke:var(--accent)}
+.cell .eyebrow{margin-bottom:8px}
+.cell h4{margin-bottom:6px}
+.cell p{color:var(--text-2);font-size:.92rem}
+.cell .foot{font-family:var(--font-mono);font-size:.7rem;color:var(--text-3);margin-top:12px;letter-spacing:.03em}
+
+/* two-col split */
+.split{display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:start;margin-top:28px}
+@media (max-width:800px){.split{grid-template-columns:1fr;gap:28px}}
+
+/* doctrine cards */
+.doc{background:var(--bg-1);border:1px solid var(--line-1);border-radius:6px;padding:26px;position:relative}
+.doc .brk{position:absolute;top:12px;left:12px;color:var(--text-3);opacity:.7}
+.doc .dhead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px;padding-left:14px}
+.doc .badge{font-family:var(--font-mono);font-size:.625rem;text-transform:uppercase;letter-spacing:.08em;color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 40%,transparent);border-radius:2px;padding:2px 6px}
+.doc .fork{width:100%;margin:6px 0 16px}
+.doc p{font-family:var(--font-serif);font-size:1.06rem;line-height:1.7;color:var(--text-1)}
+.doc p .val{color:var(--text-2)}
+.why{border-left:3px solid var(--accent);background:var(--accent-dim);padding:20px 22px;border-radius:0 4px 4px 0;margin-top:24px}
+.why .eyebrow{color:var(--accent);margin-bottom:8px}
+.why p{font-family:var(--font-serif);font-size:1.12rem;line-height:1.6;color:var(--text-1);max-width:60ch}
+
+/* pass list */
+.passes{display:grid;gap:22px;margin-top:32px}
+.passgrp{border:1px solid var(--line-1);border-radius:6px;background:var(--bg-1);overflow:hidden}
+.pgh{padding:12px 18px;border-bottom:1px solid var(--line-1);background:var(--bg-2)}
+.prow{display:grid;grid-template-columns:212px 1fr;gap:18px;align-items:baseline;padding:11px 18px;border-bottom:1px solid var(--line-1)}
+.prow:last-child{border-bottom:none}
+.pn{font-family:var(--font-mono);font-size:.82rem;font-weight:500;color:var(--text-1)}
+.pc{color:var(--text-2);font-size:.92rem}
+@media (max-width:620px){.prow{grid-template-columns:1fr;gap:3px}}
+
+/* sidecar file cards */
+.file{background:var(--bg-1);border:1px solid var(--line-1);border-radius:6px;overflow:hidden}
+.file .fh{display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--bg-2);padding:10px 14px;border-bottom:1px solid var(--line-1)}
+.file .fn{font-family:var(--font-mono);font-size:.8rem;color:var(--text-1)}
+.file .ft{font-family:var(--font-mono);font-size:.625rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-3);border:1px solid var(--line-2);border-radius:2px;padding:2px 6px}
+.file pre{margin:0;padding:14px;overflow-x:auto;font-family:var(--font-mono);font-size:.8125rem;line-height:1.6;color:var(--text-1)}
+.file .k{color:var(--text-2)}.file .s{color:var(--accent)}
+
+/* version rail */
+.rail{display:flex;align-items:center;gap:0;margin-top:28px;overflow-x:auto;padding-bottom:8px}
+.vpill{display:flex;flex-direction:column;gap:6px;align-items:flex-start;flex:none;padding-right:8px}
+.vjoin{height:1px;width:34px;background:var(--line-2);flex:none;margin:0 2px;position:relative}
+.vjoin::before,.vjoin::after{content:"";position:absolute;top:-2px;width:5px;height:5px;border-radius:50%;background:var(--line-2)}
+.vjoin::before{left:-2px}.vjoin::after{right:-2px}
+.vpill .vn{font-family:var(--font-mono);font-weight:600;font-size:.9rem;color:var(--text-1)}
+.vpill .vb{font-family:var(--font-mono);font-size:.625rem;text-transform:uppercase;letter-spacing:.08em;padding:2px 7px;border-radius:2px;border:1px solid}
+.vb.wip{color:var(--text-3);border-color:var(--line-2)}
+.vb.rev{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+.vb.fin{color:var(--pass);border-color:color-mix(in srgb,var(--pass) 40%,transparent);background:var(--pass-dim)}
+
+/* misc */
+.lead{color:var(--text-2);max-width:70ch}
+.lead + .lead{margin-top:14px}
+ul.ticks{list-style:none;margin-top:18px;display:grid;gap:10px}
+ul.ticks li{padding-left:20px;position:relative;color:var(--text-2)}
+ul.ticks li::before{content:"";position:absolute;left:0;top:9px;width:8px;height:1px;background:var(--accent)}
+ul.ticks li b{color:var(--text-1);font-weight:600}
+.note{font-family:var(--font-mono);font-size:.75rem;color:var(--text-3);letter-spacing:.03em;margin-top:16px}
+
+/* footer */
+footer{padding-block:56px}
+.foothead{display:flex;align-items:center;gap:12px;margin-bottom:20px}
+.footcredit{color:var(--text-2)}
+.footcredit b{color:var(--text-1)}
+.buildline{font-family:var(--font-mono);font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--text-3);margin-top:20px}
+.onwatch{font-family:var(--font-mono);font-size:.8rem;letter-spacing:.16em;color:var(--accent);margin-top:8px}
+
+/* reveal */
+.js .reveal{opacity:0;transform:translateY(8px);transition:opacity .55s cubic-bezier(.22,.61,.36,1),transform .55s cubic-bezier(.22,.61,.36,1)}
+.js .reveal.in{opacity:1;transform:none}
+.js .stagger > *{transition-delay:calc(var(--i,0)*60ms)}
+
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
+  .js .reveal{opacity:1;transform:none}
+  .aparc{animation:none!important}
+}
+</style>
+</head>
+<body>
+
+<!-- frame chrome -->
+<div class="frame" aria-hidden="true">
+  <svg class="cnr tl" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 5V1h4"/></svg>
+  <svg class="cnr tr" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 5V1H8"/></svg>
+  <svg class="cnr bl" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 8v4h4"/></svg>
+  <svg class="cnr br" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 8v4H8"/></svg>
+</div>
+<div class="hud tl">SENTINEL — V1.9.0</div>
+<div class="hud bl">C4D 2026 · REDSHIFT · MACOS/WIN</div>
+<div class="hud br" id="scrollreadout">00 / ON WATCH</div>
+<div class="hud tr"><button class="themebtn" id="themebtn" aria-label="Toggle colour theme">[ LIGHT ]</button></div>
+
+<nav>
+  <div class="wrap">
+    <a href="#watch" class="wordmark">SENTINEL<b>_</b></a>
+    <div class="navlinks">
+      <a href="#qc">QC</a>
+      <a href="#aovs">AOVs</a>
+      <a href="#render">Render</a>
+      <a href="#versions">Versions</a>
+      <a href="#delivery">Delivery</a>
+      <a href="#rules">Rules</a>
+      <a href="#tools">Tools</a>
+    </div>
+  </div>
+</nav>
+
+<main>
+
+<!-- ============ HERO ============ -->
+<header class="hero" id="watch">
+  <div class="grid-bg" aria-hidden="true"></div>
+  <div class="glow" aria-hidden="true"></div>
+  <div class="wrap">
+    <div class="herogrid">
+      <div class="reveal">
+        <div class="chiprow"><span class="ochip">Cinema 4D 2026</span><span class="ochip">Redshift</span><span class="ochip">v1.9.0</span></div>
+        <h1>Nothing broken<br>reaches the farm.</h1>
+        <p class="standfirst">Sentinel is a real-time QC watchdog for Cinema&nbsp;4D and Redshift — twelve continuous checks, opinionated AOVs, versioned saves, and delivery validation. On duty from first save to final frame.</p>
+        <div class="btnrow">
+          <a class="btn primary" href="https://github.com/jmcodex93/sentinel">Get Sentinel</a>
+          <a class="btn ghost" href="#aovs">Read the AOV doctrine ↓</a>
+        </div>
+        <div class="est">Est. Yambo Studio — MMXXV · On watch since first save</div>
+      </div>
+      <div class="reveal">
+        <svg class="aperture" viewBox="0 0 420 420" fill="none" role="img" aria-label="Sentinel aperture motif">
+          <g stroke="var(--text-3)" stroke-width="1.5">
+            <circle cx="210" cy="210" r="168" stroke-dasharray="2 8" opacity=".7"/>
+            <circle cx="210" cy="210" r="132" stroke-dasharray="2 6" opacity=".5"/>
+            <circle cx="210" cy="210" r="96" stroke-dasharray="1 5" opacity=".4"/>
+          </g>
+          <circle class="aparc" cx="210" cy="210" r="168" fill="none" stroke="var(--accent)" stroke-width="2"
+            stroke-dasharray="176 880" stroke-linecap="round" style="transform-origin:center;animation:aspin 80s linear infinite"/>
+          <circle cx="210" cy="42" r="3.5" fill="var(--accent)"/>
+          <!-- crosshair + safe frame -->
+          <g stroke="var(--text-2)" stroke-width="1" opacity=".8">
+            <line x1="210" y1="150" x2="210" y2="270"/><line x1="150" y1="210" x2="270" y2="210"/>
+          </g>
+          <g stroke="var(--text-1)" stroke-width="1.5" fill="none">
+            <path d="M132 150h20M132 150v14"/><path d="M288 150h-20M288 150v14"/>
+            <path d="M132 270h20M132 270v-14"/><path d="M288 270h-20M288 270v-14"/>
+          </g>
+          <g font-family="var(--font-mono)" font-size="10" fill="var(--text-3)" letter-spacing="1">
+            <text x="210" y="26" text-anchor="middle">16:9</text>
+            <text x="392" y="214" text-anchor="end">25 FPS</text>
+            <text x="210" y="402" text-anchor="middle">ACES</text>
+            <text x="28" y="214">F 1001</text>
+          </g>
+        </svg>
+      </div>
+    </div>
+    <div class="readout reveal stagger">
+      <div class="cell" style="--i:0"><div class="tick"></div><div class="num tnum">12</div><div class="lbl">Live checks</div></div>
+      <div class="cell" style="--i:1"><div class="tick"></div><div class="num tnum">5</div><div class="lbl">Delivery aspects</div></div>
+      <div class="cell" style="--i:2"><div class="tick"></div><div class="num tnum">17+</div><div class="lbl">Managed AOVs</div></div>
+      <div class="cell" style="--i:3"><div class="tick"></div><div class="num tnum">1001</div><div class="lbl">VFX start frame</div></div>
+      <div class="cell" style="--i:4"><div class="tick"></div><div class="num tnum">180</div><div class="lbl">Tests green</div></div>
+    </div>
+  </div>
+</header>
+<style>@keyframes aspin{to{transform:rotate(360deg)}}</style>
+
+<!-- ============ 01 THE TWELVE ============ -->
+<section id="qc"><div class="wrap">
+  <div class="slate reveal"><span class="idx">01</span><span class="tick"></span><span class="kick">The Twelve</span></div>
+  <h2 class="reveal">Twelve checks, re-run on every scene change.</h2>
+  <p class="standfirst reveal">Green is earned. Sentinel watches the document via CoreMessage dirty-flags — no polling — and re-scores the scene the instant something changes. Every failing row carries its own <span class="val">Select</span>, <span class="val">Fix</span> and <span class="val">Info</span> actions.</p>
+
+  <div class="board reveal">
+    <div class="bhead">
+      <span class="score">QC 9/12</span>
+      <div class="segbar" aria-hidden="true">
+        <span class="seg pass" style="--i:0"></span><span class="seg pass" style="--i:1"></span><span class="seg warn" style="--i:2"></span>
+        <span class="seg fail" style="--i:3"></span><span class="seg pass" style="--i:4"></span><span class="seg pass" style="--i:5"></span>
+        <span class="seg pass" style="--i:6"></span><span class="seg warn" style="--i:7"></span><span class="seg pass" style="--i:8"></span>
+        <span class="seg pass" style="--i:9"></span><span class="seg pass" style="--i:10"></span><span class="seg pass" style="--i:11"></span>
+      </div>
+      <span class="tally"><span class="w">2 WARN</span> · <span class="f">1 FAIL</span></span>
+    </div>
+    <ul style="list-style:none">
+      <li class="qcrow pass"><span class="status pass"><span class="dot"></span>Pass</span><span class="nm">Lights</span><span class="ds">All lights organised in a lights group</span><span class="caps"><span class="cap">Select</span><span class="cap">Fix</span></span></li>
+      <li class="qcrow pass"><span class="status pass"><span class="dot"></span>Pass</span><span class="nm">Visibility</span><span class="ds">Viewport / render visibility consistent</span><span class="caps"><span class="cap">Select</span></span></li>
+      <li class="qcrow warn"><span class="status warn"><span class="dot"></span>Warn</span><span class="nm">Keyframes</span><span class="ds">Multi-axis keyframes that can drift animation</span><span class="caps"><span class="cap">Select</span></span></li>
+      <li class="qcrow fail"><span class="status fail"><span class="dot"></span>Fail</span><span class="nm">Cameras</span><span class="ds">Non-zero camera shift on “RS CAM 55mm”</span><span class="caps"><span class="cap">Select</span><span class="cap">Fix</span></span></li>
+      <li class="qcrow pass"><span class="status pass"><span class="dot"></span>Pass</span><span class="nm">Presets</span><span class="ds">Only approved render presets present</span><span class="caps"><span class="cap">Info</span></span></li>
+      <li class="qcrow pass"><span class="status pass"><span class="dot"></span>Pass</span><span class="nm">Assets</span><span class="ds">Textures resolve — no absolute or missing paths</span><span class="caps"><span class="cap">Info</span></span></li>
+      <li class="qcrow pass"><span class="status pass"><span class="dot"></span>Pass</span><span class="nm">Materials</span><span class="ds">No unused materials in the document</span><span class="caps"><span class="cap">Select</span><span class="cap">Fix</span></span></li>
+      <li class="qcrow warn"><span class="status warn"><span class="dot"></span>Warn</span><span class="nm">Naming</span><span class="ds">3 objects still using C4D default names</span><span class="caps"><span class="cap">Select</span></span></li>
+      <li class="qcrow pass"><span class="status pass"><span class="dot"></span>Pass</span><span class="nm">Output</span><span class="ds">Render paths carry the required tokens</span><span class="caps"><span class="cap">Info</span></span></li>
+      <li class="qcrow pass"><span class="status pass"><span class="dot"></span>Pass</span><span class="nm">Takes</span><span class="ds">Camera per take · $take token in outputs</span><span class="caps"><span class="cap">Info</span></span></li>
+      <li class="qcrow pass"><span class="status pass"><span class="dot"></span>Pass</span><span class="nm">FPS / Range</span><span class="ds">25 fps · start 1001 · timeline + preview aligned</span><span class="caps"><span class="cap">Info</span><span class="cap">Fix</span></span></li>
+      <li class="qcrow pass"><span class="status pass"><span class="dot"></span>Pass</span><span class="nm">Safe Area</span><span class="ds">Marked subjects inside every format's safe area</span><span class="caps"><span class="cap">Select</span><span class="cap">Info</span></span></li>
+    </ul>
+  </div>
+  <p class="note">Severity (FAIL / WARN) and each check's on/off state are configurable per project via <span class="val">sentinel_rules.json</span>. A disabled check dims and drops out of the score denominator — <span class="val">9/11 · 1 disabled</span>.</p>
+</div></section>
+
+<!-- ============ 02 AOV DOCTRINE ============ -->
+<section id="aovs"><div class="wrap">
+  <div class="slate reveal"><span class="idx">02</span><span class="tick"></span><span class="kick">Render Passes</span></div>
+  <h2 class="reveal">Three tiers, because comp<br>asks three questions.</h2>
+  <p class="standfirst reveal">Sentinel doesn't just switch Redshift passes on — it groups them by what a compositor actually needs from a frame, and tunes each one to how Nuke or After&nbsp;Effects reads it back.</p>
+
+  <div class="why reveal">
+    <div class="eyebrow">Why grouped</div>
+    <p>A render pass is only useful if comp can read it. Sentinel writes the data passes lossless so their numbers survive, adapts Depth and Motion&nbsp;Vectors to the target compositor, and — above all — bundles them into tiers that map to the three things you ask of a render: <em>rebuild it, take it apart, or relight it.</em></p>
+  </div>
+
+  <!-- the three tiers = three questions -->
+  <div class="grid g3" style="margin-top:32px">
+    <div class="cell reveal">
+      <div class="eyebrow">Essentials · 11 passes</div>
+      <h4>Can comp rebuild the frame?</h4>
+      <p>The floor. The Beauty as reference, the lighting components that add back to it, and the three technical passes every shot needs — Depth, Motion&nbsp;Vectors, Cryptomatte. Enough to reconstruct and finish.</p>
+    </div>
+    <div class="cell reveal">
+      <div class="eyebrow">Production · 17+ passes</div>
+      <h4>Can comp take it apart?</h4>
+      <p>Adds the raw and filter passes, World&nbsp;Position, Normals and AO — plus the Z&nbsp;Fog matte. Relight, retexture, add atmosphere: full control of the image after the render, no re-render.</p>
+    </div>
+    <div class="cell reveal">
+      <div class="eyebrow">Light Groups</div>
+      <h4>Can comp relight it?</h4>
+      <p>Splits the Beauty per light so each source is gradeable on its own in comp. One button diagnoses the groups in the scene and toggles them onto Beauty.</p>
+    </div>
+  </div>
+
+  <!-- the passes, with a comment each -->
+  <div class="passes">
+    <div class="passgrp reveal">
+      <div class="pgh"><span class="eyebrow">Essentials — rebuild the frame</span></div>
+      <div class="prow"><span class="pn">Beauty</span><span class="pc">The reference frame — everything else has to add back to this.</span></div>
+      <div class="prow"><span class="pn">Diffuse Lighting</span><span class="pc">The matte, non-reflective response of surfaces to light.</span></div>
+      <div class="prow"><span class="pn">GI</span><span class="pc">Indirect bounce light — the fill that makes a render sit.</span></div>
+      <div class="prow"><span class="pn">Specular Lighting</span><span class="pc">Direct highlights — the shine, gradeable on its own.</span></div>
+      <div class="prow"><span class="pn">Reflections</span><span class="pc">Reflected environment and surrounding surfaces.</span></div>
+      <div class="prow"><span class="pn">SSS</span><span class="pc">Sub-surface scattering — skin, wax, marble, translucency.</span></div>
+      <div class="prow"><span class="pn">Refractions</span><span class="pc">Light bent through glass and transmissive materials.</span></div>
+      <div class="prow"><span class="pn">Emission</span><span class="pc">Self-lit materials — screens, neon, glow sources.</span></div>
+      <div class="prow"><span class="pn">Depth</span><span class="pc">Distance from camera — drives defocus and depth fog.</span></div>
+      <div class="prow"><span class="pn">Motion Vectors</span><span class="pc">Per-pixel movement — drives motion blur in comp.</span></div>
+      <div class="prow"><span class="pn">Cryptomatte</span><span class="pc">Automatic per-object and per-material selection mattes.</span></div>
+    </div>
+    <div class="passgrp reveal">
+      <div class="pgh"><span class="eyebrow">Production adds — take it apart</span></div>
+      <div class="prow"><span class="pn">Diffuse Filter</span><span class="pc">Raw albedo — surface colour before lighting, for retexture.</span></div>
+      <div class="prow"><span class="pn">Reflection Filter</span><span class="pc">Reflection albedo — the reflective tint, isolated.</span></div>
+      <div class="prow"><span class="pn">Refractions Raw</span><span class="pc">Un-tinted refraction, for clean glass control.</span></div>
+      <div class="prow"><span class="pn">World Position</span><span class="pc">3D position per pixel — world-space masks and effects.</span></div>
+      <div class="prow"><span class="pn">Normals</span><span class="pc">Surface orientation — relight and re-shade in comp.</span></div>
+      <div class="prow"><span class="pn">Ambient Occlusion</span><span class="pc">Contact shadowing — grounds surfaces, deepens crevices.</span></div>
+      <div class="prow"><span class="pn">Z Fog</span><span class="pc">An artist-ready depth matte for atmosphere, bright at the back.</span></div>
+    </div>
+    <div class="passgrp reveal">
+      <div class="pgh"><span class="eyebrow">Added automatically — when the scene needs it</span></div>
+      <div class="prow"><span class="pn">Caustics</span><span class="pc">Only when caustics are enabled in the render settings.</span></div>
+      <div class="prow"><span class="pn">Volume Lighting · Fog Tint · Fog Emission</span><span class="pc">Only when the scene contains Redshift volumes or environment fog.</span></div>
+    </div>
+  </div>
+
+  <p class="note">Compositor target (Nuke / After&nbsp;Effects) and Multi-Part EXR are studio defaults — the Depth and Motion-Vector encoding follow the target automatically, and the data passes stay lossless either way.</p>
+</div></section>
+
+<!-- ============ 03 RENDER / FORMATS ============ -->
+<section id="render"><div class="wrap">
+  <div class="slate reveal"><span class="idx">03</span><span class="tick"></span><span class="kick">Frame &amp; Formats</span></div>
+  <h2 class="reveal">One camera. Five deliveries. Zero re-framing by hand.</h2>
+  <p class="standfirst reveal">The Sentinel&nbsp;Frame is a single per-camera tag — the one entry point for multi-format delivery. It draws live viewport guides as you compose, then generates a camera-scoped Take per aspect with a true WYSIWYG crop.</p>
+
+  <div class="split">
+    <div class="reveal">
+      <svg viewBox="0 0 480 300" width="100%" fill="none" font-family="var(--font-mono)" font-size="10" role="img" aria-label="Multi-format crop stack">
+        <rect x="20" y="20" width="440" height="248" rx="3" stroke="var(--fmt-169)" stroke-width="1.5"/>
+        <text x="28" y="36" fill="var(--fmt-169)">16:9 — MASTER</text>
+        <!-- 21:9 -->
+        <rect x="40" y="96" width="400" height="96" stroke="var(--fmt-219)" stroke-width="1.2" stroke-dasharray="3 3"/>
+        <text x="48" y="110" fill="var(--fmt-219)">21:9</text>
+        <!-- 4:5 -->
+        <rect x="150" y="44" width="180" height="200" stroke="var(--fmt-45)" stroke-width="1.2"/>
+        <text x="158" y="58" fill="var(--fmt-45)">4:5</text>
+        <!-- 1:1 -->
+        <rect x="168" y="60" width="144" height="144" stroke="var(--fmt-11)" stroke-width="1.2"/>
+        <text x="176" y="74" fill="var(--fmt-11)">1:1</text>
+        <!-- 9:16 with asymmetric safe insets -->
+        <rect x="188" y="36" width="104" height="216" stroke="var(--fmt-916)" stroke-width="1.5"/>
+        <text x="196" y="50" fill="var(--fmt-916)">9:16 — REELS</text>
+        <rect x="196" y="52" width="80" height="168" stroke="var(--fmt-916)" stroke-width="1" stroke-dasharray="2 3" opacity=".7"/>
+      </svg>
+      <p class="note">9:16 shows its asymmetric safe insets baked in — <span class="val">8&nbsp;/&nbsp;15&nbsp;/&nbsp;5&nbsp;/&nbsp;10</span> — the IG&nbsp;Reels caption &amp; icon zones, not just the raw aspect crop.</p>
+    </div>
+    <div class="reveal">
+      <ul class="ticks">
+        <li><b>Live guides.</b> Toggle guides, a dimmed mask with opacity, and platform safe-zones — computed live in the master view as you compose.</li>
+        <li><b>One-click delivery Takes.</b> A camera-scoped Take per format, rename-safe on re-run (tracked by BaseLink), reverted with a single Cmd+Z. A “Takes out of date” HUD warns when a setting changes.</li>
+        <li><b>True WYSIWYG crop.</b> Narrower formats crop by a focal zoom — works on standard <em>and</em> Redshift cameras, keeping DOF; wider formats crop by resolution.</li>
+        <li><b>Per-format nudge.</b> Shift each crop via camera film-offset — preserves lens and parallax, never moves the camera.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="grid g4">
+    <div class="cell reveal"><div class="ico"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="6" width="18" height="12" rx="1"/><path class="ac" d="M3 10h18" stroke="currentColor"/></svg></div><div class="eyebrow">Presets</div><h4>Standard formats</h4><p>Previz 1280×720, Pre-Render / Render 1920×1080, Stills 3840×2160 — all @ 25 fps, one click.</p></div>
+    <div class="cell reveal"><div class="ico"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="16" height="16" rx="1"/><path class="ac" d="M9 4v16M4 9h16"/></svg></div><div class="eyebrow">Overlay</div><h4>Safe-area guides</h4><p>Live coloured rectangles per format in the viewport, with the platform's UI-safe insets already applied.</p></div>
+    <div class="cell reveal"><div class="ico"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="8"/><path class="ac" d="M12 8v4l3 2"/></svg></div><div class="eyebrow">QC #12</div><h4>Cross-aspect check</h4><p>Marked subjects are validated inside every format's safe area, swept across keyframes on demand.</p></div>
+    <div class="cell reveal"><div class="ico"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3l7 4v6c0 4-3 6-7 8-4-2-7-4-7-8V7z"/><path class="ac" d="M9 12l2 2 4-4"/></svg></div><div class="eyebrow">Composition</div><h4>None / Resize Canvas</h4><p>Keep the camera fixed and crop, or rotate the field of view per format via a sensor override — DOF stays intact.</p></div>
+  </div>
+</div></section>
+
+<!-- ============ 04 VERSIONS ============ -->
+<section id="versions"><div class="wrap">
+  <div class="slate reveal"><span class="idx">04</span><span class="tick"></span><span class="kick">Versions</span></div>
+  <h2 class="reveal">Every save is a record, not just a file.</h2>
+  <p class="standfirst reveal">Smart Save Version writes a numbered <span class="val">scene_v###.c4d</span> with a required comment, the QC score at save time, and scene stats — logged to a per-scene history sidecar shared across every version of the same base.</p>
+
+  <div class="rail reveal">
+    <div class="vpill"><span class="vn">v005</span><span class="vb wip">WIP</span></div>
+    <div class="vjoin"></div>
+    <div class="vpill"><span class="vn">v006</span><span class="vb rev">TR</span></div>
+    <div class="vjoin"></div>
+    <div class="vpill"><span class="vn">v007</span><span class="vb rev">CR</span></div>
+    <div class="vjoin"></div>
+    <div class="vpill"><span class="vn">v008</span><span class="vb fin">Final ⏷</span></div>
+  </div>
+  <p class="note">Review status bakes into the filename — <span class="val">scene_v007_TR.c4d</span>. After a TR/CR/FINAL save, Sentinel offers to branch a fresh WIP so the review snapshot stays untouched.</p>
+
+  <div class="grid g3" style="margin-top:28px">
+    <div class="cell reveal"><div class="eyebrow">Browse</div><h4>Recent versions</h4><p>The last five versions inline in the panel with colour-coded status badges, a filter dropdown, and click-to-open.</p></div>
+    <div class="cell reveal"><div class="eyebrow">Notes</div><h4>Scene notes &amp; TODOs</h4><p>Free-form notes and a checklist per scene base, shared across versions. A ⚠ caption flags pending TODOs.</p></div>
+    <div class="cell reveal"><div class="eyebrow">Pillbox</div><h4>Last-version caption</h4><p>A live line above Save Version — <span class="val">v007 TR · 2h ago</span> — so you always know what you're building on.</p></div>
+  </div>
+</div></section>
+
+<!-- ============ 05 DELIVERY ============ -->
+<section id="delivery"><div class="wrap">
+  <div class="slate reveal"><span class="idx">05</span><span class="tick"></span><span class="kick">The Last Mile</span></div>
+  <h2 class="reveal">The render finished.<br>Sentinel checks that it's actually all there.</h2>
+  <p class="standfirst reveal">Scene Collector packages a clean delivery; Post-Render Validation audits the frames on disk against what the scene said it would produce. The gap between “render started” and “render correct” is where nights get lost.</p>
+
+  <div class="split">
+    <div class="reveal">
+      <h3>Scene Collector</h3>
+      <ul class="ticks">
+        <li><b>Pre-flight QC</b> before anything is copied — the gate can auto-fix, accept into baseline, or stop.</li>
+        <li><b>Clean delivery naming</b> — <span class="val">robot_010_v022_FINAL.c4d</span> becomes <span class="val">robot_010.c4d</span>; the manifest keeps the traceability.</li>
+        <li><b>Sidecars travel too</b> — notes, baseline and the effective ruleset are copied and renamed into the delivery.</li>
+      </ul>
+    </div>
+    <div class="reveal">
+      <h3>Post-Render Validation</h3>
+      <ul class="ticks">
+        <li><b>Sequence gaps</b> and 0-byte / truncated frames, flagged against the expected range.</li>
+        <li><b>Size-outlier detection</b> (MAD) and previous-session “stale” clusters that shouldn't be in the delivery.</li>
+        <li><b>AOV coverage</b> per Take and format — reading the scene's real render data, not a guess.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="grid g3" style="margin-top:32px">
+    <div class="file reveal"><div class="fh"><span class="fn">robot_010_history.json</span><span class="ft">Per-scene</span></div><pre><span class="k">"version"</span>: <span class="s">"v022"</span>,
+<span class="k">"status"</span>: <span class="s">"FINAL"</span>,
+<span class="k">"comment"</span>: <span class="s">"client sign-off"</span>,
+<span class="k">"score"</span>: { <span class="k">"passed"</span>:11,
+  <span class="k">"total"</span>:12, <span class="k">"new"</span>:0,
+  <span class="k">"accepted"</span>:1 }</pre></div>
+    <div class="file reveal"><div class="fh"><span class="fn">robot_010_baseline.json</span><span class="ft">Shared</span></div><pre><span class="k">"check_id"</span>: <span class="s">"names"</span>,
+<span class="k">"path"</span>: <span class="s">"/Cube.1"</span>,
+<span class="k">"guid"</span>: <span class="s">"a2492afc"</span>,
+<span class="k">"author"</span>: <span class="s">"melgar"</span>,
+<span class="k">"reason"</span>: <span class="s">"library asset"</span></pre></div>
+    <div class="file reveal"><div class="fh"><span class="fn">sentinel_rules.json</span><span class="ft">Project</span></div><pre><span class="k">"fps"</span>: <span class="s">25</span>,
+<span class="k">"start_frame"</span>: <span class="s">1001</span>,
+<span class="k">"safe_area"</span>: { <span class="k">"9x16"</span>:
+  [<span class="s">8</span>,<span class="s">15</span>,<span class="s">5</span>,<span class="s">10</span>] },
+<span class="k">"severity"</span>: { <span class="k">"cam"</span>:<span class="s">"FAIL"</span> }</pre></div>
+  </div>
+</div></section>
+
+<!-- ============ 06 RULES ============ -->
+<section id="rules"><div class="wrap">
+  <div class="slate reveal"><span class="idx">06</span><span class="tick"></span><span class="kick">Rules &amp; Gates</span></div>
+  <h2 class="reveal">One studio, one ruleset.</h2>
+  <p class="standfirst reveal">A project drops a <span class="val">sentinel_rules.json</span> in the scene folder — or up to three ancestors — and the whole team validates against the same FPS, start frame, approved presets, safe-area insets and per-check severity. Precedence is explicit: project&nbsp;rules&nbsp;›&nbsp;machine&nbsp;settings&nbsp;›&nbsp;embedded&nbsp;defaults.</p>
+
+  <div class="grid g3">
+    <div class="cell reveal"><div class="eyebrow">Per-project rules</div><h4>Discovered, cached, live</h4><p>Nearest file wins; shadowed files are surfaced in the header. Per-key validation rejects one bad value by name and applies the rest. Edits take effect without a restart.</p></div>
+    <div class="cell reveal"><div class="eyebrow">Baseline</div><h4>Accepted violations</h4><p>Sign off a known issue with author + reason. The score then counts only <em>new</em> violations — a mixed row reads <span class="val">2 new (1 accepted)</span>. Identity survives renames via object GUID.</p></div>
+    <div class="cell reveal"><div class="eyebrow">Quality gates</div><h4>Actionable at save &amp; collect</h4><p>Failing checks raise a triage dialog — auto-fix the batchable ones in a single undo step, accept into baseline, or proceed anyway. Off by default; opt in per project.</p></div>
+  </div>
+</div></section>
+
+<!-- ============ 07 TOOLS ============ -->
+<section id="tools"><div class="wrap">
+  <div class="slate reveal"><span class="idx">07</span><span class="tick"></span><span class="kick">Toolbox</span></div>
+  <h2 class="reveal">The tedious parts, automated.</h2>
+  <p class="standfirst reveal">Texture Repathing, cross-platform snapshots and a full suite of scene tools — the parts of mograph delivery nobody wants to do by hand.</p>
+
+  <div class="split">
+    <div class="reveal">
+      <h3>Texture Repathing</h3>
+      <p class="lead">A multi-renderer bulk find/replace and smart-fix for texture paths — built for supervision (validate a whole scene's assets) and for artists (one-button fixes, undo-safe).</p>
+      <ul class="ticks">
+        <li>Scans <b>every</b> storage mechanism — Redshift &amp; Arnold node graphs, classic shader chains, Octane image shaders, RS Dome HDR, Alembic caches, tag shaders.</li>
+        <li>Per-path status: <span class="val">OK · absolute · missing · asset&nbsp;URI · empty</span>, with a status filter.</li>
+        <li>Case-insensitive find/replace with a Match-case toggle; the whole batch reverts with a single Cmd+Z.</li>
+      </ul>
+      <p class="note">Async, not modal — C4D stays interactive, so undo actually reaches the document.</p>
+    </div>
+    <div class="reveal">
+      <div class="grid g2" style="margin-top:0">
+        <div class="cell"><div class="ico"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 16l5-5 3 3 5-6"/><rect class="ac" x="3" y="4" width="18" height="16" rx="1"/></svg></div><div class="eyebrow">Snapshots</div><h4>EXR → PNG · ACES</h4><p>Cross-platform EXR→PNG with a full ACEScg→sRGB pipeline.</p></div>
+        <div class="cell"><div class="ico"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3v18M5 8l7-5 7 5"/><path class="ac" d="M5 16l7 5 7-5"/></svg></div><div class="eyebrow">Camera rigs</div><h4>By-keyframe wizard</h4><p>Simple &amp; shake camera rigs — by Riccardo Bottoni.</p></div>
+        <div class="cell"><div class="ico"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="4" rx="1"/><rect class="ac" x="3" y="10" width="12" height="4" rx="1"/><rect x="3" y="16" width="16" height="4" rx="1"/></svg></div><div class="eyebrow">Layers</div><h4>H → Layers · Solo</h4><p>Hierarchy to layers, solo layers, drop to floor, vibrate null.</p></div>
+        <div class="cell"><div class="ico"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path class="ac" d="M12 7v5l4 2"/></svg></div><div class="eyebrow">Animation</div><h4>ABC Retime</h4><p>Bundled Alembic retime — by Austin Marola &amp; Axis.</p></div>
+      </div>
+    </div>
+  </div>
+</div></section>
+
+<!-- ============ FOOTER ============ -->
+<footer id="credits"><div class="wrap">
+  <div class="foothead">
+    <svg width="20" height="20" viewBox="0 0 420 420" fill="none" aria-hidden="true"><circle cx="210" cy="210" r="168" stroke="var(--text-3)" stroke-width="10" stroke-dasharray="20 60"/><circle cx="210" cy="42" r="22" fill="var(--accent)"/></svg>
+    <span class="eyebrow">Sentinel — since MMXXV</span>
+  </div>
+  <p class="footcredit">Born as <b>YS&nbsp;Guardian</b> at <b>Yambo&nbsp;Studio</b> · Maintained by <b>Javier&nbsp;Melgar</b>.</p>
+  <p class="footcredit" style="margin-top:6px">Camera rigs by Riccardo&nbsp;Bottoni · ABC&nbsp;Retime by Austin&nbsp;Marola &amp;&nbsp;Axis. <a href="https://github.com/jmcodex93/sentinel">github.com/jmcodex93/sentinel</a></p>
+  <p class="buildline">v1.9.0 · pytest 180/180 · C4D 2026.301 · Redshift 2026</p>
+  <p class="onwatch">SENTINEL — ON WATCH.</p>
+</div></footer>
+
+</main>
+
+<script>
+(function(){
+  var root=document.documentElement, btn=document.getElementById('themebtn');
+  function current(){return root.getAttribute('data-theme') || (matchMedia('(prefers-color-scheme:light)').matches?'light':'dark');}
+  function paint(){var t=current();if(btn)btn.textContent = t==='dark' ? '[ LIGHT ]' : '[ DARK ]';}
+  paint();
+  if(btn)btn.addEventListener('click',function(){
+    var next = current()==='dark' ? 'light':'dark';
+    root.setAttribute('data-theme',next);
+    try{localStorage.setItem('sentinel-theme',next);}catch(e){}
+    paint();
+  });
+
+  /* reveal */
+  if('IntersectionObserver' in window){
+    var io=new IntersectionObserver(function(es){
+      es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});
+    },{threshold:.15});
+    document.querySelectorAll('.reveal').forEach(function(el){io.observe(el);});
+  } else {
+    document.querySelectorAll('.reveal').forEach(function(el){el.classList.add('in');});
+  }
+
+  /* scrollspy → nav + HUD readout */
+  var secs=[].slice.call(document.querySelectorAll('section[id], header[id]'));
+  var links={}; document.querySelectorAll('.navlinks a').forEach(function(a){links[a.getAttribute('href').slice(1)]=a;});
+  var labels={watch:'00 / ON WATCH',qc:'01 / THE TWELVE',aovs:'02 / AOV DOCTRINE',render:'03 / FRAME & FORMATS',versions:'04 / VERSIONS',delivery:'05 / THE LAST MILE',rules:'06 / RULES & GATES',tools:'07 / TOOLBOX',credits:'08 / CREDITS'};
+  var readout=document.getElementById('scrollreadout');
+  if('IntersectionObserver' in window){
+    var so=new IntersectionObserver(function(es){
+      es.forEach(function(e){
+        if(e.isIntersecting){
+          var id=e.target.id;
+          Object.keys(links).forEach(function(k){links[k].classList.toggle('active',k===id);});
+          if(readout&&labels[id])readout.textContent=labels[id];
+        }
+      });
+    },{rootMargin:'-45% 0px -50% 0px'});
+    secs.forEach(function(s){so.observe(s);});
+  }
+}());
+</script>
+</body>
+</html>

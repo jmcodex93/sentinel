@@ -87,10 +87,13 @@ Dos sabores del mismo sistema:
   traceback a consola; el Timer nunca lanza.
 - Fallback: sin gadget HTML o fallo de render → `webbrowser.open` de la misma
   URL (paridad Overseer).
-- Cmd+Z: si el spike falla (webview roba el atajo), las superficies
-  interactivas de Fase 4 se re-evalúan; Reports (read-only) no se ve afectado.
-- Windows: si el motor del gadget es viejo, Reports sigue vía navegador
-  externo; decisión Fase 4 se pospone hasta verificar en una máquina Windows.
+- Cmd+Z: **SPIKE VERDE (2026-07-19, C4D 2026.302 macOS)** — con la ventana de
+  Reports enfocada, Cmd+Z atraviesa el webview y deshace en la escena
+  (verificado por el usuario: mover objeto → foco Reports → Cmd+Z → el objeto
+  vuelve). Fase 4 desbloqueada para HTML embebido.
+- Windows: **pendiente de hardware** — el fallback a navegador externo está
+  operativo (verificado el camino de código); verificar el motor del gadget
+  cuando haya una máquina Windows antes de dar Fase 4 por cross-platform.
 
 ## Testing
 
