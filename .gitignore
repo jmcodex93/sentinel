@@ -12,3 +12,7 @@ web/node_modules/
 web/dist/
 web/node_modules/.tmp/
 
+
+# Session scratch (visual companion, SDD ledgers)
+.superpowers/
+tests/fixtures/backup/

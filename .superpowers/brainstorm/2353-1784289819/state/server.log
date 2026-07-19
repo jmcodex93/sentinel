@@ -1,4 +1,0 @@
-{"type":"server-started","port":64803,"host":"127.0.0.1","url_host":"localhost","url":"http://localhost:64803/?key=1fa058501f8c21cad896e1fd411b0348afa83b4ee775dbdc134d0712cf9e1d0a","screen_dir":"/Users/javiermelgar/Library/CloudStorage/SynologyDrive-01_WORK/99 - CODEX/10 YS Guardian/.superpowers/brainstorm/2353-1784289819/content","state_dir":"/Users/javiermelgar/Library/CloudStorage/SynologyDrive-01_WORK/99 - CODEX/10 YS Guardian/.superpowers/brainstorm/2353-1784289819/state","idle_timeout_ms":14400000}
-{"type":"screen-added","file":"/Users/javiermelgar/Library/CloudStorage/SynologyDrive-01_WORK/99 - CODEX/10 YS Guardian/.superpowers/brainstorm/2353-1784289819/content/asset-hub-layout-original.html"}
-{"type":"screen-updated","file":"/Users/javiermelgar/Library/CloudStorage/SynologyDrive-01_WORK/99 - CODEX/10 YS Guardian/.superpowers/brainstorm/2353-1784289819/content/asset-hub-layout-original.html"}
-{"type":"server-stopped","reason":"idle timeout"}
