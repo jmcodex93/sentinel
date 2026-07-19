@@ -147,16 +147,26 @@ def _force_aov_tier(doc, tier_list, tier_name):
 
 
 def _handle_validate_render(doc):
-    """Run on-demand post-render validation for a chosen folder."""
+    """Run on-demand post-render validation for a chosen folder.
+
+    Returns ``{"message": str}`` on success (a report was written, whether
+    PASSED or ISSUES FOUND) so the caller (``panel._handle_validate_render``,
+    Phase 2 Task 3) can open the Reports render_validation page and fall
+    back to ``c4d.gui.MessageDialog(result["message"])`` if that fails to
+    open. Returns ``None`` when the flow ended before producing a report
+    (folder picker cancelled, invalid folder, audit exception) — those
+    branches already showed their own MessageDialog, so there is nothing
+    left for the caller to display.
+    """
     folder = c4d.storage.LoadDialog(
         title="Select Render Output Folder",
         flags=c4d.FILESELECT_DIRECTORY,
     )
     if not folder:
-        return
+        return None
     if not os.path.isdir(folder):
         c4d.gui.MessageDialog("Render validation cancelled:\n\nSelected folder is not valid.")
-        return
+        return None
 
     try:
         findings = postrender.audit_render_folder(doc, folder)
@@ -164,7 +174,7 @@ def _handle_validate_render(doc):
     except Exception as exc:
         safe_print(f"Render validation failed: {exc}")
         c4d.gui.MessageDialog(f"Render validation failed:\n\n{exc}")
-        return
+        return None
 
     doc_path = _doc_full_path(doc)
     report_path = postrender.report_path_for_doc(doc_path, folder)
@@ -195,7 +205,7 @@ def _handle_validate_render(doc):
     msg += f"Report: {report_path if wrote_report else 'could not write report'}\n"
     if not wrote_history:
         msg += "Render history could not be updated.\n"
-    c4d.gui.MessageDialog(msg)
+    return {"message": msg}
 
 
 def _open_artist_folder(artist_name):

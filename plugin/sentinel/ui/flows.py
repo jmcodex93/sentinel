@@ -1059,14 +1059,18 @@ def snapshot_save_still(doc, artist_name):
         c4d.gui.MessageDialog(f"Conversion failed:\n{error}")
         return
 
-    # Show in Picture Viewer
+    # Show in Picture Viewer — the still itself is the confirmation, so the
+    # result is a status-bar caption rather than a redundant MessageDialog
+    # the artist would have to dismiss over the image they can already see
+    # (popup triage, Phase 2 Task 3: obvious inline surface = Picture Viewer).
     bmp = c4d.bitmaps.BaseBitmap()
     if bmp.InitWith(png_path)[0] == c4d.IMAGERESULT_OK:
         c4d.bitmaps.ShowBitmap(bmp)
         w, h = bmp.GetBw(), bmp.GetBh()
-        c4d.gui.MessageDialog(f"Still saved!\n\nFile: {os.path.basename(png_path)}\nResolution: {w}x{h}\nFolder: {output_dir}")
+        c4d.gui.StatusSetText(
+            f"Still saved: {os.path.basename(png_path)} ({w}x{h}) -> {output_dir}")
     else:
-        c4d.gui.MessageDialog(f"Still saved!\n\n{png_path}")
+        c4d.gui.StatusSetText(f"Still saved: {png_path}")
 
     safe_print(f"Still saved: {png_path}")
 

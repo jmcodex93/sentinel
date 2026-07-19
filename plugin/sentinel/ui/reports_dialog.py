@@ -99,7 +99,7 @@ def ensure_server():
                 "Sentinel Reports: no build found at\n\n"
                 f"{_WEB_ROOT}\n\n"
                 "The SPA (plugin/web/) is missing from this install. "
-                "Falling back to the legacy Delivery Summary dialog."
+                "Falling back to the legacy native dialog."
             )
         raise RuntimeError(f"Reports web build not found at {_WEB_ROOT}")
 
@@ -304,10 +304,18 @@ class ReportsDialog(gui.GeDialog):
     ID_HTML = 3001
     ID_NOTICE = 3002
 
-    def __init__(self, port):
+    def __init__(self, port, page=None):
         super().__init__()
         self._port = port
+        # Deep-link into a specific SPA page (e.g. "doctor", "qc") via a
+        # `?page=` query param the SPA reads once at mount (web/src/App.tsx
+        # initialPage()) — None keeps the SPA's own default (Delivery).
+        self._page = page
         self._html = None
+
+    def _url(self):
+        base = f"http://127.0.0.1:{self._port}/"
+        return f"{base}?page={self._page}" if self._page else base
 
     def CreateLayout(self):
         self.SetTitle("Sentinel Reports")
@@ -318,7 +326,7 @@ class ReportsDialog(gui.GeDialog):
         if self._html is None:
             # No HtmlViewer gadget on this platform/build — open the report
             # in the system browser instead and explain the empty window.
-            url = f"http://127.0.0.1:{self._port}/"
+            url = self._url()
             webbrowser.open(url)
             self.AddStaticText(
                 self.ID_NOTICE, c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT, 0, 0,
@@ -333,8 +341,7 @@ class ReportsDialog(gui.GeDialog):
 
     def InitValues(self):
         if self._html is not None:
-            self._html.SetUrl(f"http://127.0.0.1:{self._port}/",
-                               c4d.URL_ENCODING_UTF16)
+            self._html.SetUrl(self._url(), c4d.URL_ENCODING_UTF16)
         return True
 
     def Timer(self, msg):
@@ -349,7 +356,7 @@ class ReportsDialog(gui.GeDialog):
         pass
 
 
-def open_reports(doc):
+def open_reports(doc, page=None):
     """Ensure the Reports server is running and open the dialog.
 
     ``doc`` is accepted (not read here) for call-site symmetry with the
@@ -360,11 +367,15 @@ def open_reports(doc):
     later (on a Timer tick, possibly after the user switched documents) and
     should reflect whichever document is active *then*.
 
+    ``page`` optionally deep-links straight to one of the SPA's pages
+    ("qc", "doctor", "supervisor", "render") instead of its default
+    Delivery Summary landing page — see ``ReportsDialog._url``.
+
     Raises on failure (missing web build, or a server bind failure such as
     every port in range being busy) — the panel's button handler catches
-    this and falls back to the legacy text-dialog Delivery Summary.
+    this and falls back to a legacy native dialog.
     """
     port = ensure_server()
-    dlg = ReportsDialog(port)
+    dlg = ReportsDialog(port, page=page)
     dlg.Open(c4d.DLG_TYPE_ASYNC, defaultw=1080, defaulth=760)
     return dlg
