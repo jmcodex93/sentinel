@@ -533,7 +533,7 @@ class YSPanel(gui.GeDialog):
             doc = c4d.documents.GetActiveDocument()
             if idx == 1:  # Render
                 self._update_snapshot_dir_label()
-            elif idx == 2:  # Versions
+            elif idx == 2:  # Deliver
                 self._update_last_version_label(doc)
                 self._update_notes_summary(doc)
                 self._update_history_area(doc)

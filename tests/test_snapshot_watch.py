@@ -10,6 +10,7 @@ helper; the Timer wiring and captions need live C4D.
 import os
 
 from sentinel.snapshots import (
+    _find_latest_exr,
     next_snapshot_name,
     parse_rv_snapshot_dir,
     scan_snapshot_candidates,
@@ -295,3 +296,75 @@ def test_settings_watch_roundtrip():
     finally:
         settings_mod.GlobalSettings._load = staticmethod(orig_load)
         settings_mod.GlobalSettings._save = staticmethod(orig_save)
+
+
+# ── _find_latest_exr snap_dir routing (Phase 3 IA consolidation) ──────────
+#
+# Regression coverage for the Save Still fix: _find_latest_exr used to read
+# ONLY GlobalSettings.get_snapshot_dir() (manual value), inconsistent with
+# the watchfolder prime which already auto-detects first. It now accepts an
+# optional snap_dir so callers (ui.flows.snapshot_save_still) can pass the
+# already-resolved effective dir straight through.
+
+def test_find_latest_exr_uses_snap_dir_param_not_a_decoy(tmp_path):
+    """snap_dir, when passed, is read directly — a second dir (standing in
+    for whatever GlobalSettings.get_snapshot_dir() would have returned)
+    with a chronologically NEWER file must be ignored entirely."""
+    passed_dir = tmp_path / "detected"
+    decoy_dir = tmp_path / "decoy"
+    passed_dir.mkdir()
+    decoy_dir.mkdir()
+
+    older = _touch_exr(str(passed_dir), "older.exr", mtime=1000.0)
+    newer_in_passed = _touch_exr(str(passed_dir), "newer.exr", mtime=2000.0)
+    # Newer than both files above, but in the decoy dir — must not win.
+    _touch_exr(str(decoy_dir), "newest_decoy.exr", mtime=9999.0)
+
+    path, error = _find_latest_exr(snap_dir=str(passed_dir))
+    assert error is None
+    assert path == newer_in_passed
+    assert path != older
+
+
+def test_find_latest_exr_snap_dir_none_falls_back_to_global_settings(tmp_path):
+    """Omitting snap_dir (legacy call shape) still resolves the manual
+    GlobalSettings value directly — unchanged behavior for any caller that
+    hasn't adopted the effective-dir helper."""
+    from sentinel.common import settings as settings_mod
+
+    snap_dir = str(tmp_path)
+    only_exr = _touch_exr(snap_dir, "only.exr", mtime=1234.0)
+
+    store = {"snapshot_dir": snap_dir}
+    orig_load = settings_mod.GlobalSettings._load
+    orig_save = settings_mod.GlobalSettings._save
+    settings_mod.GlobalSettings._load = staticmethod(lambda: dict(store))
+
+    def _save(data):
+        store.clear()
+        store.update(data)
+        return True
+
+    settings_mod.GlobalSettings._save = staticmethod(_save)
+    try:
+        path, error = _find_latest_exr()  # snap_dir omitted
+        assert error is None
+        assert path == only_exr
+    finally:
+        settings_mod.GlobalSettings._load = staticmethod(orig_load)
+        settings_mod.GlobalSettings._save = staticmethod(orig_save)
+
+
+def test_find_latest_exr_missing_or_empty_dir_returns_none_with_reason(tmp_path):
+    """Contract: (None, message) — never raises — for a dir that doesn't
+    exist yet, and separately for one that exists but has no EXRs."""
+    missing_dir = str(tmp_path / "does_not_exist")
+    path, error = _find_latest_exr(snap_dir=missing_dir)
+    assert path is None
+    assert "not found" in error
+
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    path, error = _find_latest_exr(snap_dir=str(empty_dir))
+    assert path is None
+    assert "No EXR snapshots found" in error
