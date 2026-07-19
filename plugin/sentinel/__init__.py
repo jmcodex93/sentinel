@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Sentinel package bootstrap."""
 
-PLUGIN_VERSION = "1.14.0"
+PLUGIN_VERSION = "1.15.0"
 PLUGIN_NAME = f"Sentinel v{PLUGIN_VERSION}"
 
 from . import common

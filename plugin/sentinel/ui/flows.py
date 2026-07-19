@@ -16,6 +16,7 @@ from sentinel import PLUGIN_NAME
 from sentinel.common.cache import check_cache
 from sentinel.common.constants import MAX_OBJECTS_PER_CHECK
 from sentinel.common.helpers import _iter_objs, open_in_explorer, safe_print
+from sentinel.common.settings import GlobalSettings
 from sentinel.checks.scene import _is_light_obj
 from sentinel.fixes import apply_fixes
 from sentinel.qc.registry import CHECK_REGISTRY, resolve_function
@@ -1024,14 +1025,34 @@ def detect_rv_snapshot_dir():
     return None
 
 
+def get_effective_snapshot_dir():
+    """Resolve the RS snapshot source dir Sentinel actually reads from, plus
+    how it was resolved (IA consolidation — Phase 3).
+
+    Auto-detect (live-parsed from RenderView's ``redshift_rv.cfg``) wins when
+    it resolves to an existing directory; otherwise falls back to the manual
+    Settings value. Mirrors the project-rules > machine-settings precedence
+    already used for Standard FPS (see SentinelSettingsDialog). Returns
+    ``(path, origin)`` where origin is ``"auto"`` or ``"manual"``. Never
+    raises — detect_rv_snapshot_dir() and GlobalSettings.get_snapshot_dir()
+    are both already defensive.
+    """
+    detected = detect_rv_snapshot_dir()
+    if detected:
+        return detected, "auto"
+    return GlobalSettings.get_snapshot_dir(), "manual"
+
+
 def snapshot_save_still(doc, artist_name):
     """Main entry point: find latest EXR, convert with ACES, save to project"""
     if not artist_name:
         c4d.gui.MessageDialog("Please set your artist name first!")
         return
 
-    # Find latest EXR
-    exr_path, error = _find_latest_exr()
+    # Find latest EXR — resolve the effective snapshot source dir the same
+    # way the panel caption and the watchfolder prime do (auto-detect first).
+    snap_dir, _origin = get_effective_snapshot_dir()
+    exr_path, error = _find_latest_exr(snap_dir)
     if not exr_path:
         c4d.gui.MessageDialog(error)
         return

@@ -440,7 +440,7 @@ def check_cross_aspect_safe_area(doc, sample_strategy="keyframes", rules_context
 # ---------------- Snapshot System (moved to sentinel.snapshots + ui.flows) ----------------
 from sentinel import snapshots as snapshot_engine
 from sentinel.ui.flows import (
-    detect_rv_snapshot_dir,
+    get_effective_snapshot_dir,
     snapshot_auto_convert,
     snapshot_open_folder,
     snapshot_save_still,
@@ -533,7 +533,7 @@ class YSPanel(gui.GeDialog):
             doc = c4d.documents.GetActiveDocument()
             if idx == 1:  # Render
                 self._update_snapshot_dir_label()
-            elif idx == 2:  # Versions
+            elif idx == 2:  # Deliver
                 self._update_last_version_label(doc)
                 self._update_notes_summary(doc)
                 self._update_history_area(doc)
@@ -687,12 +687,11 @@ class YSPanel(gui.GeDialog):
         # Populate the AOV info caption with current settings
         self._update_aov_info_label()
 
-        # ── Snapshots ──
+        # ── Snapshots ── (IA consolidation, Phase 3: Browse lives only in
+        # Settings now — this caption is read-only, showing the EFFECTIVE dir
+        # + how it was resolved; see _update_snapshot_dir_label)
         self._add_section_label("Snapshots")
-        self.GroupBegin(61, c4d.BFH_SCALEFIT, 2, 0)
         self.AddStaticText(G.LABEL_SNAPSHOT_DIR, c4d.BFH_SCALEFIT, 0, 0, "", 0)
-        self.AddButton(G.BTN_SET_SNAPSHOT_DIR, c4d.BFH_RIGHT, 60, 0, "Browse")
-        self.GroupEnd()
         self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
         self.AddButton(G.BTN_SNAPSHOT, c4d.BFH_SCALEFIT, 0, 0, "Save Still")
         self.AddButton(G.BTN_OPEN_FOLDER, c4d.BFH_SCALEFIT, 0, 0, "Open Folder")
@@ -715,7 +714,9 @@ class YSPanel(gui.GeDialog):
         self.AddStaticText(0, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 0, 0, "", 0)
 
     def _build_tab_versions(self):
-        """Build Versions tab content."""
+        """Build Deliver tab content (renamed from "Versions" in the Phase 3
+        IA consolidation — Save Version, Recent Versions, Notes, and the
+        Asset Hub delivery gate all live here)."""
         # ── Scene Notes ──
         self._add_section_label("Scene Notes", first=True)
         self.GroupBegin(64, c4d.BFH_SCALEFIT, 2, 0)
@@ -887,11 +888,15 @@ class YSPanel(gui.GeDialog):
             safe_print(f"Filename caption error: {e}")
 
     def _update_snapshot_dir_label(self):
-        snap_dir = GlobalSettings.get_snapshot_dir()
+        """Show the EFFECTIVE snapshot dir + how it was resolved (IA
+        consolidation, Phase 3 — Browse was removed from this tab; the
+        manual value is editable only in Settings, as a fallback)."""
+        snap_dir, origin = get_effective_snapshot_dir()
         # Shorten for display: show last 2 path components
         parts = snap_dir.replace("\\", "/").rstrip("/").split("/")
         short = "/".join(parts[-2:]) if len(parts) > 2 else snap_dir
-        self.SetString(G.LABEL_SNAPSHOT_DIR, f"Snapshots: .../{short}")
+        suffix = "(auto-detected from RenderView)" if origin == "auto" else "(manual fallback)"
+        self.SetString(G.LABEL_SNAPSHOT_DIR, f"Snapshots: .../{short}  {suffix}")
 
     def _update_last_version_label(self, doc=None):
         """Refresh the 'Last version' caption above Save Version button."""
@@ -1266,6 +1271,21 @@ class YSPanel(gui.GeDialog):
     def CreateLayout(self):
         self.SetTitle(PLUGIN_NAME)
 
+        # ── Menu bar (Phase 3 IA consolidation) — GitHub / Report Bug move
+        # off the footer into a "Help" submenu (the burger-menu equivalent
+        # for a GeDialog); the footer keeps only Settings + Doctor. Reuses
+        # the existing BTN_GITHUB / BTN_BUG_REPORT ids: a string menu entry
+        # routes through Command() exactly like a button click, so no new
+        # handler is needed. Menus only render on async dialogs (this panel
+        # is DLG_TYPE_ASYNC — see YSPanelCmd.Execute), per the SDK example
+        # gedialog_menu_hide_content_r15.py.
+        self.MenuFlushAll()
+        self.MenuSubBegin("Help")
+        self.MenuAddString(G.BTN_GITHUB, "GitHub")
+        self.MenuAddString(G.BTN_BUG_REPORT, "Report Bug")
+        self.MenuSubEnd()
+        self.MenuFinished()
+
         # Main container
         self.GroupBegin(1, c4d.BFH_SCALEFIT|c4d.BFV_SCALEFIT, 1, 0)
         self.GroupBorderSpace(4, 4, 4, 4)
@@ -1317,7 +1337,7 @@ class YSPanel(gui.GeDialog):
             # Mark the persisted-active tab as selected on startup
             self._quicktab.AppendString(0, "QC", self._active_tab == 0)
             self._quicktab.AppendString(1, "Render", self._active_tab == 1)
-            self._quicktab.AppendString(2, "Versions", self._active_tab == 2)
+            self._quicktab.AppendString(2, "Deliver", self._active_tab == 2)
             self._quicktab.AppendString(3, "Tools", self._active_tab == 3)
 
         # ── Tab content container — only the active tab's content lives inside.
@@ -1328,14 +1348,14 @@ class YSPanel(gui.GeDialog):
         self.GroupEnd()
 
         # ───────── Footer (always visible) — secondary actions ─────────
+        # GitHub / Report Bug moved to the Help menu above (Phase 3 IA
+        # consolidation); the footer keeps only Settings + Doctor.
         self.AddSeparatorH(4)
-        self.GroupBegin(70, c4d.BFH_SCALEFIT, 4, 0)
+        self.GroupBegin(70, c4d.BFH_SCALEFIT, 2, 0)
         self.AddButton(G.BTN_SETTINGS, c4d.BFH_SCALEFIT, 0, 0, "⚙ Settings")
         # Plain text label: emoji glyphs (🩺) don't render in C4D's UI font
-        # (showed as "_" — verified live). GitHub/Report Bug are plain too.
+        # (showed as "_" — verified live).
         self.AddButton(G.BTN_DOCTOR, c4d.BFH_SCALEFIT, 0, 0, "Doctor")
-        self.AddButton(G.BTN_GITHUB, c4d.BFH_SCALEFIT, 0, 0, "GitHub")
-        self.AddButton(G.BTN_BUG_REPORT, c4d.BFH_SCALEFIT, 0, 0, "Report Bug")
         self.GroupEnd()
 
         self.GroupEnd()  # Main container
@@ -1575,7 +1595,7 @@ class YSPanel(gui.GeDialog):
         anyway, so this is best-effort live-follow, not real-time. Falls back
         to the manual picker (GlobalSettings) when detection fails."""
         import time
-        snap_dir = detect_rv_snapshot_dir() or GlobalSettings.get_snapshot_dir()
+        snap_dir, _origin = get_effective_snapshot_dir()
         self._snap_watch_dir = snap_dir
         registry = {}
         try:
@@ -2176,13 +2196,6 @@ class YSPanel(gui.GeDialog):
 
         elif cid == G.BTN_APPLY_MULTIPART:
             self._apply_multipart_to_scene(doc)
-
-        elif cid == G.BTN_SET_SNAPSHOT_DIR:
-            new_dir = c4d.storage.LoadDialog(title="Select RS Snapshot Folder", flags=c4d.FILESELECT_DIRECTORY)
-            if new_dir:
-                GlobalSettings.set_snapshot_dir(new_dir)
-                self._update_snapshot_dir_label()
-                safe_print(f"Snapshot directory set to: {new_dir}")
 
         elif cid == G.BTN_OPEN_FOLDER:
             self._open_artist_folder()
