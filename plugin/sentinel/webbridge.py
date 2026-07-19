@@ -51,12 +51,16 @@ _API_PREFIX = "/api/"
 # ---------------------------------------------------------------------------
 
 class _QueuedRequest:
-    __slots__ = ("payload", "event", "result")
+    __slots__ = ("payload", "event", "result", "cancelled", "lock")
 
     def __init__(self, payload):
         self.payload = payload
         self.event = threading.Event()
         self.result = None
+        self.cancelled = False
+        # Guards the cancelled-check + dispatch-commit in `drain` against a
+        # concurrent cancel attempt in `submit` — see both docstrings.
+        self.lock = threading.Lock()
 
 
 class MainThreadQueue:
@@ -73,33 +77,60 @@ class MainThreadQueue:
 
         Returns whatever ``dispatch`` produced — including an error dict if
         dispatch raised (see ``drain``). Raises ``TimeoutError`` only if the
-        main thread never drains in time; never raises for dispatch errors.
+        main thread never drains it in time AND the cancel below succeeds;
+        never raises for dispatch errors.
 
-        Invariant: a timed-out request is NOT removed from the queue — it
-        stays there and ``drain`` will still dispatch it on a later Timer
-        tick, whenever the main thread gets to it. Its result is computed
-        but discarded (nothing is waiting on the Event anymore). This means
-        every ``dispatch`` handler (and everything ``api_handler`` calls
-        through it) must be safe to run even when nobody is listening
-        anymore: read-only or idempotent, no reliance on the caller still
-        being there to consume side effects exactly once.
+        Invariant (mutation-safe): on timeout, this atomically marks the
+        request cancelled *before* raising ``TimeoutError`` — a
+        client-abandoned request never executes late. The mark-vs-dispatch
+        race against a concurrent ``drain`` is closed by ``request.lock``:
+        ``drain`` holds that same lock for the cancelled-check AND the
+        dispatch call as one unit, so exactly one of two outcomes happens,
+        never a third "half-dispatched" one:
+
+        - We acquire the lock first (drain hasn't reached this request
+          yet): we set ``cancelled`` and raise ``TimeoutError``; ``drain``
+          later sees ``cancelled`` and skips the request — it never runs.
+        - ``drain`` acquired the lock first (dispatch already committed or
+          in flight): our lock acquisition blocks until dispatch finishes,
+          then we see ``event`` is set and return the real result instead
+          of raising — it ran before/around the timeout, not after.
+
+        Every ``dispatch`` handler (and everything ``api_handler`` calls
+        through it) must still tolerate a client retry (the client may
+        resubmit the same mutation after a timeout it never blocks late).
         """
         request = _QueuedRequest(payload)
         self._queue.put(request)
-        if not request.event.wait(timeout):
-            raise TimeoutError("keep the Reports window open")
-        return request.result
+        if request.event.wait(timeout):
+            return request.result
+
+        with request.lock:
+            if request.event.is_set():
+                # drain() had already committed to dispatching this request
+                # (or just finished) by the time we got the lock — it ran,
+                # return its real result instead of a stale TimeoutError.
+                return request.result
+            request.cancelled = True
+        raise TimeoutError("keep the Reports window open")
 
     def drain(self, dispatch):
         """Called from the main thread (the Timer). Processes EVERY item
-        currently queued, in order — including requests whose ``submit``
-        already timed out and returned (see the invariant on ``submit``);
-        ``drain`` has no way to know that and dispatches them anyway. Its
-        result is then discarded (nothing is waiting on that Event). Keep
-        ``dispatch`` read-only/idempotent for this reason. ``dispatch(payload)
-        -> dict`` runs once per item; an exception from ``dispatch`` becomes
-        the result ``{"error": str(exc), "traceback": <format_exc>}`` instead
-        of propagating. This method itself never raises.
+        currently queued, in order, EXCEPT requests cancelled by a timed-out
+        ``submit`` (see its docstring) — those are skipped: ``dispatch`` is
+        never called for them and there is no result to discard (the queue
+        no longer holds anything for a cancelled request beyond the flag).
+
+        Mutations are safe to dispatch here now: a client that gave up
+        waiting can never have its request execute later. Handlers still
+        must tolerate the client retrying the same mutation after its own
+        timeout (a fresh ``submit`` call is a brand new, undispatched
+        request — cancellation does not deduplicate retries).
+
+        ``dispatch(payload) -> dict`` runs once per non-cancelled item; an
+        exception from ``dispatch`` becomes the result
+        ``{"error": str(exc), "traceback": <format_exc>}`` instead of
+        propagating. This method itself never raises.
         """
         while True:
             try:
@@ -107,15 +138,19 @@ class MainThreadQueue:
             except queue.Empty:
                 return
 
-            try:
-                request.result = dispatch(request.payload)
-            except Exception as exc:
-                request.result = {
-                    "error": str(exc),
-                    "traceback": traceback.format_exc(),
-                }
-            finally:
-                request.event.set()
+            with request.lock:
+                if request.cancelled:
+                    continue
+
+                try:
+                    request.result = dispatch(request.payload)
+                except Exception as exc:
+                    request.result = {
+                        "error": str(exc),
+                        "traceback": traceback.format_exc(),
+                    }
+                finally:
+                    request.event.set()
 
 
 # ---------------------------------------------------------------------------

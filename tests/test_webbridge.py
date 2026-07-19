@@ -122,6 +122,116 @@ class TestMainThreadQueueRoundTrip:
         q.drain(dispatch)
 
 
+class TestMainThreadQueueCancellation:
+    """T1 of UI Phase 4: a timed-out submit() must mark its request
+    cancelled BEFORE raising, and a later drain() must skip it — a
+    client-abandoned request never executes late, which is what makes
+    mutation ops (not just reads) safe to route through this queue.
+    """
+
+    def test_timeout_then_late_drain_never_dispatches(self):
+        # (1) submit with a tiny timeout, no drain in between -> TimeoutError.
+        q = webbridge.MainThreadQueue()
+        with pytest.raises(TimeoutError):
+            q.submit({"op": "abandoned"}, timeout=0.05)
+
+        # Then drain with a spy dispatch -> spy is NOT called, and nothing
+        # is left waiting on a stale result.
+        calls = []
+        q.drain(lambda payload: calls.append(payload))
+        assert calls == []
+
+    def test_happy_path_unchanged_after_cancellation_support(self):
+        # (2) happy path: a request that IS drained before its timeout
+        # still gets dispatched and returns the real result normally.
+        q = webbridge.MainThreadQueue()
+        results = {}
+
+        def worker():
+            results["value"] = q.submit({"op": "ping"}, timeout=5.0)
+
+        t = threading.Thread(target=worker)
+        t.start()
+        deadline = time.time() + 2.0
+        while q._queue.empty() and time.time() < deadline:
+            time.sleep(0.01)
+
+        calls = []
+
+        def dispatch(payload):
+            calls.append(payload)
+            return {"pong": True}
+
+        q.drain(dispatch)
+        t.join(timeout=5.0)
+        assert not t.is_alive()
+        assert results["value"] == {"pong": True}
+        assert calls == [{"op": "ping"}]
+
+    def test_manually_cancelled_request_is_skipped_by_drain(self):
+        # (3a) race guard, deterministic form: mark cancelled directly
+        # between enqueue and drain (no live timing needed) -> drain must
+        # skip it exactly like the real submit-timeout path does.
+        q = webbridge.MainThreadQueue()
+        request = webbridge._QueuedRequest({"op": "x"})
+        request.cancelled = True
+        q._queue.put(request)
+
+        calls = []
+        q.drain(lambda payload: calls.append(payload))
+
+        assert calls == []
+        assert request.result is None
+        assert not request.event.is_set()
+
+    def test_cancel_race_loses_to_in_flight_dispatch_no_half_dispatch(self):
+        # (3b) drain-mid-flight semantics: if dispatch has already started
+        # (committed under request.lock) by the time submit's timeout
+        # fires and tries to cancel, the cancel must NOT win and must NOT
+        # observe a half-dispatched state — submit blocks on the lock and
+        # then returns the real dispatched result instead of raising
+        # TimeoutError.
+        q = webbridge.MainThreadQueue()
+        dispatch_started = threading.Event()
+        release_dispatch = threading.Event()
+
+        def slow_dispatch(payload):
+            dispatch_started.set()
+            assert release_dispatch.wait(2.0), "test setup: dispatch never released"
+            return {"ran": True}
+
+        results = {}
+
+        def submitter():
+            try:
+                results["value"] = q.submit({"op": "slow"}, timeout=0.05)
+            except TimeoutError as exc:
+                results["error"] = exc
+
+        submit_thread = threading.Thread(target=submitter)
+        submit_thread.start()
+
+        deadline = time.time() + 2.0
+        while q._queue.empty() and time.time() < deadline:
+            time.sleep(0.01)
+
+        drain_thread = threading.Thread(target=q.drain, args=(slow_dispatch,))
+        drain_thread.start()
+
+        assert dispatch_started.wait(2.0), "dispatch never started"
+        # Dispatch is now in flight, holding request.lock. Give submit's
+        # 0.05s timeout time to fire and attempt its cancel -- it must
+        # block on the lock rather than racing ahead of the dispatch.
+        time.sleep(0.2)
+        release_dispatch.set()
+
+        drain_thread.join(timeout=2.0)
+        submit_thread.join(timeout=2.0)
+
+        assert "error" not in results
+        assert results["value"] == {"ran": True}
+
+
 # ---------------------------------------------------------------------------
 # HTTP server: static + /api
 # ---------------------------------------------------------------------------
