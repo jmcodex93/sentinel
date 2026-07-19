@@ -1,0 +1,60 @@
+{
+  "meta": {
+    "sentinel_version": "1.13.0",
+    "c4d_version": "2026.301 (Release)",
+    "os": "macOS 15.1 (arm64)",
+    "renderers": "Redshift",
+    "settings_path": "/Users/artist/Library/Preferences/Sentinel/sentinel_settings.json"
+  },
+  "items": [
+    {
+      "id": "c4d_version",
+      "label": "Cinema 4D version",
+      "status": "ok",
+      "detail": "Cinema 4D 2026 (raw 2026301)",
+      "hint": "Tested and supported."
+    },
+    {
+      "id": "payload",
+      "label": "Plugin payload integrity",
+      "status": "ok",
+      "detail": "All expected files present under the plugin folder.",
+      "hint": ""
+    },
+    {
+      "id": "renderers",
+      "label": "Renderers detected",
+      "status": "info",
+      "detail": "Redshift detected.",
+      "hint": ""
+    },
+    {
+      "id": "settings_writable",
+      "label": "Settings file writable",
+      "status": "ok",
+      "detail": "sentinel_settings.json is readable and writable.",
+      "hint": ""
+    },
+    {
+      "id": "snapshot_dir",
+      "label": "Snapshot directory configured",
+      "status": "warn",
+      "detail": "No Redshift snapshot directory set.",
+      "hint": "Set it from the Render tab so still snapshots have a destination."
+    },
+    {
+      "id": "python_version",
+      "label": "Embedded Python",
+      "status": "ok",
+      "detail": "Python 3.11.9 (C4D embedded)",
+      "hint": ""
+    },
+    {
+      "id": "abc_retime",
+      "label": "ABC Retime plugin",
+      "status": "fail",
+      "detail": "abc_retime/ folder missing from the install.",
+      "hint": "Reinstall the full plugin folder, not just sentinel_panel.pyp."
+    }
+  ]
+}
