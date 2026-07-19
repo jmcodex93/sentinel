@@ -4,13 +4,15 @@ tags: [popup-triage, reports, dialogs]
 problem_type: ui-migration
 ---
 
-# Popup triage — batch 1 (Phase 2 Task 3)
+# Popup triage — batch 1 (Phase 2 Task 3) + batch 2 (Task 4)
 
 Full inventory of every `c4d.gui.MessageDialog(...)` / `c4d.gui.QuestionDialog(...)`
 call site across `plugin/sentinel/ui/flows.py`, `plugin/sentinel/ui/panel.py`, and
 `plugin/sentinel/ui/dialogs.py`, as required by the Phase 2 plan
-(`docs/superpowers/plans/2026-07-19-ui-phase2-reports.md`, Task 3). Line numbers
-are post-batch-1 (i.e. after the conversions below landed).
+(`docs/superpowers/plans/2026-07-19-ui-phase2-reports.md`, Tasks 3 and 4). Line
+numbers are post-batch-1 (i.e. after the Task 3 conversions landed); the batch-2
+section below re-verifies and converts the remaining panel.py INFORMATIVO sites
+Task 3 flagged as "Task 4 candidate".
 
 ## Classification key
 
@@ -82,21 +84,17 @@ dialogs for the new Reports entry points) — net 44 remaining native popups.
 | panel.py:2239 | "Sentinel Reports could not open. Use each check row's Info button…" | DECISIÓN | fallback shown only if the Reports server fails to start (missing SPA build / port exhaustion) for the new "Open QC Report" button — error the user must notice, no legacy QC-report dialog exists to fall back to |
 | panel.py:2635 | Legacy Validate Render Output result text (`result["message"]`) | DECISIÓN (kept, repurposed as fallback) | fallback for the render-validation Reports entry — same content the old always-shown dialog had; now only shown if Reports can't open |
 
-### Remaining native popups (unclassified for conversion this batch — Task 4 scope, listed for completeness)
+### Remaining native popups (DECISIÓN / INFORMATIVO-DIFERIDO — not converted)
 
 | file:line | gist | classification | rationale |
 |---|---|---|---|
-| panel.py:1452 | "Accepted N violation(s) for {row}." (baseline accept) | INFORMATIVO | QC row / StatusArea already reflects the new baseline state via `self._refresh()` called just before — Task 4 candidate |
-| panel.py:1462 | "Acceptances retired for {row}." | INFORMATIVO | same surface as 1452 |
 | panel.py:1464 | "Could not update the baseline sidecar." | DECISIÓN | write failure, must notice |
 | panel.py:1499 | "File not found: {filename}" (Browse Versions row click) | DECISIÓN | error — file moved/deleted since history was recorded |
-| panel.py:1512 | "Already viewing {filename}." | INFORMATIVO | `c4d.gui.StatusSetText` pattern already used elsewhere in this file for equivalent quick notices — Task 4 candidate |
 | panel.py:1538 | QuestionDialog "Open {filename}?" (+ unsaved-changes warning) | DECISIÓN | real yes/no gate before loading another file |
 | panel.py:1548 | "Cinema 4D could not open: {filename}" | DECISIÓN | error, LoadFile returned False |
 | panel.py:1553 | "Error opening file:\n\n{e}" | DECISIÓN | error, exception during LoadFile |
 | panel.py:1728 | RENDER PRESETS info report (Info button, multi-paragraph) | INFORMATIVO-DIFERIDO | on-demand detailed report, explicit "Info" click, too much content for a caption; family shared with 1799/1814/1865/2042/2158 below |
 | panel.py:1748 | QuestionDialog "Open Asset Hub to fix these?" (texture issues) | DECISIÓN | real yes/no gate, branches to `_open_asset_hub` |
-| panel.py:1751 | "All assets OK. No absolute paths or missing files." | INFORMATIVO | redundant with the QC row itself already showing `[ OK ]`; StatusSetText candidate — Task 4 |
 | panel.py:1799 | OUTPUT PATH ISSUES info report | INFORMATIVO-DIFERIDO | same family as 1728 |
 | panel.py:1814 | TAKE ISSUES info report | INFORMATIVO-DIFERIDO | same family |
 | panel.py:1865 | FPS & FRAME RANGE info report | INFORMATIVO-DIFERIDO | same family |
@@ -107,9 +105,7 @@ dialogs for the new Reports entry points) — net 44 remaining native popups.
 | panel.py:1989 | "No Multi-Format delivery Takes detected." (Info) | INFORMATIVO-DIFERIDO | same family |
 | panel.py:2042 | Cross-Aspect full keyframe-sweep report | INFORMATIVO-DIFERIDO | same family as 1728, largest of the group |
 | panel.py:2122 | "Redshift module not available." | DECISIÓN | guard/error |
-| panel.py:2124 | "No AOVs configured. Use Essentials/Production." | INFORMATIVO | `LABEL_AOV_INFO` caption exists in the Render tab and could carry this — Task 4 candidate |
 | panel.py:2158 | Full AOV report (active/missing per tier) | INFORMATIVO-DIFERIDO | multi-paragraph, too much for `LABEL_AOV_INFO`; family with 1728 |
-| panel.py:2284 | "QC Report saved!\n\n{path}" | INFORMATIVO | `StatusSetText` candidate, same pattern already used for other one-shot exports — Task 4 |
 | panel.py:2399, 2437, 2443, 2447, 2451 | `_show_delivery_summary` legacy text-dialog family (manifest read error, scan-failed summary, verify confirm, VERIFY LOST, VERIFY OK) | DECISIÓN | intentional fallback path for when the Reports SPA fails to load — kept native **by design** (see CLAUDE.md: "Los diálogos nativos viejos (Doctor/Supervisor) quedan como fallback igual que `_show_delivery_summary`"); not a conversion target, ever |
 | panel.py:2462 | "No active document." (Edit Notes guard) | DECISIÓN | guard |
 | panel.py:2466 | "Save the scene first before adding notes." | DECISIÓN | prerequisite guard |
@@ -121,9 +117,28 @@ dialogs for the new Reports entry points) — net 44 remaining native popups.
 | panel.py:2595 | "No Redshift render data in this scene." | DECISIÓN | guard |
 | panel.py:2612 | QuestionDialog "Switch to Multi-Part EXR / Direct Output?" | DECISIÓN | real yes/no gate, explains compression consequences |
 | panel.py:2616 | "Could not change Multi-Part EXR:\n\n{error}" | DECISIÓN | error |
-| panel.py:2623 | "Multi-Part EXR: ON/OFF — applied to scene." | INFORMATIVO | `self._set_active_tab(...)` is called immediately above, which already rebuilds `LABEL_AOV_INFO` with the new multipart status synchronously — strongest Task 4 candidate in this file (surface refresh already proven to happen before the dialog even shows) |
 | panel.py:2665 | "No active document." (Open Asset Hub guard) | DECISIÓN | guard |
 | panel.py:2680 | "Asset Hub failed to open:\n{e}" | DECISIÓN | error |
+
+### Converted this batch (Task 4)
+
+Every panel.py site Task 3 tagged INFORMATIVO / "Task 4 candidate" — 7 sites,
+not 8 (Task 3's totals table undercounted DECISIÓN by one and overcounted
+INFORMATIVO by one; corrected below). Re-verified each against the live code
+before converting (see rationale column) — no reclassifications, all 7 held up
+under review.
+
+| file:line (pre-batch-2) | gist | replaced with |
+|---|---|---|
+| panel.py:1452 | "Accepted N violation(s) for {row}." (baseline accept) | `safe_print` + `c4d.gui.StatusSetText` — `self._refresh()` runs immediately above and already re-executes all checks, updating the QC row/StatusArea before the message would have shown |
+| panel.py:1462 | "Acceptances retired for {row}." | same pattern as 1452, same `self._refresh()` call above it |
+| panel.py:1512 | "Already viewing {filename}." (Browse Versions row click on the active doc) | `c4d.gui.StatusSetText` — quick observational notice, matches the pattern already used for `_qc_select_unused_mats` etc. |
+| panel.py:1751 | "All assets OK. No absolute paths or missing files." (Assets Info, no issues branch) | `c4d.gui.StatusSetText` — the QC row already shows `[ OK ]` for this check |
+| panel.py:2124 | "No AOVs configured.\n\nUse 'Essentials' or 'Production' to add passes." (AOV Info, Redshift available but empty) | `c4d.gui.StatusSetText` — note: Task 3's rationale ("`LABEL_AOV_INFO` could carry this") didn't hold up on re-verification; `_update_aov_info_label` only shows Compositor + Multi-Part status, never an AOV count, so `LABEL_AOV_INFO` isn't actually the right surface — used `StatusSetText` instead |
+| panel.py:2284 | "QC Report saved!\n\n{save_path}" | `safe_print` (unchanged, already printed the same path one line above) + `c4d.gui.StatusSetText` — the popup was a verbatim duplicate of what was already printed to console |
+| panel.py:2623 | "Multi-Part EXR: ON/OFF — applied to scene." | `safe_print` + `c4d.gui.StatusSetText` — `self._set_active_tab(...)` runs immediately above and already rebuilds `LABEL_AOV_INFO` synchronously with the new state |
+
+**Converted this batch: 7.**
 
 ---
 
@@ -132,7 +147,10 @@ dialogs for the new Reports entry points) — net 44 remaining native popups.
 Produced by reading every call site's enclosing dialog/flow (`SaveVersionDialog`,
 `BaselineActionDialog`, `GateTriageDialog`, `SentinelSettingsDialog`,
 `TextureRepathingDialog`, `AssetHubDialog`, `SentinelDoctorDialog`,
-`SupervisorDialog`). Tally: 27 DECISIÓN, 19 INFORMATIVO, 4 INFORMATIVO-DIFERIDO.
+`SupervisorDialog`). Tally: 31 DECISIÓN, 16 INFORMATIVO, 3 INFORMATIVO-DIFERIDO
+(corrected during Task 4's totals pass — the original 27/19/4 count was an
+arithmetic slip in the batch-1 doc; row-by-row classification below is
+unchanged, only the summary tally was off).
 
 | file:line | gist | classification | rationale |
 |---|---|---|---|
@@ -191,15 +209,27 @@ Produced by reading every call site's enclosing dialog/flow (`SaveVersionDialog`
 
 ## Totals
 
-| File | Sites | DECISIÓN | INFORMATIVO | INFORMATIVO-DIFERIDO | Converted this batch |
-|---|---|---|---|---|---|
-| flows.py | 14 | 8 (incl. 5 dead-code) | 0 | 0 | **2** |
-| panel.py | 44 (+2 new fallbacks, +3 converted) | 30 | 8 | 8 | **3** |
-| dialogs.py | 50 | 27 | 19 | 4 | 0 |
-| **Total** | **108** | 65 | 27 | 12 | **5** |
+Updated after Task 4 (batch 2). "Sites" = call sites inventoried in that file
+as of the batch that touched it (flows.py/panel.py rows reflect their own
+batch's before-state; dialogs.py is untouched since batch 1). "DECISIÓN"
+includes the flows.py dead-code count parenthetically since those sites still
+exist as live `MessageDialog` calls in unreachable code. Corrected two
+arithmetic slips from the batch-1 version of this table: panel.py's
+INFORMATIVO count was 7 (not 8), and dialogs.py's DECISIÓN/INFORMATIVO/DIFERIDO
+split was 31/16/3 (not 27/19/4) — see the dialogs.py section note above.
 
-Everything marked INFORMATIVO but not converted this batch is explicit Task 4
-scope (panel.py sweep: "AOV apply results, preset resets, tool results" per
-the plan) or a future dialogs.py pass. INFORMATIVO-DIFERIDO items need a
-toast/notification surface that doesn't exist yet (Phase 4 of the plan) and
-are not candidates for caption conversion regardless of batch.
+| File | Sites | DECISIÓN | INFORMATIVO (remaining) | INFORMATIVO-DIFERIDO | Converted this batch | Converted (cumulative) |
+|---|---|---|---|---|---|---|
+| flows.py | 14 | 12 (7 + 5 dead-code) | 0 | 0 | 0 | **2** |
+| panel.py | 44 (+2 new fallbacks from batch 1) | 28 | 0 | 9 | **7** | **10** (3 batch 1 + 7 batch 2) |
+| dialogs.py | 50 | 31 | 16 | 3 | 0 | 0 |
+| **Total** | **108** | 71 | 16 | 12 | **7** | **12** |
+
+Panel.py's INFORMATIVO backlog is now zero — every site Task 3 flagged as a
+Task 4 candidate was re-verified and converted (see "Converted this batch
+(Task 4)" table above; no reclassifications, all 7 held up). What remains in
+panel.py is DECISIÓN (kept, by design) and INFORMATIVO-DIFERIDO. dialogs.py's
+16 INFORMATIVO sites are still open — explicit scope for a future batch, not
+touched here. INFORMATIVO-DIFERIDO items need a toast/notification surface
+that doesn't exist yet (Phase 4 of the plan) and are not candidates for
+caption conversion regardless of batch.

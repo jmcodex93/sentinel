@@ -648,7 +648,7 @@ def _supervisor_shot(shot):
 
 def supervisor_report_payload(shots, meta):
     """Map ``supervisor.scan_folder()``'s ``(shots, meta)`` to the SPA's
-    SupervisorReport contract (``POST /api/report/supervisor``).
+    SupervisorReport contract (``GET/POST /api/report/supervisor``).
 
     Pure: no c4d, no filesystem access — ``supervisor.py`` itself is already
     pure stdlib (it reads sidecars via ``sentinel.versioning``/``sentinel.notes``,

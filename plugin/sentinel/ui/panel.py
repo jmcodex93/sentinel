@@ -1449,7 +1449,11 @@ class YSPanel(gui.GeDialog):
             self._last_check_time = 0
             self._dirty = True
             self._refresh()
-            c4d.gui.MessageDialog(f"Accepted {written} violation(s) for {row_label}.")
+            # Popup triage (fase 2): result surfaces via the QC row/StatusArea
+            # (_refresh() above already re-ran the checks) + StatusSetText echo.
+            msg = f"Accepted {written} violation(s) for {row_label}."
+            safe_print(msg)
+            c4d.gui.StatusSetText(msg)
             return True
 
         if dlg.action == "retire":
@@ -1459,7 +1463,11 @@ class YSPanel(gui.GeDialog):
             self._dirty = True
             self._refresh()
             if ok:
-                c4d.gui.MessageDialog(f"Acceptances retired for {row_label}.")
+                # Popup triage (fase 2): result surfaces via the QC row/StatusArea
+                # (_refresh() above already re-ran the checks) + StatusSetText echo.
+                msg = f"Acceptances retired for {row_label}."
+                safe_print(msg)
+                c4d.gui.StatusSetText(msg)
             else:
                 c4d.gui.MessageDialog("Could not update the baseline sidecar.")
             return True
@@ -1509,7 +1517,8 @@ class YSPanel(gui.GeDialog):
             try:
                 cur_full = os.path.join(current.GetDocumentPath() or "", current.GetDocumentName() or "")
                 if os.path.normcase(os.path.normpath(cur_full)) == os.path.normcase(os.path.normpath(path)):
-                    c4d.gui.MessageDialog(f"Already viewing {filename}.")
+                    # Popup triage (fase 2): result surfaces via c4d.gui.StatusSetText
+                    c4d.gui.StatusSetText(f"Already viewing {filename}.")
                     return
             except Exception:
                 pass
@@ -1748,8 +1757,9 @@ class YSPanel(gui.GeDialog):
             if c4d.gui.QuestionDialog(info_msg):
                 self._open_asset_hub(doc)
         else:
-            c4d.gui.MessageDialog(
-                "All assets OK. No absolute paths or missing files.")
+            # Popup triage (fase 2): result surfaces via c4d.gui.StatusSetText
+            # (the QC row already shows [ OK ] for this check)
+            c4d.gui.StatusSetText("All assets OK. No absolute paths or missing files.")
 
     def _qc_select_unused_mats(self, doc):
         if self._unused_mats_bad:
@@ -2121,7 +2131,8 @@ class YSPanel(gui.GeDialog):
             if not result["available"]:
                 c4d.gui.MessageDialog("Redshift module not available.\n\nMake sure Redshift is installed and active.")
             elif not result["aovs"]:
-                c4d.gui.MessageDialog("No AOVs configured.\n\nUse 'Essentials' or 'Production' to add passes.")
+                # Popup triage (fase 2): result surfaces via c4d.gui.StatusSetText
+                c4d.gui.StatusSetText("No AOVs configured. Use 'Essentials' or 'Production' to add passes.")
             else:
                 target_name = "Nuke" if int(GlobalSettings.get('comp_target', 0)) == 0 else "After Effects"
                 lg_status = "ON" if _is_lg_active_on_beauty(doc) else "OFF"
@@ -2280,8 +2291,11 @@ class YSPanel(gui.GeDialog):
             }
             save_path = export_qc_report(doc, results, self._artist_name, self._qc_summary)
             if save_path:
+                # Popup triage (fase 2): result surfaces via safe_print (console,
+                # full path) + c4d.gui.StatusSetText (already-printed path was
+                # duplicated verbatim in the popup)
                 safe_print(f"QC report saved to: {save_path}")
-                c4d.gui.MessageDialog(f"QC Report saved!\n\n{save_path}")
+                c4d.gui.StatusSetText(f"QC Report saved: {save_path}")
 
         elif cid == G.BTN_COLLECT_SCENE:
             self._open_asset_hub(doc, focus="deliver")
@@ -2620,8 +2634,11 @@ class YSPanel(gui.GeDialog):
         # refreshes on a full tab rebuild — the same path a tab switch takes,
         # which is why switching tabs "fixed" the stale text.
         self._set_active_tab(self._active_tab)
-        c4d.gui.MessageDialog(
-            f"Multi-Part EXR: {'ON' if target else 'OFF'} — applied to scene.")
+        # Popup triage (fase 2): result surfaces via LABEL_AOV_INFO (already
+        # refreshed synchronously by _set_active_tab above) + StatusSetText echo.
+        msg = f"Multi-Part EXR: {'ON' if target else 'OFF'} — applied to scene."
+        safe_print(msg)
+        c4d.gui.StatusSetText(msg)
 
     def _handle_validate_render(self, doc):
         """Run post-render validation, then open the Reports render page
