@@ -1,0 +1,22 @@
+{
+  "scene": "robot_010_v007_TR.c4d",
+  "last_version": {
+    "version_label": "v007",
+    "version_int": 7,
+    "status_label": "TR",
+    "time_label": "2h ago",
+    "comment": "Fixed rig pivot, ready for team review",
+    "qc_label": "9/12 · 9 new",
+    "qc_pass": false,
+    "filename": "robot_010_v007_TR.c4d",
+    "path": "/mock/robot_010/robot_010_v007_TR.c4d",
+    "artist": "Motioneer"
+  },
+  "qc": { "score": "9/12", "pass": false },
+  "status_options": [
+    { "label": "Work in Progress (WIP)", "suffix": "", "preview_filename": "robot_010_v008.c4d" },
+    { "label": "Team Review (TR)", "suffix": "TR", "preview_filename": "robot_010_v008_TR.c4d" },
+    { "label": "Client Review (CR)", "suffix": "CR", "preview_filename": "robot_010_v008_CR.c4d" },
+    { "label": "Final Delivery", "suffix": "FINAL", "preview_filename": "robot_010_v008_FINAL.c4d" }
+  ]
+}

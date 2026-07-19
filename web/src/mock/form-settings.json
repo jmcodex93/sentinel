@@ -1,0 +1,9 @@
+{
+  "fps": { "value": 25, "options": [24, 25, 30, 60], "locked": true, "locked_reason": "defined by project ruleset" },
+  "compositor": { "value": 0, "options": ["Nuke", "After Effects"] },
+  "multipart_default": true,
+  "slate": { "value": true },
+  "mv_max_motion": 64,
+  "snapshot_dir": { "value": "/Volumes/render/robot_010/snapshots", "detected": true, "locked": true },
+  "history_max": { "value": 5, "options": [5, 10, 20] }
+}

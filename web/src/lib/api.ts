@@ -1,5 +1,9 @@
 import mockDeliveryReport from "../mock/delivery-summary.json";
 import mockDoctorReport from "../mock/doctor-report.json";
+import mockGate from "../mock/form-gate.json";
+import mockNotes from "../mock/form-notes.json";
+import mockSaveVersion from "../mock/form-save-version.json";
+import mockSettings from "../mock/form-settings.json";
 import mockQcReport from "../mock/qc-report.json";
 import mockRenderValidationReport from "../mock/render-validation.json";
 import mockSupervisorReport from "../mock/supervisor-report.json";
@@ -8,10 +12,26 @@ import type {
   DeliveryReportResult,
   DoctorReport,
   DoctorReportResult,
+  GateState,
+  GateStateResult,
+  GateSubmitAction,
+  GateSubmitResponse,
+  NotesState,
+  NotesStateResult,
+  NotesSubmitPayload,
+  NotesSubmitResponse,
   QcReport,
   QcReportResult,
   RenderValidationReport,
   RenderValidationReportResult,
+  SaveVersionState,
+  SaveVersionStateResult,
+  SaveVersionSubmitPayload,
+  SaveVersionSubmitResponse,
+  SettingsState,
+  SettingsStateResult,
+  SettingsSubmitPayload,
+  SettingsSubmitResponse,
   SupervisorReport,
   SupervisorReportResult,
 } from "../types";
@@ -146,4 +166,189 @@ export async function fetchRenderValidationReport(): Promise<RenderValidationRep
   return fetchReport<RenderValidationReport>("/api/report/render_validation", {
     no_report: 'Run "Validate Render Output..." in the Render tab first.',
   });
+}
+
+// ---------------------------------------------------------------------------
+// Form ops (Phase 4 Task 3) — save version, notes, settings, gate triage.
+//
+// State ops (`GET /api/form/<name>/state`) reuse `fetchReport` above, same
+// error-envelope handling as the report pages. Submit ops
+// (`POST /api/form/<name>/submit`) go through `postForm` below: unlike a
+// report GET, a submit response's own `{ok: false, error}` is NOT an
+// exceptional case to redirect into an ErrorState/EmptyState — it is normal
+// validation feedback the calling page renders inline under the offending
+// field (DESIGN.md's anti-popup rule), so `postForm` never throws and always
+// resolves to the typed response shape, synthesizing `{ok: false, error}`
+// only for a genuine network/JSON failure.
+// ---------------------------------------------------------------------------
+
+function isMock(): boolean {
+  return new URLSearchParams(window.location.search).get("mock") === "1";
+}
+
+async function postForm<T extends { ok: boolean; error?: string }>(path: string, body: unknown): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    return {
+      ok: false,
+      error: "Could not reach the Sentinel server. Is this form's window still open in Cinema 4D?",
+    } as T;
+  }
+
+  try {
+    return (await response.json()) as T;
+  } catch {
+    return { ok: false, error: "Server returned invalid JSON." } as T;
+  }
+}
+
+/** `GET /api/form/save_version/state` — see web_ops.py `_op_form_save_version_state`. */
+export async function fetchSaveVersionState(): Promise<SaveVersionStateResult> {
+  if (isMock()) {
+    return { kind: "ok", data: mockSaveVersion as SaveVersionState };
+  }
+  return fetchReport<SaveVersionState>("/api/form/save_version/state", {
+    no_document: "No active Cinema 4D document. Open a scene, then reopen Save Version.",
+  });
+}
+
+/** Client-only mirror of `validate_save_version_submit`'s two visible rules
+ * (empty comment rejected, "final" is a non-blocking warning) — used ONLY
+ * in `?mock=1` mode, where there is no real server to validate against. In
+ * live mode the actual server response is always the source of truth (see
+ * `submitSaveVersion` below); this never runs then. */
+function mockSaveVersionSubmit(payload: SaveVersionSubmitPayload): SaveVersionSubmitResponse {
+  const comment = (payload.comment || "").trim();
+  if (!comment) {
+    return { ok: false, error: "Please enter a comment describing this version." };
+  }
+  const status = (payload.custom_status || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "") || payload.status || "";
+  const version = "v008";
+  const suffix = status ? `_${status}` : "";
+  return {
+    ok: true,
+    message: `Saved as robot_010_${version}${suffix}.c4d`,
+    version,
+    status,
+    path: `/mock/robot_010/robot_010_${version}${suffix}.c4d`,
+    warning: comment.toLowerCase().includes("final")
+      ? "Tip: instead of writing 'final' in the comment, use the 'Final Delivery' status tag — it bakes the marker into the filename and the history log."
+      : null,
+  };
+}
+
+/** `POST /api/form/save_version/submit` — see web_ops.py `_op_form_save_version_submit`. */
+export async function submitSaveVersion(payload: SaveVersionSubmitPayload): Promise<SaveVersionSubmitResponse> {
+  if (isMock()) {
+    return mockSaveVersionSubmit(payload);
+  }
+  return postForm<SaveVersionSubmitResponse>("/api/form/save_version/submit", payload);
+}
+
+/** `GET /api/form/notes/state` — see web_ops.py `_op_form_notes_state`. */
+export async function fetchNotesState(): Promise<NotesStateResult> {
+  if (isMock()) {
+    return { kind: "ok", data: mockNotes as NotesState };
+  }
+  return fetchReport<NotesState>("/api/form/notes/state", {
+    no_scene_path: "Save the scene to a folder first, then reopen Edit Notes.",
+  });
+}
+
+/** `POST /api/form/notes/submit` — see web_ops.py `_op_form_notes_submit`. */
+export async function submitNotes(payload: NotesSubmitPayload): Promise<NotesSubmitResponse> {
+  if (isMock()) {
+    return { ok: true };
+  }
+  return postForm<NotesSubmitResponse>("/api/form/notes/submit", payload);
+}
+
+/** `GET /api/form/settings/state` — see web_ops.py `_op_form_settings_state`.
+ * Never returns an `{"error": "no_document"}` sentinel (settings are
+ * machine/global, not scene-scoped) — an `"empty"` result here would be
+ * unreachable, same reasoning as Doctor's report op. */
+export async function fetchSettingsState(): Promise<SettingsStateResult> {
+  if (isMock()) {
+    return { kind: "ok", data: mockSettings as SettingsState };
+  }
+  const result = await fetchReport<SettingsState>("/api/form/settings/state", {});
+  return result.kind === "empty" ? { kind: "error", message: result.reason } : result;
+}
+
+/** `POST /api/form/settings/submit` — see web_ops.py `_op_form_settings_submit`. */
+export async function submitSettings(payload: SettingsSubmitPayload): Promise<SettingsSubmitResponse> {
+  if (isMock()) {
+    return { ok: true };
+  }
+  return postForm<SettingsSubmitResponse>("/api/form/settings/submit", payload);
+}
+
+// `?mock=1` gate state is stateful across fix_all/accept actions within one
+// page session (unlike the other three forms' fire-and-forget mocks) so the
+// mock flow can actually demonstrate "fixed checks disappear from the list"
+// end to end for screenshots/dev — reset on page reload.
+let mockGateState: GateState | null = null;
+
+function getMockGateState(): GateState {
+  if (!mockGateState) {
+    mockGateState = JSON.parse(JSON.stringify(mockGate)) as GateState;
+  }
+  return mockGateState;
+}
+
+function mockGateSubmit(action: GateSubmitAction): GateSubmitResponse {
+  const state = getMockGateState();
+
+  if (action.action === "cancel") {
+    return { ok: true, proceed: false, state };
+  }
+
+  if (action.action === "proceed") {
+    const proceed = !state.checks.some((c) => c.bucket === "blocking" || (c.bucket === "fixable" && c.blocks));
+    return { ok: true, proceed, state };
+  }
+
+  if (action.action === "fix_all") {
+    const fixed = state.checks.filter((c) => c.bucket === "fixable").map((c) => c.check_id);
+    mockGateState = { ...state, checks: state.checks.filter((c) => c.bucket !== "fixable") };
+    mockGateState.passed = !mockGateState.checks.some((c) => c.bucket === "blocking");
+    return { ok: true, fixed, state: mockGateState };
+  }
+
+  // action.action === "accept"
+  const author = action.author.trim();
+  const reason = action.reason.trim();
+  if (!author || !reason) {
+    return { ok: false, error: "Author and reason are required to accept violations." };
+  }
+  if (action.ids.length === 0) {
+    return { ok: false, error: "Select at least one check to accept." };
+  }
+  mockGateState = { ...state, checks: state.checks.filter((c) => !action.ids.includes(c.check_id)) };
+  mockGateState.passed = !mockGateState.checks.some((c) => c.bucket === "blocking");
+  return { ok: true, accepted: true, state: mockGateState };
+}
+
+/** `GET /api/form/gate/state` — see web_ops.py `_op_form_gate_state`. */
+export async function fetchGateState(): Promise<GateStateResult> {
+  if (isMock()) {
+    return { kind: "ok", data: getMockGateState() };
+  }
+  return fetchReport<GateState>("/api/form/gate/state", {
+    no_document: "No active Cinema 4D document. Open a scene, then reopen the Quality Gate.",
+  });
+}
+
+/** `POST /api/form/gate/submit` — see web_ops.py `_op_form_gate_submit`. */
+export async function submitGate(action: GateSubmitAction): Promise<GateSubmitResponse> {
+  if (isMock()) {
+    return mockGateSubmit(action);
+  }
+  return postForm<GateSubmitResponse>("/api/form/gate/submit", action);
 }

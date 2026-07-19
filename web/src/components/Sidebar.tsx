@@ -1,9 +1,9 @@
 import { Clapperboard, ClipboardCheck, Package, ShieldCheck, Stethoscope, Users } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import type { Page } from "../App";
+import type { ReportPage } from "../App";
 
 interface NavItem {
-  page: Page;
+  page: ReportPage;
   label: string;
   Icon: LucideIcon;
 }
@@ -19,8 +19,9 @@ const NAV_ITEMS: NavItem[] = [
 /** State-lift router nav — five report pages, no URL routing needed (the
  * SPA is hosted inside a single C4D HtmlViewer gadget/browser tab; a page
  * refresh always re-lands on the default page, which is acceptable here).
- * See App.tsx's `Page` union for the sibling switch statement. */
-export function Sidebar({ active, onNavigate }: { active: Page; onNavigate: (page: Page) => void }) {
+ * See App.tsx's `ReportPage` union for the sibling switch statement (form/*
+ * pages are a separate `FormPage` union — no Sidebar, see `FormApp`). */
+export function Sidebar({ active, onNavigate }: { active: ReportPage; onNavigate: (page: ReportPage) => void }) {
   return (
     <aside
       className="flex w-[200px] shrink-0 flex-col p-4"
