@@ -215,9 +215,17 @@ def _get_stills_dir(doc, artist_name):
     os.makedirs(output_dir, exist_ok=True)
     return output_dir
 
-def _find_latest_exr():
-    """Find the most recent EXR in the RS snapshot directory"""
-    snap_dir = GlobalSettings.get_snapshot_dir()
+def _find_latest_exr(snap_dir=None):
+    """Find the most recent EXR in the RS snapshot directory.
+
+    ``snap_dir`` lets a caller pass an already-resolved effective directory
+    (e.g. ui.flows.get_effective_snapshot_dir(), which auto-detects the live
+    RenderView dir before falling back to the manual Settings value). This
+    module stays c4d-free, so when omitted it falls back to the manual
+    Settings value directly rather than auto-detecting.
+    """
+    if snap_dir is None:
+        snap_dir = GlobalSettings.get_snapshot_dir()
     if not os.path.exists(snap_dir):
         return None, f"Snapshot directory not found:\n{snap_dir}\n\nConfigure it in Redshift RenderView > Preferences > Snapshots"
 

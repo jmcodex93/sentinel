@@ -782,6 +782,8 @@ class SentinelSettingsDialog(gui.GeDialog):
     LABEL_STANDARD_FPS = 1009
     EDT_MV_MAX_MOTION = 1010
     CHK_SLATE = 1011
+    LABEL_SNAP_DIR = 1012
+    LABEL_SNAP_DIR_HINT = 1013
 
     # FPS choices in the combo
     FPS_OPTIONS = [24, 25, 30, 60]
@@ -792,6 +794,7 @@ class SentinelSettingsDialog(gui.GeDialog):
         super().__init__()
         self.confirmed = False
         self._standard_fps_overridden = False
+        self._snap_dir_overridden = False
 
     def CreateLayout(self):
         self.SetTitle("Sentinel Settings")
@@ -839,11 +842,14 @@ class SentinelSettingsDialog(gui.GeDialog):
 
         # ── Paths ──
         self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0, "▸ Paths", 0)
-        self.AddStaticText(0, c4d.BFH_LEFT, 0, 0, "RS Snapshot directory:", 0)
+        self.AddStaticText(self.LABEL_SNAP_DIR, c4d.BFH_LEFT, 0, 0, "RS Snapshot directory:", 0)
         self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
         self.AddEditText(self.EDT_SNAP_DIR, c4d.BFH_SCALEFIT, 0, 0)
         self.AddButton(self.BTN_BROWSE_DIR, c4d.BFH_RIGHT, 80, 0, "Browse...")
         self.GroupEnd()
+        # Populated in InitValues only when auto-detect succeeds (IA
+        # consolidation, Phase 3) — empty otherwise, no layout gap either way.
+        self.AddStaticText(self.LABEL_SNAP_DIR_HINT, c4d.BFH_SCALEFIT, 0, 0, "", 0)
 
         self.AddSeparatorH(8)
 
@@ -916,8 +922,31 @@ class SentinelSettingsDialog(gui.GeDialog):
             mv_max = 0
         self.SetInt32(self.EDT_MV_MAX_MOTION, max(mv_max, 0), min=0)
 
-        # Snapshot dir
-        self.SetString(self.EDT_SNAP_DIR, GlobalSettings.get_snapshot_dir())
+        # Snapshot dir — auto-detect (RenderView's redshift_rv.cfg) takes
+        # precedence over the manual value (IA consolidation, Phase 3);
+        # mirrors the Standard FPS / project-rules override pattern above.
+        # Local import: sentinel.ui.flows imports sentinel.ui.dialogs at
+        # module level (GateTriageDialog), so importing flows at module
+        # level here would be circular.
+        try:
+            from sentinel.ui.flows import detect_rv_snapshot_dir
+            detected_snap_dir = detect_rv_snapshot_dir()
+        except Exception:
+            detected_snap_dir = None
+        self._snap_dir_overridden = bool(detected_snap_dir)
+        if self._snap_dir_overridden:
+            self.SetString(self.EDT_SNAP_DIR, detected_snap_dir)
+            self.SetString(
+                self.LABEL_SNAP_DIR_HINT,
+                "↳ auto-detected from RenderView — manual value used only as fallback",
+            )
+            try:
+                self.Enable(self.EDT_SNAP_DIR, False)
+                self.Enable(self.BTN_BROWSE_DIR, False)
+            except Exception:
+                pass
+        else:
+            self.SetString(self.EDT_SNAP_DIR, GlobalSettings.get_snapshot_dir())
 
         # Recent versions max
         for i, n in enumerate(self.HISTORY_OPTIONS):
@@ -973,10 +1002,13 @@ class SentinelSettingsDialog(gui.GeDialog):
                 mv_max = int(self.GetInt32(self.EDT_MV_MAX_MOTION))
                 GlobalSettings.set('mv_max_motion', max(mv_max, 0))
 
-                # Snapshot dir
-                snap_dir = (self.GetString(self.EDT_SNAP_DIR) or "").strip()
-                if snap_dir:
-                    GlobalSettings.set_snapshot_dir(snap_dir)
+                # Snapshot dir — disabled (auto-detected) means the field
+                # shows the detected path, not the manual fallback; don't
+                # overwrite the fallback value with it (mirrors Standard FPS).
+                if not self._snap_dir_overridden:
+                    snap_dir = (self.GetString(self.EDT_SNAP_DIR) or "").strip()
+                    if snap_dir:
+                        GlobalSettings.set_snapshot_dir(snap_dir)
 
                 # History max rows
                 h_idx = int(self.GetInt32(self.COMBO_HISTORY_MAX))
@@ -2833,7 +2865,7 @@ class SupervisorDialog(gui.GeDialog):
         if not self._shots and not warnings:
             gui.MessageDialog(
                 "No scene sidecars found in this folder.\n\n"
-                "Save a version from the Versions tab (or point the scan at a "
+                "Save a version from the Deliver tab (or point the scan at a "
                 "folder that contains versioned scenes) to populate this view.")
 
     def Command(self, cid, msg):

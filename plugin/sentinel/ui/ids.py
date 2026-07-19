@@ -90,7 +90,8 @@ class G:
     BTN_FORCE_ESSENTIALS = 1156
     BTN_FORCE_PRODUCTION = 1157
     BTN_APPLY_MULTIPART = 1159   # Render tab: flip Multi-Part EXR on the LIVE scene
-    BTN_SET_SNAPSHOT_DIR = 1160
+    # 1160 (BTN_SET_SNAPSHOT_DIR) retired in Phase 3 IA consolidation — Browse
+    # now lives only in Settings; the panel caption is read-only.
     LABEL_SNAPSHOT_DIR = 1161
     BTN_GITHUB = 1306
     BTN_BUG_REPORT = 1307
@@ -98,8 +99,8 @@ class G:
     LABEL_AOV_INFO = 1309   # read-only summary of comp + multi-part in Render tab
     BTN_TEXTURE_REPATH = 1310  # Tools tab: open Texture Repathing dialog (v1.5.7)
     BTN_DOCTOR = 1311  # Footer: open Sentinel Doctor self-diagnostic (I6)
-    BTN_SUPERVISOR = 1312  # Versions tab: open Supervisor folder QC aggregator (I5-A)
-    BTN_DELIVERY_SUMMARY = 1313  # Versions tab: Delivery Summary + receiver-side verify (I4)
+    BTN_SUPERVISOR = 1312  # Deliver tab: open Supervisor folder QC aggregator (I5-A)
+    BTN_DELIVERY_SUMMARY = 1313  # Deliver tab: Delivery Summary + receiver-side verify (I4)
     CHK_SNAPSHOT_WATCH = 1314  # Render tab: toggle snapshot watchfolder auto-convert
     LABEL_SNAPSHOT_WATCH = 1315  # Render tab: auto-convert status/alert caption
 

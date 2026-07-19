@@ -385,7 +385,7 @@ def build_supervisor_report(shots, meta):
     if not shots:
         lines.append("")
         lines.append("No scene sidecars found in this folder.")
-        lines.append("Save a version (Versions tab) to create one.")
+        lines.append("Save a version (Deliver tab) to create one.")
         if warnings:
             lines.append("")
             lines.append("Skipped:")
@@ -658,7 +658,7 @@ def build_supervisor_html(shots, meta):
     if not shots:
         parts.append(
             '<div class="empty">No scene sidecars found in this folder.<br>'
-            "Save a version from the Versions tab to create one.</div>"
+            "Save a version from the Deliver tab to create one.</div>"
         )
     else:
         # Readout strip: the supervisor's four numbers.

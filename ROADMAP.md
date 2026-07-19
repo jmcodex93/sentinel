@@ -653,6 +653,7 @@ Fase 1 (fundación: DESIGN.md + webbridge + Reports/Delivery Summary) entregada 
 - **Fase 3 — Consolidación IA nativa**: snapshots (auto-detect + fallback solo en Settings, quitar Browse del panel), Multi-Part EXR una sola vez, pestaña Versions → Deliver, footer limpio (GitHub/Report Bug al burger)
 - **Fase 4 — Formularios a SPA** (spike Cmd+Z VERDE en macOS; falta verificar motor del gadget en Windows): Save Version, Settings, Notes, Gate Triage; toasts; command palette ⌘K
 - **Fase 5 — Asset Hub en SPA**: tabla virtualizada para escenas grandes; decidir con datos de fases 2-4
+- **Fase 6 (candidata, pendiente de brainstorm in-depth)**: panel completo como SPA embebida (viabilidad técnica probada en fases 1-2; requiere spike de refresco vivo PostWebMessage/polling)
 
 ### Deuda conocida (Asset Hub v1.11)
 
