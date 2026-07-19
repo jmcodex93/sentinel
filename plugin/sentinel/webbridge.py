@@ -1125,6 +1125,23 @@ def gate_can_proceed(gate_result):
 # Fix" run action ties it to the QC check whose current violation count
 # gates `enabled` (see `palette_actions_payload`) — same check_ids the
 # panel's own `_qc_fix_*` handlers key off of (`self._lights_bad` etc.).
+#
+# `requires_confirm` + `confirm_label` mark the two Quick Fix actions whose
+# native handlers gate on a real ``QuestionDialog`` decision, per
+# docs/superpowers/specs/2026-07-19-popup-triage.md (DECISIÓN, "must stay"):
+# panel.py:1891 "Delete N unused material(s)?" (destructive) and panel.py:1918
+# the FPS/range fix preview + confirm (destructive — rewrites every render
+# preset). ``fix_lights``/``fix_cameras`` never had a native confirm (they
+# are reversible, low-impact fixes reported via status bar only — see
+# panel.py `_qc_fix_lights`/`_qc_fix_cam`), so they stay unconfirmed. A
+# native modal can't be opened mid-``palette/run`` (it would block the
+# ``MainThreadQueue`` drain loop and hang the HTTP request under the
+# cancellation contract — see webbridge.MainThreadQueue.drain), so the gate
+# is a contract-level round trip instead: `palette/run` rejects a
+# `requires_confirm` action with ``{"error": "confirm_required"}`` unless
+# the payload carries ``confirm: true`` — the SPA must render
+# `confirm_label` as an explicit yes/no step before resubmitting with that
+# flag (see `palette_actions_payload` / `ui/web_ops.py` `_op_palette_run`).
 PALETTE_ACTIONS = (
     {"id": "open_hub", "label": "Open Asset Hub", "group": "Navigate",
      "kind": "run", "requires_doc": True},
@@ -1151,9 +1168,13 @@ PALETTE_ACTIONS = (
      "kind": "run", "requires_doc": True, "check_id": "cam"},
     {"id": "fix_materials", "label": "Fix: Delete unused materials",
      "group": "Quick Fix", "kind": "run", "requires_doc": True,
-     "check_id": "unused_mats"},
+     "check_id": "unused_mats", "requires_confirm": True,
+     "confirm_label": "Delete {count} unused material(s) — single undo"},
     {"id": "fix_fps", "label": "Fix: FPS / frame range", "group": "Quick Fix",
-     "kind": "run", "requires_doc": True, "check_id": "fps_range"},
+     "kind": "run", "requires_doc": True, "check_id": "fps_range",
+     "requires_confirm": True,
+     "confirm_label": "Rewrite FPS + frame range on {count} issue(s) "
+                       "across ALL render presets — single undo"},
     {"id": "rescan_qc", "label": "Rescan QC", "group": "Quick Fix",
      "kind": "run", "requires_doc": True},
 )
@@ -1171,6 +1192,14 @@ def palette_actions_payload(doc_present, doc_saved=False, qc_counts=None):
     panel's own ``_qc_fix_*`` handlers, which are no-ops printing "No ...
     issues to fix" when their bad-list is empty (Phase 4 Task 2 gives that
     same no-op a disabled, not just a silent-no-op, palette entry).
+
+    Every action carries ``requires_confirm``/``confirm_label`` (False/None
+    for most). For the two DECISIÓN-classified destructive fixes
+    (``fix_materials``, ``fix_fps`` — see the ``PALETTE_ACTIONS`` comment
+    above), ``confirm_label`` is formatted with the live ``qc_counts`` value
+    for that action's ``check_id`` so the SPA can show "Delete 3 unused
+    material(s) — single undo" instead of static wording; a missing count
+    falls back to 0 rather than raising.
 
     Never raises: an action with a ``check_id`` not present in
     ``qc_counts`` is treated as 0 (nothing to fix), never a KeyError.
@@ -1190,11 +1219,19 @@ def palette_actions_payload(doc_present, doc_saved=False, qc_counts=None):
             enabled = False
             reason = "Nothing to fix"
 
+        requires_confirm = bool(action.get("requires_confirm"))
+        confirm_label = None
+        if requires_confirm:
+            count = qc_counts.get(action.get("check_id"), 0)
+            confirm_label = action["confirm_label"].format(count=count)
+
         actions.append({
             "id": action["id"],
             "label": action["label"],
             "group": action["group"],
             "enabled": enabled,
             "reason": reason,
+            "requires_confirm": requires_confirm,
+            "confirm_label": confirm_label,
         })
     return actions

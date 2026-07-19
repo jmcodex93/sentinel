@@ -540,12 +540,17 @@ def _palette_open_reports(doc, action_id):
 
 def _palette_fix(doc, action_id):
     """Runs the exact same fix_* engine call the panel's own
-    ``_qc_fix_lights``/``_qc_fix_cam``/``_qc_fix_unused_mats`` handlers make
-    — minus their confirmation ``QuestionDialog``/preview popups, per the
-    Phase 4 popup-triage direction those handlers themselves already
-    follow for lights/camera/FPS (only the unused-materials delete still
-    confirms today; it is undo-safe via a single ``StartUndo``/``EndUndo``
-    step exactly like the others, so the palette forgoes that popup too).
+    ``_qc_fix_lights``/``_qc_fix_cam``/``_qc_fix_unused_mats``/
+    ``_qc_fix_fps_range`` handlers make. ``fix_lights``/``fix_cameras``
+    never had a native confirm (reversible, low-impact, status-bar-only —
+    see panel.py). ``fix_materials``/``fix_fps`` DO have a native
+    ``QuestionDialog`` gate (DECISIÓN, "must stay" per
+    docs/superpowers/specs/2026-07-19-popup-triage.md:101-102 — destructive
+    material delete, and a preview+confirm before rewriting every render
+    preset's FPS/range) — this function is only ever reached for those two
+    after ``_op_palette_run`` has already enforced the
+    ``requires_confirm``/``confirm: true`` contract gate that replaces the
+    popup (see its docstring for why a real modal can't run here).
     """
     from sentinel.ui.flows import _current_module
 
@@ -589,11 +594,29 @@ def _op_palette_run(payload):
     ``page`` (the FormDialog host that actually opens it is Phase 4
     Task 4). A ``kind: "run"`` action executes real work on the C4D main
     thread and returns a toast-able ``message``.
+
+    ``requires_confirm`` actions (``fix_materials``, ``fix_fps`` — the two
+    DECISIÓN-classified destructive fixes per
+    docs/superpowers/specs/2026-07-19-popup-triage.md, see the
+    ``PALETTE_ACTIONS`` comment in webbridge.py) are rejected with
+    ``{"ok": False, "error": "confirm_required"}`` unless the payload
+    carries ``confirm: true``. This is a contract-level gate, not a native
+    ``QuestionDialog`` — opening a modal here would block on the C4D main
+    thread INSIDE a ``MainThreadQueue.drain`` call, freezing every other
+    queued request (including the HTTP request that would show the modal's
+    own result) for as long as the modal stays open. The SPA is
+    responsible for showing ``confirm_label`` (from ``palette/actions``)
+    as an explicit step and resubmitting with ``confirm: true`` once the
+    user agrees — the real "must stay" decision the popup-triage doc
+    requires simply moves from a blocking dialog to a blocking round trip.
     """
     action_id = payload.get("id")
     entry = webbridge.PALETTE_ACTION_BY_ID.get(action_id)
     if entry is None:
         return {"ok": False, "error": f"unknown palette action: {action_id!r}"}
+
+    if entry.get("requires_confirm") and payload.get("confirm") is not True:
+        return {"ok": False, "error": "confirm_required"}
 
     doc = documents.GetActiveDocument()
 

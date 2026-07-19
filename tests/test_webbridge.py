@@ -1372,3 +1372,28 @@ class TestPaletteActionsPayload:
         actions = self._by_id(webbridge.palette_actions_payload(
             doc_present=True, doc_saved=False, qc_counts={}))
         assert actions["rescan_qc"]["enabled"] is True
+
+    def test_destructive_fixes_require_confirm_with_formatted_label(self):
+        actions = self._by_id(webbridge.palette_actions_payload(
+            doc_present=True, doc_saved=True,
+            qc_counts={"unused_mats": 3, "fps_range": 2}))
+        assert actions["fix_materials"]["requires_confirm"] is True
+        assert actions["fix_materials"]["confirm_label"] == (
+            "Delete 3 unused material(s) — single undo")
+        assert actions["fix_fps"]["requires_confirm"] is True
+        assert "2 issue(s)" in actions["fix_fps"]["confirm_label"]
+
+    def test_confirm_label_falls_back_to_zero_when_count_missing(self):
+        actions = self._by_id(webbridge.palette_actions_payload(
+            doc_present=True, doc_saved=True, qc_counts={}))
+        assert actions["fix_materials"]["confirm_label"] == (
+            "Delete 0 unused material(s) — single undo")
+
+    def test_non_destructive_actions_never_require_confirm(self):
+        actions = self._by_id(webbridge.palette_actions_payload(
+            doc_present=True, doc_saved=True,
+            qc_counts={"lights": 1, "cam": 1}))
+        for action_id in ("fix_lights", "fix_cameras", "rescan_qc",
+                          "open_hub", "save_version", "settings"):
+            assert actions[action_id]["requires_confirm"] is False
+            assert actions[action_id]["confirm_label"] is None
