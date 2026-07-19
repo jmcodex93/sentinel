@@ -35,6 +35,11 @@ export function SaveVersionPage() {
   const [customStatus, setCustomStatus] = useState("");
   const [pending, setPending] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // Kept separate from `submitError` (the SubmitBar's generic banner): an
+  // empty comment is a field-level problem, so it renders under the Comment
+  // field itself via FieldRow's own error slot (and drives TextArea's red
+  // border) rather than as a submit-level banner.
+  const [commentError, setCommentError] = useState<string | null>(null);
   const [result, setResult] = useState<SaveVersionSubmitResponse | null>(null);
 
   const load = useCallback(() => {
@@ -94,8 +99,9 @@ export function SaveVersionPage() {
   async function handleSubmit(event?: FormEvent) {
     event?.preventDefault();
     setSubmitError(null);
+    setCommentError(null);
     if (!trimmedComment) {
-      setSubmitError("Please enter a comment describing this version.");
+      setCommentError("Please enter a comment describing this version.");
       return;
     }
     setPending(true);
@@ -153,14 +159,17 @@ export function SaveVersionPage() {
       }
     >
       <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
-        <FieldRow label="Comment" htmlFor="save-version-comment">
+        <FieldRow label="Comment" htmlFor="save-version-comment" error={commentError}>
           <TextArea
             id="save-version-comment"
             rows={4}
             value={comment}
-            onChange={(e) => setComment(e.target.value)}
+            onChange={(e) => {
+              setComment(e.target.value);
+              if (commentError) setCommentError(null);
+            }}
             placeholder="What changed in this version?"
-            invalid={Boolean(submitError) && !trimmedComment}
+            invalid={Boolean(commentError)}
           />
           {finalHintVisible && (
             <p className="text-caption mt-1.5" style={{ color: "var(--color-status-warn)" }}>

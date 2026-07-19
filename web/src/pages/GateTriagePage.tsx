@@ -286,7 +286,11 @@ export function GateTriagePage() {
                 >
                   Cancel
                 </Button>
-                <Button variant="primary" disabled={busy} onClick={confirmAccept}>
+                <Button
+                  variant="primary"
+                  disabled={busy || !author.trim() || !reason.trim() || selected.size === 0}
+                  onClick={confirmAccept}
+                >
                   Confirm Accept
                 </Button>
               </div>

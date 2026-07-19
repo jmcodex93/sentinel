@@ -12,11 +12,11 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { SupervisorPage } from "./pages/SupervisorPage";
 
 export type ReportPage = "delivery" | "qc" | "doctor" | "supervisor" | "render";
-export type FormPage = "form/save-version" | "form/notes" | "form/settings" | "form/gate";
+export type FormPage = "form/save_version" | "form/notes" | "form/settings" | "form/gate";
 export type Page = ReportPage | FormPage;
 
 const REPORT_PAGES: ReportPage[] = ["delivery", "qc", "doctor", "supervisor", "render"];
-const FORM_PAGES: FormPage[] = ["form/save-version", "form/notes", "form/settings", "form/gate"];
+const FORM_PAGES: FormPage[] = ["form/save_version", "form/notes", "form/settings", "form/gate"];
 const PAGES: Page[] = [...REPORT_PAGES, ...FORM_PAGES];
 
 // Smallest possible deep-link: the C4D host opens the SPA with a
@@ -49,7 +49,7 @@ function isFormPage(page: Page): page is FormPage {
 function FormApp({ page }: { page: FormPage }) {
   return (
     <div className="h-screen" style={{ backgroundColor: "var(--color-canvas)" }}>
-      {page === "form/save-version" && <SaveVersionPage />}
+      {page === "form/save_version" && <SaveVersionPage />}
       {page === "form/notes" && <NotesPage />}
       {page === "form/settings" && <SettingsPage />}
       {page === "form/gate" && <GateTriagePage />}
