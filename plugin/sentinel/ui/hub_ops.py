@@ -9,7 +9,8 @@ honor). Host-agnostic: no dialog imports here; merged into
 ``reports_dialog._OPS`` by whichever task wires the route.
 
 Every op re-reads the active document at dispatch time (HTTP is stateless).
-Collect/delivery job ops land in Task 6.
+The Collect job (``hub/collect_start`` + ``pump_jobs``) is a Task 6
+addition — see those functions for the ``webbridge.JOBS`` contract.
 """
 
 import os
@@ -19,6 +20,8 @@ from c4d import documents
 
 from sentinel import webbridge
 from sentinel import assets as assets_engine
+from sentinel import gate as quality_gate
+from sentinel.common.settings import GlobalSettings
 from sentinel.qc.score import compute_score, run_all_checks
 from sentinel.rules_context import active_rules_for_doc
 
@@ -309,6 +312,168 @@ def _op_hub_thumb(payload):
         return {"error": "thumb error: %s" % exc}
 
 
+def _count_new_fails(score, rules_context):
+    """New FAIL-severity violation count for the ``hub/collect_start`` gate
+    contract. Thin delegate to ``sentinel.gate.count_new_fails``, which
+    mirrors ``gate.classify_gate``/``gate.evaluate_gate``'s
+    ``entry_severity(entry, rules_context) == "FAIL"`` accessor exactly —
+    the same accessor the native modal quality gate
+    (``ui.flows._run_quality_gate`` / ``_compute_gate_snapshot``) uses to
+    bucket a check as blocking. Kept as a named function here (rather than
+    calling ``quality_gate.count_new_fails`` inline) per this op's own
+    checkpoint contract.
+    """
+    return quality_gate.count_new_fails(score, rules_context)
+
+
+def _build_preflight_payload_for_collect(doc, rules_context, score, baseline_path,
+                                          gate_evaluated=False, gate_ack=False):
+    """Assemble the ``preflight_payload`` dict ``run_collect_pipeline``
+    expects — the same 7 keys ``AssetHubDialog._build_collect_preflight_payload``
+    (dialogs.py) builds: ``issues, preflight_score, rules_context,
+    gate_overrides, gate_evaluated, baseline_path, baseline_entries``.
+
+    ``issues`` comes from the shared ``quality_gate.build_preflight_issues``
+    helper (extracted from the native dialog's own copy of this loop, see
+    ``gate.py``) so both call sites stay byte-identical.
+
+    Deliberate difference from the native dialog: this never opens the
+    modal ``GateTriageDialog`` (``ui.flows._run_quality_gate``) — that
+    dialog is synchronous/blocking and has no place inside an HTTP request
+    handler. Instead, ``_op_hub_collect_start`` enforces the gate itself
+    via ``_count_new_fails`` before this function is even called; the SPA
+    resolves any FAIL violations beforehand through the existing
+    ``form/gate`` ops (fase 4) and retries with ``gate_ack=True``. Because
+    there is no synchronous per-delivery override-capture step here (no
+    triage dialog runs), ``gate_overrides`` is always empty — any
+    acceptance the artist made via ``form/gate`` already lives in the
+    baseline sidecar by the time this runs, so ``baseline_entries`` picks
+    it up naturally. ``gate_ack`` is accepted for signature symmetry with
+    the caller but has no payload key of its own — ``run_collect_pipeline``
+    only reads the 7 keys returned below.
+    """
+    from sentinel import baseline
+
+    baseline_entries = []
+    if baseline_path:
+        entries, status = baseline.load_baseline(baseline_path)
+        if status == baseline.STATUS_OK:
+            baseline_entries = entries
+
+    return {
+        "issues": quality_gate.build_preflight_issues(score),
+        "preflight_score": score,
+        "rules_context": rules_context,
+        "gate_overrides": [],
+        "gate_evaluated": gate_evaluated,
+        "baseline_path": baseline_path,
+        "baseline_entries": baseline_entries,
+    }
+
+
+def _op_hub_collect_start(payload):
+    """``hub/collect_start`` — kick off a Scene Collector run as a
+    background job (``webbridge.JOBS``). Payload: ``target_dir``, ``zip``
+    (bool), ``gate_ack`` (bool). Runs the same pre-flight QC snapshot
+    ``hub/preflight`` does, then enforces the FAIL-severity gate
+    (``gates_enabled`` + ``_count_new_fails`` > 0) unless ``gate_ack`` is
+    exactly ``True`` — mirroring the fase-4 ``form/gate`` contract
+    (``requires_confirm``/``confirm_required``): the gate is enforced
+    server-side, not just hidden in the SPA. On success the job is queued;
+    ``pump_jobs()`` (called from the host dialog's ``Timer`` after the
+    ``MainThreadQueue`` drain) actually runs the collect synchronously.
+    """
+    target_dir = (payload.get("target_dir") or "").strip()
+    if not target_dir:
+        return {"ok": False, "error": "no_target"}
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+    if not doc.GetDocumentPath():
+        return {"ok": False, "error": "unsaved_document"}
+
+    from sentinel.ui.flows import _baseline_path_for_doc, _current_module
+
+    rules_context = active_rules_for_doc(doc)
+    registry_results = run_all_checks(doc, _current_module(), rules_context)
+    baseline_path = _baseline_path_for_doc(doc, only_existing=True)
+    score = compute_score(registry_results, rules_context,
+                          baseline_path=baseline_path,
+                          current_params=rules_context.params)
+
+    gates_enabled = bool(rules_context.params.get("gates_enabled"))
+    if gates_enabled and _count_new_fails(score, rules_context) > 0 \
+            and payload.get("gate_ack") is not True:
+        return {"ok": False, "error": "gate_blocked"}
+
+    preflight_payload = _build_preflight_payload_for_collect(
+        doc, rules_context, score, baseline_path,
+        gate_evaluated=gates_enabled, gate_ack=bool(payload.get("gate_ack")))
+    try:
+        job_id = webbridge.JOBS.start({
+            "target_dir": target_dir,
+            "zip": bool(payload.get("zip")),
+            "preflight_payload": preflight_payload,
+        })
+    except RuntimeError:
+        return {"ok": False, "error": "job_running"}
+    return {"ok": True, "job_id": job_id}
+
+
+def _run_collect_for_job(spec, on_status):
+    """Isolated for testability (``pump_jobs`` failure-path test
+    monkeypatches this). Re-reads the active document (HTTP/job dispatch is
+    stateless, same convention as every other hub op)."""
+    doc = documents.GetActiveDocument()
+    if not doc:
+        raise RuntimeError("no_document")
+    from sentinel.ui.flows import run_collect_pipeline
+    return run_collect_pipeline(
+        doc, GlobalSettings.load_artist_name(), spec["target_dir"],
+        make_zip=spec.get("zip", False),
+        preflight_payload=spec.get("preflight_payload"),
+        on_status=on_status)
+
+
+def pump_jobs():
+    """Called from host dialog Timers after the queue drain. Runs at most
+    one pending job synchronously on the main thread; progress is
+    published to ``JOBS`` (read from the HTTP server thread, so polling
+    stays live even while this call blocks the main thread). Note per
+    Task 1's review finding: ``JOBS.take_pending()`` returns the spec dict
+    BY REFERENCE — this function only reads it, never mutates it in
+    place."""
+    taken = webbridge.JOBS.take_pending()
+    if taken is None:
+        return None
+    job_id, spec = taken
+
+    def on_status(message):
+        phase, pct = webbridge.collect_phase_pct(message)
+        webbridge.JOBS.update(job_id, phase, detail=message, pct=pct)
+
+    try:
+        result = _run_collect_for_job(spec, on_status)
+        if not result:
+            webbridge.JOBS.fail(job_id, "collect failed (SaveProject)")
+            return job_id
+        report = webbridge.delivery_report_payload(
+            result.get("manifest") or {}, result.get("manifest_path") or "")
+        webbridge.JOBS.finish(job_id, {
+            "target_dir": result.get("target_dir"),
+            "delivery_filename": result.get("delivery_filename"),
+            "assets_collected": result.get("assets_collected"),
+            "assets_missing": result.get("assets_missing"),
+            "zip": result.get("zip"),
+            "zip_error": result.get("zip_error"),
+            "pending_todos": result.get("pending_todos"),
+            "report": report,
+        })
+    except Exception as exc:
+        webbridge.JOBS.fail(job_id, exc)
+    return job_id
+
+
 HUB_OPS = {
     "hub/inventory": _op_hub_inventory,
     "hub/state_stamp": _op_hub_state_stamp,
@@ -319,4 +484,5 @@ HUB_OPS = {
     "hub/select_owner": _op_hub_select_owner,
     "hub/pick_path": _op_hub_pick_path,
     "hub/thumb": _op_hub_thumb,
+    "hub/collect_start": _op_hub_collect_start,
 }

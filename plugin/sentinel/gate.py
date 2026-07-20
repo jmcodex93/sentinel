@@ -142,6 +142,25 @@ def build_preflight_issues(score: dict[str, Any]) -> list[str]:
     return issues
 
 
+def count_new_fails(score: dict[str, Any], rules_context: Any = None) -> int:
+    """Total new-violation count across FAIL-severity checks.
+
+    Uses the same ``entry_severity(entry, rules_context)`` accessor as
+    ``classify_gate``/``evaluate_gate`` above, and the same
+    ``score["counts"]`` accessor ``build_preflight_issues`` (and the
+    native dialog's own preflight loop) use — so this always agrees with
+    what the preflight issue list and the modal gate would report as
+    FAIL-severity violations.
+    """
+    counts = score.get("counts") or {}
+    total = 0
+    for entry in CHECK_REGISTRY:
+        if entry_severity(entry, rules_context) != "FAIL":
+            continue
+        total += counts.get(entry.check_id, 0)
+    return total
+
+
 def _registry_entry(check_id: str) -> Any:
     for entry in CHECK_REGISTRY:
         if entry.check_id == check_id:

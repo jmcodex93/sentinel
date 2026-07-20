@@ -51,3 +51,41 @@ class TestHubMutationOps:
     def test_thumb_without_document(self, sentinel_module):
         from sentinel.ui import hub_ops
         assert hub_ops.HUB_OPS["hub/thumb"]({"key": "k"}) == {"error": "no_document"}
+
+
+class TestHubCollectJob:
+    def test_collect_start_without_document(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        response = hub_ops.HUB_OPS["hub/collect_start"]({"target_dir": "/tmp/x"})
+        assert response == {"ok": False, "error": "no_document"}
+
+    def test_collect_start_requires_target(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops.HUB_OPS["hub/collect_start"]({}) == {"ok": False, "error": "no_target"}
+
+    def test_pump_jobs_noop_when_no_pending(self, sentinel_module):
+        from sentinel import webbridge
+        from sentinel.ui import hub_ops
+        # Fresh registry so other tests' jobs don't leak in.
+        old = webbridge.JOBS
+        webbridge.JOBS = webbridge.JobRegistry()
+        try:
+            assert hub_ops.pump_jobs() is None
+        finally:
+            webbridge.JOBS = old
+
+    def test_pump_jobs_marks_job_failed_when_pipeline_raises(self, sentinel_module, monkeypatch):
+        from sentinel import webbridge
+        from sentinel.ui import hub_ops
+        old = webbridge.JOBS
+        webbridge.JOBS = webbridge.JobRegistry()
+        try:
+            job_id = webbridge.JOBS.start({"target_dir": "/tmp/x", "zip": False,
+                                           "preflight_payload": None})
+            monkeypatch.setattr(hub_ops, "_run_collect_for_job",
+                                lambda spec, on_status: (_ for _ in ()).throw(RuntimeError("boom")))
+            hub_ops.pump_jobs()
+            st = webbridge.JOBS.status(job_id)
+            assert st["state"] == "error" and "boom" in st["error"]
+        finally:
+            webbridge.JOBS = old
