@@ -17,6 +17,7 @@ wiring, manifest lookups) lives in ``ui/`` — same split as assets.py /
 manifest.py / postrender.py.
 """
 import http.server
+import itertools
 import json
 import os
 import queue
@@ -155,6 +156,84 @@ class MainThreadQueue:
                     }
                 finally:
                     request.event.set()
+
+
+# ---------------------------------------------------------------------------
+# JobRegistry
+# ---------------------------------------------------------------------------
+
+class JobRegistry:
+    """Single-slot background-job registry for the Hub collect.
+
+    Pure stdlib, thread-safe. ``status()`` is answered on the HTTP server
+    thread (bypassing MainThreadQueue) so progress polling stays live while
+    the job itself blocks C4D's main thread. One job at a time: the Hub
+    collect is exclusive by design.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._counter = itertools.count(1)
+        self._job = None  # {"job_id", "spec", "state", "phase", "detail", "pct", "result", "error"}
+
+    def start(self, spec):
+        with self._lock:
+            if self._job is not None and self._job["state"] in ("pending", "running"):
+                raise RuntimeError("job_running")
+            job_id = "job-%d" % next(self._counter)
+            self._job = {"job_id": job_id, "spec": spec, "state": "pending",
+                         "phase": "", "detail": "", "pct": 0,
+                         "result": None, "error": None}
+            return job_id
+
+    def take_pending(self):
+        with self._lock:
+            job = self._job
+            if job is None or job["state"] != "pending":
+                return None
+            job["state"] = "running"
+            return job["job_id"], job["spec"]
+
+    def _if_current(self, job_id):
+        job = self._job
+        return job if (job is not None and job["job_id"] == job_id) else None
+
+    def update(self, job_id, phase, detail="", pct=None):
+        with self._lock:
+            job = self._if_current(job_id)
+            if job is None:
+                return
+            job["phase"] = phase
+            job["detail"] = detail
+            if pct is not None:
+                job["pct"] = pct
+
+    def finish(self, job_id, result):
+        with self._lock:
+            job = self._if_current(job_id)
+            if job is not None:
+                job["state"] = "done"
+                job["result"] = result
+                job["pct"] = 100
+
+    def fail(self, job_id, error):
+        with self._lock:
+            job = self._if_current(job_id)
+            if job is not None:
+                job["state"] = "error"
+                job["error"] = str(error)
+
+    def status(self, job_id):
+        with self._lock:
+            job = self._if_current(job_id)
+            if job is None:
+                return {"error": "unknown_job"}
+            snap = dict(job)
+            snap.pop("spec", None)
+            return snap
+
+
+JOBS = JobRegistry()
 
 
 # ---------------------------------------------------------------------------

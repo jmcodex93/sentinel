@@ -1397,3 +1397,48 @@ class TestPaletteActionsPayload:
                           "open_hub", "save_version", "settings"):
             assert actions[action_id]["requires_confirm"] is False
             assert actions[action_id]["confirm_label"] is None
+
+
+# ---------------------------------------------------------------------------
+# JobRegistry
+# ---------------------------------------------------------------------------
+
+class TestJobRegistry:
+    def test_lifecycle_start_take_update_finish(self):
+        reg = webbridge.JobRegistry()
+        job_id = reg.start({"kind": "collect", "target": "/tmp/x"})
+        assert reg.status(job_id)["state"] == "pending"
+        taken = reg.take_pending()
+        assert taken == (job_id, {"kind": "collect", "target": "/tmp/x"})
+        assert reg.status(job_id)["state"] == "running"
+        reg.update(job_id, "save", detail="Saving project…", pct=15)
+        st = reg.status(job_id)
+        assert (st["phase"], st["detail"], st["pct"]) == ("save", "Saving project…", 15)
+        reg.finish(job_id, {"manifest_path": "/tmp/x/m.json"})
+        st = reg.status(job_id)
+        assert st["state"] == "done" and st["result"]["manifest_path"] == "/tmp/x/m.json"
+
+    def test_single_job_slot_rejects_second_start(self):
+        reg = webbridge.JobRegistry()
+        reg.start({"kind": "collect"})
+        with pytest.raises(RuntimeError, match="job_running"):
+            reg.start({"kind": "collect"})
+
+    def test_new_start_allowed_after_done_or_error(self):
+        reg = webbridge.JobRegistry()
+        a = reg.start({"n": 1}); reg.take_pending(); reg.fail(a, "boom")
+        assert reg.status(a)["state"] == "error"
+        b = reg.start({"n": 2})
+        assert b != a and reg.status(b)["state"] == "pending"
+
+    def test_take_pending_empty_and_unknown_status(self):
+        reg = webbridge.JobRegistry()
+        assert reg.take_pending() is None
+        assert reg.status("nope") == {"error": "unknown_job"}
+
+    def test_status_is_a_copy_and_thread_safe_reads(self):
+        reg = webbridge.JobRegistry()
+        job_id = reg.start({})
+        snap = reg.status(job_id)
+        snap["state"] = "hacked"
+        assert reg.status(job_id)["state"] == "pending"
