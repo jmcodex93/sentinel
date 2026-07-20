@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@radix-ui/react-tooltip": "^1.2.12",
+    "@tanstack/react-virtual": "^3.14.7",
     "lucide-react": "^1.25.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
