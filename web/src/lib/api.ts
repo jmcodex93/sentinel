@@ -200,7 +200,7 @@ export async function fetchRenderValidationReport(): Promise<RenderValidationRep
 // only for a genuine network/JSON failure.
 // ---------------------------------------------------------------------------
 
-function isMock(): boolean {
+export function isMock(): boolean {
   return new URLSearchParams(window.location.search).get("mock") === "1";
 }
 

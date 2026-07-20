@@ -7,6 +7,7 @@ import {
   fetchHubInventory,
   fetchHubPresets,
   fetchHubStateStamp,
+  isMock,
   postHubApply,
   postHubMakeRelative,
   postHubMatchFolder,
@@ -87,6 +88,11 @@ export function HubPage() {
   }, [refreshInventory]);
 
   useEffect(() => {
+    // No polling under `?mock=1` — there is no live document to drift from,
+    // and the mocked stamp is a constant that would never fire a change
+    // anyway, but setting up a live interval in a mock/demo/screenshot
+    // context is still the wrong behavior to ship.
+    if (isMock()) return;
     const id = window.setInterval(async () => {
       if (document.visibilityState !== "visible") return;
       const newStamp = await fetchHubStateStamp();
@@ -147,21 +153,27 @@ export function HubPage() {
   }
 
   async function handleSearchFolder() {
-    const picked = await postHubPickPath(true, "Choose folder to search");
-    if (!picked.ok || !picked.path) return;
+    // `busy` is set around the picker itself (not just the match_folder
+    // call after it) so a double-click can't queue a second native
+    // LoadDialog while the first is still open.
     setBusy(true);
-    const res = await postHubMatchFolder(picked.path);
-    setBusy(false);
-    if (!res.ok) {
-      toast({ message: res.error || "Couldn't search that folder.", variant: "warn" });
-      return;
+    try {
+      const picked = await postHubPickPath(true, "Choose folder to search");
+      if (!picked.ok || !picked.path) return;
+      const res = await postHubMatchFolder(picked.path);
+      if (!res.ok) {
+        toast({ message: res.error || "Couldn't search that folder.", variant: "warn" });
+        return;
+      }
+      const changes = new Map((res.matches || []).map((m) => [m.key, m.match]));
+      setPending((prev) => mergePending(prev, changes));
+      let message = `Matched ${changes.size} missing asset(s).`;
+      if (res.ambiguous) message += ` ${res.ambiguous} ambiguous (use Relink Selected…).`;
+      if (res.truncated) message += " Folder index truncated (>50k files).";
+      toast({ message, variant: changes.size > 0 ? "success" : "info" });
+    } finally {
+      setBusy(false);
     }
-    const changes = new Map((res.matches || []).map((m) => [m.key, m.match]));
-    setPending((prev) => mergePending(prev, changes));
-    let message = `Matched ${changes.size} missing asset(s).`;
-    if (res.ambiguous) message += ` ${res.ambiguous} ambiguous (use Relink Selected…).`;
-    if (res.truncated) message += " Folder index truncated (>50k files).";
-    toast({ message, variant: changes.size > 0 ? "success" : "info" });
   }
 
   async function handleRelinkSelected() {
@@ -169,9 +181,14 @@ export function HubPage() {
       toast({ message: "Select a row first.", variant: "info" });
       return;
     }
-    const picked = await postHubPickPath(false, "Choose replacement file");
-    if (!picked.ok || !picked.path) return;
-    setPending((prev) => new Map(prev).set(selectedKey, picked.path!));
+    setBusy(true);
+    try {
+      const picked = await postHubPickPath(false, "Choose replacement file");
+      if (!picked.ok || !picked.path) return;
+      setPending((prev) => new Map(prev).set(selectedKey, picked.path!));
+    } finally {
+      setBusy(false);
+    }
   }
 
   function handleClear() {
