@@ -58,3 +58,8 @@ La tabla del Hub pasa de listado de rutas a inspector de texturas: nombre primer
 - pytest: `imagemeta.py` (por formato, cabeceras corruptas, buckets en bordes 7168/3584/1536, vram defaults), `hub/meta` (caché por mtime, keys desconocidas), `hub/ui_state` round-trip.
 - vitest: sort + composición de facetas (lógica TS no trivial).
 - Build committeado + live en C4D con la escena real (39 assets): metadatos correctos contrastados contra Overseer como referencia cruzada (mismo archivo → misma resolución/canales/depth), totales coherentes, drag de columnas persistente entre aperturas, sort y facetas con contadores correctos.
+
+## Desviaciones de implementación
+
+- **Chip 4K usa `--color-status-warn-tint-10`, no `-15`**: el token `--color-status-warn-tint-15` no existe en DESIGN.md (solo hay `-10` para warn; `-15` sí existe para `fail`, usado en el chip 8K). En vez de inventar hex se reutilizó el tint más fuerte disponible para warn — documentado inline en el componente (`RES_CHIP_META`).
+- **Sort por resolución vive como control secundario junto a la columna Name, no como columna propia**: el plan no le daba una columna dedicada a "Res" (la resolución vive en el chip de la línea 1 del nombre, no en una celda propia), así que el botón de orden por `res` se ancla como un pequeño control `text-caption` ("Res") pegado a la cabecera de Name en vez de encabezar su propia columna — mismo ciclo asc→desc→default que el resto, `aria-sort` propio.

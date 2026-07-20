@@ -653,6 +653,8 @@ Fase 1 (fundación: DESIGN.md + webbridge + Reports/Delivery Summary) entregada 
 - [x] **Fase 3 — Consolidación IA nativa** ✅ (v1.15.0): snapshots efectivo+origen (bug Save Still cazado), Multi-Part ya conforme, pestaña Deliver, menú Help
 - [x] **Fase 4 — Formularios a SPA** ✅ (v1.16.0): Save Version/Notes/Settings/Gate en HTML, toasts, Command Palette con confirm contractual; cancelación de peticiones en la cola
 - [x] **Fase 5 — Asset Hub en SPA** ✅ (v1.17.0): página `hub` con inventario virtualizado (tanstack/react-virtual), repathing con pending model + undo único, gate/collect inline como job en vivo (JobRegistry + `/thumb` binario); entradas migradas con fallback nativo
+  - [x] **Fase 5.1 — pulido: inspector de texturas** ✅ (v1.17.0, spec `2026-07-20-hub-polish-design.md`): metadatos de imagen por fila (`imagemeta.py`, parsers de cabecera puros sin Pillow), VRAM estimada + totales, filas de 2 líneas, columnas redimensionables persistidas, orden clicable, facetas Res/Canales/Profundidad. pytest 601, vitest 28. Verificación live pendiente (junto con Fase 5)
+  - **Fase 5.2 (backlog)**: Shrink in-place de texturas sobredimensionadas + copy-into-project para assets externos (decidido en el brainstorming de 5.1; "Accept missing" descartado — el equivalente ya existe como baseline QC)
 - **Fase 6 (candidata, pendiente de brainstorm in-depth)**: panel completo como SPA embebida (viabilidad técnica probada en fases 1-2; requiere spike de refresco vivo PostWebMessage/polling)
 
 ### Deuda conocida (Asset Hub v1.11)
