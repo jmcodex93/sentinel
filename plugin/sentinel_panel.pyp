@@ -18,7 +18,14 @@ from sentinel.ui import panel as _panel
 from sentinel.ui import dialogs as _dialogs
 from sentinel.ui import ids as _ids
 from sentinel.ui import user_areas as _user_areas
-from sentinel.ui.panel import YSPanelCmd
+from sentinel.ui.panel import YSPanelCmd, SentinelPaletteCmd
+
+# Phase 4 Task 4 — Command Palette. Own CommandData (distinct from
+# PLUGIN_ID/the main panel) so the artist can bind it a shortcut
+# independently via Preferences > Customize Commands. Grepped the 2099xxx
+# range (PLUGIN_ID=2099069, SENTINEL_FRAME_TAG_PLUGIN_ID=2099073, 2099072
+# retired) before picking 2099075 — free.
+SENTINEL_PALETTE_PLUGIN_ID = 2099075
 
 try:
     from sentinel.ui.frame_tag import (
@@ -87,6 +94,22 @@ def Register():
         safe_print(f"{PLUGIN_NAME} registered successfully")
     else:
         safe_print("Failed to register Guardian panel")
+
+    # Command Palette (Phase 4 Task 4) — separate CommandData, own shortcut
+    # slot in Preferences > Customize Commands (search "Sentinel: Command
+    # Palette"); no default binding is registered here.
+    ok_palette = plugins.RegisterCommandPlugin(
+        id=SENTINEL_PALETTE_PLUGIN_ID,
+        str="Sentinel: Command Palette",
+        info=0,
+        icon=icon,
+        help="Open the Sentinel Command Palette (assign a shortcut in Preferences > Customize Commands)",
+        dat=SentinelPaletteCmd()
+    )
+    if ok_palette:
+        safe_print("Sentinel Command Palette registered successfully")
+    else:
+        safe_print("Failed to register Sentinel Command Palette")
 
     # (The v1.5.6 Safe-Area Overlay ObjectData was retired in v1.8.0 — the
     # Sentinel Frame per-camera tag draws the viewport guides directly.)

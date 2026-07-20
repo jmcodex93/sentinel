@@ -1,0 +1,57 @@
+{
+  "passed": false,
+  "sidecar_invalid": false,
+  "checks": [
+    {
+      "check_id": "lights",
+      "label": "Lights Organization",
+      "severity": "FAIL",
+      "bucket": "fixable",
+      "blocks": true,
+      "has_fix": true,
+      "new_count": 3,
+      "violations": [
+        { "label": "Light.Key", "message": "Not inside 'lights' group", "extras": null },
+        { "label": "Light.Fill", "message": "Not inside 'lights' group", "extras": null }
+      ]
+    },
+    {
+      "check_id": "cam",
+      "label": "Camera Shift Detection",
+      "severity": "WARN",
+      "bucket": "fixable",
+      "blocks": false,
+      "has_fix": true,
+      "new_count": 1,
+      "violations": [
+        { "label": "Camera.Main", "message": "Shift X = 0.08", "extras": null }
+      ]
+    },
+    {
+      "check_id": "output_paths",
+      "label": "Output Paths",
+      "severity": "FAIL",
+      "bucket": "blocking",
+      "blocks": true,
+      "has_fix": false,
+      "new_count": 2,
+      "violations": [
+        { "label": "Render Data · Main", "message": "Output path is empty", "extras": null },
+        { "label": "Render Data · 9x16", "message": "Missing $take token", "extras": null }
+      ]
+    },
+    {
+      "check_id": "default_names",
+      "label": "Default Names",
+      "severity": "WARN",
+      "bucket": "advisory",
+      "blocks": false,
+      "has_fix": false,
+      "new_count": 4,
+      "violations": [
+        { "label": "Cube", "message": "Still using default name", "extras": null },
+        { "label": "Null.1", "message": "Still using default name", "extras": null }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+[
+  { "id": "open_hub", "label": "Open Asset Hub", "group": "Navigate", "enabled": true, "reason": null, "requires_confirm": false, "confirm_label": null },
+  { "id": "open_reports_qc", "label": "Open Reports · QC", "group": "Navigate", "enabled": true, "reason": null, "requires_confirm": false, "confirm_label": null },
+  { "id": "open_reports_doctor", "label": "Open Reports · Doctor", "group": "Navigate", "enabled": true, "reason": null, "requires_confirm": false, "confirm_label": null },
+  { "id": "open_reports_supervisor", "label": "Open Reports · Supervisor", "group": "Navigate", "enabled": true, "reason": null, "requires_confirm": false, "confirm_label": null },
+  { "id": "open_reports_render_validation", "label": "Open Reports · Render Validation", "group": "Navigate", "enabled": true, "reason": null, "requires_confirm": false, "confirm_label": null },
+  { "id": "open_reports_delivery", "label": "Open Reports · Delivery Summary", "group": "Navigate", "enabled": true, "reason": null, "requires_confirm": false, "confirm_label": null },
+  { "id": "save_version", "label": "Save Version…", "group": "Scene", "enabled": true, "reason": null, "requires_confirm": false, "confirm_label": null },
+  { "id": "edit_notes", "label": "Edit Notes…", "group": "Scene", "enabled": true, "reason": null, "requires_confirm": false, "confirm_label": null },
+  { "id": "settings", "label": "Settings…", "group": "Scene", "enabled": true, "reason": null, "requires_confirm": false, "confirm_label": null },
+  { "id": "gate_triage", "label": "Quality Gate Triage…", "group": "Scene", "enabled": true, "reason": null, "requires_confirm": false, "confirm_label": null },
+  { "id": "fix_lights", "label": "Fix: Group stray lights", "group": "Quick Fix", "enabled": true, "reason": null, "requires_confirm": false, "confirm_label": null },
+  { "id": "fix_cameras", "label": "Fix: Reset camera shift", "group": "Quick Fix", "enabled": false, "reason": "Nothing to fix", "requires_confirm": false, "confirm_label": null },
+  { "id": "fix_materials", "label": "Fix: Delete unused materials", "group": "Quick Fix", "enabled": true, "reason": null, "requires_confirm": true, "confirm_label": "Delete 3 unused material(s) — single undo" },
+  { "id": "fix_fps", "label": "Fix: FPS / frame range", "group": "Quick Fix", "enabled": true, "reason": null, "requires_confirm": true, "confirm_label": "Rewrite FPS + frame range on 2 issue(s) across ALL render presets — single undo" },
+  { "id": "rescan_qc", "label": "Rescan QC", "group": "Quick Fix", "enabled": true, "reason": null, "requires_confirm": false, "confirm_label": null }
+]

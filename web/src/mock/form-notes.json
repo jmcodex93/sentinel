@@ -1,0 +1,9 @@
+{
+  "notes_text": "Camera rig needs a pass before client review. Check DOF on shot 040.",
+  "todos": [
+    { "id": 1, "text": "Fix rig pivot on Arm_L", "done": true },
+    { "id": 2, "text": "Bake vertex colors for cloner", "done": false },
+    { "id": 3, "text": "Confirm 9:16 crop with client", "done": false }
+  ],
+  "scene_base": "robot_010"
+}
