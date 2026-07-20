@@ -365,13 +365,32 @@ export async function submitGate(action: GateSubmitAction): Promise<GateSubmitRe
 /** `GET /api/palette/actions` — never returns a `{"error": <code>}` empty
  * sentinel (the registry always has entries; per-action `enabled` carries
  * the "nothing to do right now" state instead), so an error dict here is
- * always an unexpected dispatch failure, same reasoning as Doctor/Settings. */
+ * always an unexpected dispatch failure, same reasoning as Doctor/Settings.
+ *
+ * The op's real payload is `{"actions": [...]}` (see `_op_palette_actions`
+ * in web_ops.py — it returns a dict, like every other op, NOT a bare
+ * array), so `fetchReport` is typed against that wrapper shape and this
+ * unwraps `.actions` for the page. A malformed/missing `actions` field
+ * (should never happen from a well-formed server, but a live bug once
+ * already proved "should never happen" isn't "never") degrades to an
+ * ErrorState here rather than handing the page a non-array to `.filter()`
+ * — see PalettePage.tsx's own `Array.isArray` guard for the second layer
+ * of the same defense. */
 export async function fetchPaletteActions(): Promise<PaletteActionsResult> {
   if (isMock()) {
     return { kind: "ok", data: mockPaletteActions as PaletteAction[] };
   }
-  const result = await fetchReport<PaletteAction[]>("/api/palette/actions", {});
-  return result.kind === "empty" ? { kind: "error", message: result.reason } : result;
+  const result = await fetchReport<{ actions: PaletteAction[] }>("/api/palette/actions", {});
+  if (result.kind === "empty") {
+    return { kind: "error", message: result.reason };
+  }
+  if (result.kind === "error") {
+    return result;
+  }
+  if (!Array.isArray(result.data.actions)) {
+    return { kind: "error", message: "Server returned a malformed palette/actions payload." };
+  }
+  return { kind: "ok", data: result.data.actions };
 }
 
 /** Client-only mock for `palette/run` — used ONLY in `?mock=1` mode (see

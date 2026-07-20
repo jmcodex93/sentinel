@@ -55,7 +55,21 @@ export function PalettePage({ onNavigate }: { onNavigate: (page: Page) => void }
     inputRef.current?.focus();
   }, []);
 
-  const actions = useMemo(() => (state.kind === "ok" ? state.data : []), [state]);
+  // Defense in depth against a shape-drift bug (a live one already shipped
+  // once: the API layer briefly handed this page the raw `{actions:[...]}`
+  // wrapper object instead of the unwrapped array — `.filter()` on an
+  // object threw, React unmounted, the window went blank with zero visible
+  // error). `fetchPaletteActions` is the primary fix; this guard is the
+  // second layer so a future contract drift degrades to a message instead
+  // of a silent blank window. Kept as a plain boolean here (not an early
+  // return) — every hook below must still run unconditionally on every
+  // render; the actual bail-out JSX lives with the other kind-based
+  // returns further down, after all hooks have been called.
+  const malformed = state.kind === "ok" && !Array.isArray(state.data);
+  const actions = useMemo(
+    () => (state.kind === "ok" && Array.isArray(state.data) ? state.data : []),
+    [state],
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -128,6 +142,15 @@ export function PalettePage({ onNavigate }: { onNavigate: (page: Page) => void }
   if (state.kind === "loading") return <LoadingState />;
   if (state.kind === "error") {
     return <ErrorState title="Couldn't load the Command Palette" message={state.message} onRetry={load} />;
+  }
+  if (malformed) {
+    return (
+      <ErrorState
+        title="Couldn't load the Command Palette"
+        message="Server returned a malformed palette/actions payload."
+        onRetry={load}
+      />
+    );
   }
 
   if (confirmAction) {
