@@ -312,6 +312,83 @@ def _op_hub_thumb(payload):
         return {"error": "thumb error: %s" % exc}
 
 
+def _op_hub_match_folder(payload):
+    """``hub/match_folder`` — Search Folder for Missing, server-side.
+    Mirrors ``AssetHubDialog._search_folder_for_missing`` (dialogs.py
+    ~2231) exactly: fresh ``scan_scene_assets`` -> ``assets_engine.
+    build_file_index(root)`` -> ``assets_engine.match_missing_in_folder``.
+    Ambiguous matches (2+ candidates for the same basename) are never
+    auto-picked — only unambiguous single-candidate matches are returned
+    in ``matches``; ``ambiguous`` is just a count for the SPA to toast, same
+    as the native dialog's summary message.
+    """
+    root = (payload.get("root") or "").strip()
+    if not root:
+        return {"ok": False, "error": "no_root"}
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+
+    from sentinel.ui.flows import scan_scene_assets
+
+    records, _tex_records, _skipped = scan_scene_assets(doc)
+    index, truncated = assets_engine.build_file_index(root)
+    raw_matches = assets_engine.match_missing_in_folder(records, index)
+
+    by_key = {rec["key"]: rec for rec in records}
+    matches = []
+    ambiguous = 0
+    for key, match in raw_matches.items():
+        rec = by_key.get(key)
+        if rec is None or not rec.get("repathable"):
+            continue
+        if "match" in match:
+            matches.append({"key": key, "match": match["match"]})
+        else:
+            ambiguous += 1
+    return {"ok": True, "matches": matches, "ambiguous": ambiguous, "truncated": truncated}
+
+
+def _op_hub_make_relative(payload):
+    """``hub/make_relative`` — Make All Relative, server-side (read-only:
+    stages changes, does not write). Mirrors ``AssetHubDialog.
+    _make_all_relative`` (dialogs.py ~2191) exactly, including the
+    ``file://`` scheme strip before ``compute_relative_texture_path`` — the
+    rule (``os.path.relpath`` + cross-drive/climb-depth rejection) is not
+    trivially reproducible in the browser, so it stays server-side rather
+    than being re-derived in TypeScript.
+    """
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+    doc_path = doc.GetDocumentPath() or ""
+    if not doc_path:
+        return {"ok": False, "error": "unsaved_document"}
+
+    from sentinel.textures import compute_relative_texture_path
+    from sentinel.ui.flows import scan_scene_assets
+
+    records, _tex_records, _skipped = scan_scene_assets(doc)
+    changes = []
+    skipped_cross_drive = 0
+    for rec in records:
+        if not rec.get("repathable") or rec.get("status") != "absolute":
+            continue
+        cur = rec["path"]
+        if cur.startswith("file://"):
+            abs_part = cur[len("file://"):]
+            if abs_part.startswith("/") and len(abs_part) > 3 and abs_part[2] == ":":
+                abs_part = abs_part.lstrip("/")
+        else:
+            abs_part = cur
+        rel = compute_relative_texture_path(abs_part, doc_path)
+        if rel is None:
+            skipped_cross_drive += 1
+            continue
+        changes.append({"key": rec["key"], "new_path": rel})
+    return {"ok": True, "changes": changes, "skipped_cross_drive": skipped_cross_drive}
+
+
 def _count_new_fails(score, rules_context):
     """New FAIL-severity violation count for the ``hub/collect_start`` gate
     contract. Thin delegate to ``sentinel.gate.count_new_fails``, which
@@ -484,5 +561,7 @@ HUB_OPS = {
     "hub/select_owner": _op_hub_select_owner,
     "hub/pick_path": _op_hub_pick_path,
     "hub/thumb": _op_hub_thumb,
+    "hub/match_folder": _op_hub_match_folder,
+    "hub/make_relative": _op_hub_make_relative,
     "hub/collect_start": _op_hub_collect_start,
 }

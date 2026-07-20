@@ -24,6 +24,8 @@ import type {
   HubInventory,
   HubInventoryResult,
   HubJobStatus,
+  HubMakeRelativeResponse,
+  HubMatchFolderResponse,
   HubPickPathResponse,
   HubPreset,
   HubPresetsResult,
@@ -564,6 +566,26 @@ export async function fetchHubJobStatus(jobId: string): Promise<HubJobStatus> {
   } catch {
     return { error: "Could not reach the Sentinel server. Is the Asset Hub still open in Cinema 4D?" };
   }
+}
+
+/** `POST /api/hub/match_folder` — see `_op_hub_match_folder` in hub_ops.py
+ * (Search Folder for Missing). */
+export async function postHubMatchFolder(root: string): Promise<HubMatchFolderResponse> {
+  if (isMock()) {
+    return { ok: true, matches: [], ambiguous: 0, truncated: false };
+  }
+  return postForm<HubMatchFolderResponse>("/api/hub/match_folder", { root });
+}
+
+/** `POST /api/hub/make_relative` — see `_op_hub_make_relative` in
+ * hub_ops.py (Make All Relative). Server-side because the rule
+ * (`compute_relative_texture_path`'s `os.path.relpath` + cross-drive/climb
+ * depth rejection) is not trivially reproducible in the browser. */
+export async function postHubMakeRelative(): Promise<HubMakeRelativeResponse> {
+  if (isMock()) {
+    return { ok: true, changes: [], skipped_cross_drive: 0 };
+  }
+  return postForm<HubMakeRelativeResponse>("/api/hub/make_relative", {});
 }
 
 /** `GET /api/hub/preflight` — see `_op_hub_preflight` in hub_ops.py. Same

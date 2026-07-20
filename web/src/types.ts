@@ -593,6 +593,28 @@ export interface HubPickPathResponse {
   path?: string;
 }
 
+/** `POST /api/hub/match_folder` — see `_op_hub_match_folder` in hub_ops.py
+ * (Search Folder for Missing). `matches` are only the unambiguous
+ * single-candidate hits — ambiguous (2+ candidates) is just a count, the
+ * SPA never auto-picks. */
+export interface HubMatchFolderResponse {
+  ok: boolean;
+  error?: string;
+  matches?: { key: string; match: string }[];
+  ambiguous?: number;
+  truncated?: boolean;
+}
+
+/** `POST /api/hub/make_relative` — see `_op_hub_make_relative` in
+ * hub_ops.py (Make All Relative). Read-only: stages `changes` for the SPA
+ * to merge into `pending`, does not write anything itself. */
+export interface HubMakeRelativeResponse {
+  ok: boolean;
+  error?: string;
+  changes?: { key: string; new_path: string }[];
+  skipped_cross_drive?: number;
+}
+
 export interface HubCollectStartResponse {
   ok: boolean;
   error?: string;

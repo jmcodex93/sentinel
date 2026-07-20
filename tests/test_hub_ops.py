@@ -52,6 +52,24 @@ class TestHubMutationOps:
         from sentinel.ui import hub_ops
         assert hub_ops.HUB_OPS["hub/thumb"]({"key": "k"}) == {"error": "no_document"}
 
+    def test_match_folder_and_make_relative_registered(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        for op in ("hub/match_folder", "hub/make_relative"):
+            assert op in hub_ops.HUB_OPS
+
+    def test_match_folder_without_document(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        response = hub_ops.HUB_OPS["hub/match_folder"]({"root": "/tmp/x"})
+        assert response == {"ok": False, "error": "no_document"}
+
+    def test_match_folder_requires_root(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops.HUB_OPS["hub/match_folder"]({}) == {"ok": False, "error": "no_root"}
+
+    def test_make_relative_without_document(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops.HUB_OPS["hub/make_relative"]({}) == {"ok": False, "error": "no_document"}
+
 
 class TestHubCollectJob:
     def test_collect_start_without_document(self, sentinel_module):
