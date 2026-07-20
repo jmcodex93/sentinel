@@ -705,25 +705,24 @@ def _op_hub_meta(payload):
     return {"metas": metas}
 
 
-def _op_hub_meta_totals(payload):
-    """``hub/meta_totals`` — VRAM/disk rollup over unique resolved paths
-    that already have a cache entry (never triggers a parse itself; the
-    SPA fetches ``hub/meta`` in chunks first, so by the time this fires
-    the cache is warm). ``total`` counts unique files that exist on disk;
-    ``covered`` counts how many of those have a successfully-parsed
-    cache entry — the SPA prefixes the VRAM figure with ``~`` while
-    ``covered < total``.
+def _totals_from_cache(paths):
+    """Pure: VRAM/disk rollup over a collection of resolved paths that
+    already have a cache entry. ``total`` counts only paths whose
+    extension is a thumbnailable image type (``webbridge._THUMB_EXTS``) —
+    non-image assets (.abc, .vdb, ...) never get a parsed meta entry, so
+    counting them in ``total`` would keep ``covered < total`` forever and
+    the SPA's ``~`` partial marker would never clear. ``covered`` counts
+    how many of those image paths have a successfully-parsed cache entry.
     """
-    doc = documents.GetActiveDocument()
-    if not doc:
-        return {"error": "no_document"}
-
     vram_total = 0
     disk_total = 0
     covered = 0
     total = 0
-    for resolved in set(_THUMB_PATHS.values()):
+    for resolved in set(paths):
         if not resolved:
+            continue
+        ext = os.path.splitext(resolved)[1].lower()
+        if ext not in webbridge._THUMB_EXTS:
             continue
         key_size = _stat_cache_key(resolved)
         if key_size is None:
@@ -744,6 +743,23 @@ def _op_hub_meta_totals(payload):
         "covered": covered,
         "total": total,
     }
+
+
+def _op_hub_meta_totals(payload):
+    """``hub/meta_totals`` — VRAM/disk rollup over unique resolved paths
+    that already have a cache entry (never triggers a parse itself; the
+    SPA fetches ``hub/meta`` in chunks first, so by the time this fires
+    the cache is warm). ``total`` counts unique image files that exist on
+    disk (non-image assets like .abc/.vdb never get a thumb, so they're
+    excluded — see ``_totals_from_cache``); ``covered`` counts how many of
+    those have a successfully-parsed cache entry — the SPA prefixes the
+    VRAM figure with ``~`` while ``covered < total``.
+    """
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"error": "no_document"}
+
+    return _totals_from_cache(_THUMB_PATHS.values())
 
 
 def _op_hub_ui_state(payload):

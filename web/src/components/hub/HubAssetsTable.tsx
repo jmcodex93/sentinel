@@ -302,13 +302,29 @@ export function HubAssetsTable({
         >
           {HEADER_COLUMNS.map((col) => {
             const isSorted = sort?.col === col.sortCol;
+            const isResSorted = col.id === "name" && sort?.col === "res";
+            // aria-sort belongs on the header cell (role="columnheader"), not
+            // the button inside it — assistive tech ignores aria-sort on
+            // non-columnheader elements. The "name" cell hosts two
+            // independent sort buttons (name + res); the cell's aria-sort
+            // reflects whichever of the two is currently active.
+            const cellAriaSort = isSorted
+              ? (sort!.dir === "asc" ? "ascending" : "descending")
+              : isResSorted
+                ? (sort!.dir === "asc" ? "ascending" : "descending")
+                : "none";
             return (
-              <div key={col.id} className="relative flex items-center gap-1 px-2 py-2" style={{ color: "var(--color-ink-secondary)" }}>
+              <div
+                key={col.id}
+                role="columnheader"
+                aria-sort={cellAriaSort}
+                className="relative flex items-center gap-1 px-2 py-2"
+                style={{ color: "var(--color-ink-secondary)" }}
+              >
                 {col.sortCol ? (
                   <button
                     type="button"
                     onClick={() => onSortChange?.(nextSort(sort, col.sortCol as SortCol))}
-                    aria-sort={isSorted ? (sort!.dir === "asc" ? "ascending" : "descending") : "none"}
                     className="flex items-center gap-1 hover:text-[var(--color-ink)]"
                     style={{ color: isSorted ? "var(--color-ink)" : "inherit" }}
                   >
@@ -322,13 +338,12 @@ export function HubAssetsTable({
                   <button
                     type="button"
                     onClick={() => onSortChange?.(nextSort(sort, "res"))}
-                    aria-sort={sort?.col === "res" ? (sort!.dir === "asc" ? "ascending" : "descending") : "none"}
                     className="text-caption ml-1 flex items-center gap-0.5 hover:text-[var(--color-ink)]"
-                    style={{ color: sort?.col === "res" ? "var(--color-ink)" : "var(--color-muted)" }}
+                    style={{ color: isResSorted ? "var(--color-ink)" : "var(--color-muted)" }}
                     title="Sort by resolution"
                   >
                     Res
-                    {sort?.col === "res" && <SortIndicator dir={sort.dir} />}
+                    {isResSorted && <SortIndicator dir={sort!.dir} />}
                   </button>
                 )}
                 {col.resizeId && (

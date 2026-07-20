@@ -207,6 +207,55 @@ class TestHubMetaOps:
         assert hub_ops._META_BATCH_CAP == 64
 
 
+class TestHubMetaTotalsFromCache:
+    """``_totals_from_cache`` is the pure helper behind ``hub/meta_totals``.
+    ``hub/meta_totals`` itself always short-circuits on ``no_document`` in
+    this harness (no fake c4d document), so the counting logic is tested
+    directly against the helper."""
+
+    def test_total_counts_images_only(self, sentinel_module, tmp_path):
+        from sentinel.ui import hub_ops
+
+        png_file = tmp_path / "tex.png"
+        png_file.write_bytes(make_png(4, 4, 8, 2))
+        png_path = str(png_file)
+        abc_path = tmp_path / "cache.abc"
+        abc_path.write_bytes(b"not an image")
+        abc_path = str(abc_path)
+
+        # Seed the cache for both paths as if a parse had already been
+        # attempted — proves the .abc is excluded by extension, not just
+        # because it lacks a cache entry.
+        png_key, _ = hub_ops._stat_cache_key(png_path)
+        abc_key, _ = hub_ops._stat_cache_key(abc_path)
+        hub_ops._META_CACHE[png_key] = {"vram_bytes": 100, "disk_bytes": 10}
+        hub_ops._META_CACHE[abc_key] = {"vram_bytes": 999, "disk_bytes": 999}
+        try:
+            result = hub_ops._totals_from_cache([png_path, abc_path])
+        finally:
+            hub_ops._META_CACHE.pop(png_key, None)
+            hub_ops._META_CACHE.pop(abc_key, None)
+
+        assert result["total"] == 1
+        assert result["covered"] == 1
+        assert result["vram_bytes"] == 100
+        assert result["disk_bytes"] == 10
+
+    def test_none_and_missing_paths_ignored(self, sentinel_module, tmp_path):
+        from sentinel.ui import hub_ops
+
+        missing_png = str(tmp_path / "gone.png")
+        result = hub_ops._totals_from_cache([None, missing_png])
+        assert result == {
+            "vram_bytes": 0,
+            "vram_label": hub_ops.assets_engine.format_size(0),
+            "disk_bytes": 0,
+            "disk_label": hub_ops.assets_engine.format_size(0),
+            "covered": 0,
+            "total": 0,
+        }
+
+
 class TestHubUiState:
     def test_ui_state_default_empty(self, sentinel_module):
         from sentinel.ui import hub_ops
