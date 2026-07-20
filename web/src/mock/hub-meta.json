@@ -1,0 +1,112 @@
+{
+  "tex_body_diffuse": {
+    "width": 4096,
+    "height": 4096,
+    "channels": 3,
+    "bit_depth": 8,
+    "colorspace": "sRGB",
+    "vram_bytes": 67108864,
+    "vram_label": "64 MB",
+    "res_label": "4K",
+    "res_tier": "4k"
+  },
+  "tex_body_normal": {
+    "width": 4096,
+    "height": 4096,
+    "channels": 3,
+    "bit_depth": 8,
+    "colorspace": "linear",
+    "vram_bytes": 67108864,
+    "vram_label": "64 MB",
+    "res_label": "4K",
+    "res_tier": "4k"
+  },
+  "tex_shared_noise": {
+    "width": 8192,
+    "height": 8192,
+    "channels": 3,
+    "bit_depth": 8,
+    "colorspace": "linear",
+    "vram_bytes": 268435456,
+    "vram_label": "256 MB",
+    "res_label": "8K",
+    "res_tier": "8k"
+  },
+  "tex_glass_normal": {
+    "width": 2048,
+    "height": 2048,
+    "channels": 3,
+    "bit_depth": 8,
+    "colorspace": "linear",
+    "vram_bytes": 16777216,
+    "vram_label": "16 MB",
+    "res_label": "2K",
+    "res_tier": "2k"
+  },
+  "hdri_dome_studio": {
+    "width": 4096,
+    "height": 2048,
+    "channels": 3,
+    "bit_depth": 8,
+    "colorspace": "linear",
+    "vram_bytes": 33554432,
+    "vram_label": "32 MB",
+    "res_label": "4K",
+    "res_tier": "4k"
+  },
+  "tex_label_diffuse": {
+    "width": 1024,
+    "height": 1024,
+    "channels": 3,
+    "bit_depth": 8,
+    "colorspace": "sRGB",
+    "vram_bytes": 4194304,
+    "vram_label": "4.0 MB",
+    "res_label": "<2K",
+    "res_tier": "sm"
+  },
+  "tex_props_ao": {
+    "width": 2048,
+    "height": 2048,
+    "channels": 1,
+    "bit_depth": 8,
+    "colorspace": "linear",
+    "vram_bytes": 5592405,
+    "vram_label": "5.3 MB",
+    "res_label": "2K",
+    "res_tier": "2k"
+  },
+  "abc_hero_anim": {
+    "width": 2048,
+    "height": 1080,
+    "channels": 4,
+    "bit_depth": 32,
+    "colorspace": "linear",
+    "vram_bytes": 46137344,
+    "vram_label": "44 MB",
+    "res_label": "2K",
+    "res_tier": "2k"
+  },
+  "hdri_dome_backup": {
+    "width": 4096,
+    "height": 4096,
+    "channels": 3,
+    "bit_depth": 8,
+    "colorspace": "linear",
+    "vram_bytes": 67108864,
+    "vram_label": "64 MB",
+    "res_label": "4K",
+    "res_tier": "4k"
+  },
+  "abc_crowd_sim": {
+    "width": 1024,
+    "height": 1024,
+    "channels": 4,
+    "bit_depth": 8,
+    "colorspace": "linear",
+    "vram_bytes": 5592405,
+    "vram_label": "5.3 MB",
+    "res_label": "<2K",
+    "res_tier": "sm"
+  }
+}

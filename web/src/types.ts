@@ -648,3 +648,52 @@ export interface HubJobStatus {
   result?: HubCollectResult | null;
   error?: string;
 }
+
+/**
+ * Hub Metadata contract — mirrors `_meta_for` in plugin/sentinel/ui/hub_ops.py
+ * (Task 2). Produced by `POST /api/hub/meta` with `{keys: [...]}` payload
+ * (see `_op_hub_meta`). Per-asset image metadata extracted from file headers
+ * (width, height, channels, bit_depth, colorspace) plus derived fields
+ * (vram_bytes, vram_label, res_label, res_tier).
+ */
+export type HubResTier = "8k" | "4k" | "2k" | "sm";
+
+export interface HubMeta {
+  width: number;
+  height: number;
+  channels: number;
+  bit_depth: number;
+  colorspace: string;
+  vram_bytes: number;
+  vram_label: string;
+  res_label: string;
+  res_tier: HubResTier;
+}
+
+/**
+ * Hub Metadata Totals contract — mirrors the response from
+ * `GET /api/hub/meta_totals` (see `_op_hub_meta_totals` in hub_ops.py).
+ * Aggregated metrics over all unique assets in the inventory that have
+ * cached metadata. `covered`/`total` indicates partial vs complete scan
+ * state (the SPA shows "~" prefix while `covered < total`).
+ */
+export interface HubMetaTotals {
+  vram_bytes: number;
+  vram_label: string;
+  disk_bytes: number;
+  disk_label: string;
+  covered: number;
+  total: number;
+}
+
+/**
+ * Hub UI State contract — mirrors the response from `GET /api/hub/ui_state`
+ * and the payload for `POST /api/hub/ui_state/save` (see `_op_hub_ui_state`
+ * and `_op_hub_ui_state_save` in hub_ops.py). Persisted in `sentinel_settings.json`
+ * under the key `hub_spa_ui`. Carries resizable column widths and sort spec
+ * across sessions.
+ */
+export interface HubUiState {
+  col_widths?: Record<string, number>;
+  sort?: { col: string; dir: "asc" | "desc" };
+}

@@ -5,6 +5,7 @@ import mockNotes from "../mock/form-notes.json";
 import mockSaveVersion from "../mock/form-save-version.json";
 import mockSettings from "../mock/form-settings.json";
 import mockHubInventory from "../mock/hub-inventory.json";
+import mockHubMeta from "../mock/hub-meta.json";
 import mockPaletteActions from "../mock/palette-actions.json";
 import mockQcReport from "../mock/qc-report.json";
 import mockRenderValidationReport from "../mock/render-validation.json";
@@ -24,6 +25,8 @@ import type {
   HubInventory,
   HubInventoryResult,
   HubJobStatus,
+  HubMeta,
+  HubMetaTotals,
   HubMakeRelativeResponse,
   HubMatchFolderResponse,
   HubPickPathResponse,
@@ -31,6 +34,7 @@ import type {
   HubPresetsResult,
   HubPresetsSaveResponse,
   HubSelectOwnerResponse,
+  HubUiState,
   NotesState,
   NotesStateResult,
   NotesSubmitPayload,
@@ -598,4 +602,110 @@ export async function fetchHubPreflight(): Promise<QcReportResult> {
   return fetchReport<QcReport>("/api/hub/preflight", {
     no_document: "No active Cinema 4D document. Open a scene, then reopen the Asset Hub.",
   });
+}
+
+/** `POST /api/hub/meta` — see `_op_hub_meta` in hub_ops.py.
+ * Batches up to 64 keys (the SPA batches visible rows, never the world).
+ * Returns only the metas that were found; missing keys are absent.
+ * Returns `{}` on any error (never throws). Mock branch filters
+ * `hub-meta.json` by the requested keys. */
+export async function fetchHubMeta(keys: string[]): Promise<Record<string, HubMeta>> {
+  if (isMock()) {
+    const mockData = mockHubMeta as Record<string, HubMeta>;
+    const result: Record<string, HubMeta> = {};
+    for (const key of keys) {
+      if (key in mockData) {
+        result[key] = mockData[key];
+      }
+    }
+    return result;
+  }
+
+  try {
+    const response = await fetch("/api/hub/meta", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keys }),
+    });
+    const payload = await response.json();
+    if (response.ok && payload && typeof payload === "object" && "metas" in payload) {
+      return (payload as { metas: Record<string, HubMeta> }).metas;
+    }
+  } catch {
+    // Silently fall through to empty return
+  }
+  return {};
+}
+
+/** `GET /api/hub/meta_totals` — see `_op_hub_meta_totals` in hub_ops.py.
+ * Aggregated metrics over all assets that have cached metadata.
+ * Returns a default totals object on any error (never throws). */
+export async function fetchHubMetaTotals(): Promise<HubMetaTotals> {
+  const defaultTotals: HubMetaTotals = {
+    vram_bytes: 0,
+    vram_label: "—",
+    disk_bytes: 0,
+    disk_label: "—",
+    covered: 0,
+    total: 0,
+  };
+
+  if (isMock()) {
+    return {
+      vram_bytes: 3149639680,
+      vram_label: "2.9 GB",
+      disk_bytes: 537395200,
+      disk_label: "512 MB",
+      covered: 10,
+      total: 10,
+    };
+  }
+
+  try {
+    const response = await fetch("/api/hub/meta_totals");
+    if (!response.ok) return defaultTotals;
+    return (await response.json()) as HubMetaTotals;
+  } catch {
+    return defaultTotals;
+  }
+}
+
+/** `GET /api/hub/ui_state` — see `_op_hub_ui_state` in hub_ops.py.
+ * Retrieves persisted column widths and sort spec from `sentinel_settings.json`.
+ * Returns an empty state on any error (never throws). */
+export async function fetchHubUiState(): Promise<HubUiState> {
+  if (isMock()) {
+    return { col_widths: {}, sort: undefined };
+  }
+
+  try {
+    const response = await fetch("/api/hub/ui_state");
+    if (!response.ok) return {};
+    const payload = await response.json();
+    if (payload && typeof payload === "object" && "state" in payload) {
+      return (payload as { state: HubUiState }).state;
+    }
+  } catch {
+    // Silently fall through to empty return
+  }
+  return {};
+}
+
+/** `POST /api/hub/ui_state/save` — see `_op_hub_ui_state_save` in hub_ops.py.
+ * Fire-and-forget mutation: persists column widths and sort spec.
+ * Never throws; silently fails on network error. */
+export async function saveHubUiState(state: HubUiState): Promise<void> {
+  if (isMock()) {
+    return;
+  }
+
+  try {
+    await fetch("/api/hub/ui_state/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state }),
+    });
+  } catch {
+    // Fire-and-forget; silently ignore errors
+  }
 }
