@@ -8,6 +8,8 @@ import { EmptyState, ErrorState, LoadingState } from "../components/PageStates";
 import { Section } from "../components/Section";
 import {
   fetchHubInventory,
+  fetchHubMeta,
+  fetchHubMetaTotals,
   fetchHubPresets,
   fetchHubStateStamp,
   isMock,
@@ -20,11 +22,12 @@ import {
 } from "../lib/api";
 import { computeBulkChanges } from "../lib/repath";
 import { useToast } from "../lib/toast";
-import type { HubInventory, HubInventoryResult, HubPreset } from "../types";
+import type { HubInventory, HubInventoryResult, HubMeta, HubMetaTotals, HubPreset } from "../types";
 
 type PageState = { kind: "loading" } | HubInventoryResult;
 
 const POLL_INTERVAL_MS = 2000;
+const META_CHUNK_SIZE = 64;
 
 function mergePending(prev: Map<string, string>, additions: Map<string, string>): Map<string, string> {
   if (additions.size === 0) return prev;
@@ -54,6 +57,8 @@ export function HubPage() {
   const [presets, setPresets] = useState<HubPreset[]>([]);
   const [busy, setBusy] = useState(false);
   const [sceneChanged, setSceneChanged] = useState(false);
+  const [metas, setMetas] = useState<Record<string, HubMeta>>({});
+  const [metaTotals, setMetaTotals] = useState<HubMetaTotals | null>(null);
 
   // Refs so the polling interval (set up once) always reads the latest
   // values without re-creating the interval on every keystroke/selection.
@@ -92,6 +97,40 @@ export function HubPage() {
       // window/URLSearchParams unavailable in this host — no-op
     }
   }, [refreshInventory]);
+
+  // Meta sweep: after each inventory load, fetch header metadata for every
+  // asset key in chunks of 64 (sequential — 39-500 assets is at most ~8
+  // requests, simpler than viewport-tracking, and the server-side (path,
+  // mtime, size) cache makes repeat sweeps of unchanged assets free). Skipped
+  // when the key set is unchanged from the last sweep (e.g. a silent poll
+  // refresh with no new assets) so it doesn't re-hit the server every 2s.
+  const sweptKeysRef = useRef<string>("");
+  useEffect(() => {
+    if (state.kind !== "ok") return;
+    const keys = state.data.assets.map((a) => a.key);
+    const signature = keys.slice().sort().join("|");
+    if (signature === sweptKeysRef.current) return;
+    sweptKeysRef.current = signature;
+
+    let cancelled = false;
+    (async () => {
+      for (let i = 0; i < keys.length; i += META_CHUNK_SIZE) {
+        if (cancelled) return;
+        const chunk = keys.slice(i, i + META_CHUNK_SIZE);
+        const result = await fetchHubMeta(chunk);
+        if (cancelled) return;
+        if (Object.keys(result).length > 0) {
+          setMetas((prev) => ({ ...prev, ...result }));
+        }
+      }
+      if (cancelled) return;
+      const totals = await fetchHubMetaTotals();
+      if (!cancelled) setMetaTotals(totals);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [state]);
 
   useEffect(() => {
     // No polling under `?mock=1` — there is no live document to drift from,
@@ -254,6 +293,13 @@ export function HubPage() {
           </h1>
           <p className="text-caption mt-0.5" style={{ color: "var(--color-ink-secondary)" }}>
             {data.totals.count} assets · {data.totals.total_label}
+            {metaTotals && metaTotals.total > 0 && (
+              <span>
+                {" "}
+                · {metaTotals.covered < metaTotals.total ? "~" : ""}
+                {metaTotals.vram_label} VRAM
+              </span>
+            )}
             {data.totals.missing > 0 && (
               <span style={{ color: "var(--color-status-fail)" }}> · {data.totals.missing} missing</span>
             )}
@@ -319,6 +365,7 @@ export function HubPage() {
           selectedKey={selectedKey}
           onSelect={handleRowSelect}
           onOwnerClick={handleOwnerClick}
+          metas={metas}
         />
         <div ref={deliverRef}>
           <Section title="Deliver">

@@ -13,10 +13,47 @@ import {
   File as FileIcon,
   type LucideIcon,
 } from "lucide-react";
-import type { HubAsset, HubAssetStatus } from "../../types";
+import type { HubAsset, HubAssetStatus, HubMeta, HubResTier } from "../../types";
 
-const ROW_H = 32; // --space-table-row
-const GRID_COLUMNS = "40px 1fr 90px 90px 80px 180px";
+const ROW_H = 44; // --space-table-row (2-line rows: name+chip+badge / path+dims+owner)
+const GRID_COLUMNS = "40px minmax(160px, 1fr) 90px 90px 80px 90px 160px";
+
+/** Res-chip chroma → existing DESIGN.md tokens only (Task 4 mapping,
+ * `docs/superpowers/plans/2026-07-20-hub-polish.md`). No `--color-status-warn-tint-15`
+ * token exists yet, so 4k reuses the warn 10% badge tint (closest existing token). */
+const RES_CHIP_META: Record<HubResTier, { color: string; background: string }> = {
+  "8k": { color: "var(--color-status-fail)", background: "var(--color-status-fail-tint-15)" },
+  "4k": { color: "var(--color-status-warn)", background: "var(--color-status-warn-tint-10)" },
+  "2k": { color: "var(--color-ink-secondary)", background: "var(--color-surface-2)" },
+  sm: { color: "var(--color-muted)", background: "var(--color-surface-2)" },
+};
+
+function HubResChip({ meta }: { meta: HubMeta | undefined }) {
+  if (!meta) return null;
+  const chip = RES_CHIP_META[meta.res_tier];
+  return (
+    <span
+      className="text-label inline-block shrink-0 rounded-sm px-1.5 py-0.5"
+      style={{ color: chip.color, backgroundColor: chip.background }}
+    >
+      {meta.res_label}
+    </span>
+  );
+}
+
+/** channels: 1|2→"Grey", 3→"RGB", 4→"RGBA" (Task 4 spec). */
+function channelsLabel(channels: number): string {
+  if (channels <= 2) return "Grey";
+  if (channels === 3) return "RGB";
+  return "RGBA";
+}
+
+function metaLine(meta: HubMeta | undefined): string {
+  if (!meta) return "—";
+  const parts = [`${meta.width}×${meta.height}`, `${channelsLabel(meta.channels)} ${meta.bit_depth}b`];
+  if (meta.colorspace) parts.push(meta.colorspace);
+  return parts.join(" · ");
+}
 
 /** asset_type (see assets.py `_TYPE_BY_EXT`) → fallback icon shown when
  * `has_thumb` is false or the thumbnail request fails. */
@@ -87,12 +124,25 @@ export function HubAssetsTable({
   selectedKey,
   onSelect,
   onOwnerClick,
+  metas,
+  sort: _sort,
+  onSortChange: _onSortChange,
+  colWidths: _colWidths,
+  onColWidthsChange: _onColWidthsChange,
 }: {
   assets: HubAsset[];
   pending: Map<string, string>;
   selectedKey: string | null;
   onSelect: (key: string) => void;
   onOwnerClick: (key: string) => void;
+  metas: Record<string, HubMeta>;
+  /** Sort/resize props are accepted here and rendered inert (fixed header
+   * labels, fixed GRID_COLUMNS widths) — Task 5 wires the interactive click
+   * handlers/resizers without touching the surrounding row markup. */
+  sort?: { col: string; dir: "asc" | "desc" } | null;
+  onSortChange?: (col: string) => void;
+  colWidths?: Record<string, number>;
+  onColWidthsChange?: (widths: Record<string, number>) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
@@ -127,7 +177,7 @@ export function HubAssetsTable({
             borderBottom: "1px solid var(--color-hairline-strong)",
           }}
         >
-          {["", "Path", "Type", "Status", "Size", "Used by"].map((h) => (
+          {["", "Name", "Type", "Status", "Size", "VRAM", "Used by"].map((h) => (
             <div key={h} className="px-2 py-2" style={{ color: "var(--color-ink-secondary)" }}>
               {h}
             </div>
@@ -136,8 +186,12 @@ export function HubAssetsTable({
         <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
           {virtualizer.getVirtualItems().map((row) => {
             const a = assets[row.index];
+            const meta = metas[a.key];
             const pendingPath = pending.get(a.key);
+            const displayPath = pendingPath ?? a.path;
+            const basename = displayPath.split(/[\\/]/).pop() || displayPath;
             const extraOwners = a.owners.length - 1;
+            const pathColor = pendingPath ? "var(--color-status-pass)" : "var(--color-ink-secondary)";
             return (
               <div
                 key={a.key}
@@ -170,13 +224,18 @@ export function HubAssetsTable({
 
                 <Tooltip.Root>
                   <Tooltip.Trigger asChild>
-                    <span
-                      className="block truncate px-2"
-                      style={pendingPath ? { color: "var(--color-status-pass)" } : { color: "var(--color-ink)" }}
-                      title={pendingPath ? a.path : undefined}
-                    >
-                      {pendingPath ?? a.path}
-                    </span>
+                    <div className="flex min-w-0 flex-col justify-center gap-0.5 px-2">
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <span className="truncate" style={{ color: "var(--color-ink)" }}>
+                          {basename}
+                        </span>
+                        <HubResChip meta={meta} />
+                      </span>
+                      <span className="text-caption truncate" style={{ color: pathColor }}>
+                        {displayPath} · {metaLine(meta)}
+                        {a.owners.length > 0 ? ` · ${a.owners[0].name}` : ""}
+                      </span>
+                    </div>
                   </Tooltip.Trigger>
                   <Tooltip.Portal>
                     <Tooltip.Content
@@ -205,6 +264,10 @@ export function HubAssetsTable({
 
                 <span className="truncate px-2" style={{ color: "var(--color-ink-secondary)" }}>
                   {a.size_label}
+                </span>
+
+                <span className="truncate px-2" style={{ color: "var(--color-ink-secondary)" }}>
+                  {meta?.vram_label ?? "—"}
                 </span>
 
                 <div className="px-2">
