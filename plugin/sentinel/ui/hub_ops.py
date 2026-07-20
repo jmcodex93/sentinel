@@ -47,29 +47,46 @@ def _op_hub_inventory(payload):
         records, totals, scene_name=doc.GetDocumentName() or "", skipped=skipped)
 
 
-def _op_hub_state_stamp(payload):
-    """``hub/state_stamp`` — a cheap, comparable fingerprint of the active
-    document's asset-relevant state, so the SPA can poll and only re-fetch
-    ``hub/inventory`` when something actually changed. ``GetDirty`` support
-    on ``BaseDocument`` is unverified live (per the task's own note) so it
-    is wrapped defensively, falling back to ``GetChanged()``.
-    """
-    doc = documents.GetActiveDocument()
-    if not doc:
-        return {"error": "no_document"}
+def _stamp_for(doc):
+    """Cheap, comparable fingerprint of ``doc``'s asset-relevant state —
+    shared by ``hub/state_stamp`` and every mutation op. ``GetDirty``
+    support on ``BaseDocument`` is unverified live (per the task's own
+    note) so it is wrapped defensively, falling back to ``GetChanged()``.
 
+    Mutation ops call this *after* their own ``c4d.EventAdd()`` and hand
+    the fresh stamp back in the response. This is the stateless-HTTP
+    equivalent of the native ``AssetHubDialog``'s ``_suppress_ticks``
+    idiom (dialogs.py ~2130): the native dialog arms a short window to
+    swallow the EVMSG_CHANGE its own SetActiveMaterial/SetActiveObject
+    broadcasts, so a self-inflicted change never triggers its own
+    rescan. There is no persistent dialog state here to arm a window on,
+    so instead the SPA re-anchors its polling baseline from the stamp
+    returned in the mutation's own response — its own edit never reads
+    back as an external scene change.
+    """
     try:
         dirty = doc.GetDirty(c4d.DIRTYFLAGS_DATA | c4d.DIRTYFLAGS_CHILDREN)
     except Exception:
         dirty = int(bool(doc.GetChanged()))
 
-    stamp = "%s|%s|%s|%s" % (
+    return "%s|%s|%s|%s" % (
         doc.GetDocumentPath() or "",
         doc.GetDocumentName() or "",
         dirty,
         len(doc.GetMaterials()),
     )
-    return {"stamp": stamp}
+
+
+def _op_hub_state_stamp(payload):
+    """``hub/state_stamp`` — a cheap, comparable fingerprint of the active
+    document's asset-relevant state, so the SPA can poll and only re-fetch
+    ``hub/inventory`` when something actually changed.
+    """
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"error": "no_document"}
+
+    return {"stamp": _stamp_for(doc)}
 
 
 def _op_hub_presets(payload):
@@ -183,7 +200,7 @@ def _op_hub_apply_repath(payload):
     finally:
         doc.EndUndo()
     c4d.EventAdd()
-    return {"ok": True, "applied": applied, "errors": errors}
+    return {"ok": True, "applied": applied, "errors": errors, "stamp": _stamp_for(doc)}
 
 
 def _op_hub_select_owner(payload):
@@ -210,19 +227,19 @@ def _op_hub_select_owner(payload):
         return {"ok": False, "error": "unknown key"}
     tex_idx = rec.get("tex_idx")
     if tex_idx is None:
-        return {"ok": True}
+        return {"ok": True, "stamp": _stamp_for(doc)}
     try:
         host = tex_records[tex_idx].get("host")
     except IndexError:
         host = None
     if host is None:
-        return {"ok": True}
+        return {"ok": True, "stamp": _stamp_for(doc)}
     if isinstance(host, c4d.BaseMaterial):
         doc.SetActiveMaterial(host)
     else:
         doc.SetActiveObject(host)
     c4d.EventAdd()
-    return {"ok": True}
+    return {"ok": True, "stamp": _stamp_for(doc)}
 
 
 def _op_hub_pick_path(payload):
