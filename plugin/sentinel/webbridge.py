@@ -49,6 +49,7 @@ CONTENT_TYPES = {
 }
 
 _API_PREFIX = "/api/"
+_THUMB_PATH = "/thumb"
 
 
 # ---------------------------------------------------------------------------
@@ -247,8 +248,11 @@ class _RequestHandler(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        parsed_path = urllib.parse.urlsplit(self.path).path
         if self._is_api_path():
             self._handle_api()
+        elif parsed_path == _THUMB_PATH:
+            self._handle_thumb()
         else:
             self._handle_static()
 
@@ -342,6 +346,34 @@ class _RequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_bytes(self, code, data, content_type):
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "max-age=300")
+        self.end_headers()
+        self.wfile.write(data)
+
+    # -- thumb -------------------------------------------------------
+
+    def _handle_thumb(self):
+        try:
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            key = (query.get("key") or [""])[-1]
+            if not key:
+                self._send_plain(404, b"missing key")
+                return
+            result = self.server.api_handler({"op": "hub/thumb", "key": key})
+            png_path = (result or {}).get("png_path")
+            if not png_path or not os.path.isfile(png_path):
+                self._send_plain(404, b"no thumbnail")
+                return
+            with open(png_path, "rb") as handle:
+                data = handle.read()
+            self._send_bytes(200, data, "image/png")
+        except Exception as exc:
+            self._send_plain(404, ("thumb error: %s" % exc).encode("utf-8"))
 
 
 def create_server(web_root, api_handler, host="127.0.0.1", ports=range(8347, 8357)):

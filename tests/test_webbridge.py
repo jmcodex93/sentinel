@@ -460,6 +460,49 @@ class TestPortSelection:
 
 
 # ---------------------------------------------------------------------------
+# Binary /thumb route
+# ---------------------------------------------------------------------------
+
+class TestThumbRoute:
+    def test_thumb_streams_png_bytes(self, web_root, tmp_path):
+        png = tmp_path / "t.png"
+        png.write_bytes(b"\x89PNG\r\n\x1a\nfakebody")
+        seen = {}
+
+        def api_handler(payload):
+            seen.update(payload)
+            return {"png_path": str(png)}
+
+        live = _LiveServer(web_root, api_handler=api_handler)
+        try:
+            resp, body = live.get("/thumb?key=tex%2Ffoo.png")
+            assert resp.status == 200
+            assert resp.getheader("Content-Type") == "image/png"
+            assert body.startswith(b"\x89PNG")
+            assert seen["op"] == "hub/thumb" and seen["key"] == "tex/foo.png"
+        finally:
+            live.close()
+
+    def test_thumb_error_payload_gives_404(self, web_root):
+        live = _LiveServer(web_root, api_handler=lambda p: {"error": "no_thumb"})
+        try:
+            resp, body = live.get("/thumb?key=x")
+            resp.read() if hasattr(resp, 'read') and not body else None
+            assert resp.status == 404
+        finally:
+            live.close()
+
+    def test_thumb_missing_file_gives_404(self, web_root, tmp_path):
+        live = _LiveServer(web_root, api_handler=lambda p: {"png_path": str(tmp_path / "gone.png")})
+        try:
+            resp, body = live.get("/thumb?key=x")
+            resp.read() if hasattr(resp, 'read') and not body else None
+            assert resp.status == 404
+        finally:
+            live.close()
+
+
+# ---------------------------------------------------------------------------
 # delivery_report_payload — sentinel_manifest.json -> SPA contract
 # ---------------------------------------------------------------------------
 
