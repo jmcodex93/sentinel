@@ -605,7 +605,9 @@ export async function fetchHubPreflight(): Promise<QcReportResult> {
 }
 
 /** `POST /api/hub/meta` — see `_op_hub_meta` in hub_ops.py.
- * Batches up to 64 keys (the SPA batches visible rows, never the world).
+ * Caps each request at 64 keys — the caller (HubPage's meta sweep) chunks
+ * the full asset key set into sequential 64-key calls rather than sending
+ * one giant request.
  * Returns only the metas that were found; missing keys are absent.
  * Returns `{}` on any error (never throws). Mock branch filters
  * `hub-meta.json` by the requested keys. */

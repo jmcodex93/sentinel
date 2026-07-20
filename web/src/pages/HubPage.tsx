@@ -110,7 +110,6 @@ export function HubPage() {
     const keys = state.data.assets.map((a) => a.key);
     const signature = keys.slice().sort().join("|");
     if (signature === sweptKeysRef.current) return;
-    sweptKeysRef.current = signature;
 
     let cancelled = false;
     (async () => {
@@ -125,7 +124,13 @@ export function HubPage() {
       }
       if (cancelled) return;
       const totals = await fetchHubMetaTotals();
-      if (!cancelled) setMetaTotals(totals);
+      if (cancelled) return;
+      setMetaTotals(totals);
+      // Stamped only on a completed, non-aborted sweep — an in-flight sweep
+      // cancelled by a same-signature re-run (e.g. the 2s poll firing a
+      // refreshInventory with an unchanged asset set) must be retried on
+      // the next effect run, not silently treated as done.
+      sweptKeysRef.current = signature;
     })();
     return () => {
       cancelled = true;
