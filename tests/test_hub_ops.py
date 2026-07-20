@@ -89,3 +89,29 @@ class TestHubCollectJob:
             assert st["state"] == "error" and "boom" in st["error"]
         finally:
             webbridge.JOBS = old
+
+
+class TestBridgeWiring:
+    def test_hub_ops_merged_into_dispatch_table(self, sentinel_module):
+        from sentinel.ui import reports_dialog
+        for op in ("hub/inventory", "hub/apply_repath", "hub/collect_start"):
+            assert op in reports_dialog._OPS
+
+    def test_api_entry_answers_job_status_without_queue(self, sentinel_module):
+        from sentinel import webbridge
+        from sentinel.ui import reports_dialog
+        old = webbridge.JOBS
+        webbridge.JOBS = webbridge.JobRegistry()
+        try:
+            job_id = webbridge.JOBS.start({})
+            # No queue exists yet (_queue is None) — a queue round-trip would
+            # crash; a direct registry answer succeeds.
+            st = reports_dialog._api_entry({"op": "hub/job_status", "job_id": job_id})
+            assert st["state"] == "pending"
+            assert reports_dialog._api_entry({"op": "hub/job_status"}) == {"error": "unknown_job"}
+        finally:
+            webbridge.JOBS = old
+
+    def test_hub_form_size_registered(self, sentinel_module):
+        from sentinel.ui import reports_dialog
+        assert reports_dialog._FORM_SIZES["hub"] == (1120, 700)

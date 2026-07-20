@@ -38,6 +38,7 @@ from c4d import documents, gui
 import json
 import os
 import sys
+import urllib.parse
 import webbrowser
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
@@ -52,7 +53,9 @@ from sentinel.common.helpers import safe_print
 from sentinel.common.settings import GlobalSettings
 from sentinel.qc.score import compute_score, run_all_checks
 from sentinel.rules_context import active_rules_for_doc
+from sentinel.ui.hub_ops import HUB_OPS, pump_jobs
 from sentinel.ui.web_ops import FORM_OPS
+from sentinel import webbridge
 from sentinel.webbridge import (
     MainThreadQueue,
     create_server,
@@ -128,10 +131,12 @@ def ensure_server():
         raise RuntimeError(f"Reports web build not found at {_WEB_ROOT}")
 
     _queue = MainThreadQueue()
-    # api_handler is the queue's own submit(): every HTTP request blocks the
-    # server thread until the dialog's Timer drains it on the main thread —
-    # the cross-thread hand-off webbridge.py documents. No wrapper needed.
-    _server, _port = create_server(_WEB_ROOT, _queue.submit)
+    # api_handler is _api_entry, not the queue's submit() directly: every op
+    # except hub/job_status still blocks the server thread until the
+    # dialog's Timer drains it on the main thread (the cross-thread hand-off
+    # webbridge.py documents) — hub/job_status is the one op answered right
+    # here on the server thread, see _api_entry's own docstring for why.
+    _server, _port = create_server(_WEB_ROOT, _api_entry)
     start_server_thread(_server)
     safe_print(f"Sentinel Reports server listening on 127.0.0.1:{_port}")
     return _port
@@ -306,7 +311,26 @@ _OPS = {
     "report/supervisor": _op_report_supervisor,
     "report/render_validation": _op_report_render_validation,
     **FORM_OPS,
+    **HUB_OPS,
 }
+
+
+def _api_entry(payload):
+    """Server-thread entry point passed to ``create_server`` in place of
+    ``_queue.submit`` directly. ``hub/job_status`` is answered right here,
+    NOT via the ``MainThreadQueue``: a Collect job (``hub/collect_start`` +
+    ``hub_ops.pump_jobs``) runs synchronously on the main thread and blocks
+    it for the duration, which also blocks the Timer that would otherwise
+    drain the queue — a queued ``hub/job_status`` request would simply never
+    get answered until the job finishes, defeating the whole point of
+    polling for live progress. ``webbridge.JOBS`` is its own
+    thread-safe registry (see its docstring) built exactly for this: safe to
+    read from the server thread while the main thread is busy. Every other
+    op still goes through the queue.
+    """
+    if payload.get("op") == "hub/job_status":
+        return webbridge.JOBS.status(payload.get("job_id") or "")
+    return _queue.submit(payload)
 
 
 def _dispatch(payload):
@@ -374,6 +398,10 @@ class ReportsDialog(gui.GeDialog):
     def Timer(self, msg):
         if _queue is not None:
             _queue.drain(_dispatch)
+        try:
+            pump_jobs()
+        except Exception:
+            pass  # a job failure is recorded in JOBS; the Timer never raises
         return True
 
     def DestroyWindow(self):
@@ -395,6 +423,7 @@ _FORM_SIZES = {
     "form/settings": (560, 560),
     "form/gate": (640, 600),
     "palette": (560, 420),
+    "hub": (1120, 700),
 }
 
 _FORM_TITLES = {
@@ -403,6 +432,7 @@ _FORM_TITLES = {
     "form/settings": "Sentinel — Settings",
     "form/gate": "Sentinel — Quality Gate",
     "palette": "Sentinel — Command Palette",
+    "hub": "Sentinel — Asset Hub",
 }
 
 
@@ -439,15 +469,21 @@ class FormDialog(gui.GeDialog):
     ID_HTML = 3001
     ID_NOTICE = 3002
 
-    def __init__(self, port, page, title=None):
+    def __init__(self, port, page, title=None, query=None):
         super().__init__()
         self._port = port
         self._page = page
         self._title = title or _FORM_TITLES.get(page, "Sentinel")
         self._html = None
+        # Extra deep-link params appended to the URL beyond `?page=` (e.g.
+        # `{"focus": "deliver"}` -> `&focus=deliver`) — see _url().
+        self._query = query or {}
 
     def _url(self):
-        return f"http://127.0.0.1:{self._port}/?page={self._page}"
+        url = f"http://127.0.0.1:{self._port}/?page={self._page}"
+        for key, value in sorted(self._query.items()):
+            url += "&%s=%s" % (key, urllib.parse.quote(str(value)))
+        return url
 
     def CreateLayout(self):
         self.SetTitle(self._title)
@@ -477,6 +513,10 @@ class FormDialog(gui.GeDialog):
     def Timer(self, msg):
         if _queue is not None:
             _queue.drain(_dispatch)
+        try:
+            pump_jobs()
+        except Exception:
+            pass  # a job failure is recorded in JOBS; the Timer never raises
         return True
 
     def DestroyWindow(self):
@@ -486,7 +526,7 @@ class FormDialog(gui.GeDialog):
         pass
 
 
-def open_form(doc, page, defaultw=None, defaulth=None):
+def open_form(doc, page, defaultw=None, defaulth=None, query=None):
     """Ensure the Reports/Forms server is running and open ``page`` (one of
     ``form/save_version``, ``form/notes``, ``form/settings``, ``form/gate``,
     or ``palette``) in its own right-sized ``FormDialog`` window.
@@ -519,6 +559,10 @@ def open_form(doc, page, defaultw=None, defaulth=None):
     it. Callers MAY still keep their own reference too (harmless — both just
     point at the same object), but no caller is REQUIRED to for the dialog
     to work correctly.
+
+    ``query`` is an optional dict of extra deep-link params appended to the
+    URL beyond ``?page=`` (e.g. ``{"focus": "deliver"}`` -> the SPA sees
+    ``?page=hub&focus=deliver``) — passed straight through to ``FormDialog``.
     """
     port = ensure_server()
     table_w, table_h = _FORM_SIZES.get(page, (560, 480))
@@ -531,7 +575,7 @@ def open_form(doc, page, defaultw=None, defaulth=None):
         except Exception:
             pass
 
-    dlg = FormDialog(port, page)
+    dlg = FormDialog(port, page, query=query)
     dlg.Open(c4d.DLG_TYPE_ASYNC,
               defaultw=defaultw or table_w, defaulth=defaulth or table_h)
     _open_form_dialogs[page] = dlg
