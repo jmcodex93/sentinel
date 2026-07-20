@@ -267,8 +267,7 @@ _THUMB_SIZE = 64
 def _thumb_cache_dir():
     prefs = c4d.storage.GeGetC4DPath(c4d.C4D_PATH_PREFS)
     cache_dir = os.path.join(prefs, "sentinel_thumbs")
-    if not os.path.isdir(cache_dir):
-        os.makedirs(cache_dir)
+    os.makedirs(cache_dir, exist_ok=True)
     return cache_dir
 
 

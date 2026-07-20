@@ -375,7 +375,7 @@ class _RequestHandler(http.server.BaseHTTPRequestHandler):
                 data = handle.read()
             self._send_bytes(200, data, "image/png")
         except Exception as exc:
-            self._send_plain(404, ("thumb error: %s" % exc).encode("utf-8"))
+            self._send_plain(404, b"thumb error")
 
 
 def create_server(web_root, api_handler, host="127.0.0.1", ports=range(8347, 8357)):
