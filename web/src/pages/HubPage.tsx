@@ -2,6 +2,7 @@ import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { HubAssetsTable } from "../components/hub/HubAssetsTable";
 import { HubDeliverSection } from "../components/hub/HubDeliverSection";
+import { HubFacets } from "../components/hub/HubFacets";
 import { HubPreflightStrip } from "../components/hub/HubPreflightStrip";
 import { HubToolbar, type HubFilter } from "../components/hub/HubToolbar";
 import { EmptyState, ErrorState, LoadingState } from "../components/PageStates";
@@ -12,6 +13,7 @@ import {
   fetchHubMetaTotals,
   fetchHubPresets,
   fetchHubStateStamp,
+  fetchHubUiState,
   isMock,
   postHubApply,
   postHubMakeRelative,
@@ -19,10 +21,23 @@ import {
   postHubPickPath,
   postHubSelectOwner,
   saveHubPreset,
+  saveHubUiState,
 } from "../lib/api";
+import {
+  applyFacets,
+  emptyFacetState,
+  facetCounts,
+  sortAssets,
+  type FacetState,
+  type ResizableColumn,
+  type SortSpec,
+} from "../lib/hubTable";
 import { computeBulkChanges } from "../lib/repath";
 import { useToast } from "../lib/toast";
-import type { HubInventory, HubInventoryResult, HubMeta, HubMetaTotals, HubPreset } from "../types";
+import type { HubInventory, HubInventoryResult, HubMeta, HubMetaTotals, HubPreset, HubUiState } from "../types";
+
+const UI_STATE_SAVE_DEBOUNCE_MS = 500;
+const SORT_COLS = new Set(["name", "status", "res", "size", "vram"]);
 
 type PageState = { kind: "loading" } | HubInventoryResult;
 
@@ -59,6 +74,9 @@ export function HubPage() {
   const [sceneChanged, setSceneChanged] = useState(false);
   const [metas, setMetas] = useState<Record<string, HubMeta>>({});
   const [metaTotals, setMetaTotals] = useState<HubMetaTotals | null>(null);
+  const [sort, setSort] = useState<SortSpec | null>(null);
+  const [colWidths, setColWidths] = useState<Partial<Record<ResizableColumn, number>>>({});
+  const [facets, setFacets] = useState<FacetState>(emptyFacetState());
 
   // Refs so the polling interval (set up once) always reads the latest
   // values without re-creating the interval on every keystroke/selection.
@@ -68,6 +86,43 @@ export function HubPage() {
   useEffect(() => {
     pendingRef.current = pending;
   }, [pending]);
+
+  // Debounced ui_state persistence: sort + column widths are saved together
+  // (Task 5 spec), 500ms after the triggering change settles — a single
+  // shared timer so a resize drag followed immediately by a sort click
+  // still coalesces into one write. Explicitly triggered from the sort/
+  // resize handlers below rather than a generic state-watching effect, so
+  // the initial `fetchHubUiState` load (which also calls setSort/
+  // setColWidths) never re-saves the values it just loaded.
+  const saveTimerRef = useRef<number | null>(null);
+  const persistUiState = useCallback((nextSort: SortSpec | null, nextWidths: Partial<Record<ResizableColumn, number>>) => {
+    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(() => {
+      const payload: HubUiState = { col_widths: nextWidths as Record<string, number> };
+      if (nextSort) payload.sort = nextSort;
+      saveHubUiState(payload);
+    }, UI_STATE_SAVE_DEBOUNCE_MS);
+  }, []);
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+    };
+  }, []);
+
+  const handleSortChange = useCallback(
+    (next: SortSpec | null) => {
+      setSort(next);
+      persistUiState(next, colWidths);
+    },
+    [colWidths, persistUiState],
+  );
+  const handleColWidthsChange = useCallback(
+    (widths: Partial<Record<ResizableColumn, number>>, commit: boolean) => {
+      setColWidths(widths);
+      if (commit) persistUiState(sort, widths);
+    },
+    [sort, persistUiState],
+  );
 
   const refreshInventory = useCallback(async (silent: boolean) => {
     if (!silent) setState({ kind: "loading" });
@@ -81,6 +136,17 @@ export function HubPage() {
     refreshInventory(false);
     fetchHubPresets().then((result) => {
       if (result.kind === "ok") setPresets(result.data);
+    });
+    // Non-blocking: the table renders with default sort/widths immediately
+    // and re-renders once the persisted ui_state arrives (fetchHubUiState
+    // resolves `{}` on any error/mock, so this is always safe to apply).
+    fetchHubUiState().then((uiState) => {
+      if (uiState.sort && SORT_COLS.has(uiState.sort.col)) {
+        setSort(uiState.sort as SortSpec);
+      }
+      if (uiState.col_widths) {
+        setColWidths(uiState.col_widths as Partial<Record<ResizableColumn, number>>);
+      }
     });
 
     // `?focus=deliver` deep-link — the Collect Scene button (panel.py)
@@ -278,6 +344,10 @@ export function HubPage() {
   }
 
   const searchLower = search.trim().toLowerCase();
+  // Facets compose AFTER status + search (Task 5 spec): counts and the
+  // facet-narrowed set are both derived from this status+search-filtered
+  // list, so a chip's count always matches what's actually on screen
+  // before that chip's own group narrows it further.
   const filteredAssets = data.assets.filter((asset) => {
     if (filter !== "all" && asset.status !== filter) return false;
     if (searchLower && !asset.path.toLowerCase().includes(searchLower) && !asset.asset_type.toLowerCase().includes(searchLower)) {
@@ -285,6 +355,9 @@ export function HubPage() {
     }
     return true;
   });
+  const counts = facetCounts(filteredAssets, metas);
+  const facetedAssets = applyFacets(filteredAssets, metas, facets);
+  const sortedAssets = sortAssets(facetedAssets, metas, sort);
 
   return (
     <div className="flex h-full flex-1 flex-col overflow-hidden">
@@ -362,15 +435,20 @@ export function HubPage() {
         pendingCount={pending.size}
         busy={busy}
       />
+      <HubFacets counts={counts} facets={facets} onChange={setFacets} />
 
       <div className="flex-1 overflow-auto p-4">
         <HubAssetsTable
-          assets={filteredAssets}
+          assets={sortedAssets}
           pending={pending}
           selectedKey={selectedKey}
           onSelect={handleRowSelect}
           onOwnerClick={handleOwnerClick}
           metas={metas}
+          sort={sort}
+          onSortChange={handleSortChange}
+          colWidths={colWidths}
+          onColWidthsChange={handleColWidthsChange}
         />
         <div ref={deliverRef}>
           <Section title="Deliver">

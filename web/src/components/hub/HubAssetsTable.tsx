@@ -1,6 +1,7 @@
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import * as Tooltip from "@radix-ui/react-tooltip";
+import { ArrowDown, ArrowUp } from "lucide-react";
 import {
   Image as ImageIcon,
   Sun,
@@ -14,9 +15,17 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { HubAsset, HubAssetStatus, HubMeta, HubResTier } from "../../types";
+import {
+  channelsLabel as sharedChannelsLabel,
+  clampColWidth,
+  DEFAULT_COL_WIDTHS,
+  gridColumnsFor,
+  type ResizableColumn,
+  type SortCol,
+  type SortSpec,
+} from "../../lib/hubTable";
 
 const ROW_H = 44; // --space-table-row (2-line rows: name+chip+badge / path+dims+owner)
-const GRID_COLUMNS = "40px minmax(160px, 1fr) 90px 90px 80px 90px 160px";
 
 /** Res-chip chroma → existing DESIGN.md tokens only (Task 4 mapping,
  * `docs/superpowers/plans/2026-07-20-hub-polish.md`). No `--color-status-warn-tint-15`
@@ -41,16 +50,9 @@ function HubResChip({ meta }: { meta: HubMeta | undefined }) {
   );
 }
 
-/** channels: 1|2→"Grey", 3→"RGB", 4→"RGBA" (Task 4 spec). */
-function channelsLabel(channels: number): string {
-  if (channels <= 2) return "Grey";
-  if (channels === 3) return "RGB";
-  return "RGBA";
-}
-
 function metaLine(meta: HubMeta | undefined): string {
   if (!meta) return "—";
-  const parts = [`${meta.width}×${meta.height}`, `${channelsLabel(meta.channels)} ${meta.bit_depth}b`];
+  const parts = [`${meta.width}×${meta.height}`, `${sharedChannelsLabel(meta.channels)} ${meta.bit_depth}b`];
   if (meta.colorspace) parts.push(meta.colorspace);
   return parts.join(" · ");
 }
@@ -118,6 +120,95 @@ function ThumbCell({ asset }: { asset: HubAsset }) {
   );
 }
 
+/** One entry per grid column, in `gridColumnsFor`'s fixed order. `sortCol`
+ * is `null` for columns with no corresponding `SortCol` (thumb icon well,
+ * Type, Used by — Type is a free-text category and Used by is an array,
+ * neither reduces to a single sortable scalar). `resizeId` is set only for
+ * the columns tracked in `RESIZABLE_COLUMNS`. */
+const HEADER_COLUMNS: { id: string; label: string; sortCol: SortCol | null; resizeId: ResizableColumn | null }[] = [
+  { id: "thumb", label: "", sortCol: null, resizeId: null },
+  { id: "name", label: "Name", sortCol: "name", resizeId: null },
+  { id: "type", label: "Type", sortCol: null, resizeId: "type" },
+  { id: "status", label: "Status", sortCol: "status", resizeId: "status" },
+  { id: "size", label: "Size", sortCol: "size", resizeId: "size" },
+  { id: "vram", label: "VRAM", sortCol: "vram", resizeId: "vram" },
+  { id: "usedby", label: "Used by", sortCol: null, resizeId: "usedby" },
+];
+
+/** asc → desc → default(null); mirrors the SortSpec cycle in hubTable.ts. */
+function nextSort(current: SortSpec | null | undefined, col: SortCol): SortSpec | null {
+  if (!current || current.col !== col) return { col, dir: "asc" };
+  if (current.dir === "asc") return { col, dir: "desc" };
+  return null;
+}
+
+function SortIndicator({ dir }: { dir: "asc" | "desc" }) {
+  const Icon = dir === "asc" ? ArrowUp : ArrowDown;
+  return <Icon size={11} strokeWidth={2.5} aria-hidden="true" style={{ display: "inline", verticalAlign: "-1px" }} />;
+}
+
+/** 4px hit-area divider rendered at the right edge of a resizable header
+ * cell. Drag adjusts that column's own stored width (the "left column" of
+ * the boundary it sits on); double-click resets it back to the default.
+ * Lives as an absolutely-positioned sibling of the header label, so a drag
+ * gesture never lands on — and can never trigger — the sort button. */
+function ColumnResizer({
+  colId,
+  width,
+  onResize,
+  onResizeEnd,
+}: {
+  colId: ResizableColumn;
+  width: number;
+  onResize: (colId: ResizableColumn, width: number) => void;
+  onResizeEnd: () => void;
+}) {
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const handlePointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      dragRef.current = { startX: event.clientX, startWidth: width };
+      (event.target as HTMLElement).setPointerCapture(event.pointerId);
+    },
+    [width],
+  );
+
+  const handlePointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (!dragRef.current) return;
+      const delta = event.clientX - dragRef.current.startX;
+      onResize(colId, clampColWidth(dragRef.current.startWidth + delta));
+    },
+    [colId, onResize],
+  );
+
+  const handlePointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    (event.target as HTMLElement).releasePointerCapture(event.pointerId);
+    onResizeEnd();
+  }, [onResizeEnd]);
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onDoubleClick={(event) => {
+        event.stopPropagation();
+        onResize(colId, DEFAULT_COL_WIDTHS[colId]);
+        onResizeEnd();
+      }}
+      className="absolute top-0 right-0 h-full w-1 cursor-col-resize touch-none select-none hover:bg-[var(--color-primary)]"
+      style={{ zIndex: 1 }}
+    />
+  );
+}
+
 export function HubAssetsTable({
   assets,
   pending,
@@ -125,10 +216,10 @@ export function HubAssetsTable({
   onSelect,
   onOwnerClick,
   metas,
-  sort: _sort,
-  onSortChange: _onSortChange,
-  colWidths: _colWidths,
-  onColWidthsChange: _onColWidthsChange,
+  sort,
+  onSortChange,
+  colWidths,
+  onColWidthsChange,
 }: {
   assets: HubAsset[];
   pending: Map<string, string>;
@@ -136,13 +227,10 @@ export function HubAssetsTable({
   onSelect: (key: string) => void;
   onOwnerClick: (key: string) => void;
   metas: Record<string, HubMeta>;
-  /** Sort/resize props are accepted here and rendered inert (fixed header
-   * labels, fixed GRID_COLUMNS widths) — Task 5 wires the interactive click
-   * handlers/resizers without touching the surrounding row markup. */
-  sort?: { col: string; dir: "asc" | "desc" } | null;
-  onSortChange?: (col: string) => void;
-  colWidths?: Record<string, number>;
-  onColWidthsChange?: (widths: Record<string, number>) => void;
+  sort?: SortSpec | null;
+  onSortChange?: (sort: SortSpec | null) => void;
+  colWidths?: Partial<Record<ResizableColumn, number>>;
+  onColWidthsChange?: (widths: Partial<Record<ResizableColumn, number>>, commit: boolean) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
@@ -151,6 +239,19 @@ export function HubAssetsTable({
     estimateSize: () => ROW_H,
     overscan: 12,
   });
+
+  const widths = colWidths ?? {};
+  const gridColumns = gridColumnsFor(widths);
+
+  const handleResize = useCallback(
+    (colId: ResizableColumn, width: number) => {
+      onColWidthsChange?.({ ...widths, [colId]: width }, false);
+    },
+    [onColWidthsChange, widths],
+  );
+  const handleResizeEnd = useCallback(() => {
+    onColWidthsChange?.(widths, true);
+  }, [onColWidthsChange, widths]);
 
   if (assets.length === 0) {
     return (
@@ -172,16 +273,53 @@ export function HubAssetsTable({
         <div
           className="sticky top-0 z-10 grid text-label"
           style={{
-            gridTemplateColumns: GRID_COLUMNS,
+            gridTemplateColumns: gridColumns,
             background: "var(--color-surface-1)",
             borderBottom: "1px solid var(--color-hairline-strong)",
           }}
         >
-          {["", "Name", "Type", "Status", "Size", "VRAM", "Used by"].map((h) => (
-            <div key={h} className="px-2 py-2" style={{ color: "var(--color-ink-secondary)" }}>
-              {h}
-            </div>
-          ))}
+          {HEADER_COLUMNS.map((col) => {
+            const isSorted = sort?.col === col.sortCol;
+            return (
+              <div key={col.id} className="relative flex items-center gap-1 px-2 py-2" style={{ color: "var(--color-ink-secondary)" }}>
+                {col.sortCol ? (
+                  <button
+                    type="button"
+                    onClick={() => onSortChange?.(nextSort(sort, col.sortCol as SortCol))}
+                    aria-sort={isSorted ? (sort!.dir === "asc" ? "ascending" : "descending") : "none"}
+                    className="flex items-center gap-1 hover:text-[var(--color-ink)]"
+                    style={{ color: isSorted ? "var(--color-ink)" : "inherit" }}
+                  >
+                    {col.label}
+                    {isSorted && <SortIndicator dir={sort!.dir} />}
+                  </button>
+                ) : (
+                  col.label
+                )}
+                {col.id === "name" && (
+                  <button
+                    type="button"
+                    onClick={() => onSortChange?.(nextSort(sort, "res"))}
+                    aria-sort={sort?.col === "res" ? (sort!.dir === "asc" ? "ascending" : "descending") : "none"}
+                    className="text-caption ml-1 flex items-center gap-0.5 hover:text-[var(--color-ink)]"
+                    style={{ color: sort?.col === "res" ? "var(--color-ink)" : "var(--color-muted)" }}
+                    title="Sort by resolution"
+                  >
+                    Res
+                    {sort?.col === "res" && <SortIndicator dir={sort.dir} />}
+                  </button>
+                )}
+                {col.resizeId && (
+                  <ColumnResizer
+                    colId={col.resizeId}
+                    width={widths[col.resizeId] ?? DEFAULT_COL_WIDTHS[col.resizeId]}
+                    onResize={handleResize}
+                    onResizeEnd={handleResizeEnd}
+                  />
+                )}
+              </div>
+            );
+          })}
         </div>
         <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
           {virtualizer.getVirtualItems().map((row) => {
@@ -213,7 +351,7 @@ export function HubAssetsTable({
                   right: 0,
                   transform: `translateY(${row.start}px)`,
                   height: ROW_H,
-                  gridTemplateColumns: GRID_COLUMNS,
+                  gridTemplateColumns: gridColumns,
                   background: selectedKey === a.key ? "var(--color-surface-2)" : undefined,
                   borderBottom: "1px solid var(--color-hairline)",
                 }}
