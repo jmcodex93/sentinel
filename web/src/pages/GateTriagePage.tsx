@@ -1,14 +1,13 @@
-import { CheckCircle2, Wrench } from "lucide-react";
+import { CheckCircle2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { CheckRow } from "../components/CheckRow";
 import { Button } from "../components/form/Button";
 import { FieldRow } from "../components/form/FieldRow";
 import { FormPageShell } from "../components/form/FormPageShell";
 import { TextArea } from "../components/form/TextArea";
 import { TextInput } from "../components/form/TextInput";
+import { GateCheckRow } from "../components/GateChecks";
 import { EmptyState, ErrorState, LoadingState } from "../components/PageStates";
 import { Section } from "../components/Section";
-import type { StatusTone } from "../components/StatusDot";
 import { fetchGateState, submitGate } from "../lib/api";
 import { useToast } from "../lib/toast";
 import type { GateBucket, GateCheck, GateState, GateStateResult } from "../types";
@@ -22,72 +21,6 @@ const BUCKET_TITLE: Record<GateBucket, string> = {
   advisory: "Advisory",
 };
 const BUCKET_ORDER: GateBucket[] = ["blocking", "fixable", "advisory"];
-
-function toneForSeverity(severity: string): StatusTone {
-  return severity === "WARN" ? "warn" : "fail";
-}
-
-function GateDetails({ check }: { check: GateCheck }) {
-  if (check.violations.length === 0) {
-    return (
-      <p className="text-caption py-1" style={{ color: "var(--color-ink-secondary)" }}>
-        No violation details to show for this check.
-      </p>
-    );
-  }
-  return (
-    <ul>
-      {check.violations.map((violation, index) => (
-        <li key={`${violation.label}:${index}`} className="text-caption py-1">
-          {violation.label && <span style={{ color: "var(--color-ink)" }}>{violation.label}</span>}
-          {violation.label && violation.message && " — "}
-          <span style={{ color: "var(--color-ink-secondary)" }}>{violation.message}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function GateCheckRow({
-  check,
-  selectable,
-  selected,
-  onToggleSelect,
-}: {
-  check: GateCheck;
-  selectable: boolean;
-  selected: boolean;
-  onToggleSelect: (id: string) => void;
-}) {
-  return (
-    <div className="flex items-center">
-      {selectable && (
-        <span className="flex items-center pl-3">
-          <input
-            type="checkbox"
-            checked={selected}
-            onChange={() => onToggleSelect(check.check_id)}
-            style={{ accentColor: "var(--color-primary)" }}
-            aria-label={`Select "${check.label}" for acceptance`}
-          />
-        </span>
-      )}
-      <div className="min-w-0 flex-1">
-        <CheckRow
-          tone={toneForSeverity(check.severity)}
-          label={check.label}
-          meta={`${check.new_count} new`}
-          extra={
-            check.has_fix ? (
-              <Wrench size={12} strokeWidth={2.25} style={{ color: "var(--color-ink-secondary)" }} aria-hidden="true" />
-            ) : undefined
-          }
-          expandedContent={<GateDetails check={check} />}
-        />
-      </div>
-    </div>
-  );
-}
 
 /** Quality Gate triage — mirrors `gate.py` + `ui/dialogs.py`
  * `GateTriageDialog` (see web_ops.py `_op_form_gate_state/_submit`'s
