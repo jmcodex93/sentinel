@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Asset Hub SPA ops (fase 5) — read-only ops (inventory, state_stamp,
-presets, preflight). Thin c4d adapters over the same engines the native
-``AssetHubDialog`` uses — zero duplicated logic. Sibling of
-``ui/reports_dialog.py`` / ``ui/web_ops.py`` (same ``MainThreadQueue``
-dispatch-target contract — see ``webbridge.MainThreadQueue.drain`` for the
-invariant every handler must honor). Host-agnostic: no dialog imports here;
-merged into ``reports_dialog._OPS`` by whichever task wires the route.
+"""Asset Hub SPA ops (fase 5) — read ops (inventory, state_stamp, presets,
+preflight) plus mutation ops (apply_repath, select_owner, pick_path, thumb).
+Thin c4d adapters over the same engines the native ``AssetHubDialog`` uses —
+zero duplicated logic. Sibling of ``ui/reports_dialog.py`` / ``ui/web_ops.py``
+(same ``MainThreadQueue`` dispatch-target contract — see
+``webbridge.MainThreadQueue.drain`` for the invariant every handler must
+honor). Host-agnostic: no dialog imports here; merged into
+``reports_dialog._OPS`` by whichever task wires the route.
 
-Read-only ops never mutate; every op re-reads the active document at
-dispatch time (mutation/job ops for repath/collect land in Tasks 5/6).
+Every op re-reads the active document at dispatch time (HTTP is stateless).
+Collect/delivery job ops land in Task 6.
 """
 
 import os
@@ -138,10 +139,167 @@ def _op_hub_preflight(payload):
     return webbridge.qc_report_payload(scene_name, ruleset, score, structured_by_check)
 
 
+def _op_hub_apply_repath(payload):
+    """``hub/apply_repath`` — bulk-write pending Find/Replace / relink
+    changes. HTTP is stateless, so the client's ``key``s are re-resolved
+    against a *fresh* ``scan_scene_assets`` right here (same canonical keys
+    ``hub/inventory`` handed out) via ``webbridge.resolve_repath_targets`` —
+    a scene that changed between fetch and submit surfaces as a per-key
+    "unknown key" error, never a mis-write. Every live write goes through
+    ``textures.apply_texture_path_change`` (its own ``doc.AddUndo`` anchor
+    lives inside, per shader) — this op only brackets the whole batch in
+    one ``StartUndo``/``EndUndo`` (matching ``AssetHubDialog``'s Apply All)
+    so a single Cmd+Z reverts every row.
+    """
+    changes = payload.get("changes") or []
+    if not changes:
+        return {"ok": False, "error": "no_changes"}
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+
+    from sentinel.ui.flows import scan_scene_assets
+    from sentinel.textures import apply_texture_path_change
+
+    records, tex_records, _skipped = scan_scene_assets(doc)
+    targets, errors = webbridge.resolve_repath_targets(records, changes)
+    applied = 0
+    doc.StartUndo()
+    try:
+        for target in targets:
+            row_ok = True
+            for tex_idx in target["tex_idxs"]:
+                try:
+                    live = tex_records[tex_idx]
+                except IndexError:
+                    row_ok = False
+                    continue
+                if not apply_texture_path_change(live, target["new_path"], doc=doc):
+                    row_ok = False
+            if row_ok:
+                applied += 1
+            else:
+                errors.append({"key": target["key"], "error": "writer failed"})
+    finally:
+        doc.EndUndo()
+    c4d.EventAdd()
+    return {"ok": True, "applied": applied, "errors": errors}
+
+
+def _op_hub_select_owner(payload):
+    """``hub/select_owner`` — select the record's owning material/object in
+    the scene, so an SPA row click behaves like the native table row click.
+    Owner-selection idiom copied verbatim from
+    ``AssetHubDialog._select_owner_in_scene`` (dialogs.py ~2108): rows with
+    no ``tex_idx`` (generic ``GetAllAssetsNew`` entries not backed by a
+    structured TextureRecord) are a documented no-op — same known debt as
+    the native dialog (see ``assets.merge_asset_records``). Material vs.
+    object dispatch is a plain ``isinstance(host, c4d.BaseMaterial)``
+    branch — no selection-flag juggling, matching the native code exactly.
+    """
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+    key = payload.get("key") or ""
+
+    from sentinel.ui.flows import scan_scene_assets
+
+    records, tex_records, _skipped = scan_scene_assets(doc)
+    rec = next((r for r in records if r.get("key") == key), None)
+    if rec is None:
+        return {"ok": False, "error": "unknown key"}
+    tex_idx = rec.get("tex_idx")
+    if tex_idx is None:
+        return {"ok": True}
+    try:
+        host = tex_records[tex_idx].get("host")
+    except IndexError:
+        host = None
+    if host is None:
+        return {"ok": True}
+    if isinstance(host, c4d.BaseMaterial):
+        doc.SetActiveMaterial(host)
+    else:
+        doc.SetActiveObject(host)
+    c4d.EventAdd()
+    return {"ok": True}
+
+
+def _op_hub_pick_path(payload):
+    """``hub/pick_path`` — native file/directory picker for relink and
+    Search-Folder-for-Missing. Runs inside the ``MainThreadQueue`` drain
+    (the dialog ``Timer``), so this modal ``LoadDialog`` call blocks the
+    queue while open — safe because of the fase-4 per-request lock in
+    ``MainThreadQueue``: the SPA's ``submit()`` blocks on that same lock
+    with its own timeout and still gets the real result once the artist
+    closes the dialog, instead of racing a stale/cancelled response.
+    """
+    flags = c4d.FILESELECT_DIRECTORY if payload.get("directory") else c4d.FILESELECT_LOAD
+    path = c4d.storage.LoadDialog(title=payload.get("title") or "Choose", flags=flags)
+    if not path:
+        return {"ok": False, "error": "cancelled"}
+    return {"ok": True, "path": path}
+
+
+_THUMB_SIZE = 64
+
+
+def _thumb_cache_dir():
+    prefs = c4d.storage.GeGetC4DPath(c4d.C4D_PATH_PREFS)
+    cache_dir = os.path.join(prefs, "sentinel_thumbs")
+    if not os.path.isdir(cache_dir):
+        os.makedirs(cache_dir)
+    return cache_dir
+
+
+def _op_hub_thumb(payload):
+    """``hub/thumb`` — lazy per-asset PNG thumbnail, disk-cached by
+    (resolved_path, mtime) via ``webbridge.thumb_cache_name`` so repeat
+    requests for an unchanged file are a stat + return, not a re-decode.
+    Re-scans the scene per request (stateless HTTP, same as every other
+    hub op) — if live verification shows this too slow with many visible
+    rows, add a module-level ``{key: resolved_path}`` memo refreshed by
+    ``hub/inventory``, but only then (YAGNI, per the task brief).
+    """
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"error": "no_document"}
+    key = payload.get("key") or ""
+
+    from sentinel.ui.flows import scan_scene_assets
+
+    records, _tex, _skipped = scan_scene_assets(doc)
+    rec = next((r for r in records if r.get("key") == key), None)
+    resolved = (rec or {}).get("resolved_path")
+    if not resolved or not os.path.isfile(resolved):
+        return {"error": "no_thumb"}
+    try:
+        mtime = os.path.getmtime(resolved)
+        cache_path = os.path.join(
+            _thumb_cache_dir(), webbridge.thumb_cache_name(resolved, mtime))
+        if os.path.isfile(cache_path):
+            return {"png_path": cache_path}
+        bmp = c4d.bitmaps.BaseBitmap()
+        if bmp.InitWith(resolved)[0] != c4d.IMAGERESULT_OK:
+            return {"error": "unreadable"}
+        small = c4d.bitmaps.BaseBitmap()
+        small.Init(_THUMB_SIZE, _THUMB_SIZE)
+        bmp.ScaleIt(small, 256, True, False)
+        if not small.Save(cache_path, c4d.FILTER_PNG):
+            return {"error": "save_failed"}
+        return {"png_path": cache_path}
+    except Exception as exc:
+        return {"error": "thumb error: %s" % exc}
+
+
 HUB_OPS = {
     "hub/inventory": _op_hub_inventory,
     "hub/state_stamp": _op_hub_state_stamp,
     "hub/presets": _op_hub_presets,
     "hub/presets/save": _op_hub_presets_save,
     "hub/preflight": _op_hub_preflight,
+    "hub/apply_repath": _op_hub_apply_repath,
+    "hub/select_owner": _op_hub_select_owner,
+    "hub/pick_path": _op_hub_pick_path,
+    "hub/thumb": _op_hub_thumb,
 }
