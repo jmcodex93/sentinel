@@ -7,6 +7,9 @@ tests/test_web_ops.py). GetActiveDocument() is None in the harness, so these
 tests pin the no-document contract + the op-table shape; the payload logic
 itself is pure and tested in tests/test_webbridge.py.
 """
+import os
+
+from test_imagemeta import make_png
 
 
 class TestHubOpsTable:
@@ -151,6 +154,152 @@ class TestThumbMemo:
 
         hub_ops._remember_thumb_paths([{"key": "c", "resolved_path": "/y"}])
         assert hub_ops._THUMB_PATHS == {"c": "/y"}
+
+
+def _patched_settings(store):
+    from sentinel.common import settings as settings_mod
+
+    orig_load = settings_mod.GlobalSettings._load
+    orig_save = settings_mod.GlobalSettings._save
+    settings_mod.GlobalSettings._load = staticmethod(lambda: dict(store))
+
+    def _save(data):
+        store.clear()
+        store.update(data)
+        return True
+
+    settings_mod.GlobalSettings._save = staticmethod(_save)
+    return orig_load, orig_save
+
+
+def _restore_settings(orig_load, orig_save):
+    from sentinel.common import settings as settings_mod
+
+    settings_mod.GlobalSettings._load = staticmethod(orig_load)
+    settings_mod.GlobalSettings._save = staticmethod(orig_save)
+
+
+class TestHubMetaOps:
+    def test_meta_ops_registered(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        for op in ("hub/meta", "hub/meta_totals", "hub/ui_state", "hub/ui_state/save"):
+            assert op in hub_ops.HUB_OPS
+
+    def test_meta_without_document(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops.HUB_OPS["hub/meta"]({"keys": ["a"]}) == {"error": "no_document"}
+
+    def test_meta_totals_without_document(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops.HUB_OPS["hub/meta_totals"]({}) == {"error": "no_document"}
+
+    def test_meta_over_batch_cap_still_doc_guarded_first(self, sentinel_module):
+        # Doc-guard-first, same as every sibling op: the harness's
+        # GetActiveDocument() is always None, so the no_document contract
+        # wins even with an over-cap key list — the cap check itself sits
+        # after the doc guard (sibling-consistent, see plan Task 2).
+        from sentinel.ui import hub_ops
+        response = hub_ops.HUB_OPS["hub/meta"]({"keys": ["k"] * 65})
+        assert response == {"error": "no_document"}
+
+    def test_meta_batch_cap_constant(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops._META_BATCH_CAP == 64
+
+
+class TestHubUiState:
+    def test_ui_state_default_empty(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        store = {}
+        orig = _patched_settings(store)
+        try:
+            assert hub_ops.HUB_OPS["hub/ui_state"]({}) == {"state": {}}
+        finally:
+            _restore_settings(*orig)
+
+    def test_ui_state_roundtrip(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        store = {}
+        orig = _patched_settings(store)
+        try:
+            state = {"col_widths": {"name": 200}, "sort": {"col": "size", "dir": "desc"}}
+            result = hub_ops.HUB_OPS["hub/ui_state/save"]({"state": state})
+            assert result == {"ok": True}
+            assert hub_ops.HUB_OPS["hub/ui_state"]({}) == {"state": state}
+        finally:
+            _restore_settings(*orig)
+
+    def test_ui_state_save_rejects_non_dict(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        store = {}
+        orig = _patched_settings(store)
+        try:
+            result = hub_ops.HUB_OPS["hub/ui_state/save"]({"state": "nope"})
+            assert result == {"ok": False, "error": "invalid state"}
+        finally:
+            _restore_settings(*orig)
+
+    def test_ui_state_save_rejects_missing_state(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        store = {}
+        orig = _patched_settings(store)
+        try:
+            result = hub_ops.HUB_OPS["hub/ui_state/save"]({})
+            assert result == {"ok": False, "error": "invalid state"}
+        finally:
+            _restore_settings(*orig)
+
+
+class TestMetaForCache:
+    def test_meta_for_unreadable_path_returns_none(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops._meta_for("/no/such/file/anywhere.png") is None
+
+    def test_meta_for_parses_and_enriches(self, sentinel_module, tmp_path):
+        from sentinel.ui import hub_ops
+        path = tmp_path / "tex.png"
+        path.write_bytes(make_png(4096, 4096, 8, 2))  # RGB 8b
+        meta = hub_ops._meta_for(str(path))
+        assert meta["width"] == 4096
+        assert meta["height"] == 4096
+        assert meta["channels"] == 3
+        assert meta["bit_depth"] == 8
+        assert meta["res_tier"] == "4k"
+        assert meta["res_label"] == "4K"
+        assert meta["vram_bytes"] > 0
+        assert meta["vram_label"]
+        assert meta["disk_bytes"] == os.path.getsize(str(path))
+
+    def test_meta_for_cache_hit_never_reparses(self, sentinel_module, tmp_path, monkeypatch):
+        from sentinel.ui import hub_ops
+        from sentinel import imagemeta
+
+        path = tmp_path / "small.png"
+        path.write_bytes(make_png(64, 64, 8, 2))
+        first = hub_ops._meta_for(str(path))
+        assert first is not None
+
+        def _boom(_path):
+            raise AssertionError("read_image_meta must not be called again on cache hit")
+
+        monkeypatch.setattr(imagemeta, "read_image_meta", _boom)
+        second = hub_ops._meta_for(str(path))
+        assert second == first
+
+    def test_meta_for_caches_unparseable_none_without_retry(self, sentinel_module, tmp_path, monkeypatch):
+        from sentinel.ui import hub_ops
+        from sentinel import imagemeta
+
+        path = tmp_path / "garbage.dat"
+        path.write_bytes(b"not an image")
+        first = hub_ops._meta_for(str(path))
+        assert first is None
+
+        def _boom(_path):
+            raise AssertionError("must not re-parse a cached-None entry")
+
+        monkeypatch.setattr(imagemeta, "read_image_meta", _boom)
+        assert hub_ops._meta_for(str(path)) is None
 
 
 class TestOpenHubPalette:

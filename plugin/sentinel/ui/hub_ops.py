@@ -21,6 +21,7 @@ from c4d import documents
 from sentinel import webbridge
 from sentinel import assets as assets_engine
 from sentinel import gate as quality_gate
+from sentinel import imagemeta
 from sentinel.common.settings import GlobalSettings
 from sentinel.qc.score import compute_score, run_all_checks
 from sentinel.rules_context import active_rules_for_doc
@@ -45,6 +46,66 @@ def _remember_thumb_paths(records):
     _THUMB_PATHS.update({r.get("key"): r.get("resolved_path") for r in records})
 
 
+# (path, mtime, size_bytes) -> enriched-meta-dict | None. Never purged
+# across requests within a session (same lifetime rule as _THUMB_PATHS) —
+# a changed file gets a new key (different mtime/size), so a stale entry
+# is simply orphaned, never served.
+_META_CACHE = {}
+
+_META_BATCH_CAP = 64
+
+
+def _stat_cache_key(path):
+    """``(path, mtime, size)`` cache key for ``path``, or ``None`` when the
+    file can't be stat'd (deleted/inaccessible). No parsing here — callers
+    that only want to know "is there a cache entry" (``hub/meta_totals``,
+    the inventory vram rollup) use this alone, without ever touching
+    ``imagemeta.read_image_meta``."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (path, st.st_mtime, st.st_size), st.st_size
+
+
+def _meta_for(path):
+    """Read + cache image header metadata for a resolved asset path.
+
+    Cache key is ``(path, mtime, size)`` so an edited file (new mtime/size)
+    never serves a stale entry. A parse failure (or a format
+    ``imagemeta`` doesn't recognize) is cached as ``None`` too — an
+    unparseable file stays unparseable until its stat changes, so it is
+    never re-attempted on every request. Enriches a successful parse with
+    ``vram_bytes``/``vram_label`` (``imagemeta.vram_bytes`` +
+    ``assets_engine.format_size``), ``res_label``/``res_tier``
+    (``imagemeta.res_bucket`` of ``max(width, height)``), and
+    ``disk_bytes`` (the stat's own size — no second stat needed downstream
+    in ``hub/meta_totals``).
+    """
+    key_size = _stat_cache_key(path)
+    if key_size is None:
+        return None
+    cache_key, size_bytes = key_size
+    if cache_key in _META_CACHE:
+        return _META_CACHE[cache_key]
+
+    raw = imagemeta.read_image_meta(path)
+    if raw is None:
+        _META_CACHE[cache_key] = None
+        return None
+
+    vram = imagemeta.vram_bytes(raw["width"], raw["height"], raw["channels"], raw["bit_depth"])
+    bucket = imagemeta.res_bucket(max(raw["width"], raw["height"]))
+    meta = dict(raw)
+    meta["vram_bytes"] = vram
+    meta["vram_label"] = assets_engine.format_size(vram)
+    meta["res_label"] = bucket["label"]
+    meta["res_tier"] = bucket["tier"]
+    meta["disk_bytes"] = size_bytes
+    _META_CACHE[cache_key] = meta
+    return meta
+
+
 def _op_hub_inventory(payload):
     """``hub/inventory`` — full asset scan the same way
     ``AssetHubDialog`` builds its table: ``ui.flows.scan_scene_assets``
@@ -66,8 +127,29 @@ def _op_hub_inventory(payload):
         start = assets_engine.stat_sizes_batch(records, start, 64)
     totals = assets_engine.compute_totals(records)
     _remember_thumb_paths(records)
+    totals["vram_bytes"] = _cached_vram_total()
+    totals["vram_label"] = assets_engine.format_size(totals["vram_bytes"])
     return webbridge.hub_inventory_payload(
         records, totals, scene_name=doc.GetDocumentName() or "", skipped=skipped)
+
+
+def _cached_vram_total():
+    """Sum ``vram_bytes`` over unique resolved paths already present in
+    ``_META_CACHE`` — no parsing, so the inventory scan (and this rollup)
+    stays fast even on a scene with hundreds of unfetched textures. Shared
+    by ``_op_hub_inventory`` (fresh-scan rollup, only ever reflects
+    previously-fetched metas) and ``hub/meta_totals``."""
+    total = 0
+    for resolved in set(_THUMB_PATHS.values()):
+        if not resolved:
+            continue
+        key_size = _stat_cache_key(resolved)
+        if key_size is None:
+            continue
+        meta = _META_CACHE.get(key_size[0])
+        if meta:
+            total += meta["vram_bytes"]
+    return total
 
 
 def _stamp_for(doc):
@@ -588,6 +670,101 @@ def pump_jobs():
     return job_id
 
 
+def _op_hub_meta(payload):
+    """``hub/meta`` — batched header metadata for a list of asset keys.
+    Doc-guard-first like every sibling op, then the batch cap (the SPA
+    batches visible rows, never the world — a request past the cap is a
+    client bug, not a scene with a lot of textures). Keys already resolved
+    in ``_THUMB_PATHS`` (populated by ``hub/inventory``/other scans) are
+    served for free; an unknown key triggers one fresh
+    ``scan_scene_assets`` (same fallback policy as ``hub/thumb``), not one
+    scan per unknown key. Keys with no resolvable path or an unparseable
+    file are simply absent from the response — never an error per-key.
+    """
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"error": "no_document"}
+    keys = payload.get("keys") or []
+    if len(keys) > _META_BATCH_CAP:
+        return {"error": "too_many_keys"}
+
+    if any(key not in _THUMB_PATHS for key in keys):
+        from sentinel.ui.flows import scan_scene_assets
+
+        records, _tex, _skipped = scan_scene_assets(doc)
+        _remember_thumb_paths(records)
+
+    metas = {}
+    for key in keys:
+        resolved = _THUMB_PATHS.get(key)
+        if not resolved:
+            continue
+        meta = _meta_for(resolved)
+        if meta is not None:
+            metas[key] = meta
+    return {"metas": metas}
+
+
+def _op_hub_meta_totals(payload):
+    """``hub/meta_totals`` — VRAM/disk rollup over unique resolved paths
+    that already have a cache entry (never triggers a parse itself; the
+    SPA fetches ``hub/meta`` in chunks first, so by the time this fires
+    the cache is warm). ``total`` counts unique files that exist on disk;
+    ``covered`` counts how many of those have a successfully-parsed
+    cache entry — the SPA prefixes the VRAM figure with ``~`` while
+    ``covered < total``.
+    """
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"error": "no_document"}
+
+    vram_total = 0
+    disk_total = 0
+    covered = 0
+    total = 0
+    for resolved in set(_THUMB_PATHS.values()):
+        if not resolved:
+            continue
+        key_size = _stat_cache_key(resolved)
+        if key_size is None:
+            continue
+        total += 1
+        meta = _META_CACHE.get(key_size[0])
+        if not meta:
+            continue
+        covered += 1
+        vram_total += meta["vram_bytes"]
+        disk_total += meta.get("disk_bytes", 0)
+
+    return {
+        "vram_bytes": vram_total,
+        "vram_label": assets_engine.format_size(vram_total),
+        "disk_bytes": disk_total,
+        "disk_label": assets_engine.format_size(disk_total),
+        "covered": covered,
+        "total": total,
+    }
+
+
+def _op_hub_ui_state(payload):
+    """``hub/ui_state`` — read-only. Not scene-dependent (column widths /
+    sort are a machine-level UI preference, same tier as
+    ``GlobalSettings.get_asset_hub_col_widths``), so no doc guard."""
+    return {"state": GlobalSettings.get("hub_spa_ui", {})}
+
+
+def _op_hub_ui_state_save(payload):
+    """``hub/ui_state/save`` — mutation. Stores ``state`` verbatim under
+    the ``hub_spa_ui`` settings key; the only validation is "is it a
+    dict" — shape (``col_widths``/``sort``) is the SPA's contract with
+    itself, not this op's to enforce."""
+    state = payload.get("state")
+    if not isinstance(state, dict):
+        return {"ok": False, "error": "invalid state"}
+    GlobalSettings.set("hub_spa_ui", state)
+    return {"ok": True}
+
+
 HUB_OPS = {
     "hub/inventory": _op_hub_inventory,
     "hub/state_stamp": _op_hub_state_stamp,
@@ -601,4 +778,8 @@ HUB_OPS = {
     "hub/match_folder": _op_hub_match_folder,
     "hub/make_relative": _op_hub_make_relative,
     "hub/collect_start": _op_hub_collect_start,
+    "hub/meta": _op_hub_meta,
+    "hub/meta_totals": _op_hub_meta_totals,
+    "hub/ui_state": _op_hub_ui_state,
+    "hub/ui_state/save": _op_hub_ui_state_save,
 }
