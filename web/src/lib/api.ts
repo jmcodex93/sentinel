@@ -651,10 +651,15 @@ export async function fetchHubMetaTotals(): Promise<HubMetaTotals> {
   };
 
   if (isMock()) {
+    // Fixture totals (sum of all 10 hub-meta.json vram_bytes):
+    // tex_body_diffuse(67MB) + tex_body_normal(67MB) + tex_shared_noise(256MB)
+    // + tex_glass_normal(16MB) + hdri_dome_studio(32MB) + tex_label_diffuse(4MB)
+    // + tex_props_ao(5.3MB) + abc_hero_anim(45MB) + hdri_dome_backup(64MB)
+    // + abc_crowd_sim(5.3MB) = 582,658,730 bytes = 556 MB
     return {
-      vram_bytes: 3149639680,
-      vram_label: "2.9 GB",
-      disk_bytes: 537395200,
+      vram_bytes: 582658730,
+      vram_label: "556 MB",
+      disk_bytes: 536870912,
       disk_label: "512 MB",
       covered: 10,
       total: 10,

@@ -6,7 +6,7 @@
     "bit_depth": 8,
     "colorspace": "sRGB",
     "vram_bytes": 67108864,
-    "vram_label": "64 MB",
+    "vram_label": "64.0 MB",
     "res_label": "4K",
     "res_tier": "4k"
   },
@@ -17,7 +17,7 @@
     "bit_depth": 8,
     "colorspace": "linear",
     "vram_bytes": 67108864,
-    "vram_label": "64 MB",
+    "vram_label": "64.0 MB",
     "res_label": "4K",
     "res_tier": "4k"
   },
@@ -39,7 +39,7 @@
     "bit_depth": 8,
     "colorspace": "linear",
     "vram_bytes": 16777216,
-    "vram_label": "16 MB",
+    "vram_label": "16.0 MB",
     "res_label": "2K",
     "res_tier": "2k"
   },
@@ -50,7 +50,7 @@
     "bit_depth": 8,
     "colorspace": "linear",
     "vram_bytes": 33554432,
-    "vram_label": "32 MB",
+    "vram_label": "32.0 MB",
     "res_label": "4K",
     "res_tier": "4k"
   },
@@ -82,8 +82,8 @@
     "channels": 4,
     "bit_depth": 32,
     "colorspace": "linear",
-    "vram_bytes": 46137344,
-    "vram_label": "44 MB",
+    "vram_bytes": 47185920,
+    "vram_label": "45.0 MB",
     "res_label": "2K",
     "res_tier": "2k"
   },
@@ -94,7 +94,7 @@
     "bit_depth": 8,
     "colorspace": "linear",
     "vram_bytes": 67108864,
-    "vram_label": "64 MB",
+    "vram_label": "64.0 MB",
     "res_label": "4K",
     "res_tier": "4k"
   },
