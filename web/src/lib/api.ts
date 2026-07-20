@@ -4,6 +4,7 @@ import mockGate from "../mock/form-gate.json";
 import mockNotes from "../mock/form-notes.json";
 import mockSaveVersion from "../mock/form-save-version.json";
 import mockSettings from "../mock/form-settings.json";
+import mockHubInventory from "../mock/hub-inventory.json";
 import mockPaletteActions from "../mock/palette-actions.json";
 import mockQcReport from "../mock/qc-report.json";
 import mockRenderValidationReport from "../mock/render-validation.json";
@@ -17,6 +18,17 @@ import type {
   GateStateResult,
   GateSubmitAction,
   GateSubmitResponse,
+  HubApplyChange,
+  HubApplyResponse,
+  HubCollectStartResponse,
+  HubInventory,
+  HubInventoryResult,
+  HubJobStatus,
+  HubPickPathResponse,
+  HubPreset,
+  HubPresetsResult,
+  HubPresetsSaveResponse,
+  HubSelectOwnerResponse,
   NotesState,
   NotesStateResult,
   NotesSubmitPayload,
@@ -438,4 +450,130 @@ export async function runPaletteAction(id: string, confirm?: boolean): Promise<P
     return mockPaletteRun(id, confirm);
   }
   return postForm<PaletteRunResponse>("/api/palette/run", confirm ? { id, confirm: true } : { id });
+}
+
+// ---------------------------------------------------------------------------
+// Asset Hub (Phase 5) — see plugin/sentinel/ui/hub_ops.py `HUB_OPS`, routed
+// through the same `/api/<op>` dispatch as every op above. Pages are not
+// wired to this module yet (that's a later Phase 5 task); these functions
+// only need to compile and match the Python contract field-for-field.
+// ---------------------------------------------------------------------------
+
+/** `GET /api/hub/inventory` — see `_op_hub_inventory` in hub_ops.py. */
+export async function fetchHubInventory(): Promise<HubInventoryResult> {
+  if (isMock()) {
+    return { kind: "ok", data: mockHubInventory as HubInventory };
+  }
+  return fetchReport<HubInventory>("/api/hub/inventory", {
+    no_document: "No active Cinema 4D document. Open a scene, then reopen the Asset Hub.",
+  });
+}
+
+/** `GET /api/hub/state_stamp` — see `_op_hub_state_stamp` in hub_ops.py.
+ * Collapses the `{stamp}` / `{error}` envelope to `string | null`: the SPA
+ * only ever compares stamps to detect change, so "no document" and a
+ * network failure are equally "nothing to compare". */
+export async function fetchHubStateStamp(): Promise<string | null> {
+  if (isMock()) {
+    return "mock-stamp";
+  }
+  const result = await fetchReport<{ stamp: string }>("/api/hub/state_stamp", {});
+  return result.kind === "ok" ? result.data.stamp : null;
+}
+
+/** `GET /api/hub/presets` — see `_op_hub_presets` in hub_ops.py. */
+export async function fetchHubPresets(): Promise<HubPresetsResult> {
+  if (isMock()) {
+    return { kind: "ok", data: [] };
+  }
+  const result = await fetchReport<{ presets: HubPreset[] }>("/api/hub/presets", {});
+  if (result.kind === "empty") {
+    return { kind: "error", message: result.reason };
+  }
+  if (result.kind === "error") {
+    return result;
+  }
+  return { kind: "ok", data: Array.isArray(result.data.presets) ? result.data.presets : [] };
+}
+
+/** `POST /api/hub/presets/save` — see `_op_hub_presets_save` in hub_ops.py. */
+export async function saveHubPreset(find: string, replace: string): Promise<HubPresetsSaveResponse> {
+  if (isMock()) {
+    return { ok: true };
+  }
+  return postForm<HubPresetsSaveResponse>("/api/hub/presets/save", { find, replace });
+}
+
+/** `POST /api/hub/apply_repath` — see `_op_hub_apply_repath` in hub_ops.py. */
+export async function postHubApply(changes: HubApplyChange[]): Promise<HubApplyResponse> {
+  if (isMock()) {
+    return { ok: true, applied: changes.length, errors: [], stamp: "mock-stamp" };
+  }
+  return postForm<HubApplyResponse>("/api/hub/apply_repath", { changes });
+}
+
+/** `POST /api/hub/select_owner` — see `_op_hub_select_owner` in hub_ops.py. */
+export async function postHubSelectOwner(key: string): Promise<HubSelectOwnerResponse> {
+  if (isMock()) {
+    return { ok: true, stamp: "mock-stamp" };
+  }
+  return postForm<HubSelectOwnerResponse>("/api/hub/select_owner", { key });
+}
+
+/** `POST /api/hub/pick_path` — see `_op_hub_pick_path` in hub_ops.py
+ * (`directory` picks a folder instead of a file; `title` is the dialog
+ * caption). */
+export async function postHubPickPath(directory: boolean, title?: string): Promise<HubPickPathResponse> {
+  if (isMock()) {
+    return { ok: false, error: "cancelled" };
+  }
+  return postForm<HubPickPathResponse>("/api/hub/pick_path", { directory, title });
+}
+
+/** `POST /api/hub/collect_start` — see `_op_hub_collect_start` in
+ * hub_ops.py. `gateAck` must be exactly `true` to proceed past a blocking
+ * FAIL-severity gate (mirrors the fase-4 `form/gate` `confirm_required`
+ * contract — see that op's docstring). */
+export async function startHubCollect(
+  targetDir: string,
+  zip: boolean,
+  gateAck: boolean,
+): Promise<HubCollectStartResponse> {
+  if (isMock()) {
+    return { ok: true, job_id: "mock-job-1" };
+  }
+  return postForm<HubCollectStartResponse>("/api/hub/collect_start", {
+    target_dir: targetDir,
+    zip,
+    gate_ack: gateAck,
+  });
+}
+
+/** `GET /api/hub/job_status?job_id=<id>` — see `webbridge.JobRegistry.status`
+ * and the `hub/job_status` special-case in `reports_dialog.py` (answered
+ * directly on the HTTP server thread, so it is NOT routed through
+ * `fetchReport`'s `MainThreadQueue`-backed error envelope — the raw shape
+ * already carries `error` for an unknown/expired job_id). */
+export async function fetchHubJobStatus(jobId: string): Promise<HubJobStatus> {
+  if (isMock()) {
+    return { job_id: jobId, state: "done", phase: "run", detail: "", pct: 100, result: null };
+  }
+  try {
+    const response = await fetch("/api/hub/job_status?job_id=" + encodeURIComponent(jobId));
+    return (await response.json()) as HubJobStatus;
+  } catch {
+    return { error: "Could not reach the Sentinel server. Is the Asset Hub still open in Cinema 4D?" };
+  }
+}
+
+/** `GET /api/hub/preflight` — see `_op_hub_preflight` in hub_ops.py. Same
+ * `qc_report_payload` shape as `GET /api/report/qc`, so this reuses
+ * `QcReport`/`QcReportResult` rather than a duplicate Hub-specific type. */
+export async function fetchHubPreflight(): Promise<QcReportResult> {
+  if (isMock()) {
+    return { kind: "ok", data: mockQcReport as QcReport };
+  }
+  return fetchReport<QcReport>("/api/hub/preflight", {
+    no_document: "No active Cinema 4D document. Open a scene, then reopen the Asset Hub.",
+  });
 }
