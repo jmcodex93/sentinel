@@ -108,6 +108,63 @@ def test_texture_path_classifier_corpus_pins_current_behavior(
             assert Path(resolved) == Path(expected_resolved), label
 
 
+def test_resolve_relative_texture_uses_global_dirs_when_doc_path_empty(
+    sentinel_module, tmp_path
+):
+    resolve = sentinel_module._resolve_relative_texture
+
+    global_dir = tmp_path / "user_tex"
+    global_dir.mkdir()
+    texture = global_dir / "hero_albedo.exr"
+    texture.write_text("placeholder", encoding="utf-8")
+
+    # No doc_path at all (unsaved doc) — only the global dir can resolve it,
+    # and it's found via bare-filename match (C4D's own resolution mode).
+    assert resolve("hero_albedo.exr", "", [str(global_dir)]) == str(texture)
+    # Also resolves when the caller passes the same relative subpath.
+    assert resolve("hero_albedo.exr", None, [str(global_dir)]) == str(texture)
+
+
+def test_resolve_relative_texture_global_dir_matches_relative_subpath(
+    sentinel_module, tmp_path
+):
+    resolve = sentinel_module._resolve_relative_texture
+
+    global_dir = tmp_path / "project_root"
+    tex_dir = global_dir / "tex"
+    tex_dir.mkdir(parents=True)
+    texture = tex_dir / "diffuse.exr"
+    texture.write_text("placeholder", encoding="utf-8")
+
+    assert resolve("tex/diffuse.exr", "", [str(global_dir)]) == str(texture)
+
+
+def test_resolve_relative_texture_doc_path_wins_over_global_dirs(
+    sentinel_module, tmp_path
+):
+    resolve = sentinel_module._resolve_relative_texture
+
+    doc_path = tmp_path / "shot"
+    doc_path.mkdir()
+    doc_texture = doc_path / "diffuse.exr"
+    doc_texture.write_text("doc copy", encoding="utf-8")
+
+    global_dir = tmp_path / "user_tex"
+    global_dir.mkdir()
+    global_texture = global_dir / "diffuse.exr"
+    global_texture.write_text("global copy", encoding="utf-8")
+
+    assert resolve("diffuse.exr", str(doc_path), [str(global_dir)]) == str(doc_texture)
+
+
+def test_resolve_relative_texture_no_dirs_returns_none(sentinel_module):
+    resolve = sentinel_module._resolve_relative_texture
+
+    assert resolve("diffuse.exr", "", None) is None
+    assert resolve("diffuse.exr", "", []) is None
+    assert resolve("", "/project", None) is None
+
+
 def test_compute_relative_texture_path_uses_forward_slashes(sentinel_module, tmp_path):
     doc_path = tmp_path / "shot" / "c4d"
     texture_path = tmp_path / "shot" / "tex" / "diffuse.exr"

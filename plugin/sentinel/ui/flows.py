@@ -1237,14 +1237,17 @@ def scan_scene_assets(doc):
     # GetAllAssetsNew reports the document's own .c4d as one of its assets
     # (an xref-shaped entry with no owner). Precompute the doc's own path so
     # the loop below can drop that self-reference — otherwise every scene
-    # lists itself as an asset row in the Hub. Unsaved docs have no path;
-    # in that case doc_own degrades to just the filename and the comparison
-    # is skipped entirely (an unsaved doc can't match a resolved filename).
+    # lists itself as an asset row in the Hub. Unsaved docs have no path, so
+    # the absolute-match above can't fire; instead we fall back to matching
+    # the bare filename (GetDocumentName()) on an ownerless entry — that's
+    # the same self-reference shape GetAllAssetsNew reports for a saved doc,
+    # just without a resolvable path.
     doc_own = None
     doc_own_path = doc.GetDocumentPath() or ""
     if doc_own_path:
         doc_own = os.path.normcase(os.path.normpath(
             os.path.join(doc_own_path, doc.GetDocumentName() or "")))
+    doc_own_name = os.path.normcase(doc.GetDocumentName() or "") if not doc_own_path else ""
 
     generic = []
     try:
@@ -1259,10 +1262,14 @@ def scan_scene_assets(doc):
         for item in asset_list:
             try:
                 filename = item.get("filename", "")
+                owner = item.get("owner")
                 if doc_own and filename and \
                         os.path.normcase(os.path.normpath(filename)) == doc_own:
                     continue
-                owner = item.get("owner")
+                if doc_own_name and not owner and filename:
+                    base = os.path.normcase(os.path.basename(filename))
+                    if base in (doc_own_name, doc_own_name + ".c4d"):
+                        continue
                 owner_name = owner.GetName() if owner else ""
                 kind = "object"
                 if owner is not None:
