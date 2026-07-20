@@ -113,6 +113,35 @@ def _json_safe(value: Any) -> Any:
         return repr(value)
 
 
+def build_preflight_issues(score: dict[str, Any]) -> list[str]:
+    """Ordered human-readable preflight issue strings from a QC score.
+
+    One line per check with new violations (``score["counts"]``), honoring
+    each registry entry's ``preflight_order`` (falling back to declaration
+    order when unset) and formatting via ``preflight_template``. This is
+    the exact loop the native Asset Hub dialog's
+    ``AssetHubDialog._build_collect_preflight_payload`` used to duplicate
+    inline (and the retired ``collect_scene`` before it) — extracted here
+    so the Hub SPA's ``hub/collect_start`` op shares one implementation
+    instead of re-deriving it.
+    """
+    counts = score.get("counts") or {}
+    preflight_entries = sorted(
+        enumerate(CHECK_REGISTRY),
+        key=lambda item: (
+            item[1].preflight_order
+            if item[1].preflight_order is not None
+            else item[0]
+        ),
+    )
+    issues = []
+    for _idx, entry in preflight_entries:
+        count = counts.get(entry.check_id, 0)
+        if count:
+            issues.append(entry.preflight_template.format(n=count))
+    return issues
+
+
 def _registry_entry(check_id: str) -> Any:
     for entry in CHECK_REGISTRY:
         if entry.check_id == check_id:
