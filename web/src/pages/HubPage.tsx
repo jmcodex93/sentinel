@@ -1,8 +1,11 @@
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { HubAssetsTable } from "../components/hub/HubAssetsTable";
+import { HubDeliverSection } from "../components/hub/HubDeliverSection";
+import { HubPreflightStrip } from "../components/hub/HubPreflightStrip";
 import { HubToolbar, type HubFilter } from "../components/hub/HubToolbar";
 import { EmptyState, ErrorState, LoadingState } from "../components/PageStates";
+import { Section } from "../components/Section";
 import {
   fetchHubInventory,
   fetchHubPresets,
@@ -34,8 +37,9 @@ function mergePending(prev: Map<string, string>, additions: Map<string, string>)
  * bulk repathing, and the polling loop that keeps the table honest against
  * out-of-band scene edits (native Attribute Manager, undo, another dialog).
  * See docs/superpowers/plans/2026-07-20-hub-spa.md Task 10 for the full
- * behavior contract this implements. Deliver section (`?focus=deliver`) is
- * Task 11 — `focus` is read here and just anchors the scroll target for now.
+ * behavior contract this implements. The Deliver section (preflight strip +
+ * inline gate + job progress + delivery summary, `?focus=deliver` scrolls
+ * it into view) is Task 11 — see HubPreflightStrip.tsx / HubDeliverSection.tsx.
  */
 export function HubPage() {
   const { toast } = useToast();
@@ -54,6 +58,7 @@ export function HubPage() {
   // Refs so the polling interval (set up once) always reads the latest
   // values without re-creating the interval on every keystroke/selection.
   const stampRef = useRef<string | null>(null);
+  const deliverRef = useRef<HTMLDivElement>(null);
   const pendingRef = useRef<Map<string, string>>(pending);
   useEffect(() => {
     pendingRef.current = pending;
@@ -73,13 +78,14 @@ export function HubPage() {
       if (result.kind === "ok") setPresets(result.data);
     });
 
-    // `?focus=deliver` deep-link (Task 11 wires the actual Deliver section —
-    // for now this only scrolls to the placeholder anchor below).
+    // `?focus=deliver` deep-link — the Collect Scene button (panel.py)
+    // opens the Hub with this so the artist lands directly on Deliver
+    // instead of scrolling past the inventory table themselves.
     try {
       const focus = new URLSearchParams(window.location.search).get("focus");
       if (focus === "deliver") {
         requestAnimationFrame(() => {
-          document.getElementById("hub-deliver-anchor")?.scrollIntoView({ block: "start" });
+          deliverRef.current?.scrollIntoView({ block: "start" });
         });
       }
     } catch {
@@ -309,10 +315,17 @@ export function HubPage() {
           onSelect={setSelectedKey}
           onOwnerClick={handleOwnerClick}
         />
-        {/* Placeholder anchor for the `?focus=deliver` deep-link — Task 11
-            replaces this with the real Deliver section (preflight strip,
-            gate, job progress, delivery summary reuse). */}
-        <div id="hub-deliver-anchor" />
+        <div ref={deliverRef}>
+          <Section title="Deliver">
+            <div className="flex flex-col gap-3">
+              <HubPreflightStrip onFixed={() => refreshInventory(true)} />
+              <HubDeliverSection
+                missingCount={data.totals.missing}
+                onInventoryRefresh={() => refreshInventory(true)}
+              />
+            </div>
+          </Section>
+        </div>
       </div>
     </div>
   );
