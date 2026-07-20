@@ -1485,3 +1485,61 @@ class TestJobRegistry:
         snap = reg.status(job_id)
         snap["state"] = "hacked"
         assert reg.status(job_id)["state"] == "pending"
+
+
+# ---------------------------------------------------------------------------
+# Hub payload helpers
+# ---------------------------------------------------------------------------
+
+class TestHubPayloadHelpers:
+    def _record(self, **kw):
+        base = {"key": "k1", "path": "tex/a.png", "resolved_path": "/p/tex/a.png",
+                "status": "ok", "asset_type": "texture", "size_bytes": 2048,
+                "owners": [("Mat", "material", "Color")], "repathable": True,
+                "tex_idx": 0, "tex_idxs": [0, 3]}
+        base.update(kw)
+        return base
+
+    def test_inventory_payload_strips_live_refs_and_shapes_owners(self):
+        totals = {"count": 1, "missing": 0, "absolute": 0, "total_bytes": 2048,
+                  "unsized": 0, "by_type": {"texture": 1}}
+        payload = webbridge.hub_inventory_payload([self._record()], totals,
+                                                  scene_name="shot.c4d", skipped=2)
+        asset = payload["assets"][0]
+        assert "tex_idx" not in asset and "tex_idxs" not in asset
+        assert asset["owners"] == [{"name": "Mat", "kind": "material", "channel": "Color"}]
+        assert asset["size_label"] == "2.0 KB"
+        assert asset["has_thumb"] is True
+        assert payload["totals"]["total_label"] == "2.0 KB"
+        assert payload["scene_name"] == "shot.c4d" and payload["skipped"] == 2
+
+    def test_inventory_payload_no_thumb_for_missing_or_nonimage(self):
+        rec_missing = self._record(resolved_path=None, status="missing")
+        rec_abc = self._record(key="k2", resolved_path="/p/c.abc", asset_type="alembic")
+        payload = webbridge.hub_inventory_payload([rec_missing, rec_abc],
+                                                  {"count": 2, "missing": 1, "absolute": 0,
+                                                   "total_bytes": 0, "unsized": 0, "by_type": {}})
+        assert [a["has_thumb"] for a in payload["assets"]] == [False, False]
+
+    def test_resolve_repath_targets_maps_all_sharing_shaders(self):
+        records = [self._record(), self._record(key="k2", repathable=False, tex_idxs=[])]
+        targets, errors = webbridge.resolve_repath_targets(
+            records, [{"key": "k1", "new_path": "/new/a.png"},
+                      {"key": "k2", "new_path": "/new/b.png"},
+                      {"key": "kX", "new_path": "/new/c.png"},
+                      {"key": "k1", "new_path": ""}])
+        assert targets == [{"key": "k1", "new_path": "/new/a.png", "tex_idxs": [0, 3]}]
+        assert {e["key"] for e in errors} == {"k2", "kX", "k1"}
+
+    def test_thumb_cache_name_stable_and_mtime_sensitive(self):
+        a = webbridge.thumb_cache_name("/p/a.png", 100.0)
+        assert a == webbridge.thumb_cache_name("/p/a.png", 100.0)
+        assert a != webbridge.thumb_cache_name("/p/a.png", 101.0)
+        assert a.endswith(".png")
+
+    def test_collect_phase_pct(self):
+        assert webbridge.collect_phase_pct("Saving project with assets…") == ("save", 15)
+        assert webbridge.collect_phase_pct("Re-scanning package…") == ("rescan", 60)
+        assert webbridge.collect_phase_pct("Writing manifest…") == ("manifest", 80)
+        assert webbridge.collect_phase_pct("Zipping 3/9…") == ("zip", 90)
+        assert webbridge.collect_phase_pct("anything else") == ("run", None)
