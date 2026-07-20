@@ -9,6 +9,8 @@ import type { HubAsset, HubMeta } from "../types";
 
 export type SortCol = "name" | "status" | "res" | "size" | "vram";
 
+export const SORT_COLS: readonly SortCol[] = ["name", "status", "res", "size", "vram"];
+
 export interface SortSpec {
   col: SortCol;
   dir: "asc" | "desc";
@@ -172,6 +174,37 @@ export const MIN_COL_WIDTH = 60;
  * itself (`minmax(160px, 1fr)`) and never goes through this path. */
 export function clampColWidth(width: number): number {
   return Math.max(MIN_COL_WIDTH, Math.round(width));
+}
+
+/** Validates a `SortSpec` loaded from `sentinel_settings.json` (persisted
+ * ui_state — an external, editable-by-hand file). Anything that isn't
+ * exactly `{col: <a known SortCol>, dir: "asc"|"desc"}` is rejected back to
+ * `null` (the default order) rather than trusted as-is. */
+export function sanitizeSortSpec(value: unknown): SortSpec | null {
+  if (!value || typeof value !== "object") return null;
+  const col = (value as { col?: unknown }).col;
+  const dir = (value as { dir?: unknown }).dir;
+  if (typeof col !== "string" || !SORT_COLS.includes(col as SortCol)) return null;
+  if (dir !== "asc" && dir !== "desc") return null;
+  return { col: col as SortCol, dir };
+}
+
+/** Validates `col_widths` loaded from `sentinel_settings.json`. Keeps only
+ * known resizable column ids with a finite numeric value, clamped to the
+ * same 60px floor the live resizer enforces — corrupted or hand-edited
+ * settings (a stringified number, `0`, a negative width, an unknown key)
+ * must never produce a 0px/negative column, and must never smuggle in a
+ * `name` width (that column is never stored — see `RESIZABLE_COLUMNS`). */
+export function sanitizeColWidths(value: unknown): Partial<Record<ResizableColumn, number>> {
+  const out: Partial<Record<ResizableColumn, number>> = {};
+  if (!value || typeof value !== "object") return out;
+  for (const id of RESIZABLE_COLUMNS) {
+    const raw = (value as Record<string, unknown>)[id];
+    if (typeof raw === "number" && Number.isFinite(raw)) {
+      out[id] = clampColWidth(raw);
+    }
+  }
+  return out;
 }
 
 /** Builds the table's `gridTemplateColumns` value from stored widths,

@@ -27,6 +27,8 @@ import {
   applyFacets,
   emptyFacetState,
   facetCounts,
+  sanitizeColWidths,
+  sanitizeSortSpec,
   sortAssets,
   type FacetState,
   type ResizableColumn,
@@ -37,7 +39,6 @@ import { useToast } from "../lib/toast";
 import type { HubInventory, HubInventoryResult, HubMeta, HubMetaTotals, HubPreset, HubUiState } from "../types";
 
 const UI_STATE_SAVE_DEBOUNCE_MS = 500;
-const SORT_COLS = new Set(["name", "status", "res", "size", "vram"]);
 
 type PageState = { kind: "loading" } | HubInventoryResult;
 
@@ -140,13 +141,11 @@ export function HubPage() {
     // Non-blocking: the table renders with default sort/widths immediately
     // and re-renders once the persisted ui_state arrives (fetchHubUiState
     // resolves `{}` on any error/mock, so this is always safe to apply).
+    // sentinel_settings.json is hand-editable — sanitize before trusting it,
+    // a corrupted value must never produce a 0px/negative column.
     fetchHubUiState().then((uiState) => {
-      if (uiState.sort && SORT_COLS.has(uiState.sort.col)) {
-        setSort(uiState.sort as SortSpec);
-      }
-      if (uiState.col_widths) {
-        setColWidths(uiState.col_widths as Partial<Record<ResizableColumn, number>>);
-      }
+      setSort(sanitizeSortSpec(uiState.sort));
+      setColWidths(sanitizeColWidths(uiState.col_widths));
     });
 
     // `?focus=deliver` deep-link — the Collect Scene button (panel.py)

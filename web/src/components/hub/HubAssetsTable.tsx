@@ -149,19 +149,26 @@ function SortIndicator({ dir }: { dir: "asc" | "desc" }) {
 
 /** 4px hit-area divider rendered at the right edge of a resizable header
  * cell. Drag adjusts that column's own stored width (the "left column" of
- * the boundary it sits on); double-click resets it back to the default.
- * Lives as an absolutely-positioned sibling of the header label, so a drag
- * gesture never lands on — and can never trigger — the sort button. */
+ * the boundary it sits on); double-click deletes the stored width entirely
+ * (falls back to `DEFAULT_COL_WIDTHS` at render, rather than freezing in
+ * today's default value — future default tuning then still reaches a user
+ * who's reset). Pointer cancel (e.g. the OS interrupts the gesture) is
+ * treated like pointerup: commit + persist whatever width the drag reached,
+ * never leave it uncommitted. Lives as an absolutely-positioned sibling of
+ * the header label, so a drag gesture never lands on — and can never
+ * trigger — the sort button. */
 function ColumnResizer({
   colId,
   width,
   onResize,
   onResizeEnd,
+  onReset,
 }: {
   colId: ResizableColumn;
   width: number;
   onResize: (colId: ResizableColumn, width: number) => void;
   onResizeEnd: () => void;
+  onReset: (colId: ResizableColumn) => void;
 }) {
   const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
@@ -184,12 +191,19 @@ function ColumnResizer({
     [colId, onResize],
   );
 
-  const handlePointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current) return;
-    dragRef.current = null;
-    (event.target as HTMLElement).releasePointerCapture(event.pointerId);
-    onResizeEnd();
-  }, [onResizeEnd]);
+  const endDrag = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (!dragRef.current) return;
+      dragRef.current = null;
+      try {
+        (event.target as HTMLElement).releasePointerCapture(event.pointerId);
+      } catch {
+        // pointercancel may have already released capture — commit regardless
+      }
+      onResizeEnd();
+    },
+    [onResizeEnd],
+  );
 
   return (
     <div
@@ -197,11 +211,11 @@ function ColumnResizer({
       aria-orientation="vertical"
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
       onDoubleClick={(event) => {
         event.stopPropagation();
-        onResize(colId, DEFAULT_COL_WIDTHS[colId]);
-        onResizeEnd();
+        onReset(colId);
       }}
       className="absolute top-0 right-0 h-full w-1 cursor-col-resize touch-none select-none hover:bg-[var(--color-primary)]"
       style={{ zIndex: 1 }}
@@ -252,6 +266,14 @@ export function HubAssetsTable({
   const handleResizeEnd = useCallback(() => {
     onColWidthsChange?.(widths, true);
   }, [onColWidthsChange, widths]);
+  const handleResetWidth = useCallback(
+    (colId: ResizableColumn) => {
+      const next = { ...widths };
+      delete next[colId];
+      onColWidthsChange?.(next, true);
+    },
+    [onColWidthsChange, widths],
+  );
 
   if (assets.length === 0) {
     return (
@@ -315,6 +337,7 @@ export function HubAssetsTable({
                     width={widths[col.resizeId] ?? DEFAULT_COL_WIDTHS[col.resizeId]}
                     onResize={handleResize}
                     onResizeEnd={handleResizeEnd}
+                    onReset={handleResetWidth}
                   />
                 )}
               </div>

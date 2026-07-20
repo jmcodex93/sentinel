@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { applyFacets, channelsLabel, facetCounts, sortAssets, type FacetState } from "./hubTable";
+import {
+  applyFacets,
+  channelsLabel,
+  facetCounts,
+  MIN_COL_WIDTH,
+  sanitizeColWidths,
+  sanitizeSortSpec,
+  sortAssets,
+  type FacetState,
+} from "./hubTable";
 import type { HubAsset, HubMeta } from "../types";
 
 function asset(overrides: Partial<HubAsset> & { key: string }): HubAsset {
@@ -202,5 +211,43 @@ describe("facetCounts", () => {
 
   it("returns empty count maps when nothing has meta", () => {
     expect(facetCounts(assets, {})).toEqual({ res: {}, channels: {}, depth: {} });
+  });
+});
+
+describe("sanitizeSortSpec — untrusted sentinel_settings.json input", () => {
+  it("passes through a valid spec", () => {
+    expect(sanitizeSortSpec({ col: "size", dir: "desc" })).toEqual({ col: "size", dir: "desc" });
+  });
+  it("rejects an unknown column", () => {
+    expect(sanitizeSortSpec({ col: "bogus", dir: "asc" })).toBeNull();
+  });
+  it("rejects an invalid direction", () => {
+    expect(sanitizeSortSpec({ col: "name", dir: "sideways" })).toBeNull();
+  });
+  it("rejects null/undefined/non-object input", () => {
+    expect(sanitizeSortSpec(null)).toBeNull();
+    expect(sanitizeSortSpec(undefined)).toBeNull();
+    expect(sanitizeSortSpec("name")).toBeNull();
+    expect(sanitizeSortSpec(42)).toBeNull();
+  });
+});
+
+describe("sanitizeColWidths — untrusted sentinel_settings.json input", () => {
+  it("keeps known resizable columns with finite numbers, clamped to the min", () => {
+    expect(sanitizeColWidths({ type: 120, size: 10 })).toEqual({ type: 120, size: MIN_COL_WIDTH });
+  });
+  it("drops unknown keys, including a smuggled-in name width", () => {
+    expect(sanitizeColWidths({ name: 999, bogus: 50, type: 100 })).toEqual({ type: 100 });
+  });
+  it("clamps 0/negative finite values to the min instead of trusting them", () => {
+    expect(sanitizeColWidths({ type: 0, status: -50 })).toEqual({ type: MIN_COL_WIDTH, status: MIN_COL_WIDTH });
+  });
+  it("drops non-finite / non-numeric values (NaN, Infinity, strings)", () => {
+    expect(sanitizeColWidths({ size: NaN, vram: Infinity, usedby: "200" })).toEqual({});
+  });
+  it("returns an empty object for null/undefined/non-object input", () => {
+    expect(sanitizeColWidths(null)).toEqual({});
+    expect(sanitizeColWidths(undefined)).toEqual({});
+    expect(sanitizeColWidths("widths")).toEqual({});
   });
 });
