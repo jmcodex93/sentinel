@@ -141,8 +141,17 @@ export function HubAssetsTable({
             return (
               <div
                 key={a.key}
+                role="button"
+                tabIndex={0}
+                aria-selected={selectedKey === a.key}
                 onClick={() => onSelect(a.key)}
-                className="grid cursor-default items-center text-body hover:bg-[var(--color-surface-2)]"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onSelect(a.key);
+                  }
+                }}
+                className="grid cursor-pointer items-center text-body hover:bg-[var(--color-surface-2)]"
                 style={{
                   position: "absolute",
                   top: 0,
