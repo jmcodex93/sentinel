@@ -2428,14 +2428,22 @@ class YSPanel(gui.GeDialog):
     def _open_form(self, doc, page, fallback=None):
         """Open a Sentinel form page (Phase 4 Task 4) — the ``FormDialog``
         host (``ui/reports_dialog.py`` ``open_form``) for Save Version /
-        Edit Notes / Settings / the Command Palette. Same lifecycle pattern
-        as ``_open_reports``: reuses the module-level Reports/Forms server,
-        closes any previous instance of THIS SAME page the panel has open
-        (keyed by ``page`` in ``self._forms``, mirroring the single
-        ``self._reports`` slot), and calls ``fallback`` (a zero-arg
-        callable — the native modal dialog + engine call the page
+        Edit Notes / Settings / the Command Palette. Calls ``fallback`` (a
+        zero-arg callable — the native modal dialog + engine call the page
         replaces) if the server can't start (missing web build, every port
         busy, ...).
+
+        No dialog-instance bookkeeping here: ``open_form`` itself retains a
+        strong reference to whatever it returns (module-level
+        ``_open_form_dialogs`` registry in ``reports_dialog.py``, closing
+        any previous instance of the SAME page first) — this method used to
+        duplicate that in a ``self._forms`` dict, which was redundant once
+        the module took over ownership, and worse, is exactly the kind of
+        "someone else surely keeps a reference" assumption that let
+        ``SentinelPaletteCmd.Execute`` open a palette that Python garbage
+        collected out from under C4D (blank window, no error) because IT
+        discarded the return with no dict of its own. Fixed at the source
+        (``open_form``) instead, so nothing here needs to opt in.
 
         Unlike ``_open_reports``, opening a form is fire-and-forget: the
         mutation (save/notes/settings) happens inside the SPA's own submit
@@ -2446,21 +2454,9 @@ class YSPanel(gui.GeDialog):
         external document edit. No caller currently needs a callback for
         "form closed with X result" and none is added speculatively.
         """
-        forms = getattr(self, "_forms", None)
-        if forms is None:
-            forms = {}
-            self._forms = forms
-
         try:
             from sentinel.ui.reports_dialog import open_form
-            existing = forms.get(page)
-            if existing is not None:
-                try:
-                    if existing.IsOpen():
-                        existing.Close()
-                except Exception:
-                    pass
-            forms[page] = open_form(doc, page)
+            open_form(doc, page)
         except Exception as e:
             safe_print(f"Sentinel form '{page}' failed to open ({e}); "
                        f"falling back to native dialog")
@@ -2907,6 +2903,16 @@ class SentinelPaletteCmd(plugins.CommandData):
     No native/legacy equivalent exists for this command (the palette is a
     new Phase 4 feature, not a migration of an old modal) — a failure to
     open just surfaces as a plain ``MessageDialog``.
+
+    REGRESSION NOTE: ``Execute`` below discards ``open_form``'s return
+    value on purpose (this is a fire-and-open command, nothing here needs
+    to hold the dialog) — that used to blank the window shortcut-opened
+    from a bound key: with no Python-side reference anywhere, the
+    ``FormDialog`` instance was garbage-collected while C4D kept the empty
+    native window shell alive, so it never navigated or drained the queue.
+    Fixed in ``open_form`` itself (module-level ``_open_form_dialogs``
+    registry in ``reports_dialog.py``), not here — this method stays
+    exactly this simple.
     """
 
     def Execute(self, doc):

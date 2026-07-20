@@ -532,6 +532,10 @@ def _palette_open_reports(doc, action_id):
 
     page = _PALETTE_REPORT_PAGES.get(action_id)
     try:
+        # Return discarded on purpose — open_reports() itself retains a
+        # strong reference to the dialog (module-level _open_reports_dialog
+        # in reports_dialog.py) so it survives past this function returning;
+        # see that module's registry note for why this used to be a GC bug.
         open_reports(doc, page=page)
     except Exception as exc:
         return {"ok": False, "error": str(exc)}

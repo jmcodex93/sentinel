@@ -83,6 +83,24 @@ _server = None
 _queue = None
 _port = None
 
+# Strong references to every currently-open ReportsDialog/FormDialog
+# instance, keyed by page ("palette" -> its FormDialog; a single slot for
+# ReportsDialog since it is one deep-linkable window regardless of page —
+# see open_reports). REGRESSION NOTE: c4d.gui.GeDialog.Open(DLG_TYPE_ASYNC)
+# does NOT itself keep the Python object alive — C4D owns the native window
+# shell, but the Python-side GeDialog instance is ordinary Python garbage
+# once nothing references it. A caller that does `open_form(doc, "palette")`
+# and discards the return (as SentinelPaletteCmd.Execute originally did)
+# gets a BLANK window: the object is collected before/while CreateLayout's
+# HtmlViewer + Timer machinery would otherwise keep driving it, so the
+# shell never navigates or drains the queue. Same class of bug this project
+# hit earlier with the Asset Hub dialog. Fixing it HERE (the single place
+# every caller funnels through) means no call site — panel button, palette
+# navigate action, CommandData shortcut, any future one — has to remember
+# to keep its own reference; open_form/open_reports are the one owner.
+_open_form_dialogs = {}
+_open_reports_dialog = None
+
 # MessageDialog for a missing web build is shown at most once per session
 # (ensure_server can be called on every button click) — the popup would
 # otherwise nag on every retry with no new information.
@@ -489,12 +507,34 @@ def open_form(doc, page, defaultw=None, defaulth=None):
     ``smart_save_version``, ``NotesDialog``, ``SentinelSettingsDialog``;
     there is no native equivalent for ``palette``, so its caller's fallback
     is just an error message).
+
+    Retains a strong reference to the returned dialog in the module-level
+    ``_open_form_dialogs`` registry (keyed by ``page``), closing any
+    previous still-open instance of the SAME page first — see the registry
+    note above ``_open_form_dialogs`` for why this is not optional
+    bookkeeping: without it, a caller that doesn't keep its own reference
+    (e.g. a ``CommandData.Execute`` that just calls ``open_form(doc, page)``
+    for its side effect) gets a dialog that C4D shows as an empty/blank
+    window because Python garbage-collects the only object actually driving
+    it. Callers MAY still keep their own reference too (harmless — both just
+    point at the same object), but no caller is REQUIRED to for the dialog
+    to work correctly.
     """
     port = ensure_server()
     table_w, table_h = _FORM_SIZES.get(page, (560, 480))
+
+    existing = _open_form_dialogs.get(page)
+    if existing is not None:
+        try:
+            if existing.IsOpen():
+                existing.Close()
+        except Exception:
+            pass
+
     dlg = FormDialog(port, page)
     dlg.Open(c4d.DLG_TYPE_ASYNC,
               defaultw=defaultw or table_w, defaulth=defaulth or table_h)
+    _open_form_dialogs[page] = dlg
     return dlg
 
 
@@ -516,8 +556,32 @@ def open_reports(doc, page=None):
     Raises on failure (missing web build, or a server bind failure such as
     every port in range being busy) — the panel's button handler catches
     this and falls back to a legacy native dialog.
+
+    Retains a strong reference to the returned dialog in the module-level
+    ``_open_reports_dialog`` slot (one slot, not keyed by ``page`` — Reports
+    is a single deep-linkable window, unlike the per-page ``FormDialog``
+    registry), closing any previous still-open Reports window first. Same
+    reasoning as ``open_form``'s registry: ``ui/web_ops.py``
+    ``_palette_open_reports`` calls this and discards the return (it only
+    needs the side effect), which used to mean the palette's "Open Reports
+    · ..." actions could hand back a blank window once nothing else kept
+    the object alive. The panel's own ``self._reports`` bookkeeping in
+    ``_open_reports`` is redundant with this now (both just reference the
+    same object) but harmless, so it is left as-is rather than churned.
     """
+    global _open_reports_dialog
+
     port = ensure_server()
+
+    existing = _open_reports_dialog
+    if existing is not None:
+        try:
+            if existing.IsOpen():
+                existing.Close()
+        except Exception:
+            pass
+
     dlg = ReportsDialog(port, page=page)
     dlg.Open(c4d.DLG_TYPE_ASYNC, defaultw=1080, defaulth=760)
+    _open_reports_dialog = dlg
     return dlg
