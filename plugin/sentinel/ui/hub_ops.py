@@ -75,6 +75,9 @@ def _stamp_for(doc):
     shared by ``hub/state_stamp`` and every mutation op. ``GetDirty``
     support on ``BaseDocument`` is unverified live (per the task's own
     note) so it is wrapped defensively, falling back to ``GetChanged()``.
+    Texture-path changes only bump per-material dirty flags (not
+    document-level dirty), so ``mat_dirty`` is included in the stamp so
+    repaths/undo trigger auto-refresh.
 
     Mutation ops call this *after* their own ``c4d.EventAdd()`` and hand
     the fresh stamp back in the response. This is the stateless-HTTP
@@ -89,14 +92,17 @@ def _stamp_for(doc):
     """
     try:
         dirty = doc.GetDirty(c4d.DIRTYFLAGS_DATA | c4d.DIRTYFLAGS_CHILDREN)
+        mat_dirty = sum(m.GetDirty(c4d.DIRTYFLAGS_DATA) for m in doc.GetMaterials())
     except Exception:
         dirty = int(bool(doc.GetChanged()))
+        mat_dirty = 0
 
-    return "%s|%s|%s|%s" % (
+    return "%s|%s|%s|%s|%s" % (
         doc.GetDocumentPath() or "",
         doc.GetDocumentName() or "",
         dirty,
         len(doc.GetMaterials()),
+        mat_dirty,
     )
 
 
