@@ -1516,10 +1516,16 @@ class TestHubPayloadHelpers:
     def test_inventory_payload_no_thumb_for_missing_or_nonimage(self):
         rec_missing = self._record(resolved_path=None, status="missing")
         rec_abc = self._record(key="k2", resolved_path="/p/c.abc", asset_type="alembic")
-        payload = webbridge.hub_inventory_payload([rec_missing, rec_abc],
-                                                  {"count": 2, "missing": 1, "absolute": 0,
-                                                   "total_bytes": 0, "unsized": 0, "by_type": {}})
-        assert [a["has_thumb"] for a in payload["assets"]] == [False, False]
+        # Live-verified (2026-07-20): a missing asset can still have a
+        # resolved_path (last-known location) — has_thumb must be False
+        # regardless, or the SPA fires a guaranteed-404 thumb request.
+        rec_missing_with_path = self._record(
+            key="k3", resolved_path="/p/gone.png", status="missing")
+        payload = webbridge.hub_inventory_payload(
+            [rec_missing, rec_abc, rec_missing_with_path],
+            {"count": 3, "missing": 2, "absolute": 0,
+             "total_bytes": 0, "unsized": 0, "by_type": {}})
+        assert [a["has_thumb"] for a in payload["assets"]] == [False, False, False]
 
     def test_resolve_repath_targets_maps_all_sharing_shaders(self):
         records = [self._record(), self._record(key="k2", repathable=False, tex_idxs=[])]

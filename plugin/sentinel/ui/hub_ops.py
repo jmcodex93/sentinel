@@ -26,6 +26,25 @@ from sentinel.qc.score import compute_score, run_all_checks
 from sentinel.rules_context import active_rules_for_doc
 
 
+# Live-verified (2026-07-20): ``hub/thumb`` used to run its own
+# ``scan_scene_assets`` per request, so scrolling a table full of rows
+# queued dozens of full texture-scan + GetAllAssetsNew passes on the main
+# thread back-to-back — scroll jank, late thumbs, and the 2s state-stamp
+# poll starved behind them (looked like undo auto-refresh was broken, it
+# was actually queue congestion). This memo is refreshed by every op that
+# already runs a fresh full scan, so ``hub/thumb`` can look the path up
+# for free instead of re-scanning.
+_THUMB_PATHS = {}
+
+
+def _remember_thumb_paths(records):
+    """Refresh the ``key -> resolved_path`` memo from a fresh
+    ``scan_scene_assets`` result. Replaces (not merges) so stale keys from
+    a previous scene state don't linger."""
+    _THUMB_PATHS.clear()
+    _THUMB_PATHS.update({r.get("key"): r.get("resolved_path") for r in records})
+
+
 def _op_hub_inventory(payload):
     """``hub/inventory`` — full asset scan the same way
     ``AssetHubDialog`` builds its table: ``ui.flows.scan_scene_assets``
@@ -46,6 +65,7 @@ def _op_hub_inventory(payload):
     while start < len(records):
         start = assets_engine.stat_sizes_batch(records, start, 64)
     totals = assets_engine.compute_totals(records)
+    _remember_thumb_paths(records)
     return webbridge.hub_inventory_payload(
         records, totals, scene_name=doc.GetDocumentName() or "", skipped=skipped)
 
@@ -182,6 +202,7 @@ def _op_hub_apply_repath(payload):
     from sentinel.textures import apply_texture_path_change
 
     records, tex_records, _skipped = scan_scene_assets(doc)
+    _remember_thumb_paths(records)
     targets, errors = webbridge.resolve_repath_targets(records, changes)
     applied = 0
     doc.StartUndo()
@@ -225,6 +246,7 @@ def _op_hub_select_owner(payload):
     from sentinel.ui.flows import scan_scene_assets
 
     records, tex_records, _skipped = scan_scene_assets(doc)
+    _remember_thumb_paths(records)
     rec = next((r for r in records if r.get("key") == key), None)
     if rec is None:
         return {"ok": False, "error": "unknown key"}
@@ -275,21 +297,29 @@ def _op_hub_thumb(payload):
     """``hub/thumb`` — lazy per-asset PNG thumbnail, disk-cached by
     (resolved_path, mtime) via ``webbridge.thumb_cache_name`` so repeat
     requests for an unchanged file are a stat + return, not a re-decode.
-    Re-scans the scene per request (stateless HTTP, same as every other
-    hub op) — if live verification shows this too slow with many visible
-    rows, add a module-level ``{key: resolved_path}`` memo refreshed by
-    ``hub/inventory``, but only then (YAGNI, per the task brief).
+
+    Live-verified (2026-07-20): re-scanning the scene on EVERY ``/thumb``
+    request (one per visible row) queued dozens of full texture scans on
+    the main thread while scrolling — scroll jank, late thumbs, and the
+    2s state-stamp poll starved behind them. Looks up ``_THUMB_PATHS``
+    (kept fresh by every op that already runs a full scan) first; only
+    falls back to a scan if the key is missing (page opened before any
+    inventory fetch populated the memo — rare).
     """
     doc = documents.GetActiveDocument()
     if not doc:
         return {"error": "no_document"}
     key = payload.get("key") or ""
 
-    from sentinel.ui.flows import scan_scene_assets
+    if key in _THUMB_PATHS:
+        resolved = _THUMB_PATHS[key]
+    else:
+        from sentinel.ui.flows import scan_scene_assets
 
-    records, _tex, _skipped = scan_scene_assets(doc)
-    rec = next((r for r in records if r.get("key") == key), None)
-    resolved = (rec or {}).get("resolved_path")
+        records, _tex, _skipped = scan_scene_assets(doc)
+        _remember_thumb_paths(records)
+        rec = next((r for r in records if r.get("key") == key), None)
+        resolved = (rec or {}).get("resolved_path")
     if not resolved or not os.path.isfile(resolved):
         return {"error": "no_thumb"}
     try:
@@ -331,6 +361,7 @@ def _op_hub_match_folder(payload):
     from sentinel.ui.flows import scan_scene_assets
 
     records, _tex_records, _skipped = scan_scene_assets(doc)
+    _remember_thumb_paths(records)
     index, truncated = assets_engine.build_file_index(root)
     raw_matches = assets_engine.match_missing_in_folder(records, index)
 
@@ -368,6 +399,7 @@ def _op_hub_make_relative(payload):
     from sentinel.ui.flows import scan_scene_assets
 
     records, _tex_records, _skipped = scan_scene_assets(doc)
+    _remember_thumb_paths(records)
     changes = []
     skipped_cross_drive = 0
     for rec in records:

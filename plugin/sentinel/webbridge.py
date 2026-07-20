@@ -1381,7 +1381,8 @@ def hub_inventory_payload(records, totals, scene_name="", skipped=0):
             "owners": [{"name": n, "kind": k, "channel": c}
                        for (n, k, c) in rec.get("owners", [])],
             "repathable": bool(rec.get("repathable")),
-            "has_thumb": bool(resolved) and ext in _THUMB_EXTS,
+            "has_thumb": bool(resolved) and ext in _THUMB_EXTS
+            and rec.get("status") != "missing",
         })
     totals_out = dict(totals)
     totals_out["total_label"] = _assets.format_size(totals.get("total_bytes"))

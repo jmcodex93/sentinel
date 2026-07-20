@@ -135,6 +135,24 @@ class TestBridgeWiring:
         assert reports_dialog._FORM_SIZES["hub"] == (1120, 700)
 
 
+class TestThumbMemo:
+    def test_remember_thumb_paths_replaces_not_merges(self, sentinel_module):
+        """Live-verified (2026-07-20): ``hub/thumb`` re-scanning the scene
+        on every request queued dozens of full scans while scrolling. The
+        module-level memo is refreshed by every op that already runs a
+        fresh scan, so ``hub/thumb`` can look the path up for free. A
+        second call must REPLACE the memo (stale keys from a previous
+        scene state must not linger), not merge into it."""
+        from sentinel.ui import hub_ops
+
+        hub_ops._remember_thumb_paths(
+            [{"key": "a", "resolved_path": "/x"}, {"key": "b", "resolved_path": None}])
+        assert hub_ops._THUMB_PATHS == {"a": "/x", "b": None}
+
+        hub_ops._remember_thumb_paths([{"key": "c", "resolved_path": "/y"}])
+        assert hub_ops._THUMB_PATHS == {"c": "/y"}
+
+
 class TestOpenHubPalette:
     def test_palette_open_hub_still_registered(self, sentinel_module):
         """_palette_open_hub now tries the SPA hub (open_form) before

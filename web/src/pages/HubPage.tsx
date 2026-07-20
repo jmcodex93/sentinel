@@ -128,6 +128,11 @@ export function HubPage() {
     if (!res.ok) toast({ message: res.error || "Couldn't select the owner.", variant: "warn" });
   }
 
+  function handleRowSelect(key: string) {
+    setSelectedKey(key);
+    handleOwnerClick(key);
+  }
+
   function handlePreview() {
     if (!find) return;
     const changes = computeBulkChanges(data.assets, find, replace, matchCase);
@@ -312,7 +317,7 @@ export function HubPage() {
           assets={filteredAssets}
           pending={pending}
           selectedKey={selectedKey}
-          onSelect={setSelectedKey}
+          onSelect={handleRowSelect}
           onOwnerClick={handleOwnerClick}
         />
         <div ref={deliverRef}>
