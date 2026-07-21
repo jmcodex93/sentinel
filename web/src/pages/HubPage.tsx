@@ -4,27 +4,36 @@ import { HubAssetsTable } from "../components/hub/HubAssetsTable";
 import { HubDeliverSection } from "../components/hub/HubDeliverSection";
 import { HubFacets } from "../components/hub/HubFacets";
 import { HubPreflightStrip } from "../components/hub/HubPreflightStrip";
+import { HubShrinkDialog } from "../components/hub/HubShrinkDialog";
+import { HubSwitchResDialog } from "../components/hub/HubSwitchResDialog";
 import { HubToolbar, type HubFilter } from "../components/hub/HubToolbar";
 import { EmptyState, ErrorState, LoadingState } from "../components/PageStates";
 import { Section } from "../components/Section";
+import { formatBytes } from "../lib/format";
 import {
   fetchHubInventory,
+  fetchHubJobStatus,
   fetchHubMeta,
   fetchHubMetaTotals,
   fetchHubPresets,
   fetchHubStateStamp,
   fetchHubUiState,
+  fetchHubVariants,
   isMock,
   postHubApply,
+  postHubCopyIntoProject,
   postHubMakeRelative,
   postHubMatchFolder,
   postHubPickPath,
   postHubSelectOwner,
+  postHubSwitchRes,
   saveHubPreset,
   saveHubUiState,
+  startHubShrink,
 } from "../lib/api";
 import {
   applyFacets,
+  applySelection,
   emptyFacetState,
   facetCounts,
   sanitizeColWidths,
@@ -36,7 +45,45 @@ import {
 } from "../lib/hubTable";
 import { computeBulkChanges } from "../lib/repath";
 import { useToast } from "../lib/toast";
-import type { HubInventory, HubInventoryResult, HubMeta, HubMetaTotals, HubPreset, HubUiState } from "../types";
+import type {
+  HubInventory,
+  HubInventoryResult,
+  HubJobStatus,
+  HubMeta,
+  HubMetaTotals,
+  HubPreset,
+  HubShrinkResult,
+  HubUiState,
+  HubVariant,
+} from "../types";
+
+/** Human-readable message for a `hub/shrink_start` / `hub/copy_into_project`
+ * `{ok: false, error}` sentinel — anything not in this table (an unexpected
+ * dispatch failure, or the `?mock=1` "mock" sentinel) falls back to showing
+ * the raw error string, same policy as every other toast-surfaced op error
+ * in this file. */
+const SHRINK_ERROR_MESSAGES: Record<string, string> = {
+  no_document: "No active Cinema 4D document.",
+  invalid_target: "Invalid shrink target.",
+  nothing_to_shrink: "None of the selected rows are eligible to shrink.",
+  job_running: "Another job is already running — wait for it to finish.",
+  mock: "Shrink isn't available in mock/demo mode.",
+};
+
+const COPY_ERROR_MESSAGES: Record<string, string> = {
+  no_document: "No active Cinema 4D document.",
+  unsaved_document: "Save the scene to a folder first, then try again.",
+  mock: "Copy into project isn't available in mock/demo mode.",
+};
+
+const SWITCH_RES_ERROR_MESSAGES: Record<string, string> = {
+  no_document: "No active Cinema 4D document.",
+  invalid_target: "Invalid resolution target.",
+  too_many_keys: "Too many rows selected at once.",
+  mock: "Switch resolution isn't available in mock/demo mode.",
+};
+
+const SHRINK_JOB_POLL_MS = 500;
 
 const UI_STATE_SAVE_DEBOUNCE_MS = 500;
 
@@ -64,7 +111,12 @@ export function HubPage() {
   const { toast } = useToast();
   const [state, setState] = useState<PageState>({ kind: "loading" });
   const [pending, setPending] = useState<Map<string, string>>(new Map());
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+  // Anchor for shift-range selection. Updated on single/toggle clicks (the
+  // "last thing you deliberately clicked") but NOT on range clicks — a
+  // second shift-click always ranges from the same anchor, not from
+  // wherever the previous range happened to land.
+  const anchorRef = useRef<string | null>(null);
   const [filter, setFilter] = useState<HubFilter>("all");
   const [search, setSearch] = useState("");
   const [find, setFind] = useState("");
@@ -78,11 +130,28 @@ export function HubPage() {
   const [sort, setSort] = useState<SortSpec | null>(null);
   const [colWidths, setColWidths] = useState<Partial<Record<ResizableColumn, number>>>({});
   const [facets, setFacets] = useState<FacetState>(emptyFacetState());
+  const [shrinkDialogOpen, setShrinkDialogOpen] = useState(false);
+  const [shrinkStarting, setShrinkStarting] = useState(false);
+  const [shrinkJob, setShrinkJob] = useState<{ jobId: string; status: HubJobStatus | null } | null>(null);
+  const [copyBusy, setCopyBusy] = useState(false);
+  const [variants, setVariants] = useState<Record<string, HubVariant[]>>({});
+  const [switchResDialogOpen, setSwitchResDialogOpen] = useState(false);
+  const [switchResBusy, setSwitchResBusy] = useState(false);
 
   // Refs so the polling interval (set up once) always reads the latest
   // values without re-creating the interval on every keystroke/selection.
   const stampRef = useRef<string | null>(null);
   const deliverRef = useRef<HTMLDivElement>(null);
+  // Focus-restoration target for when a hub dialog (Switch Res / Shrink)
+  // unmounts. Diagnosis: the webview needs SOME live focused element for
+  // Cmd+Z to pass through to C4D's key handling — a dialog's focused button
+  // is removed from the DOM on close, leaving nothing focused, and the very
+  // next Cmd+Z is swallowed. Shrink's own flow only dodged this because it
+  // takes seconds and the user typically clicks something else meanwhile.
+  const tableWrapperRef = useRef<HTMLDivElement>(null);
+  const restoreFocus = useCallback(() => {
+    tableWrapperRef.current?.focus({ preventScroll: true });
+  }, []);
   const pendingRef = useRef<Map<string, string>>(pending);
   useEffect(() => {
     pendingRef.current = pending;
@@ -202,6 +271,42 @@ export function HubPage() {
     };
   }, [state]);
 
+  // Variants sweep (Task 3, fase 5.3): resolution-sibling detection, same
+  // 64-chunk sequential pattern and re-arm-on-abort semantics as the meta
+  // sweep above. The plan allows this to run as its own effect with its own
+  // completion stamp rather than being literally chained after the meta
+  // sweep's promise — extracting a shared generic sweep helper out of the
+  // meta effect above wasn't a trivial refactor (the two write to different
+  // state setters and totals), so this stays a parallel effect keyed on the
+  // same `state`/key-signature, with its own `sweptVariantKeysRef` so a
+  // same-signature re-run (e.g. the 2s poll) skips re-fetching unchanged
+  // assets' variants exactly like the meta sweep does.
+  const sweptVariantKeysRef = useRef<string>("");
+  useEffect(() => {
+    if (state.kind !== "ok") return;
+    const keys = state.data.assets.map((a) => a.key);
+    const signature = keys.slice().sort().join("|");
+    if (signature === sweptVariantKeysRef.current) return;
+
+    let cancelled = false;
+    (async () => {
+      for (let i = 0; i < keys.length; i += META_CHUNK_SIZE) {
+        if (cancelled) return;
+        const chunk = keys.slice(i, i + META_CHUNK_SIZE);
+        const result = await fetchHubVariants(chunk);
+        if (cancelled) return;
+        if (Object.keys(result).length > 0) {
+          setVariants((prev) => ({ ...prev, ...result }));
+        }
+      }
+      if (cancelled) return;
+      sweptVariantKeysRef.current = signature;
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [state]);
+
   useEffect(() => {
     // No polling under `?mock=1` — there is no live document to drift from,
     // and the mocked stamp is a constant that would never fire a change
@@ -221,6 +326,61 @@ export function HubPage() {
     return () => window.clearInterval(id);
   }, [refreshInventory]);
 
+  // Shrink job progress polling — 500ms while a job is queued/running,
+  // mirroring HubDeliverSection's own poll effect (that component is left
+  // untouched per the task brief; this is a small local equivalent scoped
+  // to just the shrink flow). Scoped to [shrinkJob?.jobId] only, same
+  // reasoning as HubDeliverSection's [phase, jobId]: `toast`/
+  // `refreshInventory` must not restart the interval on every re-render.
+  useEffect(() => {
+    const jobId = shrinkJob?.jobId;
+    if (!jobId) return;
+    let cancelled = false;
+
+    async function poll() {
+      const status = await fetchHubJobStatus(jobId!);
+      if (cancelled) return;
+
+      if (status.error || status.state === "error") {
+        toast({ message: status.error || status.detail || "Shrink failed.", variant: "warn" });
+        setShrinkJob(null);
+        return;
+      }
+      if (status.state === "done") {
+        const result = (status.result as HubShrinkResult | null) ?? null;
+        const shrunkCount = result?.shrunk.length ?? 0;
+        const errorCount = result?.errors.length ?? 0;
+        if (result) {
+          toast({
+            message:
+              errorCount > 0
+                ? `Shrunk ${shrunkCount} (${errorCount} error${errorCount === 1 ? "" : "s"}).`
+                : `Shrunk ${shrunkCount} texture${shrunkCount === 1 ? "" : "s"} — saved ${formatBytes(result.bytes_saved)}.`,
+            variant: errorCount > 0 ? "warn" : "success",
+          });
+        } else {
+          toast({ message: "Shrink complete (mock — no report data).", variant: "info" });
+        }
+        setShrinkJob(null);
+        // Shrunk assets get new on-disk sizes/hashes and the refresh below
+        // rebuilds the inventory, so the old selection's keys are orphaned
+        // anyway — clear explicitly instead of relying on that orphaning.
+        setSelectedKeys(new Set());
+        anchorRef.current = null;
+        await refreshInventory(true);
+        return;
+      }
+      setShrinkJob((prev) => (prev && prev.jobId === jobId ? { ...prev, status } : prev));
+    }
+
+    poll();
+    const id = window.setInterval(poll, SHRINK_JOB_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [shrinkJob?.jobId]);
+
   if (state.kind === "loading") return <LoadingState />;
   if (state.kind === "error") {
     return <ErrorState title="Couldn't load the Asset Hub" message={state.message} onRetry={() => refreshInventory(false)} />;
@@ -237,9 +397,15 @@ export function HubPage() {
     if (!res.ok) toast({ message: res.error || "Couldn't select the owner.", variant: "warn" });
   }
 
-  function handleRowSelect(key: string) {
-    setSelectedKey(key);
-    handleOwnerClick(key);
+  function handleRowClick(key: string, modifiers: { meta: boolean; shift: boolean }) {
+    const mode = modifiers.shift ? "range" : modifiers.meta ? "toggle" : "single";
+    const visibleKeys = sortedAssets.map((a) => a.key);
+    setSelectedKeys((prev) => applySelection(prev, visibleKeys, anchorRef.current, key, mode));
+    if (mode !== "range") anchorRef.current = key;
+    // Owner-select (the native Attribute Manager selection sync) only
+    // fires for a plain single click — toggle/range are batch gestures
+    // over many rows, not "go look at this one object".
+    if (mode === "single") handleOwnerClick(key);
   }
 
   function handlePreview() {
@@ -297,10 +463,11 @@ export function HubPage() {
   }
 
   async function handleRelinkSelected() {
-    if (!selectedKey) {
-      toast({ message: "Select a row first.", variant: "info" });
+    if (selectedKeys.size !== 1) {
+      toast({ message: "Select exactly one row to relink.", variant: "info" });
       return;
     }
+    const [selectedKey] = selectedKeys;
     setBusy(true);
     try {
       const picked = await postHubPickPath(false, "Choose replacement file");
@@ -313,6 +480,74 @@ export function HubPage() {
 
   function handleClear() {
     setPending(new Map());
+  }
+
+  async function handleShrinkConfirm(targetPx: number) {
+    setShrinkStarting(true);
+    const res = await startHubShrink(Array.from(selectedKeys), targetPx);
+    setShrinkStarting(false);
+
+    if (!res.ok || !res.job_id) {
+      toast({ message: SHRINK_ERROR_MESSAGES[res.error ?? ""] ?? res.error ?? "Couldn't start shrink.", variant: "warn" });
+      return;
+    }
+    setShrinkDialogOpen(false);
+    restoreFocus();
+    setShrinkJob({ jobId: res.job_id, status: null });
+  }
+
+  async function handleCopyIntoProject() {
+    setCopyBusy(true);
+    const res = await postHubCopyIntoProject(Array.from(selectedKeys));
+    setCopyBusy(false);
+
+    if (!res.ok) {
+      toast({ message: COPY_ERROR_MESSAGES[res.error ?? ""] ?? res.error ?? "Couldn't copy into project.", variant: "warn" });
+      return;
+    }
+    if (res.stamp) stampRef.current = res.stamp;
+    const copied = res.copied ?? 0;
+    const reused = res.reused ?? 0;
+    const errorCount = res.errors?.length ?? 0;
+    let message = `Copied ${copied}${reused > 0 ? `, reused ${reused}` : ""}.`;
+    if (errorCount > 0) message += ` ${errorCount} error${errorCount === 1 ? "" : "s"}.`;
+    toast({ message, variant: errorCount > 0 ? "warn" : "success" });
+    // Copied assets now live under a new resolved_path and the refresh
+    // below rebuilds the inventory, so the old selection's keys are
+    // orphaned anyway — clear explicitly instead of relying on that.
+    setSelectedKeys(new Set());
+    anchorRef.current = null;
+    await refreshInventory(true);
+  }
+
+  async function handleSwitchResConfirm(target: number | "highest") {
+    setSwitchResBusy(true);
+    const res = await postHubSwitchRes(Array.from(selectedKeys), target);
+    setSwitchResBusy(false);
+
+    if (!res.ok) {
+      toast({ message: SWITCH_RES_ERROR_MESSAGES[res.error ?? ""] ?? res.error ?? "Couldn't switch resolution.", variant: "warn" });
+      return;
+    }
+    setSwitchResDialogOpen(false);
+    restoreFocus();
+    if (res.stamp) stampRef.current = res.stamp;
+    const switchedCount = res.switched?.length ?? 0;
+    const skippedCount = res.skipped?.length ?? 0;
+    const errorCount = res.errors?.length ?? 0;
+    let message = `Switched ${switchedCount}.`;
+    if (skippedCount > 0) message += ` ${skippedCount} skipped.`;
+    if (errorCount > 0) message += ` ${errorCount} error${errorCount === 1 ? "" : "s"}.`;
+    toast({ message, variant: errorCount > 0 ? "warn" : "success" });
+    // Switched keys now resolve to a different sibling file — the cached
+    // variant groups for them still show the pre-switch basenames/px until
+    // re-swept, so force the parallel variants sweep effect above to refire
+    // even though the key SET is unchanged (its signature guard would
+    // otherwise skip a same-keys re-run).
+    sweptVariantKeysRef.current = "";
+    setSelectedKeys(new Set());
+    anchorRef.current = null;
+    await refreshInventory(true);
   }
 
   async function handleApply() {
@@ -357,6 +592,17 @@ export function HubPage() {
   const counts = facetCounts(filteredAssets, metas);
   const facetedAssets = applyFacets(filteredAssets, metas, facets);
   const sortedAssets = sortAssets(facetedAssets, metas, sort);
+
+  const selectedAssets = data.assets.filter((asset) => selectedKeys.has(asset.key));
+  // Coarse "plausibly eligible" toolbar gate (status/asset_type only — the
+  // exact eligibility against a chosen target_px is `shrinkPreview`'s job,
+  // computed inside the dialog once a target is picked).
+  const shrinkEnabled = selectedAssets.some(
+    (asset) => asset.status === "ok" && (asset.asset_type === "texture" || asset.asset_type === "hdri"),
+  );
+  const copyEnabled = selectedAssets.some((asset) => asset.status === "absolute");
+  const switchResEnabled = selectedAssets.some((asset) => (variants[asset.key]?.length ?? 0) > 0);
+  const jobRunning = shrinkJob !== null || shrinkStarting;
 
   return (
     <div className="flex h-full flex-1 flex-col overflow-hidden">
@@ -438,23 +684,62 @@ export function HubPage() {
         onClear={handleClear}
         onApply={handleApply}
         pendingCount={pending.size}
+        selectedCount={selectedKeys.size}
         busy={busy}
+        onShrink={() => setShrinkDialogOpen(true)}
+        onCopyIntoProject={handleCopyIntoProject}
+        shrinkEnabled={shrinkEnabled}
+        copyEnabled={copyEnabled}
+        jobRunning={jobRunning || copyBusy}
+        onSwitchRes={() => setSwitchResDialogOpen(true)}
+        switchResEnabled={switchResEnabled}
       />
+
+      {shrinkJob && (
+        <div
+          className="flex flex-col gap-2 border-b px-4 py-3"
+          style={{ borderColor: "var(--color-hairline-strong)", backgroundColor: "var(--color-surface-1)" }}
+        >
+          <p className="text-caption" style={{ color: "var(--color-ink)" }}>
+            {shrinkJob.status?.phase || "Shrinking…"}
+            {shrinkJob.status?.detail ? ` — ${shrinkJob.status.detail}` : ""}
+          </p>
+          <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ backgroundColor: "var(--color-surface-2)" }}>
+            <div
+              className="h-full rounded-full transition-all duration-150 ease-out"
+              style={{
+                width: `${Math.min(100, Math.max(0, shrinkJob.status?.pct ?? 0))}%`,
+                backgroundColor: "var(--color-status-pass)",
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       <HubFacets counts={counts} facets={facets} onChange={setFacets} />
 
       <div className="min-w-0 flex-1 overflow-auto p-4">
-        <HubAssetsTable
-          assets={sortedAssets}
-          pending={pending}
-          selectedKey={selectedKey}
-          onSelect={handleRowSelect}
-          onOwnerClick={handleOwnerClick}
-          metas={metas}
-          sort={sort}
-          onSortChange={handleSortChange}
-          colWidths={colWidths}
-          onColWidthsChange={handleColWidthsChange}
-        />
+        <div
+          ref={tableWrapperRef}
+          tabIndex={-1}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") setSelectedKeys(new Set());
+          }}
+        >
+          <HubAssetsTable
+            assets={sortedAssets}
+            pending={pending}
+            selectedKeys={selectedKeys}
+            onRowClick={handleRowClick}
+            onOwnerClick={handleOwnerClick}
+            metas={metas}
+            variants={variants}
+            sort={sort}
+            onSortChange={handleSortChange}
+            colWidths={colWidths}
+            onColWidthsChange={handleColWidthsChange}
+          />
+        </div>
         <div ref={deliverRef}>
           <Section title="Deliver">
             <div className="flex flex-col gap-3">
@@ -467,6 +752,33 @@ export function HubPage() {
           </Section>
         </div>
       </div>
+
+      {shrinkDialogOpen && (
+        <HubShrinkDialog
+          assets={data.assets}
+          metas={metas}
+          selectedKeys={selectedKeys}
+          busy={shrinkStarting}
+          onConfirm={handleShrinkConfirm}
+          onClose={() => {
+            setShrinkDialogOpen(false);
+            restoreFocus();
+          }}
+        />
+      )}
+
+      {switchResDialogOpen && (
+        <HubSwitchResDialog
+          selectedKeys={selectedKeys}
+          variants={variants}
+          busy={switchResBusy}
+          onConfirm={handleSwitchResConfirm}
+          onClose={() => {
+            setSwitchResDialogOpen(false);
+            restoreFocus();
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -25,6 +25,17 @@
   --color-primary-hover: #828fff;
   --color-on-primary: #ffffff;
 
+  /* Accent tints — single-hue ramp for a legitimate PROPERTY-scale use of the
+   * accent (the Hub's 16K/8K/4K/2K/1K/sm resolution chips: intensity =
+   * resolution), never for state. Six steps of --color-primary alpha,
+   * precomputed rgba() rather than CSS relative-color syntax for broader
+   * webview compatibility. */
+  --color-primary-tint-34: rgba(94, 106, 210, 0.34);
+  --color-primary-tint-22: rgba(94, 106, 210, 0.22);
+  --color-primary-tint-14: rgba(94, 106, 210, 0.14);
+  --color-primary-tint-08: rgba(94, 106, 210, 0.08);
+  --color-primary-tint-04: rgba(94, 106, 210, 0.04);
+
   /* Status (exclusive to state — never the accent) */
   --color-status-fail: #e0655f;
   --color-status-warn: #ffb74d;

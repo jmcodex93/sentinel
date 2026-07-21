@@ -3,7 +3,7 @@ import os
 import zipfile
 
 import pytest
-from sentinel import assets
+from sentinel import assets, imagemeta
 
 
 class TestNormalizePathKey:
@@ -502,3 +502,406 @@ class TestFitColumnWidths:
                                        budget=700, min_width=40)
         assert out["name"] == 100
         assert out["type"] == out["size"] == out["used"] == 40
+
+
+class TestShrinkTargetName:
+    def test_suffix_table(self):
+        assert assets.shrink_target_name("/a/wood.png", 4096) == "/a/wood_4K.png"
+        assert assets.shrink_target_name("/a/wood.png", 2048) == "/a/wood_2K.png"
+        assert assets.shrink_target_name("/a/wood.png", 1024) == "/a/wood_1K.png"
+
+    def test_unknown_target_uses_px_suffix(self):
+        assert assets.shrink_target_name("/a/wood.png", 512) == "/a/wood_512px.png"
+
+    def test_no_doubling_when_stem_already_ends_with_suffix(self):
+        assert assets.shrink_target_name("/a/wood_2K.png", 2048) == "/a/wood_2K.png"
+        assert assets.shrink_target_name("/a/wood_4K.exr", 4096) == "/a/wood_4K.exr"
+
+    def test_preserves_directory_and_extension(self):
+        assert (assets.shrink_target_name("/proj/tex/rock_diffuse.tif", 1024)
+                == "/proj/tex/rock_diffuse_1K.tif")
+
+
+class TestReplaceBasenamePreservingForm:
+    def test_relative_scheme_prefix(self):
+        assert (assets.replace_basename_preserving_form(
+                    "relative:///tex/a.png", "a_2K.png")
+                == "relative:///tex/a_2K.png")
+
+    def test_bare_relative_path(self):
+        assert assets.replace_basename_preserving_form("tex/a.png", "a_2K.png") == "tex/a_2K.png"
+
+    def test_windows_backslashes(self):
+        assert (assets.replace_basename_preserving_form(
+                    "D:\\proj\\tex\\a.png", "a_2K.png")
+                == "D:\\proj\\tex\\a_2K.png")
+
+    def test_bare_filename_no_directory(self):
+        assert assets.replace_basename_preserving_form("a.png", "a_2K.png") == "a_2K.png"
+
+    def test_empty_stored_path_returns_new_basename(self):
+        assert assets.replace_basename_preserving_form("", "a_2K.png") == "a_2K.png"
+        assert assets.replace_basename_preserving_form(None, "a_2K.png") == "a_2K.png"
+
+
+class TestShrinkPlan:
+    def _meta(self, w, h, channels=4, bit_depth=8):
+        return {"width": w, "height": h, "channels": channels, "bit_depth": bit_depth}
+
+    def test_mixed_batch_eligibility_and_skip_reasons(self):
+        records = [
+            {"key": "a", "path": "/proj/tex/rock_diffuse.png",
+             "resolved_path": "/proj/tex/rock_diffuse.png",
+             "status": "ok", "asset_type": "texture"},
+            {"key": "b", "path": "/proj/tex/small.png",
+             "resolved_path": "/proj/tex/small.png",
+             "status": "ok", "asset_type": "texture"},
+            {"key": "c", "path": "/proj/tex/missing.png",
+             "resolved_path": None,
+             "status": "missing", "asset_type": "texture"},
+            {"key": "d", "path": "/proj/tex/nometa.png",
+             "resolved_path": "/proj/tex/nometa.png",
+             "status": "ok", "asset_type": "texture"},
+            {"key": "e", "path": "/proj/caches/char.abc",
+             "resolved_path": "/proj/caches/char.abc",
+             "status": "ok", "asset_type": "alembic"},
+        ]
+        metas = {
+            "a": self._meta(8192, 8192),
+            "b": self._meta(2048, 2048),
+            "e": self._meta(100, 100, channels=1),
+        }
+        plan = assets.shrink_plan(records, metas, 2048)
+
+        assert [item["key"] for item in plan["shrink"]] == ["a"]
+        item = plan["shrink"][0]
+        assert item["path"] == "/proj/tex/rock_diffuse.png"
+        assert item["resolved_path"] == "/proj/tex/rock_diffuse.png"
+        assert item["width"] == 8192 and item["height"] == 8192
+        assert item["new_width"] == 2048 and item["new_height"] == 2048
+
+        skipped = {s["key"]: s["reason"] for s in plan["skipped"]}
+        assert skipped["b"] == "already_small"
+        assert skipped["c"] == "not_ok"
+        assert skipped["d"] == "no_meta"
+        assert skipped["e"] == "not_image"
+
+    def test_vram_before_after_exact(self):
+        records = [{"key": "a", "path": "/a.png", "resolved_path": "/a.png",
+                    "status": "ok", "asset_type": "texture"}]
+        metas = {"a": self._meta(8192, 8192, channels=4, bit_depth=8)}
+        plan = assets.shrink_plan(records, metas, 2048)
+
+        expected_before = imagemeta.vram_bytes(8192, 8192, 4, 8)
+        expected_after = imagemeta.vram_bytes(2048, 2048, 4, 8)
+        assert plan["vram_before"] == expected_before
+        assert plan["vram_after"] == expected_after
+        assert plan["vram_before"] > plan["vram_after"]
+
+    def test_non_square_aspect_preserved(self):
+        records = [{"key": "f", "path": "/f.png", "resolved_path": "/f.png",
+                    "status": "ok", "asset_type": "hdri"}]
+        metas = {"f": self._meta(4000, 717, channels=3, bit_depth=8)}
+        plan = assets.shrink_plan(records, metas, 2048)
+
+        item = plan["shrink"][0]
+        assert item["new_width"] == 2048
+        assert item["new_height"] == 367
+
+    def test_hdri_eligible(self):
+        records = [{"key": "h", "path": "/h.hdr", "resolved_path": "/h.hdr",
+                    "status": "ok", "asset_type": "hdri"}]
+        metas = {"h": self._meta(4096, 2048, channels=3, bit_depth=32)}
+        plan = assets.shrink_plan(records, metas, 2048)
+        assert [item["key"] for item in plan["shrink"]] == ["h"]
+
+    def test_empty_records_returns_empty_plan(self):
+        plan = assets.shrink_plan([], {}, 2048)
+        assert plan == {"shrink": [], "skipped": [], "vram_before": 0, "vram_after": 0}
+
+    def test_zero_or_missing_dims_is_no_meta_not_already_small(self):
+        # A present-but-unusable meta (width/height 0 or None) must read
+        # truthfully as "no usable metadata", not "already small enough".
+        records = [
+            {"key": "z", "path": "/z.png", "resolved_path": "/z.png",
+             "status": "ok", "asset_type": "texture"},
+            {"key": "n", "path": "/n.png", "resolved_path": "/n.png",
+             "status": "ok", "asset_type": "texture"},
+        ]
+        metas = {
+            "z": self._meta(0, 0),
+            "n": {"width": None, "height": None, "channels": 4, "bit_depth": 8},
+        }
+        plan = assets.shrink_plan(records, metas, 2048)
+        assert plan["shrink"] == []
+        skipped = {s["key"]: s["reason"] for s in plan["skipped"]}
+        assert skipped["z"] == "no_meta"
+        assert skipped["n"] == "no_meta"
+
+
+class TestCopyPlan:
+    def test_in_project_skipped_case_insensitive(self):
+        records = [{"key": "a", "resolved_path": "/Proj/Scene/tex/wood.png"}]
+        plan = assets.copy_plan(records, "/proj/scene")
+        assert plan["copy"] == []
+        assert plan["skip"] == [{"key": "a", "reason": "in_project"}]
+
+    def test_out_of_project_included_with_target_path(self):
+        records = [{"key": "a", "resolved_path": "/other/place/wood.png"}]
+        plan = assets.copy_plan(records, "/proj/scene")
+        assert plan["skip"] == []
+        assert plan["copy"] == [{
+            "key": "a",
+            "resolved_path": "/other/place/wood.png",
+            "target_path": os.path.join("/proj/scene", "tex", "wood.png"),
+        }]
+
+    def test_unresolved_skipped(self):
+        records = [
+            {"key": "a", "resolved_path": None},
+            {"key": "b"},
+        ]
+        plan = assets.copy_plan(records, "/proj/scene")
+        assert plan["copy"] == []
+        skipped = {s["key"]: s["reason"] for s in plan["skip"]}
+        assert skipped["a"] == "unresolved"
+        assert skipped["b"] == "unresolved"
+
+    def test_windows_authored_path_basename_cross_platform(self):
+        # os.path.basename on macOS doesn't recognize "\\" as a separator,
+        # so a Windows-authored resolved_path would otherwise yield the
+        # whole string as the "basename" — same bug already fixed in
+        # match_missing_in_folder, must be reused here.
+        records = [{"key": "a", "resolved_path": "D:\\old\\tex\\wood.png"}]
+        plan = assets.copy_plan(records, "/proj/scene")
+        assert plan["skip"] == []
+        assert plan["copy"] == [{
+            "key": "a",
+            "resolved_path": "D:\\old\\tex\\wood.png",
+            "target_path": os.path.join("/proj/scene", "tex", "wood.png"),
+        }]
+
+    def test_mixed_case_basename_preserved(self):
+        # copy_plan must not silently case-fold the filename: deriving the
+        # basename from the lowercased dedupe key would turn
+        # "Metal_Rough.PNG" into "metal_rough.png", which breaks relinking
+        # on case-sensitive render farms. Only the in-project containment
+        # check is intentionally case-insensitive.
+        records = [{"key": "a", "resolved_path": "D:\\old\\TEX\\Metal_Rough.PNG"}]
+        plan = assets.copy_plan(records, "/proj/scene")
+        assert plan["skip"] == []
+        assert plan["copy"] == [{
+            "key": "a",
+            "resolved_path": "D:\\old\\TEX\\Metal_Rough.PNG",
+            "target_path": os.path.join("/proj/scene", "tex", "Metal_Rough.PNG"),
+        }]
+
+    def test_mixed_batch(self):
+        records = [
+            {"key": "in", "resolved_path": "/proj/scene/tex/a.png"},
+            {"key": "out", "resolved_path": "/vendor/tex/b.png"},
+            {"key": "missing", "resolved_path": None},
+        ]
+        plan = assets.copy_plan(records, "/proj/scene")
+        assert [c["key"] for c in plan["copy"]] == ["out"]
+        assert {s["key"] for s in plan["skip"]} == {"in", "missing"}
+
+
+# ---------------------------------------------------------------------------
+# Resolution variants (Fase 5.3) — split_res_token / find_res_variants
+# ---------------------------------------------------------------------------
+
+class TestSplitResToken:
+    def test_underscore_both_sides_with_numeric_suffix(self):
+        assert (assets.split_res_token("plaster_4k_1.jpg")
+                == ("plaster_", 4096, "_1.jpg"))
+
+    def test_our_shrink_suffix_uppercase(self):
+        assert assets.split_res_token("foo_2K.png") == ("foo_", 2048, ".png")
+
+    def test_dash_delimiter(self):
+        assert assets.split_res_token("wood-8k.exr") == ("wood-", 8192, ".exr")
+
+    def test_dot_delimiter_both_sides(self):
+        assert assets.split_res_token("tex.4k.tif") == ("tex.", 4096, ".tif")
+
+    def test_start_of_name_boundary(self):
+        assert assets.split_res_token("4k_start.png") == ("", 4096, "_start.png")
+
+    def test_token_in_word_no_match(self):
+        assert assets.split_res_token("back4k.png") is None
+
+    def test_multiple_tokens_last_one_wins(self):
+        assert (assets.split_res_token("scan_4k_detail_2k.png")
+                == ("scan_4k_detail_", 2048, ".png"))
+
+    def test_case_insensitive(self):
+        assert assets.split_res_token("Plaster_4K_1.JPG") == ("Plaster_", 4096, "_1.JPG")
+
+    def test_16k_token(self):
+        assert assets.split_res_token("hdri_16k.hdr") == ("hdri_", 16384, ".hdr")
+
+    def test_no_token_returns_none(self):
+        assert assets.split_res_token("plain_wood.png") is None
+
+
+class TestFindResVariants:
+    def test_family_groups_by_prefix_and_suffix(self):
+        records = [
+            {"key": "a", "resolved_path": "/proj/tex/plaster_4k_1.jpg"},
+        ]
+
+        def fake_list_dir(path):
+            assert path == "/proj/tex"
+            return ["plaster_4k_1.jpg", "plaster_8k_1.jpg", "readme.txt"]
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert result["a"] == [
+            {"path": "/proj/tex/plaster_8k_1.jpg", "px": 8192},
+            {"path": "/proj/tex/plaster_4k_1.jpg", "px": 4096},
+        ]
+
+    def test_single_variant_excluded(self):
+        records = [{"key": "a", "resolved_path": "/proj/tex/bar_2k.png"}]
+
+        def fake_list_dir(path):
+            return ["bar_2k.png", "unrelated.png"]
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert "a" not in result
+
+    def test_different_suffix_not_grouped(self):
+        records = [
+            {"key": "a", "resolved_path": "/proj/tex/plaster_4k_1.jpg"},
+        ]
+
+        def fake_list_dir(path):
+            return ["plaster_4k_1.jpg", "plaster_8k_2.jpg"]
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert "a" not in result
+
+    def test_bare_record_no_siblings_skipped(self):
+        # A bare (tokenless) file with no tokened sibling in the dir has
+        # no family — only an unrelated file is present.
+        records = [{"key": "a", "resolved_path": "/proj/tex/plain.png"}]
+
+        def fake_list_dir(path):
+            return ["plain.png", "unrelated.png"]
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert "a" not in result
+
+    def test_bare_record_finds_tokened_siblings(self):
+        # Shrink creates NAME_2K.png from NAME.png — the bare original
+        # carries no token of its own, so it must be paired via its stem
+        # + extension against the tokened siblings in the same dir.
+        records = [{"key": "a", "resolved_path": "/proj/tex/plain.png"}]
+
+        def fake_list_dir(path):
+            return ["plain.png", "plain_2k.png"]
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert result["a"] == [
+            {"path": "/proj/tex/plain_2k.png", "px": 2048},
+            {"path": "/proj/tex/plain.png", "px": None},
+        ]
+
+    def test_bare_record_finds_two_tokened_siblings(self):
+        records = [{"key": "a", "resolved_path": "/proj/tex/plain.png"}]
+
+        def fake_list_dir(path):
+            return ["plain.png", "plain_2k.png", "plain_4k.png"]
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert result["a"] == [
+            {"path": "/proj/tex/plain_4k.png", "px": 4096},
+            {"path": "/proj/tex/plain_2k.png", "px": 2048},
+            {"path": "/proj/tex/plain.png", "px": None},
+        ]
+
+    def test_shrink_pair_bare_base_and_tokened_sibling(self):
+        # Real-world case reported by the user: Shrink creates
+        # "<name>_2K.png" from a bare base with spaces in the stem.
+        base = "CARBON GEN 2 HYPE CORAZON.png"
+        shrunk = "CARBON GEN 2 HYPE CORAZON_2K.png"
+        records = [{"key": "bare", "resolved_path": f"/proj/tex/{base}"},
+                   {"key": "tokened", "resolved_path": f"/proj/tex/{shrunk}"}]
+
+        def fake_list_dir(path):
+            return [base, shrunk]
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert result["bare"] == [
+            {"path": f"/proj/tex/{shrunk}", "px": 2048},
+            {"path": f"/proj/tex/{base}", "px": None},
+        ]
+        assert result["tokened"] == result["bare"]
+
+    def test_tokened_record_finds_its_bare_base(self):
+        records = [{"key": "a", "resolved_path": "/proj/tex/plain_2k.png"}]
+
+        def fake_list_dir(path):
+            return ["plain.png", "plain_2k.png"]
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert result["a"] == [
+            {"path": "/proj/tex/plain_2k.png", "px": 2048},
+            {"path": "/proj/tex/plain.png", "px": None},
+        ]
+
+    def test_dir_listed_once_for_multiple_records_same_dir(self):
+        records = [
+            {"key": "a", "resolved_path": "/proj/tex/plaster_4k_1.jpg"},
+            {"key": "b", "resolved_path": "/proj/tex/plaster_4k_2.jpg"},
+        ]
+        calls = []
+
+        def fake_list_dir(path):
+            calls.append(path)
+            return ["plaster_4k_1.jpg", "plaster_8k_1.jpg",
+                    "plaster_4k_2.jpg", "plaster_8k_2.jpg"]
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert calls == ["/proj/tex"]
+        assert result["a"] == [
+            {"path": "/proj/tex/plaster_8k_1.jpg", "px": 8192},
+            {"path": "/proj/tex/plaster_4k_1.jpg", "px": 4096},
+        ]
+        assert result["b"] == [
+            {"path": "/proj/tex/plaster_8k_2.jpg", "px": 8192},
+            {"path": "/proj/tex/plaster_4k_2.jpg", "px": 4096},
+        ]
+
+    def test_no_resolved_path_skipped(self):
+        records = [{"key": "a", "resolved_path": None}, {"key": "b"}]
+        result = assets.find_res_variants(records, list_dir=lambda p: [])
+        assert result == {}
+
+    def test_list_dir_failure_skips_that_directory(self):
+        records = [{"key": "a", "resolved_path": "/missing/tex/plaster_4k_1.jpg"}]
+
+        def fake_list_dir(path):
+            raise OSError("no such directory")
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert result == {}
+
+    def test_windows_authored_path_normalized_before_split(self):
+        # A Windows-authored resolved_path opened on macOS has no
+        # separators os.path.dirname/os.path.basename recognize there —
+        # without normalizing to "/" first, dirname would return "",
+        # list_dir("") would list the cwd, and the record would silently
+        # drop out of every group (same class of bug already fixed in
+        # copy_plan's match_missing_in_folder).
+        records = [{"key": "a", "resolved_path": "D:\\proj\\tex\\plaster_4k_1.jpg"}]
+
+        def fake_list_dir(path):
+            assert path == "D:/proj/tex"
+            return ["plaster_4k_1.jpg", "plaster_8k_1.jpg"]
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert result["a"] == [
+            {"path": "D:/proj/tex/plaster_8k_1.jpg", "px": 8192},
+            {"path": "D:/proj/tex/plaster_4k_1.jpg", "px": 4096},
+        ]

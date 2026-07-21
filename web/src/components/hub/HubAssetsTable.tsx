@@ -14,7 +14,7 @@ import {
   File as FileIcon,
   type LucideIcon,
 } from "lucide-react";
-import type { HubAsset, HubAssetStatus, HubMeta, HubResTier } from "../../types";
+import type { HubAsset, HubAssetStatus, HubMeta, HubResTier, HubVariant } from "../../types";
 import {
   channelsLabel as sharedChannelsLabel,
   clampColWidth,
@@ -28,13 +28,32 @@ import {
 const ROW_H = 44; // --space-table-row (2-line rows: name+chip+badge / path+dims+owner)
 
 /** Res-chip chroma → existing DESIGN.md tokens only (Task 4 mapping,
- * `docs/superpowers/plans/2026-07-20-hub-polish.md`). No `--color-status-warn-tint-15`
- * token exists yet, so 4k reuses the warn 10% badge tint (closest existing token). */
-const RES_CHIP_META: Record<HubResTier, { color: string; background: string }> = {
-  "8k": { color: "var(--color-status-fail)", background: "var(--color-status-fail-tint-15)" },
-  "4k": { color: "var(--color-status-warn)", background: "var(--color-status-warn-tint-10)" },
-  "2k": { color: "var(--color-ink-secondary)", background: "var(--color-surface-2)" },
-  sm: { color: "var(--color-muted)", background: "var(--color-surface-2)" },
+ * `docs/superpowers/plans/2026-07-20-hub-polish.md`; extended to the full
+ * 16K→<1K six-tier ramp in the 2026-07-21 live-feedback pass; re-tuned for
+ * stronger top-end separation in the 2026-07-21 follow-up pass). Resolution
+ * is a PROPERTY, not a state — chips use the accent scale (--color-primary
+ * tints), never the fail/warn/pass status chroma, which is reserved
+ * exclusively for state (missing/absolute badges etc.). Single-hue property
+ * ramp — intensity = resolution, never the status chroma (see DESIGN.md
+ * "Primary Tint Ramp"). sm/1k/2k step gently through the low tints with
+ * muted/secondary text; 4k jumps to a clearly darker tint with primary-color
+ * text; 8k adds a solid accent border on top of that for extra pop; 16k is
+ * the ramp's ceiling — a SOLID accent fill with on-primary text, unmissable
+ * at a glance. */
+const RES_CHIP_META: Record<HubResTier, { color: string; background: string; border?: string }> = {
+  "16k": {
+    color: "var(--color-on-primary)",
+    background: "var(--color-primary)",
+  },
+  "8k": {
+    color: "var(--color-primary)",
+    background: "var(--color-primary-tint-34)",
+    border: "var(--color-primary)",
+  },
+  "4k": { color: "var(--color-primary)", background: "var(--color-primary-tint-22)" },
+  "2k": { color: "var(--color-ink-secondary)", background: "var(--color-primary-tint-14)" },
+  "1k": { color: "var(--color-ink-secondary)", background: "var(--color-primary-tint-08)" },
+  sm: { color: "var(--color-muted)", background: "var(--color-primary-tint-04)" },
 };
 
 function HubResChip({ meta }: { meta: HubMeta | undefined }) {
@@ -43,7 +62,11 @@ function HubResChip({ meta }: { meta: HubMeta | undefined }) {
   return (
     <span
       className="text-label inline-block shrink-0 rounded-sm px-1.5 py-0.5"
-      style={{ color: chip.color, backgroundColor: chip.background }}
+      style={{
+        color: chip.color,
+        backgroundColor: chip.background,
+        border: chip.border ? `1px solid ${chip.border}` : undefined,
+      }}
     >
       {meta.res_label}
     </span>
@@ -270,10 +293,11 @@ function ColumnResizer({
 export function HubAssetsTable({
   assets,
   pending,
-  selectedKey,
-  onSelect,
+  selectedKeys,
+  onRowClick,
   onOwnerClick,
   metas,
+  variants,
   sort,
   onSortChange,
   colWidths,
@@ -281,10 +305,14 @@ export function HubAssetsTable({
 }: {
   assets: HubAsset[];
   pending: Map<string, string>;
-  selectedKey: string | null;
-  onSelect: (key: string) => void;
+  selectedKeys: Set<string>;
+  onRowClick: (key: string, modifiers: { meta: boolean; shift: boolean }) => void;
   onOwnerClick: (key: string) => void;
   metas: Record<string, HubMeta>;
+  /** Fase 5.3 — `hub/variants` sweep result, keyed by asset key. Optional so
+   * existing callers/tests that don't exercise the variants sweep don't
+   * need to pass an empty object explicitly. */
+  variants?: Record<string, HubVariant[]>;
   sort?: SortSpec | null;
   onSortChange?: (sort: SortSpec | null) => void;
   colWidths?: Partial<Record<ResizableColumn, number>>;
@@ -388,25 +416,36 @@ export function HubAssetsTable({
           {virtualizer.getVirtualItems().map((row) => {
             const a = assets[row.index];
             const meta = metas[a.key];
+            const variantGroup = variants?.[a.key];
             const pendingPath = pending.get(a.key);
             const displayPath = pendingPath ?? a.path;
             const basename = displayPath.split(/[\\/]/).pop() || displayPath;
             const extraOwners = a.owners.length - 1;
             const pathColor = pendingPath ? "var(--color-status-pass)" : "var(--color-ink-secondary)";
+            const isSelected = selectedKeys.has(a.key);
             return (
               <div
                 key={a.key}
                 role="button"
                 tabIndex={0}
-                aria-selected={selectedKey === a.key}
-                onClick={() => onSelect(a.key)}
+                aria-selected={isSelected}
+                onPointerDown={(event) => {
+                  // A shift-click otherwise fires the browser's native text
+                  // selection drag on the row's text nodes — preventDefault
+                  // here (not on click, which fires too late) suppresses it.
+                  if (event.shiftKey) event.preventDefault();
+                }}
+                onClick={(event) => onRowClick(a.key, { meta: event.metaKey || event.ctrlKey, shift: event.shiftKey })}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
-                    onSelect(a.key);
+                    // Keyboard activation is always treated as a plain click,
+                    // regardless of live modifier keys — range/toggle are
+                    // pointer gestures over the visible list.
+                    onRowClick(a.key, { meta: false, shift: false });
                   }
                 }}
-                className="grid cursor-pointer items-center text-body hover:bg-[var(--color-surface-2)]"
+                className="grid cursor-pointer items-center text-body hover:bg-[var(--color-surface-2)] select-none"
                 style={{
                   position: "absolute",
                   top: 0,
@@ -415,7 +454,7 @@ export function HubAssetsTable({
                   transform: `translateY(${row.start}px)`,
                   height: ROW_H,
                   gridTemplateColumns: gridColumns,
-                  background: selectedKey === a.key ? "var(--color-surface-2)" : undefined,
+                  background: isSelected ? "var(--color-surface-2)" : undefined,
                   borderBottom: "1px solid var(--color-hairline)",
                 }}
               >
@@ -456,8 +495,17 @@ export function HubAssetsTable({
                   {a.asset_type}
                 </span>
 
-                <div className="px-2">
+                <div className="flex items-center gap-1 px-2">
                   {meta ? <HubResChip meta={meta} /> : <span style={{ color: "var(--color-muted)" }}>—</span>}
+                  {variantGroup && (
+                    <span
+                      className="text-label"
+                      style={{ color: "var(--color-ink-secondary)" }}
+                      title={`${variantGroup.length} resolutions on disk`}
+                    >
+                      ⇄
+                    </span>
+                  )}
                 </div>
 
                 <div className="px-2">

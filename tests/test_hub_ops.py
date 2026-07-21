@@ -351,6 +351,170 @@ class TestMetaForCache:
         assert hub_ops._meta_for(str(path)) is None
 
 
+class TestHubShrinkAndCopyOps:
+    def test_ops_registered(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        for op in ("hub/shrink_start", "hub/copy_into_project"):
+            assert op in hub_ops.HUB_OPS
+
+    def test_shrink_start_without_document(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        response = hub_ops.HUB_OPS["hub/shrink_start"](
+            {"keys": ["a"], "target_px": 2048})
+        assert response == {"ok": False, "error": "no_document"}
+
+    def test_copy_into_project_without_document(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        response = hub_ops.HUB_OPS["hub/copy_into_project"]({"keys": ["a"]})
+        assert response == {"ok": False, "error": "no_document"}
+
+    def test_validate_shrink_payload_rejects_bad_target(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops._validate_shrink_payload(
+            {"keys": ["a"], "target_px": 999}) == "invalid_target"
+
+    def test_validate_shrink_payload_accepts_known_targets(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        for target in (4096, 2048, 1024):
+            assert hub_ops._validate_shrink_payload(
+                {"keys": ["a"], "target_px": target}) is None
+
+    def test_validate_shrink_payload_rejects_non_int_target(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops._validate_shrink_payload(
+            {"keys": ["a"], "target_px": "2048"}) == "invalid_target"
+
+
+class TestSettleRelinkResults:
+    """Pure helper behind the writer-failure fix in ``_run_shrink_for_job``
+    and ``_op_hub_copy_into_project``: a batch job must never report success
+    for an item whose relink write actually failed (mirrors
+    ``_op_hub_apply_repath``'s ``row_ok`` bookkeeping)."""
+
+    def test_all_succeed_returns_everything_no_errors(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        planned = [{"key": "a"}, {"key": "b"}]
+        write_results = {"a": True, "b": True}
+        succeeded, errors = hub_ops._settle_relink_results(planned, write_results)
+        assert succeeded == planned
+        assert errors == []
+
+    def test_false_write_result_excluded_and_reported(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        planned = [{"key": "a"}, {"key": "b"}]
+        write_results = {"a": True, "b": False}
+        succeeded, errors = hub_ops._settle_relink_results(planned, write_results)
+        assert succeeded == [{"key": "a"}]
+        assert errors == [{"key": "b", "error": "writer failed"}]
+
+    def test_missing_write_result_treated_as_failed(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        planned = [{"key": "a"}]
+        succeeded, errors = hub_ops._settle_relink_results(planned, {})
+        assert succeeded == []
+        assert errors == [{"key": "a", "error": "writer failed"}]
+
+    def test_empty_planned_returns_empty(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops._settle_relink_results([], {"a": True}) == ([], [])
+
+
+class TestPumpJobsKindDispatch:
+    def test_shrink_kind_dispatches_to_shrink_runner(self, sentinel_module, monkeypatch):
+        from sentinel import webbridge
+        from sentinel.ui import hub_ops
+        old = webbridge.JOBS
+        webbridge.JOBS = webbridge.JobRegistry()
+        called = {}
+        try:
+            job_id = webbridge.JOBS.start({"kind": "shrink", "plan": {}})
+
+            def _fake_shrink(jid, spec):
+                called["job_id"] = jid
+                called["spec"] = spec
+
+            monkeypatch.setattr(hub_ops, "_run_shrink_for_job", _fake_shrink)
+            hub_ops.pump_jobs()
+            assert called["job_id"] == job_id
+            assert called["spec"]["kind"] == "shrink"
+        finally:
+            webbridge.JOBS = old
+
+    def test_kindless_spec_still_routes_to_collect_runner(self, sentinel_module, monkeypatch):
+        """Backward compat: a spec with no ``kind`` key (the shape every
+        pre-existing ``hub/collect_start`` job used before this task) must
+        still dispatch to ``_run_collect_for_job`` — never break existing
+        collect jobs."""
+        from sentinel import webbridge
+        from sentinel.ui import hub_ops
+        old = webbridge.JOBS
+        webbridge.JOBS = webbridge.JobRegistry()
+        called = {}
+        try:
+            job_id = webbridge.JOBS.start({"target_dir": "/tmp/x", "zip": False,
+                                           "preflight_payload": None})
+
+            def _fake_collect(spec, on_status):
+                called["spec"] = spec
+                return {"manifest": {}, "manifest_path": ""}
+
+            monkeypatch.setattr(hub_ops, "_run_collect_for_job", _fake_collect)
+            hub_ops.pump_jobs()
+            assert called["spec"]["target_dir"] == "/tmp/x"
+            st = webbridge.JOBS.status(job_id)
+            assert st["state"] == "done"
+        finally:
+            webbridge.JOBS = old
+
+
+class TestHubVariantsOps:
+    def test_ops_registered(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        for op in ("hub/variants", "hub/switch_res"):
+            assert op in hub_ops.HUB_OPS
+
+    def test_variants_without_document(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops.HUB_OPS["hub/variants"]({"keys": ["a"]}) == {"error": "no_document"}
+
+    def test_variants_over_batch_cap_still_doc_guarded_first(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        response = hub_ops.HUB_OPS["hub/variants"]({"keys": ["k"] * 65})
+        assert response == {"error": "no_document"}
+
+    def test_switch_res_without_document(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        response = hub_ops.HUB_OPS["hub/switch_res"]({"keys": ["a"], "target": "highest"})
+        assert response == {"ok": False, "error": "no_document"}
+
+
+class TestValidateSwitchTarget:
+    def test_highest_is_valid(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops._validate_switch_target("highest") is None
+
+    def test_positive_int_is_valid(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops._validate_switch_target(2048) is None
+
+    def test_zero_is_invalid(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops._validate_switch_target(0) == "invalid_target"
+
+    def test_string_number_is_invalid(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops._validate_switch_target("2k") == "invalid_target"
+
+    def test_none_is_invalid(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops._validate_switch_target(None) == "invalid_target"
+
+    def test_bool_is_invalid(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops._validate_switch_target(True) == "invalid_target"
+        assert hub_ops._validate_switch_target(False) == "invalid_target"
+
+
 class TestOpenHubPalette:
     def test_palette_open_hub_still_registered(self, sentinel_module):
         """_palette_open_hub now tries the SPA hub (open_form) before

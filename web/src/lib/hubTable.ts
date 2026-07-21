@@ -1,4 +1,4 @@
-import type { HubAsset, HubMeta } from "../types";
+import type { HubAsset, HubMeta, HubVariant } from "../types";
 
 /**
  * Pure sort/facet/resize helpers for the Asset Hub table (Task 5,
@@ -17,7 +17,7 @@ export interface SortSpec {
 }
 
 /** Categorical ordering for `HubMeta.res_tier` so "res" sorts smallest→largest. */
-const RES_ORDER: Record<string, number> = { sm: 0, "2k": 1, "4k": 2, "8k": 3 };
+const RES_ORDER: Record<string, number> = { sm: 0, "1k": 1, "2k": 2, "4k": 3, "8k": 4, "16k": 5 };
 
 function basename(path: string): string {
   return path.split(/[\\/]/).pop() || path;
@@ -88,6 +88,207 @@ export function sortAssets(
     return dir === "asc" ? cmp : -cmp;
   });
   return [...present.map((x) => x.asset), ...absent];
+}
+
+export type SelectMode = "single" | "toggle" | "range";
+
+/** Pure selection reducer for the Hub table's multi-select (Task 3,
+ * `docs/superpowers/plans/2026-07-21-hub-optimize.md`). Always returns a
+ * NEW Set — callers rely on this for React state updates and must never
+ * mutate `current` in place. `visibleKeys` is the caller's CURRENT
+ * sorted+filtered+faceted key ordering, so "range" walks what's actually
+ * on screen, not insertion/fetch order. `range` falls back to `single`
+ * (clicked key only) whenever the anchor is missing or no longer present
+ * in `visibleKeys` (e.g. it scrolled out from under a facet change) — a
+ * stale anchor must never silently expand to the wrong range; if the
+ * clicked key itself isn't in `visibleKeys` either, the result is just
+ * that key (matches "single" semantics as the safest fallback). */
+export function applySelection(
+  current: Set<string>,
+  visibleKeys: string[],
+  anchorKey: string | null,
+  key: string,
+  mode: SelectMode,
+): Set<string> {
+  if (mode === "single") {
+    return new Set([key]);
+  }
+  if (mode === "toggle") {
+    const next = new Set(current);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    return next;
+  }
+  // range
+  if (anchorKey === null) return new Set([key]);
+  const anchorIdx = visibleKeys.indexOf(anchorKey);
+  const keyIdx = visibleKeys.indexOf(key);
+  if (anchorIdx === -1 || keyIdx === -1) return new Set([key]);
+  const [start, end] = anchorIdx <= keyIdx ? [anchorIdx, keyIdx] : [keyIdx, anchorIdx];
+  return new Set(visibleKeys.slice(start, end + 1));
+}
+
+/** Same VRAM formula as `imagemeta.vram_bytes` in plugin/sentinel/imagemeta.py
+ * (mip-chain overhead factor 4/3), so the client Shrink-dialog preview and
+ * the server's authoritative `shrink_plan` never disagree on a number shown
+ * to the artist before they confirm. */
+const MIP_FACTOR = 4 / 3;
+
+function vramBytes(width: number, height: number, channels: number, bitDepth: number): number {
+  const ch = Number.isInteger(channels) && channels >= 1 && channels <= 4 ? channels : 4;
+  const depth = bitDepth === 8 || bitDepth === 16 || bitDepth === 32 ? bitDepth : 8;
+  const raw = width * height * ch * (depth / 8);
+  return Math.floor(raw * MIP_FACTOR);
+}
+
+export type ShrinkSkipReason = "not_ok" | "not_image" | "no_meta" | "already_small";
+
+export interface ShrinkPreviewItem {
+  key: string;
+  width: number;
+  height: number;
+  newWidth: number;
+  newHeight: number;
+}
+
+export interface ShrinkPreviewSkip {
+  key: string;
+  reason: ShrinkSkipReason;
+}
+
+export interface ShrinkPreview {
+  eligible: ShrinkPreviewItem[];
+  skipped: ShrinkPreviewSkip[];
+  vramBefore: number;
+  vramAfter: number;
+}
+
+/** Client-side mirror of `assets.shrink_plan` (Task 1,
+ * `docs/superpowers/plans/2026-07-21-hub-optimize.md`), scoped to
+ * `selectedKeys` only — the Shrink dialog preview so the artist sees "N to
+ * shrink / N skipped / VRAM before→after" before confirming. The server
+ * recomputes the authoritative plan on `hub/shrink_start` regardless (a
+ * fresh scan could reveal a resolved path/meta this client snapshot didn't
+ * have), so this is informative, never load-bearing. Same eligibility order
+ * as the Python: status "ok" -> asset_type texture/hdri -> meta present with
+ * usable dims -> not already <= target. */
+export function shrinkPreview(
+  assets: HubAsset[],
+  metas: Record<string, HubMeta>,
+  selectedKeys: Set<string>,
+  targetPx: number,
+): ShrinkPreview {
+  const eligible: ShrinkPreviewItem[] = [];
+  const skipped: ShrinkPreviewSkip[] = [];
+  let vramBefore = 0;
+  let vramAfter = 0;
+
+  for (const asset of assets) {
+    if (!selectedKeys.has(asset.key)) continue;
+    if (asset.status !== "ok") {
+      skipped.push({ key: asset.key, reason: "not_ok" });
+      continue;
+    }
+    if (asset.asset_type !== "texture" && asset.asset_type !== "hdri") {
+      skipped.push({ key: asset.key, reason: "not_image" });
+      continue;
+    }
+    const meta = metas[asset.key];
+    if (!meta || !meta.width || !meta.height) {
+      skipped.push({ key: asset.key, reason: "no_meta" });
+      continue;
+    }
+    if (Math.max(meta.width, meta.height) <= targetPx) {
+      skipped.push({ key: asset.key, reason: "already_small" });
+      continue;
+    }
+    const scale = targetPx / Math.max(meta.width, meta.height);
+    const newWidth = Math.max(1, Math.round(meta.width * scale));
+    const newHeight = Math.max(1, Math.round(meta.height * scale));
+    eligible.push({ key: asset.key, width: meta.width, height: meta.height, newWidth, newHeight });
+    vramBefore += vramBytes(meta.width, meta.height, meta.channels, meta.bit_depth);
+    vramAfter += vramBytes(newWidth, newHeight, meta.channels, meta.bit_depth);
+  }
+
+  return { eligible, skipped, vramBefore, vramAfter };
+}
+
+/** Longest-edge px -> the studio's own resolution-token labels (the same
+ * map `split_res_token`/`find_res_variants` recognize server-side, see
+ * assets.py). Falls back to a plain `<px>px` label for any px this map
+ * doesn't know about (defensive only — the server only ever emits the five
+ * mapped values). */
+const PX_LABELS: Record<number, string> = {
+  1024: "1K",
+  2048: "2K",
+  4096: "4K",
+  8192: "8K",
+  16384: "16K",
+};
+
+function pxLabel(px: number): string {
+  const known = PX_LABELS[px];
+  return known ? `${known} (${px}px)` : `${px}px`;
+}
+
+export interface SwitchTarget {
+  px: number | "highest";
+  label: string;
+  available: number;
+}
+
+export interface SwitchTargetsResult {
+  targets: SwitchTarget[];
+  total: number;
+}
+
+/** Pure "Switch res..." dialog computation (Task 3, fase 5.3 —
+ * `docs/superpowers/plans/2026-07-21-hub-variants.md`). `variants` is the
+ * `hub/variants` response keyed by asset key (absent key = no detected
+ * sibling group, same "absence means nothing to report" convention as
+ * `hub/meta`/`metas`). Builds the union of every px present across the
+ * SELECTED keys' variant groups (desc), with a synthetic `"highest"` target
+ * always first — `available` for `"highest"` counts every selected key that
+ * has ANY detected group (picking "Highest" always resolves to `group[0]`
+ * server-side, whatever that key's own top px is), while a concrete px
+ * target counts only the selected keys whose group actually contains that
+ * exact px. `total` is the selection size, so the dialog can render each
+ * target's "X/N available" against the same denominator. Selected keys with
+ * no `variants` entry at all contribute to `total` but to no target's
+ * `available` — they simply have nothing to switch. A `null`-px entry (a
+ * "bare base" sibling the server couldn't enrich with a real pixel size)
+ * still counts toward `highestAvailable` — the family exists, and picking
+ * "Highest" resolves server-side by real pixel size, never by this label —
+ * but it never contributes an exact-px target, since there is no concrete
+ * value a null entry could ever match. */
+export function switchTargets(
+  selectedKeys: Set<string>,
+  variants: Record<string, HubVariant[]>,
+): SwitchTargetsResult {
+  const total = selectedKeys.size;
+  let highestAvailable = 0;
+  const pxCounts = new Map<number, number>();
+
+  for (const key of selectedKeys) {
+    const group = variants[key];
+    if (!group || group.length === 0) continue;
+    highestAvailable += 1;
+    const pxSet = new Set(group.map((v) => v.px).filter((px): px is number => px !== null));
+    for (const px of pxSet) {
+      pxCounts.set(px, (pxCounts.get(px) ?? 0) + 1);
+    }
+  }
+
+  if (highestAvailable === 0) {
+    return { targets: [], total };
+  }
+
+  const pxDesc = Array.from(pxCounts.keys()).sort((a, b) => b - a);
+  const targets: SwitchTarget[] = [
+    { px: "highest", label: "Highest", available: highestAvailable },
+    ...pxDesc.map((px) => ({ px, label: pxLabel(px), available: pxCounts.get(px) as number })),
+  ];
+  return { targets, total };
 }
 
 export interface FacetState {

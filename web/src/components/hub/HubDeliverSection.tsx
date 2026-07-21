@@ -15,7 +15,7 @@ import {
   submitGate,
 } from "../../lib/api";
 import { useToast } from "../../lib/toast";
-import type { GateBucket, GateCheck, GateState, HubJobStatus } from "../../types";
+import type { GateBucket, GateCheck, GateState, HubCollectResult, HubJobStatus } from "../../types";
 
 type Phase = "idle" | "gate" | "running" | "done" | "error";
 
@@ -425,7 +425,11 @@ export function HubDeliverSection({
   }
 
   if (phase === "done") {
-    const result = jobStatus?.result ?? null;
+    // This section only ever starts a "collect" job (`startHubCollect`
+    // above) — the `result` union only widened (Fase 5.2) because
+    // `HubJobStatus` is now shared with the Hub's shrink job too, whose
+    // `HubShrinkResult` never reaches this code path.
+    const result = (jobStatus?.result as HubCollectResult | null) ?? null;
     return (
       <div className="flex flex-col gap-3">
         <div className="flex items-center gap-2 rounded-lg border p-4" style={cardStyle}>

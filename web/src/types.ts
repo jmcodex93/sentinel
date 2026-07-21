@@ -632,20 +632,74 @@ export interface HubCollectResult {
   report: DeliveryReport; // reuses the existing DeliveryReport type
 }
 
+/**
+ * Hub Shrink contract (Phase 5.2) — mirrors `_op_hub_shrink_start` /
+ * `_run_shrink_for_job` in plugin/sentinel/ui/hub_ops.py and `shrink_plan`
+ * in plugin/sentinel/assets.py. Produced by `POST /api/hub/shrink_start`
+ * `{keys, target_px}`; the job result (fetched via the shared
+ * `fetchHubJobStatus`) is this shape, not `HubCollectResult` — see
+ * `HubJobStatus.result` below.
+ */
+export interface HubShrinkStartResponse {
+  ok: boolean;
+  /** "no_document" | "invalid_target" | "nothing_to_shrink" | "job_running". */
+  error?: string;
+  job_id?: string;
+}
+
+export interface HubShrinkResultItem {
+  key: string;
+  target_path: string;
+  resolved_path: string;
+}
+
+export interface HubShrinkSkip {
+  key: string;
+  reason: string;
+}
+
+export interface HubShrinkError {
+  key: string;
+  error: string;
+}
+
+export interface HubShrinkResult {
+  shrunk: HubShrinkResultItem[];
+  skipped: HubShrinkSkip[];
+  errors: HubShrinkError[];
+  bytes_saved: number;
+}
+
+/** `POST /api/hub/copy_into_project` — see `_op_hub_copy_into_project` in
+ * hub_ops.py. Synchronous (no job) — a handful of `shutil.copy2` calls plus
+ * one relink undo step. Same trailing `stamp` reasoning as `HubApplyResponse`. */
+export interface HubCopyResponse {
+  ok: boolean;
+  /** "no_document" | "unsaved_document". */
+  error?: string;
+  copied?: number;
+  reused?: number;
+  errors?: { key: string; error: string }[];
+  stamp?: string;
+}
+
 /** `GET /api/hub/job_status?job_id=<id>` — see `webbridge.JobRegistry.status`
  * and the `hub/job_status` special-case in `reports_dialog.py` (answered
  * directly on the HTTP server thread, bypassing `MainThreadQueue`, so
  * polling stays live while a collect job blocks the main thread). Returned
  * raw (not wrapped in a `{kind: ...}` result) — the shape itself already
  * carries every state the SPA needs to render, including an unknown/expired
- * `job_id` via `error`. */
+ * `job_id` via `error`. `result` widens to a union (Fase 5.2): a
+ * `"kind": "shrink"` job spec resolves to `HubShrinkResult`, everything else
+ * (the pre-5.2 default, `"collect"`) resolves to `HubCollectResult` — the
+ * page reading it knows which one to expect from which action it started. */
 export interface HubJobStatus {
   job_id?: string;
   state?: "pending" | "running" | "done" | "error";
   phase?: string;
   detail?: string;
   pct?: number;
-  result?: HubCollectResult | null;
+  result?: HubCollectResult | HubShrinkResult | null;
   error?: string;
 }
 
@@ -656,7 +710,7 @@ export interface HubJobStatus {
  * (width, height, channels, bit_depth, colorspace) plus derived fields
  * (vram_bytes, vram_label, res_label, res_tier).
  */
-export type HubResTier = "8k" | "4k" | "2k" | "sm";
+export type HubResTier = "16k" | "8k" | "4k" | "2k" | "1k" | "sm";
 
 export interface HubMeta {
   width: number;
@@ -684,6 +738,39 @@ export interface HubMetaTotals {
   disk_label: string;
   covered: number;
   total: number;
+}
+
+/**
+ * Hub resolution-variant contract (Fase 5.3) — mirrors `_op_hub_variants` in
+ * plugin/sentinel/ui/hub_ops.py. `basename` is the sibling file's name only
+ * (never a full path — the client only needs it to build the relink via
+ * `postHubSwitchRes`); `px` is the longest-edge pixel size the shared
+ * `split_res_token` token maps to. A key only appears in the response's
+ * record when its detected group has >=2 members (itself included) — see
+ * `find_res_variants` in assets.py. `px` is `null` for a "bare base"
+ * sibling — the un-tokened original a Shrink copy was derived from — when
+ * the server couldn't enrich it with a real pixel size (`_meta_for` failed
+ * to parse the file); such an entry is never a valid exact-px switch
+ * target, but it does still count toward the family for "Highest".
+ */
+export interface HubVariant {
+  basename: string;
+  px: number | null;
+}
+
+/** `POST /api/hub/switch_res` — see `_op_hub_switch_res` in hub_ops.py.
+ * Relink-only (no file writes), same trailing `stamp` reasoning as
+ * `HubApplyResponse`. `skipped` reasons are `"no_variant"` (no sibling at
+ * the requested target) or `"already_there"` (the current file already IS
+ * that target — covers "Highest" when nothing is higher). */
+export interface HubSwitchResponse {
+  ok: boolean;
+  /** "no_document" | "invalid_target" | "too_many_keys". */
+  error?: string;
+  switched?: string[];
+  skipped?: { key: string; reason: string }[];
+  errors?: { key: string; error: string }[];
+  stamp?: string;
 }
 
 /**

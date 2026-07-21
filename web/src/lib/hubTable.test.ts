@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
   applyFacets,
+  applySelection,
   channelsLabel,
   facetCounts,
   MIN_COL_WIDTH,
   sanitizeColWidths,
   sanitizeSortSpec,
+  shrinkPreview,
   sortAssets,
+  switchTargets,
   type FacetState,
 } from "./hubTable";
-import type { HubAsset, HubMeta } from "../types";
+import type { HubAsset, HubMeta, HubVariant } from "../types";
 
 function asset(overrides: Partial<HubAsset> & { key: string }): HubAsset {
   return {
@@ -249,5 +252,215 @@ describe("sanitizeColWidths — untrusted sentinel_settings.json input", () => {
     expect(sanitizeColWidths(null)).toEqual({});
     expect(sanitizeColWidths(undefined)).toEqual({});
     expect(sanitizeColWidths("widths")).toEqual({});
+  });
+});
+
+describe("applySelection", () => {
+  const visible = ["a", "b", "c", "d", "e"];
+
+  it("single mode always replaces the whole selection with just the clicked key", () => {
+    const current = new Set(["a", "b", "c"]);
+    expect(applySelection(current, visible, "a", "d", "single")).toEqual(new Set(["d"]));
+  });
+
+  it("toggle mode adds an unselected key", () => {
+    const current = new Set(["a"]);
+    expect(applySelection(current, visible, "a", "c", "toggle")).toEqual(new Set(["a", "c"]));
+  });
+
+  it("toggle mode removes an already-selected key", () => {
+    const current = new Set(["a", "c"]);
+    expect(applySelection(current, visible, "a", "c", "toggle")).toEqual(new Set(["a"]));
+  });
+
+  it("range mode selects forward from anchor to key inclusive, in visible order", () => {
+    const current = new Set(["b"]);
+    expect(applySelection(current, visible, "b", "d", "range")).toEqual(new Set(["b", "c", "d"]));
+  });
+
+  it("range mode selects backward from anchor to key inclusive", () => {
+    const current = new Set(["d"]);
+    expect(applySelection(current, visible, "d", "b", "range")).toEqual(new Set(["b", "c", "d"]));
+  });
+
+  it("range mode operates over the passed-in (filtered/sorted) visible ordering, not insertion order", () => {
+    const filteredVisible = ["e", "c", "a"]; // some other sort/filter order
+    expect(applySelection(new Set(), filteredVisible, "e", "a", "range")).toEqual(new Set(["e", "c", "a"]));
+  });
+
+  it("range mode with a null anchor falls back to single", () => {
+    const current = new Set(["a", "b"]);
+    expect(applySelection(current, visible, null, "d", "range")).toEqual(new Set(["d"]));
+  });
+
+  it("range mode with an anchor no longer in the visible set falls back to single", () => {
+    const current = new Set(["a", "b"]);
+    expect(applySelection(current, visible, "zzz", "d", "range")).toEqual(new Set(["d"]));
+  });
+
+  it("range mode where the clicked key itself is not visible falls back to single", () => {
+    const current = new Set(["a", "b"]);
+    expect(applySelection(current, visible, "a", "zzz", "range")).toEqual(new Set(["zzz"]));
+  });
+
+  it("always returns a new Set instance, never mutates the input", () => {
+    const current = new Set(["a"]);
+    const result = applySelection(current, visible, "a", "b", "toggle");
+    expect(result).not.toBe(current);
+    expect(current).toEqual(new Set(["a"])); // unmutated
+  });
+});
+
+describe("shrinkPreview", () => {
+  // Task 1 numbers (tests/test_assets.py TestShrinkPlan) — this client
+  // preview must land on the exact same figures as the server's
+  // `assets.shrink_plan`, scoped down to only the selected keys.
+  it("8K texture -> 2K target: exact dims, eligible", () => {
+    const a = asset({ key: "a", status: "ok", asset_type: "texture" });
+    const preview = shrinkPreview([a], { a: meta({ width: 8192, height: 8192 }) }, new Set(["a"]), 2048);
+    expect(preview.eligible).toEqual([{ key: "a", width: 8192, height: 8192, newWidth: 2048, newHeight: 2048 }]);
+    expect(preview.skipped).toEqual([]);
+  });
+
+  it("non-square aspect preserved: 4000x717 @2048 -> 2048x367", () => {
+    const f = asset({ key: "f", status: "ok", asset_type: "hdri" });
+    const preview = shrinkPreview(
+      [f],
+      { f: meta({ width: 4000, height: 717, channels: 3, bit_depth: 8 }) },
+      new Set(["f"]),
+      2048,
+    );
+    expect(preview.eligible[0].newWidth).toBe(2048);
+    expect(preview.eligible[0].newHeight).toBe(367);
+  });
+
+  it("vram before/after are exact and before > after", () => {
+    const a = asset({ key: "a", status: "ok", asset_type: "texture" });
+    const preview = shrinkPreview(
+      [a],
+      { a: meta({ width: 8192, height: 8192, channels: 4, bit_depth: 8 }) },
+      new Set(["a"]),
+      2048,
+    );
+    // imagemeta.vram_bytes(w, h, ch, depth) = floor(w*h*ch*(depth/8) * 4/3)
+    const expectedBefore = Math.floor(8192 * 8192 * 4 * 1 * (4 / 3));
+    const expectedAfter = Math.floor(2048 * 2048 * 4 * 1 * (4 / 3));
+    expect(preview.vramBefore).toBe(expectedBefore);
+    expect(preview.vramAfter).toBe(expectedAfter);
+    expect(preview.vramBefore).toBeGreaterThan(preview.vramAfter);
+  });
+
+  it("mixed batch: skip reasons mirror the server (not_ok, not_image, no_meta, already_small)", () => {
+    const assets = [
+      asset({ key: "a", status: "ok", asset_type: "texture" }),
+      asset({ key: "b", status: "ok", asset_type: "texture" }), // already small
+      asset({ key: "c", status: "missing", asset_type: "texture" }), // not_ok
+      asset({ key: "d", status: "ok", asset_type: "texture" }), // no meta
+      asset({ key: "e", status: "ok", asset_type: "alembic" }), // not_image
+    ];
+    const metas: Record<string, HubMeta> = {
+      a: meta({ width: 8192, height: 8192 }),
+      b: meta({ width: 2048, height: 2048 }),
+      e: meta({ width: 100, height: 100, channels: 1 }),
+    };
+    const preview = shrinkPreview(assets, metas, new Set(["a", "b", "c", "d", "e"]), 2048);
+    expect(preview.eligible.map((i) => i.key)).toEqual(["a"]);
+    const reasons = Object.fromEntries(preview.skipped.map((s) => [s.key, s.reason]));
+    expect(reasons).toEqual({ b: "already_small", c: "not_ok", d: "no_meta", e: "not_image" });
+  });
+
+  it("only considers keys in selectedKeys, ignoring the rest of the inventory", () => {
+    const a = asset({ key: "a", status: "ok", asset_type: "texture" });
+    const b = asset({ key: "b", status: "ok", asset_type: "texture" });
+    const metas: Record<string, HubMeta> = {
+      a: meta({ width: 8192, height: 8192 }),
+      b: meta({ width: 8192, height: 8192 }),
+    };
+    const preview = shrinkPreview([a, b], metas, new Set(["a"]), 2048);
+    expect(preview.eligible.map((i) => i.key)).toEqual(["a"]);
+    expect(preview.skipped).toEqual([]);
+  });
+});
+
+describe("switchTargets", () => {
+  function variantGroup(...px: number[]): HubVariant[] {
+    return px.map((p) => ({ basename: `sibling_${p}.png`, px: p }));
+  }
+
+  it("empty selection: no targets, total 0", () => {
+    const result = switchTargets(new Set(), {});
+    expect(result).toEqual({ targets: [], total: 0 });
+  });
+
+  it("selection with no variants anywhere: Highest still isn't offered (available 0 -> omitted... union is empty)", () => {
+    const result = switchTargets(new Set(["a", "b"]), {});
+    expect(result.total).toBe(2);
+    expect(result.targets).toEqual([]);
+  });
+
+  it("unions px across the selection, sorted desc, with Highest first", () => {
+    const variants: Record<string, HubVariant[]> = {
+      a: variantGroup(8192, 4096, 2048),
+      b: variantGroup(4096, 2048),
+    };
+    const result = switchTargets(new Set(["a", "b"]), variants);
+    expect(result.total).toBe(2);
+    expect(result.targets.map((t) => t.px)).toEqual(["highest", 8192, 4096, 2048]);
+  });
+
+  it("counts availability per px: only keys whose variant group contains that px", () => {
+    const variants: Record<string, HubVariant[]> = {
+      a: variantGroup(8192, 4096, 2048),
+      b: variantGroup(4096, 2048),
+      c: variantGroup(4096, 2048),
+    };
+    const result = switchTargets(new Set(["a", "b", "c"]), variants);
+    const byPx = Object.fromEntries(result.targets.map((t) => [String(t.px), t.available]));
+    expect(byPx["8192"]).toBe(1);
+    expect(byPx["4096"]).toBe(3);
+    expect(byPx["2048"]).toBe(3);
+    expect(byPx["highest"]).toBe(3);
+  });
+
+  it("selected keys with no detected variant group don't count toward Highest or any px bucket", () => {
+    const variants: Record<string, HubVariant[]> = {
+      a: variantGroup(8192, 2048),
+      // b has no entry -- no variants detected for it
+    };
+    const result = switchTargets(new Set(["a", "b"]), variants);
+    expect(result.total).toBe(2);
+    const highest = result.targets.find((t) => t.px === "highest");
+    expect(highest?.available).toBe(1);
+  });
+
+  it("ignores variants for keys not in the selection", () => {
+    const variants: Record<string, HubVariant[]> = {
+      a: variantGroup(8192, 4096),
+      z: variantGroup(16384, 2048), // not selected -- must not leak into the union
+    };
+    const result = switchTargets(new Set(["a"]), variants);
+    expect(result.targets.map((t) => t.px)).toEqual(["highest", 8192, 4096]);
+  });
+
+  it("produces a human-readable label per px target", () => {
+    const variants: Record<string, HubVariant[]> = { a: variantGroup(8192, 1024) };
+    const result = switchTargets(new Set(["a"]), variants);
+    const labels = Object.fromEntries(result.targets.map((t) => [String(t.px), t.label]));
+    expect(labels.highest).toBe("Highest");
+    expect(labels["8192"]).toMatch(/8K/);
+    expect(labels["1024"]).toMatch(/1K/);
+  });
+
+  it("a null-px entry (bare base sibling the server couldn't enrich) still counts toward Highest but never becomes an exact-px target", () => {
+    const variants: Record<string, HubVariant[]> = {
+      a: [{ basename: "sibling_2k.png", px: 2048 }, { basename: "bare.png", px: null }],
+    };
+    const result = switchTargets(new Set(["a"]), variants);
+    // Highest is still available (the family exists) ...
+    expect(result.targets.map((t) => t.px)).toEqual(["highest", 2048]);
+    const highest = result.targets.find((t) => t.px === "highest");
+    expect(highest?.available).toBe(1);
+    // ... but "null" never shows up as its own selectable exact-px target.
+    expect(result.targets.some((t) => t.px === null)).toBe(false);
   });
 });

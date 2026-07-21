@@ -7,6 +7,8 @@ import os
 import re
 import zipfile
 
+from . import imagemeta
+
 # Extension → asset_type. Lowercase, no dot.
 _TYPE_BY_EXT = {
     "png": "texture", "jpg": "texture", "jpeg": "texture", "tif": "texture",
@@ -391,3 +393,301 @@ def create_zip_archive(delivery_dir, zip_path=None, on_progress=None):
             if on_progress:
                 on_progress(i, total)
     return {"zip_path": zip_path, "files": total, "bytes": written_bytes}
+
+
+# ---------------------------------------------------------------------------
+# Hub Shrink + Copy into project (Fase 5.2) — pure planners
+# ---------------------------------------------------------------------------
+
+_SHRINK_SUFFIX = {4096: "_4K", 2048: "_2K", 1024: "_1K"}
+
+
+def shrink_target_name(path, target_px):
+    """Sibling filename for a shrunk copy — `<stem>_<K><ext>` for the known
+    targets (4096->_4K, 2048->_2K, 1024->_1K), `<stem>_{target_px}px<ext>`
+    for anything else. Idempotent: if the stem already ends with the target
+    suffix, the name is returned unchanged (a re-run on an already-shrunk
+    sibling never doubles the suffix)."""
+    suffix = _SHRINK_SUFFIX.get(target_px, f"_{target_px}px")
+    root, ext = os.path.splitext(str(path))
+    if root.endswith(suffix):
+        return path
+    return f"{root}{suffix}{ext}"
+
+
+def shrink_plan(records, metas, target_px):
+    """Plan a batch shrink to `target_px` on the larger dimension.
+
+    `records` are AssetRecord dicts (key/path/resolved_path/status/
+    asset_type); `metas` is {key: {"width","height","channels","bit_depth",
+    ...}} — the hub image-meta shape (imagemeta.read_image_meta output).
+
+    Eligible: status "ok" AND a meta entry present AND
+    max(width, height) > target_px AND asset_type in ("texture", "hdri").
+    Skip reasons (checked in this order): "not_ok", "not_image", "no_meta",
+    "already_small".
+
+    New dimensions scale by `target_px / max(w, h)`, rounded, floored at 1,
+    aspect preserved. `vram_before`/`vram_after` sum
+    `imagemeta.vram_bytes(...)` over the shrink list only — before at the
+    original dims, after at the new dims (same channels/bit_depth).
+    """
+    shrink = []
+    skipped = []
+    vram_before = 0
+    vram_after = 0
+
+    for rec in records or []:
+        key = rec.get("key")
+        if rec.get("status") != "ok":
+            skipped.append({"key": key, "reason": "not_ok"})
+            continue
+        if rec.get("asset_type") not in ("texture", "hdri"):
+            skipped.append({"key": key, "reason": "not_image"})
+            continue
+        meta = (metas or {}).get(key)
+        if not meta:
+            skipped.append({"key": key, "reason": "no_meta"})
+            continue
+        width = meta.get("width")
+        height = meta.get("height")
+        if not width or not height:
+            skipped.append({"key": key, "reason": "no_meta"})
+            continue
+        if max(width, height) <= target_px:
+            skipped.append({"key": key, "reason": "already_small"})
+            continue
+
+        scale = target_px / max(width, height)
+        new_width = max(1, round(width * scale))
+        new_height = max(1, round(height * scale))
+        channels = meta.get("channels")
+        bit_depth = meta.get("bit_depth")
+
+        shrink.append({
+            "key": key,
+            "path": rec.get("path"),
+            "resolved_path": rec.get("resolved_path"),
+            "width": width,
+            "height": height,
+            "new_width": new_width,
+            "new_height": new_height,
+        })
+        vram_before += imagemeta.vram_bytes(width, height, channels, bit_depth)
+        vram_after += imagemeta.vram_bytes(new_width, new_height, channels, bit_depth)
+
+    return {
+        "shrink": shrink,
+        "skipped": skipped,
+        "vram_before": vram_before,
+        "vram_after": vram_after,
+    }
+
+
+def replace_basename_preserving_form(stored_path, new_basename):
+    """Swap ONLY the basename of `stored_path`, preserving its original form
+    exactly — scheme prefix (`relative:///`, `file:///`), separator style
+    (forward or back — split on whichever appears LAST), and case. The
+    sibling copy from a shrink/copy op always lands in the same directory as
+    the resolved original, so relinking only ever needs a basename swap, not
+    a full new path — reusing the stored form (instead of the absolute
+    resolved target) is what keeps a `relative:///`-stored texture relative
+    after a shrink.
+
+    Examples: `relative:///tex/a.png` + `a_2K.png` ->
+    `relative:///tex/a_2K.png`; `tex/a.png` -> `tex/a_2K.png`;
+    `D:\\proj\\tex\\a.png` -> `D:\\proj\\tex\\a_2K.png`; bare `a.png` ->
+    `a_2K.png`; empty stored path -> `new_basename` unchanged.
+    """
+    stored = stored_path or ""
+    if not stored:
+        return new_basename
+    last_fwd = stored.rfind("/")
+    last_back = stored.rfind("\\")
+    cut = max(last_fwd, last_back)
+    if cut < 0:
+        return new_basename
+    return stored[:cut + 1] + new_basename
+
+
+def copy_plan(records, doc_dir):
+    """Plan copying out-of-project assets into `<doc_dir>/tex/`.
+
+    Eligible: `resolved_path` set AND its normalized-lowercased form does
+    NOT already start with the normalized `doc_dir` + separator (a
+    case-insensitive "already inside the project" check — intentionally
+    case-insensitive since it's just a containment test). Target path is
+    `os.path.join(doc_dir, "tex", basename(resolved_path))`, with the
+    basename derived from the resolved path with separators normalized to
+    "/" but CASE PRESERVED — a Windows-authored path (`D:\\old\\tex\\wood.png`)
+    opened on macOS has no separators `os.path.basename` recognizes there,
+    so it would return the whole string instead of `wood.png` (same fix as
+    `match_missing_in_folder`), but using the lowercased dedupe key here
+    would silently case-fold the filename (`Metal_Rough.PNG` →
+    `metal_rough.png`), which breaks relinking on case-sensitive render
+    farms.
+
+    Skip reasons: "in_project" (already under doc_dir), "unresolved"
+    (no resolved_path).
+    """
+    copy = []
+    skip = []
+    doc_key = normalize_path_key(doc_dir).rstrip("/") + "/"
+
+    for rec in records or []:
+        key = rec.get("key")
+        resolved = rec.get("resolved_path")
+        if not resolved:
+            skip.append({"key": key, "reason": "unresolved"})
+            continue
+        resolved_key = normalize_path_key(resolved)
+        if resolved_key.startswith(doc_key):
+            skip.append({"key": key, "reason": "in_project"})
+            continue
+        basename = os.path.basename(str(resolved).replace("\\", "/"))
+        target_path = os.path.join(doc_dir, "tex", basename)
+        copy.append({
+            "key": key,
+            "resolved_path": resolved,
+            "target_path": target_path,
+        })
+
+    return {"copy": copy, "skip": skip}
+
+
+# ---------------------------------------------------------------------------
+# Resolution variant detection (Fase 5.3) — pure, no file writes
+# ---------------------------------------------------------------------------
+
+_RES_TOKEN_MAP = {"1k": 1024, "2k": 2048, "4k": 4096, "8k": 8192, "16k": 16384}
+
+# Alternatives ordered longest-first (documentational — none of these tokens
+# is actually a prefix substring of another, so match order doesn't change
+# behavior today, but it's the defensive convention if the map ever grows).
+# Boundaries are zero-width lookaround assertions (never consumed) so the
+# delimiter itself lands in whichever side it borders when the basename is
+# sliced around the match.
+_RES_TOKEN_RE = re.compile(
+    r"(?:(?<=[_\-.])|^)(16k|8k|4k|2k|1k)(?:(?=[_\-.])|$)",
+    re.IGNORECASE,
+)
+
+
+def split_res_token(basename):
+    """Split `basename` around its LAST resolution token (`_4k_`, `-8k.`,
+    `.4k.`, leading `4k_`, our `_2K` shrink suffix, etc.), case-insensitive.
+
+    Returns `(prefix, px, suffix)` where `prefix + <token-as-found> + suffix
+    == basename` (the delimiter on each side stays put in prefix/suffix, the
+    token itself is consumed) — or `None` when no token is found. A token
+    embedded in a word (`back4k.png`) never matches: both boundaries require
+    a delimiter (`_`/`-`/`.`) or the start/end of the name. When multiple
+    tokens are present, the LAST one wins (`scan_4k_detail_2k.png` splits on
+    `2k`).
+    """
+    name = str(basename)
+    matches = list(_RES_TOKEN_RE.finditer(name))
+    if not matches:
+        return None
+    match = matches[-1]
+    px = _RES_TOKEN_MAP[match.group(1).lower()]
+    return name[:match.start()], px, name[match.end():]
+
+
+def find_res_variants(records, list_dir=os.listdir):
+    """Detect on-disk resolution siblings for each record — including the
+    "bare base" file a tokened variant was shrunk/derived from, which
+    carries no resolution token of its own (the Shrink tool creates
+    exactly this pair: `NAME.png` -> `NAME_2K.png`).
+
+    Each directory is listed at most once per call (cached by directory
+    path — a `list_dir` failure skips every record in that directory
+    rather than raising). Two cases:
+
+    - Record's basename HAS a token (`split_res_token` succeeds): siblings
+      are dir entries whose own split yields the same case-folded
+      `(prefix, suffix)` (unchanged from before) PLUS, if present, the
+      bare base file — basename == `prefix.rstrip("_-.") + suffix` — added
+      with `"px": None` (unknown from the name alone).
+    - Record's basename has NO token: look for dir entries whose split
+      gives a prefix in `{stem + "_", stem + "-", stem + "."}`
+      (case-folded) and suffix == the record's own extension (case-folded)
+      — `stem` = the record's basename without extension. If any such
+      tokened siblings exist, the family is those siblings plus the bare
+      record itself (`"px": None`); otherwise the record has no family.
+
+    Groups with fewer than 2 members (self included) are dropped.
+    Returns `{key: [{"path", "px"}, ...]}` sorted by `px` descending with
+    `None` entries LAST, paths joined with the record's directory after
+    separators are normalized to `/` — same fix as `copy_plan`'s
+    `match_missing_in_folder`: a Windows-authored `resolved_path`
+    (`D:\\proj\\tex\\a.png`) opened on macOS has no separators
+    `os.path.dirname`/`os.path.basename` recognize there, so without the
+    normalization `dirname` would return `''`, `list_dir('')` would list
+    the cwd, and the record would silently drop out of every group.
+    """
+    dir_listings = {}
+    result = {}
+
+    for rec in records or []:
+        key = rec.get("key")
+        resolved = rec.get("resolved_path")
+        if not resolved:
+            continue
+        resolved = str(resolved).replace("\\", "/")
+        dir_path = os.path.dirname(resolved)
+        basename = os.path.basename(resolved)
+
+        if dir_path not in dir_listings:
+            try:
+                dir_listings[dir_path] = list_dir(dir_path)
+            except OSError:
+                dir_listings[dir_path] = None
+        entries = dir_listings[dir_path]
+        if entries is None:
+            continue
+
+        split = split_res_token(basename)
+        group = []
+
+        if split is not None:
+            prefix, _px, suffix = split
+            prefix_key = prefix.lower()
+            suffix_key = suffix.lower()
+
+            for entry in entries:
+                entry_split = split_res_token(entry)
+                if entry_split is None:
+                    continue
+                e_prefix, e_px, e_suffix = entry_split
+                if e_prefix.lower() == prefix_key and e_suffix.lower() == suffix_key:
+                    group.append({"path": os.path.join(dir_path, entry), "px": e_px})
+
+            bare_name = prefix.rstrip("_-.") + suffix
+            if bare_name.lower() != basename.lower():
+                entries_lower = {e.lower(): e for e in entries}
+                found = entries_lower.get(bare_name.lower())
+                if found:
+                    group.append({"path": os.path.join(dir_path, found), "px": None})
+        else:
+            stem, ext = os.path.splitext(basename)
+            candidate_prefixes = {(stem + d).lower() for d in ("_", "-", ".")}
+            ext_key = ext.lower()
+
+            for entry in entries:
+                entry_split = split_res_token(entry)
+                if entry_split is None:
+                    continue
+                e_prefix, e_px, e_suffix = entry_split
+                if e_prefix.lower() in candidate_prefixes and e_suffix.lower() == ext_key:
+                    group.append({"path": os.path.join(dir_path, entry), "px": e_px})
+
+            if group:
+                group.append({"path": os.path.join(dir_path, basename), "px": None})
+
+        if len(group) < 2:
+            continue
+        group.sort(key=lambda g: (g["px"] is None, -(g["px"] or 0)))
+        result[key] = group
+
+    return result

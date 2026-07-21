@@ -1,7 +1,14 @@
 import type { FacetCounts, FacetState } from "../../lib/hubTable";
 
-const RES_ORDER = ["8k", "4k", "2k", "sm"] as const;
-const RES_LABEL: Record<string, string> = { "8k": "8K", "4k": "4K", "2k": "2K", sm: "<2K" };
+const RES_ORDER = ["16k", "8k", "4k", "2k", "1k", "sm"] as const;
+const RES_LABEL: Record<string, string> = {
+  "16k": "16K",
+  "8k": "8K",
+  "4k": "4K",
+  "2k": "2K",
+  "1k": "1K",
+  sm: "<1K",
+};
 const CHANNELS_ORDER = ["Grey", "RGB", "RGBA"] as const;
 const DEPTH_ORDER = [8, 16, 32] as const;
 
