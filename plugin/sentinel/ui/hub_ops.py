@@ -14,6 +14,7 @@ addition — see those functions for the ``webbridge.JOBS`` contract.
 """
 
 import os
+import shutil
 
 import c4d
 from c4d import documents
@@ -371,6 +372,263 @@ def _op_hub_pick_path(payload):
     return {"ok": True, "path": path}
 
 
+_SHRINK_TARGETS = (4096, 2048, 1024)
+
+# Bitmap saver IDs by extension, for the Hub Shrink job (fase 5.2). Everything
+# not listed here is a per-row "unsupported format" error, never a silent
+# degradation (exr/hdr/psd/webp are not roundtrippable through BaseBitmap's
+# 8bpc saver path). ``.tga`` -> ``c4d.FILTER_TGA`` is a documented Cinema 4D
+# save-format constant (BaseBitmap::Save) alongside PNG/JPG/TIF/BMP, so it
+# stays in the allowlist.
+_SAVER_BY_EXT = {
+    ".png": c4d.FILTER_PNG,
+    ".jpg": c4d.FILTER_JPG,
+    ".jpeg": c4d.FILTER_JPG,
+    ".tif": c4d.FILTER_TIF,
+    ".tiff": c4d.FILTER_TIF,
+    ".bmp": c4d.FILTER_BMP,
+    ".tga": c4d.FILTER_TGA,
+}
+
+
+def _validate_shrink_payload(payload):
+    """Pure: ``hub/shrink_start`` payload validation, split out so it's
+    testable without a fake document (``target_px`` is the only thing worth
+    validating before touching the scene — ``keys`` emptiness is naturally
+    handled by ``shrink_plan`` returning nothing to shrink)."""
+    target_px = payload.get("target_px")
+    if target_px not in _SHRINK_TARGETS:
+        return "invalid_target"
+    return None
+
+
+def _save_shrunk_copy(item, target_px):
+    """Save a shrunk sibling copy of ``item`` (a ``shrink_plan`` entry) at
+    ``target_px``. Returns ``(True, target_path)`` on success, ``(False,
+    error_string)`` otherwise. Never raises — every failure mode (missing
+    file, unsupported extension, unreadable/unsavable bitmap) is reported
+    back to the caller as a per-row error string, matching the ``hub/thumb``
+    error-string convention."""
+    resolved = item.get("resolved_path")
+    if not resolved:
+        return False, "no resolved path"
+    ext = os.path.splitext(resolved)[1].lower()
+    saver = _SAVER_BY_EXT.get(ext)
+    if saver is None:
+        return False, "unsupported format"
+    target = assets_engine.shrink_target_name(resolved, target_px)
+    try:
+        bmp = c4d.bitmaps.BaseBitmap()
+        if bmp.InitWith(resolved)[0] != c4d.IMAGERESULT_OK:
+            return False, "unreadable"
+        dst = c4d.bitmaps.BaseBitmap()
+        dst.Init(item["new_width"], item["new_height"])
+        bmp.ScaleIt(dst, 256, True, False)
+        if not dst.Save(target, saver):
+            return False, "save_failed"
+    except Exception as exc:
+        return False, "shrink error: %s" % exc
+    return True, target
+
+
+def _op_hub_shrink_start(payload):
+    """``hub/shrink_start`` — plan + queue a batch texture shrink as a
+    background job (``webbridge.JOBS``, same single-slot registry as
+    collect). Doc-guard-first, then ``_validate_shrink_payload`` (a bad
+    ``target_px`` never touches the scene). Plans only over the requested
+    ``keys`` (a fresh ``scan_scene_assets`` filtered down, plus ``_meta_for``
+    only for those keys — the SPA already knows which rows it selected, so
+    the response's ``skipped`` list stays scoped to that selection instead
+    of every unrelated asset in the scene). ``nothing_to_shrink`` when the
+    plan's shrink list comes back empty (all selected rows ineligible).
+    """
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+    error = _validate_shrink_payload(payload)
+    if error:
+        return {"ok": False, "error": error}
+    target_px = payload.get("target_px")
+    keys = payload.get("keys") or []
+    keys_set = set(keys)
+
+    from sentinel.ui.flows import scan_scene_assets
+
+    records, _tex_records, _skipped = scan_scene_assets(doc)
+    _remember_thumb_paths(records)
+    selected_records = [r for r in records if r.get("key") in keys_set]
+
+    metas = {}
+    for key in keys:
+        resolved = _THUMB_PATHS.get(key)
+        if not resolved:
+            continue
+        meta = _meta_for(resolved)
+        if meta is not None:
+            metas[key] = meta
+
+    plan = assets_engine.shrink_plan(selected_records, metas, target_px)
+    if not plan["shrink"]:
+        return {"ok": False, "error": "nothing_to_shrink"}
+
+    try:
+        job_id = webbridge.JOBS.start({"kind": "shrink", "plan": plan, "target_px": target_px})
+    except RuntimeError:
+        return {"ok": False, "error": "job_running"}
+    return {"ok": True, "job_id": job_id}
+
+
+def _run_shrink_for_job(job_id, spec):
+    """Runs a queued ``hub/shrink_start`` job: phase 1 saves a shrunk
+    sibling copy per eligible file (progress published to ``JOBS`` per
+    file); phase 2 relinks every successfully-saved copy in ONE
+    ``StartUndo``/``EndUndo`` bracket (finally-protected, same convention as
+    ``_op_hub_apply_repath``) so a single Cmd+Z reverts the whole batch.
+    Originals are never touched or overwritten by the relink — only the
+    shader path changes. Never raises: any unexpected failure is reported
+    via ``JOBS.fail`` rather than leaving the job stuck in "running"."""
+    try:
+        plan = spec.get("plan") or {}
+        target_px = spec.get("target_px")
+        shrink_items = plan.get("shrink") or []
+        total = len(shrink_items)
+        errors = []
+        shrunk = []
+
+        for i, item in enumerate(shrink_items, start=1):
+            basename = os.path.basename(item.get("resolved_path") or item.get("path") or "")
+            pct = int(round((i - 1) * 80.0 / total)) if total else 0
+            webbridge.JOBS.update(job_id, "shrink", "%s %d/%d" % (basename, i, total), pct)
+            ok, result = _save_shrunk_copy(item, target_px)
+            if ok:
+                shrunk.append({"key": item.get("key"), "target_path": result,
+                               "resolved_path": item.get("resolved_path")})
+            else:
+                errors.append({"key": item.get("key"), "error": result})
+
+        bytes_saved = 0
+        if shrunk:
+            webbridge.JOBS.update(job_id, "relink", "Relinking %d file(s)" % len(shrunk), 85)
+            doc = documents.GetActiveDocument()
+            if doc is None:
+                errors.extend({"key": s["key"], "error": "no_document"} for s in shrunk)
+                shrunk = []
+            else:
+                from sentinel.ui.flows import scan_scene_assets
+                from sentinel.textures import apply_texture_path_change
+
+                records, tex_records, _skipped = scan_scene_assets(doc)
+                changes = [{"key": s["key"], "new_path": s["target_path"]} for s in shrunk]
+                targets, resolve_errors = webbridge.resolve_repath_targets(records, changes)
+                errors.extend(resolve_errors)
+                relinked_keys = {t["key"] for t in targets}
+                doc.StartUndo()
+                try:
+                    for target in targets:
+                        for tex_idx in target["tex_idxs"]:
+                            try:
+                                live = tex_records[tex_idx]
+                            except IndexError:
+                                continue
+                            apply_texture_path_change(live, target["new_path"], doc=doc)
+                finally:
+                    doc.EndUndo()
+                c4d.EventAdd()
+
+                for s in shrunk:
+                    if s["key"] not in relinked_keys:
+                        continue
+                    try:
+                        bytes_saved += max(0, os.path.getsize(s["resolved_path"])
+                                          - os.path.getsize(s["target_path"]))
+                    except OSError:
+                        pass
+
+        webbridge.JOBS.finish(job_id, {
+            "shrunk": shrunk,
+            "skipped": plan.get("skipped") or [],
+            "errors": errors,
+            "bytes_saved": bytes_saved,
+        })
+    except Exception as exc:
+        webbridge.JOBS.fail(job_id, exc)
+
+
+def _op_hub_copy_into_project(payload):
+    """``hub/copy_into_project`` — synchronous mutation (no job — a handful
+    of ``shutil.copy2`` calls doesn't need progress polling). Doc guard,
+    then ``unsaved_document`` (no ``doc_dir`` to copy into). Fresh scan ->
+    ``assets_engine.copy_plan`` filtered to the requested ``keys``. Same-size
+    collision at the target path is treated as "already copied" (``reused``,
+    relink only, never re-copied); a different-size collision is a per-row
+    error and the existing file on disk is never overwritten. Every
+    successful copy/reuse is relinked in ONE ``StartUndo``/``EndUndo``
+    bracket (finally-protected), matching ``_op_hub_apply_repath``/
+    ``_run_shrink_for_job``.
+    """
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+    doc_dir = doc.GetDocumentPath() or ""
+    if not doc_dir:
+        return {"ok": False, "error": "unsaved_document"}
+    keys_set = set(payload.get("keys") or [])
+
+    from sentinel.ui.flows import scan_scene_assets
+    from sentinel.textures import apply_texture_path_change
+
+    records, tex_records, _skipped = scan_scene_assets(doc)
+    _remember_thumb_paths(records)
+    plan = assets_engine.copy_plan(records, doc_dir)
+    copy_items = [item for item in plan["copy"] if item["key"] in keys_set]
+
+    copied = 0
+    reused = 0
+    errors = []
+    changes = []
+    tex_dir = os.path.join(doc_dir, "tex")
+    for item in copy_items:
+        target = item["target_path"]
+        resolved = item["resolved_path"]
+        if os.path.exists(target):
+            try:
+                same_size = os.path.getsize(target) == os.path.getsize(resolved)
+            except OSError:
+                same_size = False
+            if not same_size:
+                errors.append({"key": item["key"], "error": "collision"})
+                continue
+            reused += 1
+        else:
+            try:
+                os.makedirs(tex_dir, exist_ok=True)
+                shutil.copy2(resolved, target)
+            except OSError as exc:
+                errors.append({"key": item["key"], "error": "copy failed: %s" % exc})
+                continue
+            copied += 1
+        changes.append({"key": item["key"], "new_path": target})
+
+    if changes:
+        targets, resolve_errors = webbridge.resolve_repath_targets(records, changes)
+        errors.extend(resolve_errors)
+        doc.StartUndo()
+        try:
+            for target in targets:
+                for tex_idx in target["tex_idxs"]:
+                    try:
+                        live = tex_records[tex_idx]
+                    except IndexError:
+                        continue
+                    apply_texture_path_change(live, target["new_path"], doc=doc)
+        finally:
+            doc.EndUndo()
+        c4d.EventAdd()
+
+    return {"ok": True, "copied": copied, "reused": reused, "errors": errors,
+            "stamp": _stamp_for(doc)}
+
+
 _THUMB_SIZE = 64
 
 
@@ -638,11 +896,23 @@ def pump_jobs():
     stays live even while this call blocks the main thread). Note per
     Task 1's review finding: ``JOBS.take_pending()`` returns the spec dict
     BY REFERENCE — this function only reads it, never mutates it in
-    place."""
+    place.
+
+    Kind-dispatch (fase 5.2): ``spec["kind"]`` selects the runner —
+    ``"shrink"`` -> ``_run_shrink_for_job`` (self-contained: it publishes
+    its own ``JOBS.update``/``finish``/``fail`` calls). Absent ``kind``
+    defaults to ``"collect"`` — every job queued before this task (and
+    every ``hub/collect_start`` spec since) has no ``kind`` key, so this
+    keeps the pre-existing collect path byte-identical.
+    """
     taken = webbridge.JOBS.take_pending()
     if taken is None:
         return None
     job_id, spec = taken
+
+    if spec.get("kind", "collect") == "shrink":
+        _run_shrink_for_job(job_id, spec)
+        return job_id
 
     def on_status(message):
         phase, pct = webbridge.collect_phase_pct(message)
@@ -794,6 +1064,8 @@ HUB_OPS = {
     "hub/match_folder": _op_hub_match_folder,
     "hub/make_relative": _op_hub_make_relative,
     "hub/collect_start": _op_hub_collect_start,
+    "hub/shrink_start": _op_hub_shrink_start,
+    "hub/copy_into_project": _op_hub_copy_into_project,
     "hub/meta": _op_hub_meta,
     "hub/meta_totals": _op_hub_meta_totals,
     "hub/ui_state": _op_hub_ui_state,

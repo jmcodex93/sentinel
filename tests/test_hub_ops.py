@@ -351,6 +351,88 @@ class TestMetaForCache:
         assert hub_ops._meta_for(str(path)) is None
 
 
+class TestHubShrinkAndCopyOps:
+    def test_ops_registered(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        for op in ("hub/shrink_start", "hub/copy_into_project"):
+            assert op in hub_ops.HUB_OPS
+
+    def test_shrink_start_without_document(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        response = hub_ops.HUB_OPS["hub/shrink_start"](
+            {"keys": ["a"], "target_px": 2048})
+        assert response == {"ok": False, "error": "no_document"}
+
+    def test_copy_into_project_without_document(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        response = hub_ops.HUB_OPS["hub/copy_into_project"]({"keys": ["a"]})
+        assert response == {"ok": False, "error": "no_document"}
+
+    def test_validate_shrink_payload_rejects_bad_target(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops._validate_shrink_payload(
+            {"keys": ["a"], "target_px": 999}) == "invalid_target"
+
+    def test_validate_shrink_payload_accepts_known_targets(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        for target in (4096, 2048, 1024):
+            assert hub_ops._validate_shrink_payload(
+                {"keys": ["a"], "target_px": target}) is None
+
+    def test_validate_shrink_payload_rejects_non_int_target(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops._validate_shrink_payload(
+            {"keys": ["a"], "target_px": "2048"}) == "invalid_target"
+
+
+class TestPumpJobsKindDispatch:
+    def test_shrink_kind_dispatches_to_shrink_runner(self, sentinel_module, monkeypatch):
+        from sentinel import webbridge
+        from sentinel.ui import hub_ops
+        old = webbridge.JOBS
+        webbridge.JOBS = webbridge.JobRegistry()
+        called = {}
+        try:
+            job_id = webbridge.JOBS.start({"kind": "shrink", "plan": {}})
+
+            def _fake_shrink(jid, spec):
+                called["job_id"] = jid
+                called["spec"] = spec
+
+            monkeypatch.setattr(hub_ops, "_run_shrink_for_job", _fake_shrink)
+            hub_ops.pump_jobs()
+            assert called["job_id"] == job_id
+            assert called["spec"]["kind"] == "shrink"
+        finally:
+            webbridge.JOBS = old
+
+    def test_kindless_spec_still_routes_to_collect_runner(self, sentinel_module, monkeypatch):
+        """Backward compat: a spec with no ``kind`` key (the shape every
+        pre-existing ``hub/collect_start`` job used before this task) must
+        still dispatch to ``_run_collect_for_job`` — never break existing
+        collect jobs."""
+        from sentinel import webbridge
+        from sentinel.ui import hub_ops
+        old = webbridge.JOBS
+        webbridge.JOBS = webbridge.JobRegistry()
+        called = {}
+        try:
+            job_id = webbridge.JOBS.start({"target_dir": "/tmp/x", "zip": False,
+                                           "preflight_payload": None})
+
+            def _fake_collect(spec, on_status):
+                called["spec"] = spec
+                return {"manifest": {}, "manifest_path": ""}
+
+            monkeypatch.setattr(hub_ops, "_run_collect_for_job", _fake_collect)
+            hub_ops.pump_jobs()
+            assert called["spec"]["target_dir"] == "/tmp/x"
+            st = webbridge.JOBS.status(job_id)
+            assert st["state"] == "done"
+        finally:
+            webbridge.JOBS = old
+
+
 class TestOpenHubPalette:
     def test_palette_open_hub_still_registered(self, sentinel_module):
         """_palette_open_hub now tries the SPA hub (open_form) before
