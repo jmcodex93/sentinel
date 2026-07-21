@@ -431,6 +431,29 @@ def _save_shrunk_copy(item, target_px):
     return True, target
 
 
+def _settle_relink_results(planned, write_results):
+    """Pure: filters ``planned`` (a list of dicts each with a ``"key"``,
+    already narrowed to items that resolved to a relink target) down to
+    only the ones whose writer actually succeeded, per ``write_results``
+    (``{key: bool}``, one entry per targeted key from the
+    ``StartUndo``/``EndUndo`` relink loop — ``True`` only when every
+    ``tex_idx`` for that key wrote successfully). A ``False`` return (or a
+    missing entry, treated the same as failed) is excluded from the
+    returned list and reported as a ``{"key", "error": "writer failed"}``
+    row instead — mirrors ``_op_hub_apply_repath``'s own ``row_ok``
+    bookkeeping, so a batch shrink/copy job never reports success for a
+    file the scene still points at full-size/out-of-project.
+    """
+    succeeded = []
+    errors = []
+    for item in planned:
+        if write_results.get(item.get("key")):
+            succeeded.append(item)
+        else:
+            errors.append({"key": item.get("key"), "error": "writer failed"})
+    return succeeded, errors
+
+
 def _op_hub_shrink_start(payload):
     """``hub/shrink_start`` — plan + queue a batch texture shrink as a
     background job (``webbridge.JOBS``, same single-slot registry as
@@ -521,23 +544,30 @@ def _run_shrink_for_job(job_id, spec):
                 changes = [{"key": s["key"], "new_path": s["target_path"]} for s in shrunk]
                 targets, resolve_errors = webbridge.resolve_repath_targets(records, changes)
                 errors.extend(resolve_errors)
-                relinked_keys = {t["key"] for t in targets}
+                write_results = {}
                 doc.StartUndo()
                 try:
                     for target in targets:
+                        row_ok = True
                         for tex_idx in target["tex_idxs"]:
                             try:
                                 live = tex_records[tex_idx]
                             except IndexError:
+                                row_ok = False
                                 continue
-                            apply_texture_path_change(live, target["new_path"], doc=doc)
+                            if not apply_texture_path_change(live, target["new_path"], doc=doc):
+                                row_ok = False
+                        write_results[target["key"]] = row_ok
                 finally:
                     doc.EndUndo()
                 c4d.EventAdd()
 
+                targeted_keys = {t["key"] for t in targets}
+                planned = [s for s in shrunk if s["key"] in targeted_keys]
+                shrunk, writer_errors = _settle_relink_results(planned, write_results)
+                errors.extend(writer_errors)
+
                 for s in shrunk:
-                    if s["key"] not in relinked_keys:
-                        continue
                     try:
                         bytes_saved += max(0, os.path.getsize(s["resolved_path"])
                                           - os.path.getsize(s["target_path"]))
@@ -585,7 +615,7 @@ def _op_hub_copy_into_project(payload):
     copied = 0
     reused = 0
     errors = []
-    changes = []
+    pending = []  # staged items (file already on disk at target), awaiting relink
     tex_dir = os.path.join(doc_dir, "tex")
     for item in copy_items:
         target = item["target_path"]
@@ -598,7 +628,7 @@ def _op_hub_copy_into_project(payload):
             if not same_size:
                 errors.append({"key": item["key"], "error": "collision"})
                 continue
-            reused += 1
+            kind = "reused"
         else:
             try:
                 os.makedirs(tex_dir, exist_ok=True)
@@ -606,24 +636,43 @@ def _op_hub_copy_into_project(payload):
             except OSError as exc:
                 errors.append({"key": item["key"], "error": "copy failed: %s" % exc})
                 continue
-            copied += 1
-        changes.append({"key": item["key"], "new_path": target})
+            kind = "copied"
+        pending.append({"key": item["key"], "target_path": target, "kind": kind})
 
-    if changes:
+    if pending:
+        changes = [{"key": p["key"], "new_path": p["target_path"]} for p in pending]
         targets, resolve_errors = webbridge.resolve_repath_targets(records, changes)
         errors.extend(resolve_errors)
+        write_results = {}
         doc.StartUndo()
         try:
             for target in targets:
+                row_ok = True
                 for tex_idx in target["tex_idxs"]:
                     try:
                         live = tex_records[tex_idx]
                     except IndexError:
+                        row_ok = False
                         continue
-                    apply_texture_path_change(live, target["new_path"], doc=doc)
+                    if not apply_texture_path_change(live, target["new_path"], doc=doc):
+                        row_ok = False
+                write_results[target["key"]] = row_ok
         finally:
             doc.EndUndo()
         c4d.EventAdd()
+
+        targeted_keys = {t["key"] for t in targets}
+        planned = [p for p in pending if p["key"] in targeted_keys]
+        settled, writer_errors = _settle_relink_results(planned, write_results)
+        errors.extend(writer_errors)
+        # copied/reused only counted for items whose relink actually
+        # succeeded — a failed writer must never inflate the tally for a
+        # file the scene still points at the old (out-of-project) path.
+        for s in settled:
+            if s["kind"] == "reused":
+                reused += 1
+            else:
+                copied += 1
 
     return {"ok": True, "copied": copied, "reused": reused, "errors": errors,
             "stamp": _stamp_for(doc)}

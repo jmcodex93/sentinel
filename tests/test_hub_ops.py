@@ -385,6 +385,40 @@ class TestHubShrinkAndCopyOps:
             {"keys": ["a"], "target_px": "2048"}) == "invalid_target"
 
 
+class TestSettleRelinkResults:
+    """Pure helper behind the writer-failure fix in ``_run_shrink_for_job``
+    and ``_op_hub_copy_into_project``: a batch job must never report success
+    for an item whose relink write actually failed (mirrors
+    ``_op_hub_apply_repath``'s ``row_ok`` bookkeeping)."""
+
+    def test_all_succeed_returns_everything_no_errors(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        planned = [{"key": "a"}, {"key": "b"}]
+        write_results = {"a": True, "b": True}
+        succeeded, errors = hub_ops._settle_relink_results(planned, write_results)
+        assert succeeded == planned
+        assert errors == []
+
+    def test_false_write_result_excluded_and_reported(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        planned = [{"key": "a"}, {"key": "b"}]
+        write_results = {"a": True, "b": False}
+        succeeded, errors = hub_ops._settle_relink_results(planned, write_results)
+        assert succeeded == [{"key": "a"}]
+        assert errors == [{"key": "b", "error": "writer failed"}]
+
+    def test_missing_write_result_treated_as_failed(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        planned = [{"key": "a"}]
+        succeeded, errors = hub_ops._settle_relink_results(planned, {})
+        assert succeeded == []
+        assert errors == [{"key": "a", "error": "writer failed"}]
+
+    def test_empty_planned_returns_empty(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops._settle_relink_results([], {"a": True}) == ([], [])
+
+
 class TestPumpJobsKindDispatch:
     def test_shrink_kind_dispatches_to_shrink_runner(self, sentinel_module, monkeypatch):
         from sentinel import webbridge
