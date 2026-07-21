@@ -1,7 +1,7 @@
 # Sentinel Plugin - Development Rules
 
 ## Project Overview
-Sentinel (v1.17.0) is a Cinema 4D quality control and workflow automation plugin designed for professional 3D production workflows. **Originally built as YS Guardian at Yambo Studio**, now maintained and extended by Javier Melgar as Sentinel — keeping the watchdog spirit while expanding into versioning, status tracking, and modern mograph workflow tools. It acts as a real-time watchdog that continuously monitors scenes for production issues, plus provides render management and scene tools.
+Sentinel (v1.18.0) is a Cinema 4D quality control and workflow automation plugin designed for professional 3D production workflows. **Originally built as YS Guardian at Yambo Studio**, now maintained and extended by Javier Melgar as Sentinel — keeping the watchdog spirit while expanding into versioning, status tracking, and modern mograph workflow tools. It acts as a real-time watchdog that continuously monitors scenes for production issues, plus provides render management and scene tools.
 
 The plugin performs **12 quality checks** in real-time:
 1. **Lights Organization** - Ensures all lights are properly organized in a "lights" group (Select + Fix)
@@ -94,7 +94,7 @@ For multi-step work, write the plan as `step → verify` pairs. Weak criteria ("
 - **QC check results**: Cached with 0.5s cooldown, dirty-flag invalidation via CoreMessage
 - **Scene stats**: Object count, polygon count, materials, lights
 
-## Current Status (v1.17.0)
+## Current Status (v1.18.0)
 
 ### What Works ✅
 - **All 12 Quality Checks**: Lights, visibility, keyframes, camera shift, presets, assets/textures, unused materials, default names, output paths, take validation, FPS/frame range, cross-aspect safe area
@@ -211,6 +211,7 @@ cd "../11 C4D DEV/renderEngine" && git pull
 ```
 
 ## Version History Summary
+- **v1.18.0** (Jul 2026): **UI Fase 5.2 — Asset Hub: Shrink + Copy into project**. Cierra las dos acciones de Overseer con valor de artista que quedaron en backlog tras la Fase 5.1. **Selección múltiple** en el Hub: click único, cmd/ctrl+click toggle, shift+click rango sobre la lista visible (ordenada+filtrada+facetada), `Escape` limpia, contador "N selected" en la toolbar; lógica pura `applySelection` en `hubTable.ts` (vitest). Relink Selected se gatea a exactamente 1 seleccionada. **Shrink por objetivo en K** (4K/2K/1K, lado mayor, no porcentajes): planners puros `shrink_plan`/`shrink_target_name` en `assets.py` (razones de skip `not_ok`/`not_image`/`no_meta`/`already_small`, VRAM antes/después vía `imagemeta.vram_bytes`), diálogo inline con preview espejo en TS (`shrinkPreview`, vitest verificado contra los mismos números que `tests/test_assets.py`). Corre como **job con progreso** reutilizando el slot único de `JobRegistry`/`hub/job_status` compartido con collect (`job_running` si se solapan): por archivo, copia hermana `<stem>_<K>.<ext>` con el saver correspondiente a la extensión original (allowlist png/jpg/tif/bmp/tga — EXR/HDR excluidos deliberadamente, nunca degradación silenciosa) dejando el original intacto, luego relink de todos los shaders que comparten la ruta. Todo el relink del lote va en **un solo** `StartUndo`/`EndUndo` (un Cmd+Z restaura los originales); fallos de escritura por archivo se acumulan como error de fila y nunca abortan el lote (`_settle_relink_results`, patrón `apply_repath`). **Copy into project**: `copy_plan` puro (basename cross-platform, detección fuera-de-proyecto por prefijo de ruta normalizada), op síncrona `hub/copy_into_project` que copia a `<docdir>/tex/` con colisión segura (mismo tamaño en bytes → reusa, distinto → error de fila, nunca sobrescribe) y relink en un único undo. Ambos flujos: toast de resumen, re-fetch de inventario + meta, stamp re-anclado. Motor puro cubierto en pytest, ops con contrato via harness fake-c4d. **Desviaciones de implementación** (ver spec): el gate de habilitación de los botones Shrink/Copy en la toolbar es deliberadamente **grosero** (solo status/asset_type de la selección) — la elegibilidad exacta contra el `target_px` elegido vive en `shrinkPreview`, calculada dentro del diálogo; y el preview en TS usa `Math.round` mientras el servidor usa `round()` de Python (round-half-to-even) — mismo resultado en la inmensa mayoría de los tamaños reales, diverge solo en el caso exacto de `.5` en el escalado, sin impacto práctico documentado. Verificación: pytest 630 + vitest 43 + reviews adversariales por tarea. Verificación live pendiente — se completa y actualiza este párrafo tras el bloque live (controller + user) en escena real.
 - **v1.0.0** (Oct 2025): Initial release — 5 QC checks, presets, scene tools, snapshot system
 - **v1.0.1** (Oct 2025): ABC Retime integration, ACES tone mapping fix
 - **v1.0.2** (Nov 2025): Fixed absolute path detection for node materials
