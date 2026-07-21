@@ -41,6 +41,12 @@
 - Persistir un "modo proxy" del proyecto (estado global) — el conmutador es por acción, sin estado.
 - Tocar el Hub nativo.
 
+## Desviaciones de implementación
+
+- **Barrido de variantes en paralelo, no encadenado tras el de meta**: la spec (§3, "Fetch") describía `fetchHubVariants` como parte del "mismo pipeline secuencial" del barrido de meta. La implementación lo corre como su propio efecto React, en paralelo al barrido de meta existente, en vez de esperar a que este termine. Sin impacto observable — ambos barridos leen el mismo inventario ya cargado y son independientes entre sí; correrlos en paralelo solo acelera el primer render de los indicadores `⇄`.
+- **Cap de lote 64 también en `hub/switch_res`**: la spec solo mencionaba explícitamente el cap ≤64 para `hub/variants` (§2, "lotes ≤64 como `hub/meta`"). La implementación aplica el mismo `_META_BATCH_CAP` a `hub/switch_res`, coherente con el resto de ops de mutación en lote del Hub (mismo patrón que `hub/apply_repath`).
+- **Keys desconocidas en `hub/switch_res` → skip `no_variant`**: no estaba explícito en la spec qué pasa si `switch_res` recibe una key que no resuelve a ningún record de la escena (por ejemplo, un doble-click enviado tras un rescan que hizo desaparecer el asset). La implementación la trata igual que "sin grupo de variantes" y la reporta como skip `no_variant`, nunca como error — consistente con el resto de la ruta, que nunca aborta el lote por una fila individual.
+
 ## Verificación
 
 - pytest: `split_res_token` (fronteras `_`/`-`/`.`, inicio/fin, case, token dentro de palabra → None, múltiples tokens → último), `find_res_variants` (mismo prefix+suffix, no cruzar familias, dir cacheado, list_dir inyectable), contratos de ops (registro, no_document, already_there/no_variant, highest).
