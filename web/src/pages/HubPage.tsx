@@ -4,11 +4,14 @@ import { HubAssetsTable } from "../components/hub/HubAssetsTable";
 import { HubDeliverSection } from "../components/hub/HubDeliverSection";
 import { HubFacets } from "../components/hub/HubFacets";
 import { HubPreflightStrip } from "../components/hub/HubPreflightStrip";
+import { HubShrinkDialog } from "../components/hub/HubShrinkDialog";
 import { HubToolbar, type HubFilter } from "../components/hub/HubToolbar";
 import { EmptyState, ErrorState, LoadingState } from "../components/PageStates";
 import { Section } from "../components/Section";
+import { formatBytes } from "../lib/format";
 import {
   fetchHubInventory,
+  fetchHubJobStatus,
   fetchHubMeta,
   fetchHubMetaTotals,
   fetchHubPresets,
@@ -16,12 +19,14 @@ import {
   fetchHubUiState,
   isMock,
   postHubApply,
+  postHubCopyIntoProject,
   postHubMakeRelative,
   postHubMatchFolder,
   postHubPickPath,
   postHubSelectOwner,
   saveHubPreset,
   saveHubUiState,
+  startHubShrink,
 } from "../lib/api";
 import {
   applyFacets,
@@ -37,7 +42,37 @@ import {
 } from "../lib/hubTable";
 import { computeBulkChanges } from "../lib/repath";
 import { useToast } from "../lib/toast";
-import type { HubInventory, HubInventoryResult, HubMeta, HubMetaTotals, HubPreset, HubUiState } from "../types";
+import type {
+  HubInventory,
+  HubInventoryResult,
+  HubJobStatus,
+  HubMeta,
+  HubMetaTotals,
+  HubPreset,
+  HubShrinkResult,
+  HubUiState,
+} from "../types";
+
+/** Human-readable message for a `hub/shrink_start` / `hub/copy_into_project`
+ * `{ok: false, error}` sentinel — anything not in this table (an unexpected
+ * dispatch failure, or the `?mock=1` "mock" sentinel) falls back to showing
+ * the raw error string, same policy as every other toast-surfaced op error
+ * in this file. */
+const SHRINK_ERROR_MESSAGES: Record<string, string> = {
+  no_document: "No active Cinema 4D document.",
+  invalid_target: "Invalid shrink target.",
+  nothing_to_shrink: "None of the selected rows are eligible to shrink.",
+  job_running: "Another job is already running — wait for it to finish.",
+  mock: "Shrink isn't available in mock/demo mode.",
+};
+
+const COPY_ERROR_MESSAGES: Record<string, string> = {
+  no_document: "No active Cinema 4D document.",
+  unsaved_document: "Save the scene to a folder first, then try again.",
+  mock: "Copy into project isn't available in mock/demo mode.",
+};
+
+const SHRINK_JOB_POLL_MS = 500;
 
 const UI_STATE_SAVE_DEBOUNCE_MS = 500;
 
@@ -84,6 +119,10 @@ export function HubPage() {
   const [sort, setSort] = useState<SortSpec | null>(null);
   const [colWidths, setColWidths] = useState<Partial<Record<ResizableColumn, number>>>({});
   const [facets, setFacets] = useState<FacetState>(emptyFacetState());
+  const [shrinkDialogOpen, setShrinkDialogOpen] = useState(false);
+  const [shrinkStarting, setShrinkStarting] = useState(false);
+  const [shrinkJob, setShrinkJob] = useState<{ jobId: string; status: HubJobStatus | null } | null>(null);
+  const [copyBusy, setCopyBusy] = useState(false);
 
   // Refs so the polling interval (set up once) always reads the latest
   // values without re-creating the interval on every keystroke/selection.
@@ -227,6 +266,56 @@ export function HubPage() {
     return () => window.clearInterval(id);
   }, [refreshInventory]);
 
+  // Shrink job progress polling — 500ms while a job is queued/running,
+  // mirroring HubDeliverSection's own poll effect (that component is left
+  // untouched per the task brief; this is a small local equivalent scoped
+  // to just the shrink flow). Scoped to [shrinkJob?.jobId] only, same
+  // reasoning as HubDeliverSection's [phase, jobId]: `toast`/
+  // `refreshInventory` must not restart the interval on every re-render.
+  useEffect(() => {
+    const jobId = shrinkJob?.jobId;
+    if (!jobId) return;
+    let cancelled = false;
+
+    async function poll() {
+      const status = await fetchHubJobStatus(jobId!);
+      if (cancelled) return;
+
+      if (status.error || status.state === "error") {
+        toast({ message: status.error || status.detail || "Shrink failed.", variant: "warn" });
+        setShrinkJob(null);
+        return;
+      }
+      if (status.state === "done") {
+        const result = (status.result as HubShrinkResult | null) ?? null;
+        const shrunkCount = result?.shrunk.length ?? 0;
+        const errorCount = result?.errors.length ?? 0;
+        if (result) {
+          toast({
+            message:
+              errorCount > 0
+                ? `Shrunk ${shrunkCount} (${errorCount} error${errorCount === 1 ? "" : "s"}).`
+                : `Shrunk ${shrunkCount} texture${shrunkCount === 1 ? "" : "s"} — saved ${formatBytes(result.bytes_saved)}.`,
+            variant: errorCount > 0 ? "warn" : "success",
+          });
+        } else {
+          toast({ message: "Shrink complete (mock — no report data).", variant: "info" });
+        }
+        setShrinkJob(null);
+        await refreshInventory(true);
+        return;
+      }
+      setShrinkJob((prev) => (prev && prev.jobId === jobId ? { ...prev, status } : prev));
+    }
+
+    poll();
+    const id = window.setInterval(poll, SHRINK_JOB_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [shrinkJob?.jobId]);
+
   if (state.kind === "loading") return <LoadingState />;
   if (state.kind === "error") {
     return <ErrorState title="Couldn't load the Asset Hub" message={state.message} onRetry={() => refreshInventory(false)} />;
@@ -328,6 +417,38 @@ export function HubPage() {
     setPending(new Map());
   }
 
+  async function handleShrinkConfirm(targetPx: number) {
+    setShrinkStarting(true);
+    const res = await startHubShrink(Array.from(selectedKeys), targetPx);
+    setShrinkStarting(false);
+
+    if (!res.ok || !res.job_id) {
+      toast({ message: SHRINK_ERROR_MESSAGES[res.error ?? ""] ?? res.error ?? "Couldn't start shrink.", variant: "warn" });
+      return;
+    }
+    setShrinkDialogOpen(false);
+    setShrinkJob({ jobId: res.job_id, status: null });
+  }
+
+  async function handleCopyIntoProject() {
+    setCopyBusy(true);
+    const res = await postHubCopyIntoProject(Array.from(selectedKeys));
+    setCopyBusy(false);
+
+    if (!res.ok) {
+      toast({ message: COPY_ERROR_MESSAGES[res.error ?? ""] ?? res.error ?? "Couldn't copy into project.", variant: "warn" });
+      return;
+    }
+    if (res.stamp) stampRef.current = res.stamp;
+    const copied = res.copied ?? 0;
+    const reused = res.reused ?? 0;
+    const errorCount = res.errors?.length ?? 0;
+    let message = `Copied ${copied}${reused > 0 ? `, reused ${reused}` : ""}.`;
+    if (errorCount > 0) message += ` ${errorCount} error${errorCount === 1 ? "" : "s"}.`;
+    toast({ message, variant: errorCount > 0 ? "warn" : "success" });
+    await refreshInventory(true);
+  }
+
   async function handleApply() {
     if (pending.size === 0) return;
     const changes = Array.from(pending, ([key, new_path]) => ({ key, new_path }));
@@ -370,6 +491,16 @@ export function HubPage() {
   const counts = facetCounts(filteredAssets, metas);
   const facetedAssets = applyFacets(filteredAssets, metas, facets);
   const sortedAssets = sortAssets(facetedAssets, metas, sort);
+
+  const selectedAssets = data.assets.filter((asset) => selectedKeys.has(asset.key));
+  // Coarse "plausibly eligible" toolbar gate (status/asset_type only — the
+  // exact eligibility against a chosen target_px is `shrinkPreview`'s job,
+  // computed inside the dialog once a target is picked).
+  const shrinkEnabled = selectedAssets.some(
+    (asset) => asset.status === "ok" && (asset.asset_type === "texture" || asset.asset_type === "hdri"),
+  );
+  const copyEnabled = selectedAssets.some((asset) => asset.status === "absolute");
+  const jobRunning = shrinkJob !== null || shrinkStarting;
 
   return (
     <div className="flex h-full flex-1 flex-col overflow-hidden">
@@ -453,7 +584,34 @@ export function HubPage() {
         pendingCount={pending.size}
         selectedCount={selectedKeys.size}
         busy={busy}
+        onShrink={() => setShrinkDialogOpen(true)}
+        onCopyIntoProject={handleCopyIntoProject}
+        shrinkEnabled={shrinkEnabled}
+        copyEnabled={copyEnabled}
+        jobRunning={jobRunning || copyBusy}
       />
+
+      {shrinkJob && (
+        <div
+          className="flex flex-col gap-2 border-b px-4 py-3"
+          style={{ borderColor: "var(--color-hairline-strong)", backgroundColor: "var(--color-surface-1)" }}
+        >
+          <p className="text-caption" style={{ color: "var(--color-ink)" }}>
+            {shrinkJob.status?.phase || "Shrinking…"}
+            {shrinkJob.status?.detail ? ` — ${shrinkJob.status.detail}` : ""}
+          </p>
+          <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ backgroundColor: "var(--color-surface-2)" }}>
+            <div
+              className="h-full rounded-full transition-all duration-150 ease-out"
+              style={{
+                width: `${Math.min(100, Math.max(0, shrinkJob.status?.pct ?? 0))}%`,
+                backgroundColor: "var(--color-status-pass)",
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       <HubFacets counts={counts} facets={facets} onChange={setFacets} />
 
       <div className="min-w-0 flex-1 overflow-auto p-4">
@@ -487,6 +645,17 @@ export function HubPage() {
           </Section>
         </div>
       </div>
+
+      {shrinkDialogOpen && (
+        <HubShrinkDialog
+          assets={data.assets}
+          metas={metas}
+          selectedKeys={selectedKeys}
+          busy={shrinkStarting}
+          onConfirm={handleShrinkConfirm}
+          onClose={() => setShrinkDialogOpen(false)}
+        />
+      )}
     </div>
   );
 }

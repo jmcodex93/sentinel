@@ -1,4 +1,4 @@
-import { FolderSearch, Link2, RotateCcw, Search, Wand2 } from "lucide-react";
+import { FolderInput, FolderSearch, Link2, Minimize2, RotateCcw, Search, Wand2 } from "lucide-react";
 import { Button } from "../form/Button";
 import { Checkbox } from "../form/Checkbox";
 import { Select } from "../form/Select";
@@ -36,6 +36,19 @@ interface HubToolbarProps {
   pendingCount: number;
   selectedCount: number;
   busy: boolean;
+  /** Task 4 (Fase 5.2) — Shrink/Copy into project. `onShrink` opens the
+   * confirm dialog (HubPage owns the dialog + job flow); `shrinkEnabled`/
+   * `copyEnabled` are coarse "any selected row is plausibly eligible" gates
+   * computed by HubPage from status/asset_type alone — the exact per-target
+   * eligibility (dims vs. target_px) is the dialog's own `shrinkPreview`
+   * call, since the K target isn't chosen yet at the toolbar. `jobRunning`
+   * disables both while a shrink job (or the Deliver collect job, sharing
+   * the same single job slot server-side) is in flight. */
+  onShrink: () => void;
+  onCopyIntoProject: () => void;
+  shrinkEnabled: boolean;
+  copyEnabled: boolean;
+  jobRunning: boolean;
 }
 
 /** Toolbar for the Asset Hub table -- search/filter row plus the bulk
@@ -69,6 +82,11 @@ export function HubToolbar({
   pendingCount,
   selectedCount,
   busy,
+  onShrink,
+  onCopyIntoProject,
+  shrinkEnabled,
+  copyEnabled,
+  jobRunning,
 }: HubToolbarProps) {
   return (
     <div
@@ -180,6 +198,24 @@ export function HubToolbar({
           <Button variant="secondary" disabled={busy || pendingCount === 0} onClick={onClear}>
             <RotateCcw size={14} strokeWidth={2.25} aria-hidden="true" />
             Clear
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={busy || jobRunning || !shrinkEnabled}
+            title={selectedCount > 0 && !shrinkEnabled ? "No selected texture/HDRI rows are shrinkable." : undefined}
+            onClick={onShrink}
+          >
+            <Minimize2 size={14} strokeWidth={2.25} aria-hidden="true" />
+            Shrink...
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={busy || jobRunning || !copyEnabled}
+            title={selectedCount > 0 && !copyEnabled ? "Select at least one absolute-path row to copy in." : undefined}
+            onClick={onCopyIntoProject}
+          >
+            <FolderInput size={14} strokeWidth={2.25} aria-hidden="true" />
+            Copy into project
           </Button>
           {selectedCount > 0 && (
             <span className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>

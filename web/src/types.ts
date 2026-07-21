@@ -632,20 +632,74 @@ export interface HubCollectResult {
   report: DeliveryReport; // reuses the existing DeliveryReport type
 }
 
+/**
+ * Hub Shrink contract (Phase 5.2) — mirrors `_op_hub_shrink_start` /
+ * `_run_shrink_for_job` in plugin/sentinel/ui/hub_ops.py and `shrink_plan`
+ * in plugin/sentinel/assets.py. Produced by `POST /api/hub/shrink_start`
+ * `{keys, target_px}`; the job result (fetched via the shared
+ * `fetchHubJobStatus`) is this shape, not `HubCollectResult` — see
+ * `HubJobStatus.result` below.
+ */
+export interface HubShrinkStartResponse {
+  ok: boolean;
+  /** "no_document" | "invalid_target" | "nothing_to_shrink" | "job_running". */
+  error?: string;
+  job_id?: string;
+}
+
+export interface HubShrinkResultItem {
+  key: string;
+  target_path: string;
+  resolved_path: string;
+}
+
+export interface HubShrinkSkip {
+  key: string;
+  reason: string;
+}
+
+export interface HubShrinkError {
+  key: string;
+  error: string;
+}
+
+export interface HubShrinkResult {
+  shrunk: HubShrinkResultItem[];
+  skipped: HubShrinkSkip[];
+  errors: HubShrinkError[];
+  bytes_saved: number;
+}
+
+/** `POST /api/hub/copy_into_project` — see `_op_hub_copy_into_project` in
+ * hub_ops.py. Synchronous (no job) — a handful of `shutil.copy2` calls plus
+ * one relink undo step. Same trailing `stamp` reasoning as `HubApplyResponse`. */
+export interface HubCopyResponse {
+  ok: boolean;
+  /** "no_document" | "unsaved_document". */
+  error?: string;
+  copied?: number;
+  reused?: number;
+  errors?: { key: string; error: string }[];
+  stamp?: string;
+}
+
 /** `GET /api/hub/job_status?job_id=<id>` — see `webbridge.JobRegistry.status`
  * and the `hub/job_status` special-case in `reports_dialog.py` (answered
  * directly on the HTTP server thread, bypassing `MainThreadQueue`, so
  * polling stays live while a collect job blocks the main thread). Returned
  * raw (not wrapped in a `{kind: ...}` result) — the shape itself already
  * carries every state the SPA needs to render, including an unknown/expired
- * `job_id` via `error`. */
+ * `job_id` via `error`. `result` widens to a union (Fase 5.2): a
+ * `"kind": "shrink"` job spec resolves to `HubShrinkResult`, everything else
+ * (the pre-5.2 default, `"collect"`) resolves to `HubCollectResult` — the
+ * page reading it knows which one to expect from which action it started. */
 export interface HubJobStatus {
   job_id?: string;
   state?: "pending" | "running" | "done" | "error";
   phase?: string;
   detail?: string;
   pct?: number;
-  result?: HubCollectResult | null;
+  result?: HubCollectResult | HubShrinkResult | null;
   error?: string;
 }
 

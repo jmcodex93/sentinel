@@ -7,6 +7,7 @@ import {
   MIN_COL_WIDTH,
   sanitizeColWidths,
   sanitizeSortSpec,
+  shrinkPreview,
   sortAssets,
   type FacetState,
 } from "./hubTable";
@@ -306,5 +307,76 @@ describe("applySelection", () => {
     const result = applySelection(current, visible, "a", "b", "toggle");
     expect(result).not.toBe(current);
     expect(current).toEqual(new Set(["a"])); // unmutated
+  });
+});
+
+describe("shrinkPreview", () => {
+  // Task 1 numbers (tests/test_assets.py TestShrinkPlan) — this client
+  // preview must land on the exact same figures as the server's
+  // `assets.shrink_plan`, scoped down to only the selected keys.
+  it("8K texture -> 2K target: exact dims, eligible", () => {
+    const a = asset({ key: "a", status: "ok", asset_type: "texture" });
+    const preview = shrinkPreview([a], { a: meta({ width: 8192, height: 8192 }) }, new Set(["a"]), 2048);
+    expect(preview.eligible).toEqual([{ key: "a", width: 8192, height: 8192, newWidth: 2048, newHeight: 2048 }]);
+    expect(preview.skipped).toEqual([]);
+  });
+
+  it("non-square aspect preserved: 4000x717 @2048 -> 2048x367", () => {
+    const f = asset({ key: "f", status: "ok", asset_type: "hdri" });
+    const preview = shrinkPreview(
+      [f],
+      { f: meta({ width: 4000, height: 717, channels: 3, bit_depth: 8 }) },
+      new Set(["f"]),
+      2048,
+    );
+    expect(preview.eligible[0].newWidth).toBe(2048);
+    expect(preview.eligible[0].newHeight).toBe(367);
+  });
+
+  it("vram before/after are exact and before > after", () => {
+    const a = asset({ key: "a", status: "ok", asset_type: "texture" });
+    const preview = shrinkPreview(
+      [a],
+      { a: meta({ width: 8192, height: 8192, channels: 4, bit_depth: 8 }) },
+      new Set(["a"]),
+      2048,
+    );
+    // imagemeta.vram_bytes(w, h, ch, depth) = floor(w*h*ch*(depth/8) * 4/3)
+    const expectedBefore = Math.floor(8192 * 8192 * 4 * 1 * (4 / 3));
+    const expectedAfter = Math.floor(2048 * 2048 * 4 * 1 * (4 / 3));
+    expect(preview.vramBefore).toBe(expectedBefore);
+    expect(preview.vramAfter).toBe(expectedAfter);
+    expect(preview.vramBefore).toBeGreaterThan(preview.vramAfter);
+  });
+
+  it("mixed batch: skip reasons mirror the server (not_ok, not_image, no_meta, already_small)", () => {
+    const assets = [
+      asset({ key: "a", status: "ok", asset_type: "texture" }),
+      asset({ key: "b", status: "ok", asset_type: "texture" }), // already small
+      asset({ key: "c", status: "missing", asset_type: "texture" }), // not_ok
+      asset({ key: "d", status: "ok", asset_type: "texture" }), // no meta
+      asset({ key: "e", status: "ok", asset_type: "alembic" }), // not_image
+    ];
+    const metas: Record<string, HubMeta> = {
+      a: meta({ width: 8192, height: 8192 }),
+      b: meta({ width: 2048, height: 2048 }),
+      e: meta({ width: 100, height: 100, channels: 1 }),
+    };
+    const preview = shrinkPreview(assets, metas, new Set(["a", "b", "c", "d", "e"]), 2048);
+    expect(preview.eligible.map((i) => i.key)).toEqual(["a"]);
+    const reasons = Object.fromEntries(preview.skipped.map((s) => [s.key, s.reason]));
+    expect(reasons).toEqual({ b: "already_small", c: "not_ok", d: "no_meta", e: "not_image" });
+  });
+
+  it("only considers keys in selectedKeys, ignoring the rest of the inventory", () => {
+    const a = asset({ key: "a", status: "ok", asset_type: "texture" });
+    const b = asset({ key: "b", status: "ok", asset_type: "texture" });
+    const metas: Record<string, HubMeta> = {
+      a: meta({ width: 8192, height: 8192 }),
+      b: meta({ width: 8192, height: 8192 }),
+    };
+    const preview = shrinkPreview([a, b], metas, new Set(["a"]), 2048);
+    expect(preview.eligible.map((i) => i.key)).toEqual(["a"]);
+    expect(preview.skipped).toEqual([]);
   });
 });

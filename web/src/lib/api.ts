@@ -22,6 +22,7 @@ import type {
   HubApplyChange,
   HubApplyResponse,
   HubCollectStartResponse,
+  HubCopyResponse,
   HubInventory,
   HubInventoryResult,
   HubJobStatus,
@@ -34,6 +35,7 @@ import type {
   HubPresetsResult,
   HubPresetsSaveResponse,
   HubSelectOwnerResponse,
+  HubShrinkStartResponse,
   HubUiState,
   NotesState,
   NotesStateResult,
@@ -675,6 +677,29 @@ export async function fetchHubMetaTotals(): Promise<HubMetaTotals> {
   } catch {
     return defaultTotals;
   }
+}
+
+/** `POST /api/hub/shrink_start` — see `_op_hub_shrink_start` in hub_ops.py.
+ * Queues a background job; poll its progress with the existing
+ * `fetchHubJobStatus`/`HubJobStatus` (the `result` field resolves to
+ * `HubShrinkResult` for this job kind). `?mock=1` has no stateful job
+ * registry to back a fake job (same policy as `startHubCollect`'s sibling
+ * ops), so it returns an informative failure instead of a fake job_id. */
+export async function startHubShrink(keys: string[], targetPx: number): Promise<HubShrinkStartResponse> {
+  if (isMock()) {
+    return { ok: false, error: "mock" };
+  }
+  return postForm<HubShrinkStartResponse>("/api/hub/shrink_start", { keys, target_px: targetPx });
+}
+
+/** `POST /api/hub/copy_into_project` — see `_op_hub_copy_into_project` in
+ * hub_ops.py. Synchronous mutation, no job. Same `?mock=1` policy as
+ * `startHubShrink` above — no stateful mock, an informative failure. */
+export async function postHubCopyIntoProject(keys: string[]): Promise<HubCopyResponse> {
+  if (isMock()) {
+    return { ok: false, error: "mock" };
+  }
+  return postForm<HubCopyResponse>("/api/hub/copy_into_project", { keys });
 }
 
 /** `GET /api/hub/ui_state` — see `_op_hub_ui_state` in hub_ops.py.

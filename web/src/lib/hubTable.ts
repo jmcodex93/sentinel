@@ -128,6 +128,91 @@ export function applySelection(
   return new Set(visibleKeys.slice(start, end + 1));
 }
 
+/** Same VRAM formula as `imagemeta.vram_bytes` in plugin/sentinel/imagemeta.py
+ * (mip-chain overhead factor 4/3), so the client Shrink-dialog preview and
+ * the server's authoritative `shrink_plan` never disagree on a number shown
+ * to the artist before they confirm. */
+const MIP_FACTOR = 4 / 3;
+
+function vramBytes(width: number, height: number, channels: number, bitDepth: number): number {
+  const ch = Number.isInteger(channels) && channels >= 1 && channels <= 4 ? channels : 4;
+  const depth = bitDepth === 8 || bitDepth === 16 || bitDepth === 32 ? bitDepth : 8;
+  const raw = width * height * ch * (depth / 8);
+  return Math.floor(raw * MIP_FACTOR);
+}
+
+export type ShrinkSkipReason = "not_ok" | "not_image" | "no_meta" | "already_small";
+
+export interface ShrinkPreviewItem {
+  key: string;
+  width: number;
+  height: number;
+  newWidth: number;
+  newHeight: number;
+}
+
+export interface ShrinkPreviewSkip {
+  key: string;
+  reason: ShrinkSkipReason;
+}
+
+export interface ShrinkPreview {
+  eligible: ShrinkPreviewItem[];
+  skipped: ShrinkPreviewSkip[];
+  vramBefore: number;
+  vramAfter: number;
+}
+
+/** Client-side mirror of `assets.shrink_plan` (Task 1,
+ * `docs/superpowers/plans/2026-07-21-hub-optimize.md`), scoped to
+ * `selectedKeys` only — the Shrink dialog preview so the artist sees "N to
+ * shrink / N skipped / VRAM before→after" before confirming. The server
+ * recomputes the authoritative plan on `hub/shrink_start` regardless (a
+ * fresh scan could reveal a resolved path/meta this client snapshot didn't
+ * have), so this is informative, never load-bearing. Same eligibility order
+ * as the Python: status "ok" -> asset_type texture/hdri -> meta present with
+ * usable dims -> not already <= target. */
+export function shrinkPreview(
+  assets: HubAsset[],
+  metas: Record<string, HubMeta>,
+  selectedKeys: Set<string>,
+  targetPx: number,
+): ShrinkPreview {
+  const eligible: ShrinkPreviewItem[] = [];
+  const skipped: ShrinkPreviewSkip[] = [];
+  let vramBefore = 0;
+  let vramAfter = 0;
+
+  for (const asset of assets) {
+    if (!selectedKeys.has(asset.key)) continue;
+    if (asset.status !== "ok") {
+      skipped.push({ key: asset.key, reason: "not_ok" });
+      continue;
+    }
+    if (asset.asset_type !== "texture" && asset.asset_type !== "hdri") {
+      skipped.push({ key: asset.key, reason: "not_image" });
+      continue;
+    }
+    const meta = metas[asset.key];
+    if (!meta || !meta.width || !meta.height) {
+      skipped.push({ key: asset.key, reason: "no_meta" });
+      continue;
+    }
+    if (Math.max(meta.width, meta.height) <= targetPx) {
+      skipped.push({ key: asset.key, reason: "already_small" });
+      continue;
+    }
+    const scale = targetPx / Math.max(meta.width, meta.height);
+    const newWidth = Math.max(1, Math.round(meta.width * scale));
+    const newHeight = Math.max(1, Math.round(meta.height * scale));
+    eligible.push({ key: asset.key, width: meta.width, height: meta.height, newWidth, newHeight });
+    vramBefore += vramBytes(meta.width, meta.height, meta.channels, meta.bit_depth);
+    vramAfter += vramBytes(newWidth, newHeight, meta.channels, meta.bit_depth);
+  }
+
+  return { eligible, skipped, vramBefore, vramAfter };
+}
+
 export interface FacetState {
   res: Set<string>;
   channels: Set<string>;
