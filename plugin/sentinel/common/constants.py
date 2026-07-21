@@ -7,6 +7,16 @@ PLUGIN_ID = 2099069
 # (2099072 was the retired v1.5.6 Safe-Area Overlay ObjectData id — freed in
 # v1.8.0 when the Sentinel Frame per-camera tag took over viewport drawing.)
 
+# Fase 6.0 (Panel SPA host) — grepped the 2099xxx range before picking this:
+# PLUGIN_ID=2099069, SENTINEL_FRAME_TAG_PLUGIN_ID=2099073 (frame_tag.py),
+# SENTINEL_PALETTE_PLUGIN_ID=2099075 (sentinel_panel.pyp), 2099072 retired.
+# 2099074 is documented in ROADMAP.md as the never-shipped v1.6.0
+# CameraFrameDrawer prototype (superseded by Sentinel Frame, not registered
+# anywhere in the current codebase) — skipped anyway to avoid confusion with
+# that history rather than reclaim it. 2099076 is the next id with no
+# reference anywhere in the repo — free.
+SENTINEL_PANEL_SPA_PLUGIN_ID = 2099076
+
 # Preset names - normalized to lowercase with underscores
 # The system accepts both "pre_render" and "pre-render" (case-insensitive)
 PRESETS = ["previz", "pre_render", "render", "stills"]
