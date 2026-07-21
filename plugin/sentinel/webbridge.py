@@ -726,11 +726,14 @@ def top_qc_checks(checks, limit=3):
     re-derives scoring, only ranks its output.
 
     Count preference per row: ``new`` (baseline-aware violation count) when
-    present, else ``count`` (legacy violation count) — mirrors how
-    ``_qc_check_row`` itself only ever populates one of the two depending on
-    whether a baseline is active. A row with no count at all (``None`` or
-    ``0`` — i.e. passing or disabled) is excluded, never ranked as a
-    zero-severity "worst" entry.
+    present, else ``count`` (legacy violation count). ``_qc_check_row``
+    populates BOTH ``count`` and ``new`` for an enabled, non-disabled check
+    once a baseline is active (``count`` stays the raw legacy total,
+    ``new`` is the baseline-aware subset) — ranking prefers ``new`` in that
+    case so a scene with a large accepted-baseline count doesn't crowd out
+    a check with few-but-unaccepted new violations. A row with no count at
+    all (``None`` or ``0`` — i.e. passing or disabled) is excluded, never
+    ranked as a zero-severity "worst" entry.
     """
     scored = []
     for entry in checks or []:

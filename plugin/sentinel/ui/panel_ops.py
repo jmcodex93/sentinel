@@ -63,6 +63,7 @@ from c4d import documents
 from sentinel import assets as assets_engine
 from sentinel import webbridge
 from sentinel.checks.render import normalize_preset_name
+from sentinel.common.helpers import safe_print
 from sentinel.common.settings import GlobalSettings
 from sentinel.notes import get_notes_path, load_notes
 from sentinel.qc.score import compute_score, count_violations, run_all_checks
@@ -246,21 +247,53 @@ def _panel_deliver_block(doc):
     }
 
 
+def _guarded_block(name, builder, doc):
+    """Run one ``panel/overview`` card builder in isolation: a failure in
+    ONE subsystem (e.g. a broken asset scan, an unreadable notes sidecar)
+    must never blank the whole dashboard — same isolation pattern
+    ``ui/panel.py`` ``_sync_ui_from_doc`` uses per-field (~line 985-1013,
+    each block wrapped in its own ``try/except`` with a ``safe_print`` on
+    failure, so one bad read doesn't take down the others). A failed block
+    comes back as ``None`` — the SPA renders that card as unavailable
+    instead of the whole response erroring out.
+    """
+    try:
+        return builder(doc)
+    except Exception as exc:
+        safe_print(f"panel/overview: {name} block failed: {exc}")
+        return None
+
+
+def build_panel_overview(doc):
+    """Pure(ish) aggregation of the 4-card ``panel/overview`` payload from
+    an already-resolved ``doc`` — split out from ``_op_panel_overview`` so
+    the per-block isolation is testable by handing in a fake/monkeypatched
+    ``doc`` and builder, without needing the fake-c4d harness's real
+    ``documents.GetActiveDocument()`` (which is always ``None`` there).
+    Every block is wrapped by ``_guarded_block``: one raising builder never
+    prevents the other four from populating their card.
+    """
+    return {
+        "scene": _guarded_block("scene", _panel_scene_block, doc),
+        "qc": _guarded_block("qc", _panel_qc_block, doc),
+        "assets": _guarded_block("assets", _panel_assets_block, doc),
+        "render": _guarded_block("render", _panel_render_block, doc),
+        "deliver": _guarded_block("deliver", _panel_deliver_block, doc),
+    }
+
+
 def _op_panel_overview(payload):
     """``panel/overview`` — read-only "shot health" dashboard payload (4
     cards). Doc-guard-first like every sibling op; see the module docstring
-    for the source of every field below."""
+    for the source of every field below. Each card is built via
+    ``build_panel_overview``'s per-block isolation, so a failure in one
+    subsystem degrades that card to ``null`` instead of blanking the whole
+    response."""
     doc = documents.GetActiveDocument()
     if not doc:
         return {"error": "no_document"}
 
-    return {
-        "scene": _panel_scene_block(doc),
-        "qc": _panel_qc_block(doc),
-        "assets": _panel_assets_block(doc),
-        "render": _panel_render_block(doc),
-        "deliver": _panel_deliver_block(doc),
-    }
+    return build_panel_overview(doc)
 
 
 _VALID_FORM_PAGES = ("form/save_version", "form/notes", "form/settings")
