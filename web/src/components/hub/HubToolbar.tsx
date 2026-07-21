@@ -192,7 +192,7 @@ export function HubToolbar({
           </Button>
           <Button variant="secondary" disabled={busy} onClick={onSearchFolder}>
             <FolderSearch size={14} strokeWidth={2.25} aria-hidden="true" />
-            Search Folder...
+            Search Folder
           </Button>
           <Button
             variant="secondary"
@@ -201,7 +201,7 @@ export function HubToolbar({
             onClick={onRelinkSelected}
           >
             <Link2 size={14} strokeWidth={2.25} aria-hidden="true" />
-            Relink Selected...
+            Relink Selected
           </Button>
           <Button variant="secondary" disabled={busy || pendingCount === 0} onClick={onClear}>
             <RotateCcw size={14} strokeWidth={2.25} aria-hidden="true" />
@@ -214,7 +214,7 @@ export function HubToolbar({
             onClick={onShrink}
           >
             <Minimize2 size={14} strokeWidth={2.25} aria-hidden="true" />
-            Shrink...
+            Shrink
           </Button>
           <Button
             variant="secondary"
@@ -232,7 +232,7 @@ export function HubToolbar({
             onClick={onSwitchRes}
           >
             <ArrowLeftRight size={14} strokeWidth={2.25} aria-hidden="true" />
-            Switch res...
+            Switch res
           </Button>
           {selectedCount > 0 && (
             <span className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
