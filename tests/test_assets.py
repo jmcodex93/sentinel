@@ -705,3 +705,124 @@ class TestCopyPlan:
         plan = assets.copy_plan(records, "/proj/scene")
         assert [c["key"] for c in plan["copy"]] == ["out"]
         assert {s["key"] for s in plan["skip"]} == {"in", "missing"}
+
+
+# ---------------------------------------------------------------------------
+# Resolution variants (Fase 5.3) — split_res_token / find_res_variants
+# ---------------------------------------------------------------------------
+
+class TestSplitResToken:
+    def test_underscore_both_sides_with_numeric_suffix(self):
+        assert (assets.split_res_token("plaster_4k_1.jpg")
+                == ("plaster_", 4096, "_1.jpg"))
+
+    def test_our_shrink_suffix_uppercase(self):
+        assert assets.split_res_token("foo_2K.png") == ("foo_", 2048, ".png")
+
+    def test_dash_delimiter(self):
+        assert assets.split_res_token("wood-8k.exr") == ("wood-", 8192, ".exr")
+
+    def test_dot_delimiter_both_sides(self):
+        assert assets.split_res_token("tex.4k.tif") == ("tex.", 4096, ".tif")
+
+    def test_start_of_name_boundary(self):
+        assert assets.split_res_token("4k_start.png") == ("", 4096, "_start.png")
+
+    def test_token_in_word_no_match(self):
+        assert assets.split_res_token("back4k.png") is None
+
+    def test_multiple_tokens_last_one_wins(self):
+        assert (assets.split_res_token("scan_4k_detail_2k.png")
+                == ("scan_4k_detail_", 2048, ".png"))
+
+    def test_case_insensitive(self):
+        assert assets.split_res_token("Plaster_4K_1.JPG") == ("Plaster_", 4096, "_1.JPG")
+
+    def test_16k_token(self):
+        assert assets.split_res_token("hdri_16k.hdr") == ("hdri_", 16384, ".hdr")
+
+    def test_no_token_returns_none(self):
+        assert assets.split_res_token("plain_wood.png") is None
+
+
+class TestFindResVariants:
+    def test_family_groups_by_prefix_and_suffix(self):
+        records = [
+            {"key": "a", "resolved_path": "/proj/tex/plaster_4k_1.jpg"},
+        ]
+
+        def fake_list_dir(path):
+            assert path == "/proj/tex"
+            return ["plaster_4k_1.jpg", "plaster_8k_1.jpg", "readme.txt"]
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert result["a"] == [
+            {"path": "/proj/tex/plaster_8k_1.jpg", "px": 8192},
+            {"path": "/proj/tex/plaster_4k_1.jpg", "px": 4096},
+        ]
+
+    def test_single_variant_excluded(self):
+        records = [{"key": "a", "resolved_path": "/proj/tex/bar_2k.png"}]
+
+        def fake_list_dir(path):
+            return ["bar_2k.png", "unrelated.png"]
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert "a" not in result
+
+    def test_different_suffix_not_grouped(self):
+        records = [
+            {"key": "a", "resolved_path": "/proj/tex/plaster_4k_1.jpg"},
+        ]
+
+        def fake_list_dir(path):
+            return ["plaster_4k_1.jpg", "plaster_8k_2.jpg"]
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert "a" not in result
+
+    def test_no_token_record_skipped(self):
+        records = [{"key": "a", "resolved_path": "/proj/tex/plain.png"}]
+
+        def fake_list_dir(path):
+            return ["plain.png", "plain_2k.png"]
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert "a" not in result
+
+    def test_dir_listed_once_for_multiple_records_same_dir(self):
+        records = [
+            {"key": "a", "resolved_path": "/proj/tex/plaster_4k_1.jpg"},
+            {"key": "b", "resolved_path": "/proj/tex/plaster_4k_2.jpg"},
+        ]
+        calls = []
+
+        def fake_list_dir(path):
+            calls.append(path)
+            return ["plaster_4k_1.jpg", "plaster_8k_1.jpg",
+                    "plaster_4k_2.jpg", "plaster_8k_2.jpg"]
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert calls == ["/proj/tex"]
+        assert result["a"] == [
+            {"path": "/proj/tex/plaster_8k_1.jpg", "px": 8192},
+            {"path": "/proj/tex/plaster_4k_1.jpg", "px": 4096},
+        ]
+        assert result["b"] == [
+            {"path": "/proj/tex/plaster_8k_2.jpg", "px": 8192},
+            {"path": "/proj/tex/plaster_4k_2.jpg", "px": 4096},
+        ]
+
+    def test_no_resolved_path_skipped(self):
+        records = [{"key": "a", "resolved_path": None}, {"key": "b"}]
+        result = assets.find_res_variants(records, list_dir=lambda p: [])
+        assert result == {}
+
+    def test_list_dir_failure_skips_that_directory(self):
+        records = [{"key": "a", "resolved_path": "/missing/tex/plaster_4k_1.jpg"}]
+
+        def fake_list_dir(path):
+            raise OSError("no such directory")
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert result == {}

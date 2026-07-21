@@ -553,3 +553,97 @@ def copy_plan(records, doc_dir):
         })
 
     return {"copy": copy, "skip": skip}
+
+
+# ---------------------------------------------------------------------------
+# Resolution variant detection (Fase 5.3) — pure, no file writes
+# ---------------------------------------------------------------------------
+
+_RES_TOKEN_MAP = {"1k": 1024, "2k": 2048, "4k": 4096, "8k": 8192, "16k": 16384}
+
+# Longest alternatives first ("16k" before "1k") so the regex engine doesn't
+# stop at a shorter prefix match. Boundaries are zero-width lookaround
+# assertions (never consumed) so the delimiter itself lands in whichever
+# side it borders when the basename is sliced around the match.
+_RES_TOKEN_RE = re.compile(
+    r"(?:(?<=[_\-.])|^)(16k|8k|4k|2k|1k)(?:(?=[_\-.])|$)",
+    re.IGNORECASE,
+)
+
+
+def split_res_token(basename):
+    """Split `basename` around its LAST resolution token (`_4k_`, `-8k.`,
+    `.4k.`, leading `4k_`, our `_2K` shrink suffix, etc.), case-insensitive.
+
+    Returns `(prefix, px, suffix)` where `prefix + <token-as-found> + suffix
+    == basename` (the delimiter on each side stays put in prefix/suffix, the
+    token itself is consumed) — or `None` when no token is found. A token
+    embedded in a word (`back4k.png`) never matches: both boundaries require
+    a delimiter (`_`/`-`/`.`) or the start/end of the name. When multiple
+    tokens are present, the LAST one wins (`scan_4k_detail_2k.png` splits on
+    `2k`).
+    """
+    name = str(basename)
+    matches = list(_RES_TOKEN_RE.finditer(name))
+    if not matches:
+        return None
+    match = matches[-1]
+    px = _RES_TOKEN_MAP[match.group(1).lower()]
+    return name[:match.start()], px, name[match.end():]
+
+
+def find_res_variants(records, list_dir=os.listdir):
+    """Detect on-disk resolution siblings for each record.
+
+    For every record with a `resolved_path`, split its basename; records
+    without a resolution token are skipped. Each directory is listed at
+    most once per call (cached by directory path — a `list_dir` failure
+    skips every record in that directory rather than raising). A sibling
+    groups with the record when its own split yields the same
+    case-folded `(prefix, suffix)`. Groups with fewer than 2 members
+    (self included) are dropped. Returns `{key: [{"path", "px"}, ...]}`
+    sorted by `px` descending, paths joined with the record's real
+    (un-normalized) directory.
+    """
+    dir_listings = {}
+    result = {}
+
+    for rec in records or []:
+        key = rec.get("key")
+        resolved = rec.get("resolved_path")
+        if not resolved:
+            continue
+        resolved = str(resolved)
+        dir_path = os.path.dirname(resolved)
+        basename = os.path.basename(resolved)
+        split = split_res_token(basename)
+        if split is None:
+            continue
+        prefix, _px, suffix = split
+        prefix_key = prefix.lower()
+        suffix_key = suffix.lower()
+
+        if dir_path not in dir_listings:
+            try:
+                dir_listings[dir_path] = list_dir(dir_path)
+            except OSError:
+                dir_listings[dir_path] = None
+        entries = dir_listings[dir_path]
+        if entries is None:
+            continue
+
+        group = []
+        for entry in entries:
+            entry_split = split_res_token(entry)
+            if entry_split is None:
+                continue
+            e_prefix, e_px, e_suffix = entry_split
+            if e_prefix.lower() == prefix_key and e_suffix.lower() == suffix_key:
+                group.append({"path": os.path.join(dir_path, entry), "px": e_px})
+
+        if len(group) < 2:
+            continue
+        group.sort(key=lambda g: -g["px"])
+        result[key] = group
+
+    return result
