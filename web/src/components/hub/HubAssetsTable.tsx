@@ -34,11 +34,14 @@ const ROW_H = 44; // --space-table-row (2-line rows: name+chip+badge / path+dims
 // (--color-primary tints), never the fail/warn/pass status chroma, which is
 // reserved exclusively for state (missing/absolute badges etc.). 2k/sm stay
 // on the neutral surface scale, unchanged.
+// Single-hue property ramp — intensity = resolution, never the status chroma
+// (see DESIGN.md "Primary Tint Ramp"). Darkest tint + primary text at 8K down
+// to the lightest tint + muted text at sm, all on the one accent hue.
 const RES_CHIP_META: Record<HubResTier, { color: string; background: string }> = {
-  "8k": { color: "var(--color-primary)", background: "var(--color-primary-tint-15)" },
-  "4k": { color: "var(--color-primary)", background: "var(--color-primary-tint-10)" },
-  "2k": { color: "var(--color-ink-secondary)", background: "var(--color-surface-2)" },
-  sm: { color: "var(--color-muted)", background: "var(--color-surface-2)" },
+  "8k": { color: "var(--color-primary)", background: "var(--color-primary-tint-20)" },
+  "4k": { color: "var(--color-primary)", background: "var(--color-primary-tint-14)" },
+  "2k": { color: "var(--color-ink-secondary)", background: "var(--color-primary-tint-08)" },
+  sm: { color: "var(--color-muted)", background: "var(--color-primary-tint-04)" },
 };
 
 function HubResChip({ meta }: { meta: HubMeta | undefined }) {

@@ -142,6 +142,16 @@ export function HubPage() {
   // values without re-creating the interval on every keystroke/selection.
   const stampRef = useRef<string | null>(null);
   const deliverRef = useRef<HTMLDivElement>(null);
+  // Focus-restoration target for when a hub dialog (Switch Res / Shrink)
+  // unmounts. Diagnosis: the webview needs SOME live focused element for
+  // Cmd+Z to pass through to C4D's key handling — a dialog's focused button
+  // is removed from the DOM on close, leaving nothing focused, and the very
+  // next Cmd+Z is swallowed. Shrink's own flow only dodged this because it
+  // takes seconds and the user typically clicks something else meanwhile.
+  const tableWrapperRef = useRef<HTMLDivElement>(null);
+  const restoreFocus = useCallback(() => {
+    tableWrapperRef.current?.focus({ preventScroll: true });
+  }, []);
   const pendingRef = useRef<Map<string, string>>(pending);
   useEffect(() => {
     pendingRef.current = pending;
@@ -482,6 +492,7 @@ export function HubPage() {
       return;
     }
     setShrinkDialogOpen(false);
+    restoreFocus();
     setShrinkJob({ jobId: res.job_id, status: null });
   }
 
@@ -519,6 +530,7 @@ export function HubPage() {
       return;
     }
     setSwitchResDialogOpen(false);
+    restoreFocus();
     if (res.stamp) stampRef.current = res.stamp;
     const switchedCount = res.switched?.length ?? 0;
     const skippedCount = res.skipped?.length ?? 0;
@@ -708,6 +720,8 @@ export function HubPage() {
 
       <div className="min-w-0 flex-1 overflow-auto p-4">
         <div
+          ref={tableWrapperRef}
+          tabIndex={-1}
           onKeyDown={(event) => {
             if (event.key === "Escape") setSelectedKeys(new Set());
           }}
@@ -746,7 +760,10 @@ export function HubPage() {
           selectedKeys={selectedKeys}
           busy={shrinkStarting}
           onConfirm={handleShrinkConfirm}
-          onClose={() => setShrinkDialogOpen(false)}
+          onClose={() => {
+            setShrinkDialogOpen(false);
+            restoreFocus();
+          }}
         />
       )}
 
@@ -756,7 +773,10 @@ export function HubPage() {
           variants={variants}
           busy={switchResBusy}
           onConfirm={handleSwitchResConfirm}
-          onClose={() => setSwitchResDialogOpen(false)}
+          onClose={() => {
+            setSwitchResDialogOpen(false);
+            restoreFocus();
+          }}
         />
       )}
     </div>

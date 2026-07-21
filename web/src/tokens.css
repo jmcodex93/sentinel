@@ -25,13 +25,14 @@
   --color-primary-hover: #828fff;
   --color-on-primary: #ffffff;
 
-  /* Accent tints — for a legitimate PROPERTY-scale use of the accent (e.g.
-   * the Hub's 8K/4K resolution chips), never for state. Same derivation as
-   * the status tints above: precomputed rgba() of --color-primary at 15%/
-   * 10% alpha, not CSS relative-color syntax, for broader webview
-   * compatibility. */
-  --color-primary-tint-15: rgba(94, 106, 210, 0.15);
-  --color-primary-tint-10: rgba(94, 106, 210, 0.1);
+  /* Accent tints — single-hue ramp for a legitimate PROPERTY-scale use of the
+   * accent (the Hub's 8K/4K/2K/sm resolution chips: intensity = resolution),
+   * never for state. Four steps of --color-primary alpha, precomputed rgba()
+   * rather than CSS relative-color syntax for broader webview compatibility. */
+  --color-primary-tint-20: rgba(94, 106, 210, 0.2);
+  --color-primary-tint-14: rgba(94, 106, 210, 0.14);
+  --color-primary-tint-08: rgba(94, 106, 210, 0.08);
+  --color-primary-tint-04: rgba(94, 106, 210, 0.04);
 
   /* Status (exclusive to state — never the accent) */
   --color-status-fail: #e0655f;
