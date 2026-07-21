@@ -152,26 +152,32 @@ function SortIndicator({ dir }: { dir: "asc" | "desc" }) {
   return <Icon size={11} strokeWidth={2.5} aria-hidden="true" style={{ display: "inline", verticalAlign: "-1px" }} />;
 }
 
-/** Divider + 8px hit-area centered on the right edge of a resizable header
- * cell — i.e. on the boundary with the next column. Drag adjusts THIS
- * column's own stored width (the "left column" of the boundary it sits
- * on): moving the pointer right grows `startWidth` by the positive
- * `clientX` delta, so dragging right always widens the column to the
- * divider's left (verified by tracing `handlePointerMove`: width persisted
- * every move is `startWidth + (event.clientX - dragRef.startX)`, never
- * inverted or applied to `colId`'s neighbor — round 2 polish confirmed this
- * math was already correct; what was missing was a visible target. Before
- * this pass the hit area was a bare 4px strip with zero static affordance
- * (only a hover background), which made it easy to miss or to feel like a
- * drag "did nothing"/"went the wrong way" when the grab landed a few px off
- * the true boundary). Double-click deletes the stored width entirely
- * (falls back to `DEFAULT_COL_WIDTHS` at render, rather than freezing in
- * today's default value — future default tuning then still reaches a user
- * who's reset). Pointer cancel (e.g. the OS interrupts the gesture) is
- * treated like pointerup: commit + persist whatever width the drag reached,
- * never leave it uncommitted. Lives as an absolutely-positioned sibling of
- * the header label, so a drag gesture never lands on — and can never
- * trigger — the sort button. */
+/** Divider + 8px hit-area on the LEFT edge of a resizable header cell — i.e.
+ * on the boundary with the PREVIOUS column. This geometry is forced by the
+ * grid layout: every resizable column sits to the right of the single
+ * flexible `Name` track (`minmax(160px, 1fr)`), which absorbs whatever
+ * space the fixed columns don't claim. That means a fixed column's LEFT
+ * edge = (container width) − (sum of every fixed column at/after it), which
+ * moves when its own width changes — its RIGHT edge is anchored by
+ * whatever sits after it and does NOT track a resize of this column. A
+ * divider placed on the right edge of a column (round 2 polish) therefore
+ * never visibly follows the pointer for anything but the very last column:
+ * the boundary the user is dragging stays put while `Name`, off to the
+ * left, silently absorbs the delta — which reads as the drag doing nothing,
+ * or moving backwards. Anchoring the divider on the LEFT edge instead makes
+ * it track correctly, but flips the sign: this column's left edge moves
+ * LEFT as it grows (eating into `Name`'s space) and RIGHT as it shrinks, so
+ * `handlePointerMove` computes `startWidth - delta` — pointer left (negative
+ * delta) grows the column and moves its left edge (the divider) left with
+ * the pointer; pointer right shrinks it and moves the edge right with the
+ * pointer. Double-click deletes the stored width entirely (falls back to
+ * `DEFAULT_COL_WIDTHS` at render, rather than freezing in today's default
+ * value — future default tuning then still reaches a user who's reset).
+ * Pointer cancel (e.g. the OS interrupts the gesture) is treated like
+ * pointerup: commit + persist whatever width the drag reached, never leave
+ * it uncommitted. Lives as an absolutely-positioned sibling of the header
+ * label, so a drag gesture never lands on — and can never trigger — the
+ * sort button. */
 function ColumnResizer({
   colId,
   width,
@@ -204,7 +210,11 @@ function ColumnResizer({
     (event: ReactPointerEvent<HTMLDivElement>) => {
       if (!dragRef.current) return;
       const delta = event.clientX - dragRef.current.startX;
-      onResize(colId, clampColWidth(dragRef.current.startWidth + delta));
+      // Inverted vs. a naive right-edge resizer: this divider sits on the
+      // column's LEFT edge, which moves left as the column grows (see the
+      // comment above ColumnResizer) — so growing the column requires
+      // SUBTRACTING the pointer's rightward delta, not adding it.
+      onResize(colId, clampColWidth(dragRef.current.startWidth - delta));
     },
     [colId, onResize],
   );
@@ -241,7 +251,7 @@ function ColumnResizer({
         onReset(colId);
       }}
       className="absolute top-0 h-full w-2 cursor-col-resize touch-none select-none"
-      style={{ right: -4, zIndex: 2 }}
+      style={{ left: -4, zIndex: 2 }}
     >
       <div
         aria-hidden="true"
