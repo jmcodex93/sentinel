@@ -124,11 +124,16 @@ function ThumbCell({ asset }: { asset: HubAsset }) {
  * is `null` for columns with no corresponding `SortCol` (thumb icon well,
  * Type, Used by — Type is a free-text category and Used by is an array,
  * neither reduces to a single sortable scalar). `resizeId` is set only for
- * the columns tracked in `RESIZABLE_COLUMNS`. */
+ * the columns tracked in `RESIZABLE_COLUMNS`. `res` got its own column in
+ * round 2 of polish (2026-07-20) — it used to be a secondary `text-caption`
+ * sort control glued to the Name header (see the deviation note in
+ * `docs/superpowers/specs/2026-07-20-hub-polish-design.md`); now it's a
+ * normal sortable/resizable column like the rest, no special-casing below. */
 const HEADER_COLUMNS: { id: string; label: string; sortCol: SortCol | null; resizeId: ResizableColumn | null }[] = [
   { id: "thumb", label: "", sortCol: null, resizeId: null },
   { id: "name", label: "Name", sortCol: "name", resizeId: null },
   { id: "type", label: "Type", sortCol: null, resizeId: "type" },
+  { id: "res", label: "Res", sortCol: "res", resizeId: "res" },
   { id: "status", label: "Status", sortCol: "status", resizeId: "status" },
   { id: "size", label: "Size", sortCol: "size", resizeId: "size" },
   { id: "vram", label: "VRAM", sortCol: "vram", resizeId: "vram" },
@@ -147,9 +152,19 @@ function SortIndicator({ dir }: { dir: "asc" | "desc" }) {
   return <Icon size={11} strokeWidth={2.5} aria-hidden="true" style={{ display: "inline", verticalAlign: "-1px" }} />;
 }
 
-/** 4px hit-area divider rendered at the right edge of a resizable header
- * cell. Drag adjusts that column's own stored width (the "left column" of
- * the boundary it sits on); double-click deletes the stored width entirely
+/** Divider + 8px hit-area centered on the right edge of a resizable header
+ * cell — i.e. on the boundary with the next column. Drag adjusts THIS
+ * column's own stored width (the "left column" of the boundary it sits
+ * on): moving the pointer right grows `startWidth` by the positive
+ * `clientX` delta, so dragging right always widens the column to the
+ * divider's left (verified by tracing `handlePointerMove`: width persisted
+ * every move is `startWidth + (event.clientX - dragRef.startX)`, never
+ * inverted or applied to `colId`'s neighbor — round 2 polish confirmed this
+ * math was already correct; what was missing was a visible target. Before
+ * this pass the hit area was a bare 4px strip with zero static affordance
+ * (only a hover background), which made it easy to miss or to feel like a
+ * drag "did nothing"/"went the wrong way" when the grab landed a few px off
+ * the true boundary). Double-click deletes the stored width entirely
  * (falls back to `DEFAULT_COL_WIDTHS` at render, rather than freezing in
  * today's default value — future default tuning then still reaches a user
  * who's reset). Pointer cancel (e.g. the OS interrupts the gesture) is
@@ -171,12 +186,15 @@ function ColumnResizer({
   onReset: (colId: ResizableColumn) => void;
 }) {
   const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [hovering, setHovering] = useState(false);
 
   const handlePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
       event.preventDefault();
       event.stopPropagation();
       dragRef.current = { startX: event.clientX, startWidth: width };
+      setDragging(true);
       (event.target as HTMLElement).setPointerCapture(event.pointerId);
     },
     [width],
@@ -195,6 +213,7 @@ function ColumnResizer({
     (event: ReactPointerEvent<HTMLDivElement>) => {
       if (!dragRef.current) return;
       dragRef.current = null;
+      setDragging(false);
       try {
         (event.target as HTMLElement).releasePointerCapture(event.pointerId);
       } catch {
@@ -205,6 +224,8 @@ function ColumnResizer({
     [onResizeEnd],
   );
 
+  const highlighted = dragging || hovering;
+
   return (
     <div
       role="separator"
@@ -213,13 +234,26 @@ function ColumnResizer({
       onPointerMove={handlePointerMove}
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
+      onPointerEnter={() => setHovering(true)}
+      onPointerLeave={() => setHovering(false)}
       onDoubleClick={(event) => {
         event.stopPropagation();
         onReset(colId);
       }}
-      className="absolute top-0 right-0 h-full w-1 cursor-col-resize touch-none select-none hover:bg-[var(--color-primary)]"
-      style={{ zIndex: 1 }}
-    />
+      className="absolute top-0 h-full w-2 cursor-col-resize touch-none select-none"
+      style={{ right: -4, zIndex: 2 }}
+    >
+      <div
+        aria-hidden="true"
+        className="absolute top-0 h-full"
+        style={{
+          left: "50%",
+          width: 1,
+          transform: "translateX(-50%)",
+          backgroundColor: highlighted ? "var(--color-hairline-strong)" : "var(--color-hairline)",
+        }}
+      />
+    </div>
   );
 }
 
@@ -302,17 +336,10 @@ export function HubAssetsTable({
         >
           {HEADER_COLUMNS.map((col) => {
             const isSorted = sort?.col === col.sortCol;
-            const isResSorted = col.id === "name" && sort?.col === "res";
             // aria-sort belongs on the header cell (role="columnheader"), not
             // the button inside it — assistive tech ignores aria-sort on
-            // non-columnheader elements. The "name" cell hosts two
-            // independent sort buttons (name + res); the cell's aria-sort
-            // reflects whichever of the two is currently active.
-            const cellAriaSort = isSorted
-              ? (sort!.dir === "asc" ? "ascending" : "descending")
-              : isResSorted
-                ? (sort!.dir === "asc" ? "ascending" : "descending")
-                : "none";
+            // non-columnheader elements.
+            const cellAriaSort = isSorted ? (sort!.dir === "asc" ? "ascending" : "descending") : "none";
             return (
               <div
                 key={col.id}
@@ -333,18 +360,6 @@ export function HubAssetsTable({
                   </button>
                 ) : (
                   col.label
-                )}
-                {col.id === "name" && (
-                  <button
-                    type="button"
-                    onClick={() => onSortChange?.(nextSort(sort, "res"))}
-                    className="text-caption ml-1 flex items-center gap-0.5 hover:text-[var(--color-ink)]"
-                    style={{ color: isResSorted ? "var(--color-ink)" : "var(--color-muted)" }}
-                    title="Sort by resolution"
-                  >
-                    Res
-                    {isResSorted && <SortIndicator dir={sort!.dir} />}
-                  </button>
                 )}
                 {col.resizeId && (
                   <ColumnResizer
@@ -401,11 +416,8 @@ export function HubAssetsTable({
                 <Tooltip.Root>
                   <Tooltip.Trigger asChild>
                     <div className="flex min-w-0 flex-col justify-center gap-0.5 px-2">
-                      <span className="flex min-w-0 items-center gap-1.5">
-                        <span className="truncate" style={{ color: "var(--color-ink)" }}>
-                          {basename}
-                        </span>
-                        <HubResChip meta={meta} />
+                      <span className="truncate" style={{ color: "var(--color-ink)" }}>
+                        {basename}
                       </span>
                       <span className="text-caption truncate" style={{ color: pathColor }}>
                         {displayPath} · {metaLine(meta)}
@@ -435,11 +447,15 @@ export function HubAssetsTable({
                 </span>
 
                 <div className="px-2">
+                  {meta ? <HubResChip meta={meta} /> : <span style={{ color: "var(--color-muted)" }}>—</span>}
+                </div>
+
+                <div className="px-2">
                   <HubStatusBadge status={a.status} />
                 </div>
 
                 <span className="truncate px-2" style={{ color: "var(--color-ink-secondary)" }}>
-                  {a.size_label}
+                  {a.size_bytes != null && a.size_bytes < 0 ? "—" : a.size_label}
                 </span>
 
                 <span className="truncate px-2" style={{ color: "var(--color-ink-secondary)" }}>

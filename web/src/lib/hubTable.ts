@@ -155,12 +155,15 @@ export function facetCounts(assets: HubAsset[], metas: Record<string, HubMeta>):
 /** Columns that carry a resizable, stored pixel width. The `name` column is
  * deliberately excluded — it always renders as `minmax(160px, 1fr)` in the
  * grid template so it absorbs whatever space the others don't claim, and
- * the thumb column is a fixed 40px icon well, not user-resizable. */
-export const RESIZABLE_COLUMNS = ["type", "status", "size", "vram", "usedby"] as const;
+ * the thumb column is a fixed 40px icon well, not user-resizable. `res` has
+ * its own column (round 2 of polish, 2026-07-20) — it used to live as a
+ * secondary sort control glued to the Name header; see HubAssetsTable.tsx. */
+export const RESIZABLE_COLUMNS = ["type", "res", "status", "size", "vram", "usedby"] as const;
 export type ResizableColumn = (typeof RESIZABLE_COLUMNS)[number];
 
 export const DEFAULT_COL_WIDTHS: Record<ResizableColumn, number> = {
   type: 90,
+  res: 70,
   status: 90,
   size: 80,
   vram: 90,
@@ -213,5 +216,5 @@ export function sanitizeColWidths(value: unknown): Partial<Record<ResizableColum
  * row rendered by `HubAssetsTable`. */
 export function gridColumnsFor(colWidths: Partial<Record<ResizableColumn, number>>): string {
   const w = (id: ResizableColumn) => `${colWidths[id] ?? DEFAULT_COL_WIDTHS[id]}px`;
-  return `40px minmax(160px, 1fr) ${w("type")} ${w("status")} ${w("size")} ${w("vram")} ${w("usedby")}`;
+  return `40px minmax(160px, 1fr) ${w("type")} ${w("res")} ${w("status")} ${w("size")} ${w("vram")} ${w("usedby")}`;
 }

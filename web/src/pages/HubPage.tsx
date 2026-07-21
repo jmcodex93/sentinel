@@ -365,11 +365,17 @@ export function HubPage() {
         style={{ backgroundColor: "var(--color-surface-1)", borderBottom: "1px solid var(--color-hairline-strong)" }}
       >
         <div className="min-w-0">
+          <p
+            className="text-caption uppercase"
+            style={{ color: "var(--color-muted)", letterSpacing: "0.06em" }}
+          >
+            Asset Hub
+          </p>
           <h1 className="text-title truncate" style={{ color: "var(--color-ink)" }}>
-            Asset Hub — {data.scene_name}
+            {data.scene_name}
           </h1>
           <p className="text-caption mt-0.5" style={{ color: "var(--color-ink-secondary)" }}>
-            {data.totals.count} assets · {data.totals.total_label}
+            {data.totals.count} assets · {data.totals.total_label} disco
             {metaTotals && metaTotals.total > 0 && (
               <span>
                 {" "}
@@ -436,7 +442,7 @@ export function HubPage() {
       />
       <HubFacets counts={counts} facets={facets} onChange={setFacets} />
 
-      <div className="flex-1 overflow-auto p-4">
+      <div className="min-w-0 flex-1 overflow-auto p-4">
         <HubAssetsTable
           assets={sortedAssets}
           pending={pending}
