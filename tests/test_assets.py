@@ -522,6 +522,28 @@ class TestShrinkTargetName:
                 == "/proj/tex/rock_diffuse_1K.tif")
 
 
+class TestReplaceBasenamePreservingForm:
+    def test_relative_scheme_prefix(self):
+        assert (assets.replace_basename_preserving_form(
+                    "relative:///tex/a.png", "a_2K.png")
+                == "relative:///tex/a_2K.png")
+
+    def test_bare_relative_path(self):
+        assert assets.replace_basename_preserving_form("tex/a.png", "a_2K.png") == "tex/a_2K.png"
+
+    def test_windows_backslashes(self):
+        assert (assets.replace_basename_preserving_form(
+                    "D:\\proj\\tex\\a.png", "a_2K.png")
+                == "D:\\proj\\tex\\a_2K.png")
+
+    def test_bare_filename_no_directory(self):
+        assert assets.replace_basename_preserving_form("a.png", "a_2K.png") == "a_2K.png"
+
+    def test_empty_stored_path_returns_new_basename(self):
+        assert assets.replace_basename_preserving_form("", "a_2K.png") == "a_2K.png"
+        assert assets.replace_basename_preserving_form(None, "a_2K.png") == "a_2K.png"
+
+
 class TestShrinkPlan:
     def _meta(self, w, h, channels=4, bit_depth=8):
         return {"width": w, "height": h, "channels": channels, "bit_depth": bit_depth}

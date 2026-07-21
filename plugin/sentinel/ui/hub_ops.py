@@ -541,7 +541,13 @@ def _run_shrink_for_job(job_id, spec):
                 from sentinel.textures import apply_texture_path_change
 
                 records, tex_records, _skipped = scan_scene_assets(doc)
-                changes = [{"key": s["key"], "new_path": s["target_path"]} for s in shrunk]
+                stored_paths = {r.get("key"): r.get("path") for r in records}
+                changes = [
+                    {"key": s["key"],
+                     "new_path": assets_engine.replace_basename_preserving_form(
+                         stored_paths.get(s["key"]), os.path.basename(s["target_path"]))}
+                    for s in shrunk
+                ]
                 targets, resolve_errors = webbridge.resolve_repath_targets(records, changes)
                 errors.extend(resolve_errors)
                 write_results = {}
@@ -640,7 +646,9 @@ def _op_hub_copy_into_project(payload):
         pending.append({"key": item["key"], "target_path": target, "kind": kind})
 
     if pending:
-        changes = [{"key": p["key"], "new_path": p["target_path"]} for p in pending]
+        changes = [{"key": p["key"],
+                    "new_path": "tex/" + os.path.basename(p["target_path"])}
+                   for p in pending]
         targets, resolve_errors = webbridge.resolve_repath_targets(records, changes)
         errors.extend(resolve_errors)
         write_results = {}

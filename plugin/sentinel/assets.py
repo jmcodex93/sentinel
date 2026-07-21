@@ -484,6 +484,32 @@ def shrink_plan(records, metas, target_px):
     }
 
 
+def replace_basename_preserving_form(stored_path, new_basename):
+    """Swap ONLY the basename of `stored_path`, preserving its original form
+    exactly — scheme prefix (`relative:///`, `file:///`), separator style
+    (forward or back — split on whichever appears LAST), and case. The
+    sibling copy from a shrink/copy op always lands in the same directory as
+    the resolved original, so relinking only ever needs a basename swap, not
+    a full new path — reusing the stored form (instead of the absolute
+    resolved target) is what keeps a `relative:///`-stored texture relative
+    after a shrink.
+
+    Examples: `relative:///tex/a.png` + `a_2K.png` ->
+    `relative:///tex/a_2K.png`; `tex/a.png` -> `tex/a_2K.png`;
+    `D:\\proj\\tex\\a.png` -> `D:\\proj\\tex\\a_2K.png`; bare `a.png` ->
+    `a_2K.png`; empty stored path -> `new_basename` unchanged.
+    """
+    stored = stored_path or ""
+    if not stored:
+        return new_basename
+    last_fwd = stored.rfind("/")
+    last_back = stored.rfind("\\")
+    cut = max(last_fwd, last_back)
+    if cut < 0:
+        return new_basename
+    return stored[:cut + 1] + new_basename
+
+
 def copy_plan(records, doc_dir):
     """Plan copying out-of-project assets into `<doc_dir>/tex/`.
 
