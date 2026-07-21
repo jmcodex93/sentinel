@@ -489,13 +489,17 @@ def copy_plan(records, doc_dir):
 
     Eligible: `resolved_path` set AND its normalized-lowercased form does
     NOT already start with the normalized `doc_dir` + separator (a
-    case-insensitive "already inside the project" check). Target path is
+    case-insensitive "already inside the project" check — intentionally
+    case-insensitive since it's just a containment test). Target path is
     `os.path.join(doc_dir, "tex", basename(resolved_path))`, with the
-    basename derived from the normalized (forward-slash) key rather than
-    `os.path.basename` — a Windows-authored path (`D:\\old\\tex\\wood.png`)
+    basename derived from the resolved path with separators normalized to
+    "/" but CASE PRESERVED — a Windows-authored path (`D:\\old\\tex\\wood.png`)
     opened on macOS has no separators `os.path.basename` recognizes there,
     so it would return the whole string instead of `wood.png` (same fix as
-    `match_missing_in_folder`).
+    `match_missing_in_folder`), but using the lowercased dedupe key here
+    would silently case-fold the filename (`Metal_Rough.PNG` →
+    `metal_rough.png`), which breaks relinking on case-sensitive render
+    farms.
 
     Skip reasons: "in_project" (already under doc_dir), "unresolved"
     (no resolved_path).
@@ -514,7 +518,7 @@ def copy_plan(records, doc_dir):
         if resolved_key.startswith(doc_key):
             skip.append({"key": key, "reason": "in_project"})
             continue
-        basename = resolved_key.rsplit("/", 1)[-1]
+        basename = os.path.basename(str(resolved).replace("\\", "/"))
         target_path = os.path.join(doc_dir, "tex", basename)
         copy.append({
             "key": key,

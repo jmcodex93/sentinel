@@ -302,6 +302,11 @@ export function HubPage() {
           toast({ message: "Shrink complete (mock — no report data).", variant: "info" });
         }
         setShrinkJob(null);
+        // Shrunk assets get new on-disk sizes/hashes and the refresh below
+        // rebuilds the inventory, so the old selection's keys are orphaned
+        // anyway — clear explicitly instead of relying on that orphaning.
+        setSelectedKeys(new Set());
+        anchorRef.current = null;
         await refreshInventory(true);
         return;
       }
@@ -446,6 +451,11 @@ export function HubPage() {
     let message = `Copied ${copied}${reused > 0 ? `, reused ${reused}` : ""}.`;
     if (errorCount > 0) message += ` ${errorCount} error${errorCount === 1 ? "" : "s"}.`;
     toast({ message, variant: errorCount > 0 ? "warn" : "success" });
+    // Copied assets now live under a new resolved_path and the refresh
+    // below rebuilds the inventory, so the old selection's keys are
+    // orphaned anyway — clear explicitly instead of relying on that.
+    setSelectedKeys(new Set());
+    anchorRef.current = null;
     await refreshInventory(true);
   }
 

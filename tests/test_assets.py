@@ -659,6 +659,21 @@ class TestCopyPlan:
             "target_path": os.path.join("/proj/scene", "tex", "wood.png"),
         }]
 
+    def test_mixed_case_basename_preserved(self):
+        # copy_plan must not silently case-fold the filename: deriving the
+        # basename from the lowercased dedupe key would turn
+        # "Metal_Rough.PNG" into "metal_rough.png", which breaks relinking
+        # on case-sensitive render farms. Only the in-project containment
+        # check is intentionally case-insensitive.
+        records = [{"key": "a", "resolved_path": "D:\\old\\TEX\\Metal_Rough.PNG"}]
+        plan = assets.copy_plan(records, "/proj/scene")
+        assert plan["skip"] == []
+        assert plan["copy"] == [{
+            "key": "a",
+            "resolved_path": "D:\\old\\TEX\\Metal_Rough.PNG",
+            "target_path": os.path.join("/proj/scene", "tex", "Metal_Rough.PNG"),
+        }]
+
     def test_mixed_batch(self):
         records = [
             {"key": "in", "resolved_path": "/proj/scene/tex/a.png"},
