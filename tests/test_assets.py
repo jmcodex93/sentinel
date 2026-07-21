@@ -597,6 +597,25 @@ class TestShrinkPlan:
         plan = assets.shrink_plan([], {}, 2048)
         assert plan == {"shrink": [], "skipped": [], "vram_before": 0, "vram_after": 0}
 
+    def test_zero_or_missing_dims_is_no_meta_not_already_small(self):
+        # A present-but-unusable meta (width/height 0 or None) must read
+        # truthfully as "no usable metadata", not "already small enough".
+        records = [
+            {"key": "z", "path": "/z.png", "resolved_path": "/z.png",
+             "status": "ok", "asset_type": "texture"},
+            {"key": "n", "path": "/n.png", "resolved_path": "/n.png",
+             "status": "ok", "asset_type": "texture"},
+        ]
+        metas = {
+            "z": self._meta(0, 0),
+            "n": {"width": None, "height": None, "channels": 4, "bit_depth": 8},
+        }
+        plan = assets.shrink_plan(records, metas, 2048)
+        assert plan["shrink"] == []
+        skipped = {s["key"]: s["reason"] for s in plan["skipped"]}
+        assert skipped["z"] == "no_meta"
+        assert skipped["n"] == "no_meta"
+
 
 class TestCopyPlan:
     def test_in_project_skipped_case_insensitive(self):
@@ -625,6 +644,20 @@ class TestCopyPlan:
         skipped = {s["key"]: s["reason"] for s in plan["skip"]}
         assert skipped["a"] == "unresolved"
         assert skipped["b"] == "unresolved"
+
+    def test_windows_authored_path_basename_cross_platform(self):
+        # os.path.basename on macOS doesn't recognize "\\" as a separator,
+        # so a Windows-authored resolved_path would otherwise yield the
+        # whole string as the "basename" — same bug already fixed in
+        # match_missing_in_folder, must be reused here.
+        records = [{"key": "a", "resolved_path": "D:\\old\\tex\\wood.png"}]
+        plan = assets.copy_plan(records, "/proj/scene")
+        assert plan["skip"] == []
+        assert plan["copy"] == [{
+            "key": "a",
+            "resolved_path": "D:\\old\\tex\\wood.png",
+            "target_path": os.path.join("/proj/scene", "tex", "wood.png"),
+        }]
 
     def test_mixed_batch(self):
         records = [

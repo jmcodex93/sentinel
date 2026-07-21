@@ -451,7 +451,10 @@ def shrink_plan(records, metas, target_px):
             continue
         width = meta.get("width")
         height = meta.get("height")
-        if not width or not height or max(width, height) <= target_px:
+        if not width or not height:
+            skipped.append({"key": key, "reason": "no_meta"})
+            continue
+        if max(width, height) <= target_px:
             skipped.append({"key": key, "reason": "already_small"})
             continue
 
@@ -487,7 +490,12 @@ def copy_plan(records, doc_dir):
     Eligible: `resolved_path` set AND its normalized-lowercased form does
     NOT already start with the normalized `doc_dir` + separator (a
     case-insensitive "already inside the project" check). Target path is
-    `os.path.join(doc_dir, "tex", basename(resolved_path))`.
+    `os.path.join(doc_dir, "tex", basename(resolved_path))`, with the
+    basename derived from the normalized (forward-slash) key rather than
+    `os.path.basename` — a Windows-authored path (`D:\\old\\tex\\wood.png`)
+    opened on macOS has no separators `os.path.basename` recognizes there,
+    so it would return the whole string instead of `wood.png` (same fix as
+    `match_missing_in_folder`).
 
     Skip reasons: "in_project" (already under doc_dir), "unresolved"
     (no resolved_path).
@@ -506,7 +514,8 @@ def copy_plan(records, doc_dir):
         if resolved_key.startswith(doc_key):
             skip.append({"key": key, "reason": "in_project"})
             continue
-        target_path = os.path.join(doc_dir, "tex", os.path.basename(resolved))
+        basename = resolved_key.rsplit("/", 1)[-1]
+        target_path = os.path.join(doc_dir, "tex", basename)
         copy.append({
             "key": key,
             "resolved_path": resolved,
