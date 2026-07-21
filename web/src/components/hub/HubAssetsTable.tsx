@@ -29,27 +29,28 @@ const ROW_H = 44; // --space-table-row (2-line rows: name+chip+badge / path+dims
 
 /** Res-chip chroma → existing DESIGN.md tokens only (Task 4 mapping,
  * `docs/superpowers/plans/2026-07-20-hub-polish.md`; extended to the full
- * 16K→<1K six-tier ramp in the 2026-07-21 live-feedback pass). Resolution is
- * a PROPERTY, not a state — chips use the accent scale (--color-primary
+ * 16K→<1K six-tier ramp in the 2026-07-21 live-feedback pass; re-tuned for
+ * stronger top-end separation in the 2026-07-21 follow-up pass). Resolution
+ * is a PROPERTY, not a state — chips use the accent scale (--color-primary
  * tints), never the fail/warn/pass status chroma, which is reserved
  * exclusively for state (missing/absolute badges etc.). Single-hue property
  * ramp — intensity = resolution, never the status chroma (see DESIGN.md
- * "Primary Tint Ramp"). Darkest tint + primary text at 16K down to the
- * lightest tint + muted text at sm, all on the one accent hue. 16k/8k also
- * get a subtle 1px accent-tint border for extra pop at the top of the
- * ramp. */
+ * "Primary Tint Ramp"). sm/1k/2k step gently through the low tints with
+ * muted/secondary text; 4k jumps to a clearly darker tint with primary-color
+ * text; 8k adds a solid accent border on top of that for extra pop; 16k is
+ * the ramp's ceiling — a SOLID accent fill with on-primary text, unmissable
+ * at a glance. */
 const RES_CHIP_META: Record<HubResTier, { color: string; background: string; border?: string }> = {
   "16k": {
-    color: "var(--color-primary)",
-    background: "var(--color-primary-tint-32)",
-    border: "var(--color-primary-tint-32)",
+    color: "var(--color-on-primary)",
+    background: "var(--color-primary)",
   },
   "8k": {
     color: "var(--color-primary)",
-    background: "var(--color-primary-tint-26)",
-    border: "var(--color-primary-tint-26)",
+    background: "var(--color-primary-tint-34)",
+    border: "var(--color-primary)",
   },
-  "4k": { color: "var(--color-primary)", background: "var(--color-primary-tint-20)" },
+  "4k": { color: "var(--color-primary)", background: "var(--color-primary-tint-22)" },
   "2k": { color: "var(--color-ink-secondary)", background: "var(--color-primary-tint-14)" },
   "1k": { color: "var(--color-ink-secondary)", background: "var(--color-primary-tint-08)" },
   sm: { color: "var(--color-muted)", background: "var(--color-primary-tint-04)" },

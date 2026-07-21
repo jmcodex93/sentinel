@@ -30,9 +30,8 @@
    * resolution), never for state. Six steps of --color-primary alpha,
    * precomputed rgba() rather than CSS relative-color syntax for broader
    * webview compatibility. */
-  --color-primary-tint-32: rgba(94, 106, 210, 0.32);
-  --color-primary-tint-26: rgba(94, 106, 210, 0.26);
-  --color-primary-tint-20: rgba(94, 106, 210, 0.2);
+  --color-primary-tint-34: rgba(94, 106, 210, 0.34);
+  --color-primary-tint-22: rgba(94, 106, 210, 0.22);
   --color-primary-tint-14: rgba(94, 106, 210, 0.14);
   --color-primary-tint-08: rgba(94, 106, 210, 0.08);
   --color-primary-tint-04: rgba(94, 106, 210, 0.04);
