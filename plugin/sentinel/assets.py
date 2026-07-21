@@ -561,10 +561,12 @@ def copy_plan(records, doc_dir):
 
 _RES_TOKEN_MAP = {"1k": 1024, "2k": 2048, "4k": 4096, "8k": 8192, "16k": 16384}
 
-# Longest alternatives first ("16k" before "1k") so the regex engine doesn't
-# stop at a shorter prefix match. Boundaries are zero-width lookaround
-# assertions (never consumed) so the delimiter itself lands in whichever
-# side it borders when the basename is sliced around the match.
+# Alternatives ordered longest-first (documentational — none of these tokens
+# is actually a prefix substring of another, so match order doesn't change
+# behavior today, but it's the defensive convention if the map ever grows).
+# Boundaries are zero-width lookaround assertions (never consumed) so the
+# delimiter itself lands in whichever side it borders when the basename is
+# sliced around the match.
 _RES_TOKEN_RE = re.compile(
     r"(?:(?<=[_\-.])|^)(16k|8k|4k|2k|1k)(?:(?=[_\-.])|$)",
     re.IGNORECASE,
@@ -602,8 +604,13 @@ def find_res_variants(records, list_dir=os.listdir):
     groups with the record when its own split yields the same
     case-folded `(prefix, suffix)`. Groups with fewer than 2 members
     (self included) are dropped. Returns `{key: [{"path", "px"}, ...]}`
-    sorted by `px` descending, paths joined with the record's real
-    (un-normalized) directory.
+    sorted by `px` descending, paths joined with the record's directory
+    after separators are normalized to `/` — same fix as `copy_plan`'s
+    `match_missing_in_folder`: a Windows-authored `resolved_path`
+    (`D:\\proj\\tex\\a.png`) opened on macOS has no separators
+    `os.path.dirname`/`os.path.basename` recognize there, so without the
+    normalization `dirname` would return `''`, `list_dir('')` would list
+    the cwd, and the record would silently drop out of every group.
     """
     dir_listings = {}
     result = {}
@@ -613,7 +620,7 @@ def find_res_variants(records, list_dir=os.listdir):
         resolved = rec.get("resolved_path")
         if not resolved:
             continue
-        resolved = str(resolved)
+        resolved = str(resolved).replace("\\", "/")
         dir_path = os.path.dirname(resolved)
         basename = os.path.basename(resolved)
         split = split_res_token(basename)

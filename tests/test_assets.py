@@ -826,3 +826,22 @@ class TestFindResVariants:
 
         result = assets.find_res_variants(records, list_dir=fake_list_dir)
         assert result == {}
+
+    def test_windows_authored_path_normalized_before_split(self):
+        # A Windows-authored resolved_path opened on macOS has no
+        # separators os.path.dirname/os.path.basename recognize there —
+        # without normalizing to "/" first, dirname would return "",
+        # list_dir("") would list the cwd, and the record would silently
+        # drop out of every group (same class of bug already fixed in
+        # copy_plan's match_missing_in_folder).
+        records = [{"key": "a", "resolved_path": "D:\\proj\\tex\\plaster_4k_1.jpg"}]
+
+        def fake_list_dir(path):
+            assert path == "D:/proj/tex"
+            return ["plaster_4k_1.jpg", "plaster_8k_1.jpg"]
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert result["a"] == [
+            {"path": "D:/proj/tex/plaster_8k_1.jpg", "px": 8192},
+            {"path": "D:/proj/tex/plaster_4k_1.jpg", "px": 4096},
+        ]
