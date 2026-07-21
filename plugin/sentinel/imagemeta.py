@@ -64,18 +64,35 @@ def vram_bytes(width, height, channels, bit_depth):
 
 
 def res_bucket(max_px):
-    """Bucket the larger image dimension into a display tier."""
-    if max_px >= 14336:
-        return {"label": "16K", "tier": "16k"}
-    if max_px >= 7168:
-        return {"label": "8K", "tier": "8k"}
-    if max_px >= 3584:
-        return {"label": "4K", "tier": "4k"}
-    if max_px >= 1536:
-        return {"label": "2K", "tier": "2k"}
+    """Bucket the larger image dimension into a label + a display tier.
+
+    label: the honest nearest-K (e.g. a 6980px HDRI reads "7K", not a
+    floor-bucketed "4K") — round(max_px / 1024), or "<1K" below 768px.
+    tier: the ramp/color class the label rounds into for swatches/facets,
+    picked by nearest-standard-class midpoint threshold (12288/6144/3072/
+    1536/768). Both come from this single function, so label and tier can
+    never disagree about which image they describe — this adopts Overseer's
+    honest per-image label without its label/color mismatch.
+    """
     if max_px >= 768:
-        return {"label": "1K", "tier": "1k"}
-    return {"label": "<1K", "tier": "sm"}
+        label = f"{max(1, round(max_px / 1024))}K"
+    else:
+        label = "<1K"
+
+    if max_px >= 12288:
+        tier = "16k"
+    elif max_px >= 6144:
+        tier = "8k"
+    elif max_px >= 3072:
+        tier = "4k"
+    elif max_px >= 1536:
+        tier = "2k"
+    elif max_px >= 768:
+        tier = "1k"
+    else:
+        tier = "sm"
+
+    return {"label": label, "tier": tier}
 
 
 # ---------------------------------------------------------------------------

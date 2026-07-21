@@ -290,27 +290,25 @@ def test_garbage_bytes_with_known_extension_returns_none(tmp_path):
 # res_bucket
 # ---------------------------------------------------------------------------
 
-def test_res_bucket_16k_boundary():
-    assert imagemeta.res_bucket(14336) == {"label": "16K", "tier": "16k"}
-    assert imagemeta.res_bucket(14335) == {"label": "8K", "tier": "8k"}
+def test_res_bucket_honest_nearest_k_label():
+    # 6980px is nearest to 7K, not floor-bucketed down to "4K" (Overseer bug).
+    assert imagemeta.res_bucket(6980) == {"label": "7K", "tier": "8k"}
+    assert imagemeta.res_bucket(3500) == {"label": "3K", "tier": "4k"}
+    assert imagemeta.res_bucket(4096) == {"label": "4K", "tier": "4k"}
+    assert imagemeta.res_bucket(8192) == {"label": "8K", "tier": "8k"}
+    assert imagemeta.res_bucket(20000) == {"label": "20K", "tier": "16k"}
+    assert imagemeta.res_bucket(14336) == {"label": "14K", "tier": "16k"}
 
 
-def test_res_bucket_8k_boundary():
-    assert imagemeta.res_bucket(7168) == {"label": "8K", "tier": "8k"}
-    assert imagemeta.res_bucket(7167) == {"label": "4K", "tier": "4k"}
-
-
-def test_res_bucket_4k_boundary():
-    assert imagemeta.res_bucket(3584) == {"label": "4K", "tier": "4k"}
-    assert imagemeta.res_bucket(3583) == {"label": "2K", "tier": "2k"}
-
-
-def test_res_bucket_2k_boundary():
+def test_res_bucket_tier_midpoint_boundaries():
+    assert imagemeta.res_bucket(12288) == {"label": "12K", "tier": "16k"}
+    assert imagemeta.res_bucket(12287) == {"label": "12K", "tier": "8k"}
+    assert imagemeta.res_bucket(6144) == {"label": "6K", "tier": "8k"}
+    assert imagemeta.res_bucket(6143) == {"label": "6K", "tier": "4k"}
+    assert imagemeta.res_bucket(3072) == {"label": "3K", "tier": "4k"}
+    assert imagemeta.res_bucket(3071) == {"label": "3K", "tier": "2k"}
     assert imagemeta.res_bucket(1536) == {"label": "2K", "tier": "2k"}
     assert imagemeta.res_bucket(1535) == {"label": "1K", "tier": "1k"}
-
-
-def test_res_bucket_1k_boundary():
     assert imagemeta.res_bucket(768) == {"label": "1K", "tier": "1k"}
     assert imagemeta.res_bucket(767) == {"label": "<1K", "tier": "sm"}
 
