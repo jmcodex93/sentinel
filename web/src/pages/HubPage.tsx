@@ -25,6 +25,7 @@ import {
 } from "../lib/api";
 import {
   applyFacets,
+  applySelection,
   emptyFacetState,
   facetCounts,
   sanitizeColWidths,
@@ -64,7 +65,12 @@ export function HubPage() {
   const { toast } = useToast();
   const [state, setState] = useState<PageState>({ kind: "loading" });
   const [pending, setPending] = useState<Map<string, string>>(new Map());
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+  // Anchor for shift-range selection. Updated on single/toggle clicks (the
+  // "last thing you deliberately clicked") but NOT on range clicks — a
+  // second shift-click always ranges from the same anchor, not from
+  // wherever the previous range happened to land.
+  const anchorRef = useRef<string | null>(null);
   const [filter, setFilter] = useState<HubFilter>("all");
   const [search, setSearch] = useState("");
   const [find, setFind] = useState("");
@@ -237,9 +243,15 @@ export function HubPage() {
     if (!res.ok) toast({ message: res.error || "Couldn't select the owner.", variant: "warn" });
   }
 
-  function handleRowSelect(key: string) {
-    setSelectedKey(key);
-    handleOwnerClick(key);
+  function handleRowClick(key: string, modifiers: { meta: boolean; shift: boolean }) {
+    const mode = modifiers.shift ? "range" : modifiers.meta ? "toggle" : "single";
+    const visibleKeys = sortedAssets.map((a) => a.key);
+    setSelectedKeys((prev) => applySelection(prev, visibleKeys, anchorRef.current, key, mode));
+    if (mode !== "range") anchorRef.current = key;
+    // Owner-select (the native Attribute Manager selection sync) only
+    // fires for a plain single click — toggle/range are batch gestures
+    // over many rows, not "go look at this one object".
+    if (mode === "single") handleOwnerClick(key);
   }
 
   function handlePreview() {
@@ -297,10 +309,11 @@ export function HubPage() {
   }
 
   async function handleRelinkSelected() {
-    if (!selectedKey) {
-      toast({ message: "Select a row first.", variant: "info" });
+    if (selectedKeys.size !== 1) {
+      toast({ message: "Select exactly one row to relink.", variant: "info" });
       return;
     }
+    const [selectedKey] = selectedKeys;
     setBusy(true);
     try {
       const picked = await postHubPickPath(false, "Choose replacement file");
@@ -438,23 +451,30 @@ export function HubPage() {
         onClear={handleClear}
         onApply={handleApply}
         pendingCount={pending.size}
+        selectedCount={selectedKeys.size}
         busy={busy}
       />
       <HubFacets counts={counts} facets={facets} onChange={setFacets} />
 
       <div className="min-w-0 flex-1 overflow-auto p-4">
-        <HubAssetsTable
-          assets={sortedAssets}
-          pending={pending}
-          selectedKey={selectedKey}
-          onSelect={handleRowSelect}
-          onOwnerClick={handleOwnerClick}
-          metas={metas}
-          sort={sort}
-          onSortChange={handleSortChange}
-          colWidths={colWidths}
-          onColWidthsChange={handleColWidthsChange}
-        />
+        <div
+          onKeyDown={(event) => {
+            if (event.key === "Escape") setSelectedKeys(new Set());
+          }}
+        >
+          <HubAssetsTable
+            assets={sortedAssets}
+            pending={pending}
+            selectedKeys={selectedKeys}
+            onRowClick={handleRowClick}
+            onOwnerClick={handleOwnerClick}
+            metas={metas}
+            sort={sort}
+            onSortChange={handleSortChange}
+            colWidths={colWidths}
+            onColWidthsChange={handleColWidthsChange}
+          />
+        </div>
         <div ref={deliverRef}>
           <Section title="Deliver">
             <div className="flex flex-col gap-3">

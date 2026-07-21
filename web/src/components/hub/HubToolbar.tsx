@@ -34,6 +34,7 @@ interface HubToolbarProps {
   onClear: () => void;
   onApply: () => void;
   pendingCount: number;
+  selectedCount: number;
   busy: boolean;
 }
 
@@ -66,6 +67,7 @@ export function HubToolbar({
   onClear,
   onApply,
   pendingCount,
+  selectedCount,
   busy,
 }: HubToolbarProps) {
   return (
@@ -166,7 +168,12 @@ export function HubToolbar({
             <FolderSearch size={14} strokeWidth={2.25} aria-hidden="true" />
             Search Folder...
           </Button>
-          <Button variant="secondary" disabled={busy} onClick={onRelinkSelected}>
+          <Button
+            variant="secondary"
+            disabled={busy || selectedCount !== 1}
+            title={selectedCount > 1 ? "Select exactly one row to relink." : undefined}
+            onClick={onRelinkSelected}
+          >
             <Link2 size={14} strokeWidth={2.25} aria-hidden="true" />
             Relink Selected...
           </Button>
@@ -174,6 +181,11 @@ export function HubToolbar({
             <RotateCcw size={14} strokeWidth={2.25} aria-hidden="true" />
             Clear
           </Button>
+          {selectedCount > 0 && (
+            <span className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
+              {selectedCount} selected
+            </span>
+          )}
         </div>
         <Button variant="primary" disabled={busy || pendingCount === 0} onClick={onApply}>
           Apply All {pendingCount > 0 ? `(${pendingCount})` : ""}

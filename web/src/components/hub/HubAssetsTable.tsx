@@ -270,8 +270,8 @@ function ColumnResizer({
 export function HubAssetsTable({
   assets,
   pending,
-  selectedKey,
-  onSelect,
+  selectedKeys,
+  onRowClick,
   onOwnerClick,
   metas,
   sort,
@@ -281,8 +281,8 @@ export function HubAssetsTable({
 }: {
   assets: HubAsset[];
   pending: Map<string, string>;
-  selectedKey: string | null;
-  onSelect: (key: string) => void;
+  selectedKeys: Set<string>;
+  onRowClick: (key: string, modifiers: { meta: boolean; shift: boolean }) => void;
   onOwnerClick: (key: string) => void;
   metas: Record<string, HubMeta>;
   sort?: SortSpec | null;
@@ -393,20 +393,30 @@ export function HubAssetsTable({
             const basename = displayPath.split(/[\\/]/).pop() || displayPath;
             const extraOwners = a.owners.length - 1;
             const pathColor = pendingPath ? "var(--color-status-pass)" : "var(--color-ink-secondary)";
+            const isSelected = selectedKeys.has(a.key);
             return (
               <div
                 key={a.key}
                 role="button"
                 tabIndex={0}
-                aria-selected={selectedKey === a.key}
-                onClick={() => onSelect(a.key)}
+                aria-selected={isSelected}
+                onPointerDown={(event) => {
+                  // A shift-click otherwise fires the browser's native text
+                  // selection drag on the row's text nodes — preventDefault
+                  // here (not on click, which fires too late) suppresses it.
+                  if (event.shiftKey) event.preventDefault();
+                }}
+                onClick={(event) => onRowClick(a.key, { meta: event.metaKey || event.ctrlKey, shift: event.shiftKey })}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
-                    onSelect(a.key);
+                    // Keyboard activation is always treated as a plain click,
+                    // regardless of live modifier keys — range/toggle are
+                    // pointer gestures over the visible list.
+                    onRowClick(a.key, { meta: false, shift: false });
                   }
                 }}
-                className="grid cursor-pointer items-center text-body hover:bg-[var(--color-surface-2)]"
+                className="grid cursor-pointer items-center text-body hover:bg-[var(--color-surface-2)] select-none"
                 style={{
                   position: "absolute",
                   top: 0,
@@ -415,7 +425,7 @@ export function HubAssetsTable({
                   transform: `translateY(${row.start}px)`,
                   height: ROW_H,
                   gridTemplateColumns: gridColumns,
-                  background: selectedKey === a.key ? "var(--color-surface-2)" : undefined,
+                  background: isSelected ? "var(--color-surface-2)" : undefined,
                   borderBottom: "1px solid var(--color-hairline)",
                 }}
               >

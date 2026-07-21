@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyFacets,
+  applySelection,
   channelsLabel,
   facetCounts,
   MIN_COL_WIDTH,
@@ -249,5 +250,61 @@ describe("sanitizeColWidths — untrusted sentinel_settings.json input", () => {
     expect(sanitizeColWidths(null)).toEqual({});
     expect(sanitizeColWidths(undefined)).toEqual({});
     expect(sanitizeColWidths("widths")).toEqual({});
+  });
+});
+
+describe("applySelection", () => {
+  const visible = ["a", "b", "c", "d", "e"];
+
+  it("single mode always replaces the whole selection with just the clicked key", () => {
+    const current = new Set(["a", "b", "c"]);
+    expect(applySelection(current, visible, "a", "d", "single")).toEqual(new Set(["d"]));
+  });
+
+  it("toggle mode adds an unselected key", () => {
+    const current = new Set(["a"]);
+    expect(applySelection(current, visible, "a", "c", "toggle")).toEqual(new Set(["a", "c"]));
+  });
+
+  it("toggle mode removes an already-selected key", () => {
+    const current = new Set(["a", "c"]);
+    expect(applySelection(current, visible, "a", "c", "toggle")).toEqual(new Set(["a"]));
+  });
+
+  it("range mode selects forward from anchor to key inclusive, in visible order", () => {
+    const current = new Set(["b"]);
+    expect(applySelection(current, visible, "b", "d", "range")).toEqual(new Set(["b", "c", "d"]));
+  });
+
+  it("range mode selects backward from anchor to key inclusive", () => {
+    const current = new Set(["d"]);
+    expect(applySelection(current, visible, "d", "b", "range")).toEqual(new Set(["b", "c", "d"]));
+  });
+
+  it("range mode operates over the passed-in (filtered/sorted) visible ordering, not insertion order", () => {
+    const filteredVisible = ["e", "c", "a"]; // some other sort/filter order
+    expect(applySelection(new Set(), filteredVisible, "e", "a", "range")).toEqual(new Set(["e", "c", "a"]));
+  });
+
+  it("range mode with a null anchor falls back to single", () => {
+    const current = new Set(["a", "b"]);
+    expect(applySelection(current, visible, null, "d", "range")).toEqual(new Set(["d"]));
+  });
+
+  it("range mode with an anchor no longer in the visible set falls back to single", () => {
+    const current = new Set(["a", "b"]);
+    expect(applySelection(current, visible, "zzz", "d", "range")).toEqual(new Set(["d"]));
+  });
+
+  it("range mode where the clicked key itself is not visible falls back to single", () => {
+    const current = new Set(["a", "b"]);
+    expect(applySelection(current, visible, "a", "zzz", "range")).toEqual(new Set(["zzz"]));
+  });
+
+  it("always returns a new Set instance, never mutates the input", () => {
+    const current = new Set(["a"]);
+    const result = applySelection(current, visible, "a", "b", "toggle");
+    expect(result).not.toBe(current);
+    expect(current).toEqual(new Set(["a"])); // unmutated
   });
 });

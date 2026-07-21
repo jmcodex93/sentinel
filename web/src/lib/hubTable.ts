@@ -90,6 +90,44 @@ export function sortAssets(
   return [...present.map((x) => x.asset), ...absent];
 }
 
+export type SelectMode = "single" | "toggle" | "range";
+
+/** Pure selection reducer for the Hub table's multi-select (Task 3,
+ * `docs/superpowers/plans/2026-07-21-hub-optimize.md`). Always returns a
+ * NEW Set — callers rely on this for React state updates and must never
+ * mutate `current` in place. `visibleKeys` is the caller's CURRENT
+ * sorted+filtered+faceted key ordering, so "range" walks what's actually
+ * on screen, not insertion/fetch order. `range` falls back to `single`
+ * (clicked key only) whenever the anchor is missing or no longer present
+ * in `visibleKeys` (e.g. it scrolled out from under a facet change) — a
+ * stale anchor must never silently expand to the wrong range; if the
+ * clicked key itself isn't in `visibleKeys` either, the result is just
+ * that key (matches "single" semantics as the safest fallback). */
+export function applySelection(
+  current: Set<string>,
+  visibleKeys: string[],
+  anchorKey: string | null,
+  key: string,
+  mode: SelectMode,
+): Set<string> {
+  if (mode === "single") {
+    return new Set([key]);
+  }
+  if (mode === "toggle") {
+    const next = new Set(current);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    return next;
+  }
+  // range
+  if (anchorKey === null) return new Set([key]);
+  const anchorIdx = visibleKeys.indexOf(anchorKey);
+  const keyIdx = visibleKeys.indexOf(key);
+  if (anchorIdx === -1 || keyIdx === -1) return new Set([key]);
+  const [start, end] = anchorIdx <= keyIdx ? [anchorIdx, keyIdx] : [keyIdx, anchorIdx];
+  return new Set(visibleKeys.slice(start, end + 1));
+}
+
 export interface FacetState {
   res: Set<string>;
   channels: Set<string>;
