@@ -7,6 +7,8 @@ import os
 import re
 import zipfile
 
+from . import imagemeta
+
 # Extension → asset_type. Lowercase, no dot.
 _TYPE_BY_EXT = {
     "png": "texture", "jpg": "texture", "jpeg": "texture", "tif": "texture",
@@ -391,3 +393,124 @@ def create_zip_archive(delivery_dir, zip_path=None, on_progress=None):
             if on_progress:
                 on_progress(i, total)
     return {"zip_path": zip_path, "files": total, "bytes": written_bytes}
+
+
+# ---------------------------------------------------------------------------
+# Hub Shrink + Copy into project (Fase 5.2) — pure planners
+# ---------------------------------------------------------------------------
+
+_SHRINK_SUFFIX = {4096: "_4K", 2048: "_2K", 1024: "_1K"}
+
+
+def shrink_target_name(path, target_px):
+    """Sibling filename for a shrunk copy — `<stem>_<K><ext>` for the known
+    targets (4096->_4K, 2048->_2K, 1024->_1K), `<stem>_{target_px}px<ext>`
+    for anything else. Idempotent: if the stem already ends with the target
+    suffix, the name is returned unchanged (a re-run on an already-shrunk
+    sibling never doubles the suffix)."""
+    suffix = _SHRINK_SUFFIX.get(target_px, f"_{target_px}px")
+    root, ext = os.path.splitext(str(path))
+    if root.endswith(suffix):
+        return path
+    return f"{root}{suffix}{ext}"
+
+
+def shrink_plan(records, metas, target_px):
+    """Plan a batch shrink to `target_px` on the larger dimension.
+
+    `records` are AssetRecord dicts (key/path/resolved_path/status/
+    asset_type); `metas` is {key: {"width","height","channels","bit_depth",
+    ...}} — the hub image-meta shape (imagemeta.read_image_meta output).
+
+    Eligible: status "ok" AND a meta entry present AND
+    max(width, height) > target_px AND asset_type in ("texture", "hdri").
+    Skip reasons (checked in this order): "not_ok", "not_image", "no_meta",
+    "already_small".
+
+    New dimensions scale by `target_px / max(w, h)`, rounded, floored at 1,
+    aspect preserved. `vram_before`/`vram_after` sum
+    `imagemeta.vram_bytes(...)` over the shrink list only — before at the
+    original dims, after at the new dims (same channels/bit_depth).
+    """
+    shrink = []
+    skipped = []
+    vram_before = 0
+    vram_after = 0
+
+    for rec in records or []:
+        key = rec.get("key")
+        if rec.get("status") != "ok":
+            skipped.append({"key": key, "reason": "not_ok"})
+            continue
+        if rec.get("asset_type") not in ("texture", "hdri"):
+            skipped.append({"key": key, "reason": "not_image"})
+            continue
+        meta = (metas or {}).get(key)
+        if not meta:
+            skipped.append({"key": key, "reason": "no_meta"})
+            continue
+        width = meta.get("width")
+        height = meta.get("height")
+        if not width or not height or max(width, height) <= target_px:
+            skipped.append({"key": key, "reason": "already_small"})
+            continue
+
+        scale = target_px / max(width, height)
+        new_width = max(1, round(width * scale))
+        new_height = max(1, round(height * scale))
+        channels = meta.get("channels")
+        bit_depth = meta.get("bit_depth")
+
+        shrink.append({
+            "key": key,
+            "path": rec.get("path"),
+            "resolved_path": rec.get("resolved_path"),
+            "width": width,
+            "height": height,
+            "new_width": new_width,
+            "new_height": new_height,
+        })
+        vram_before += imagemeta.vram_bytes(width, height, channels, bit_depth)
+        vram_after += imagemeta.vram_bytes(new_width, new_height, channels, bit_depth)
+
+    return {
+        "shrink": shrink,
+        "skipped": skipped,
+        "vram_before": vram_before,
+        "vram_after": vram_after,
+    }
+
+
+def copy_plan(records, doc_dir):
+    """Plan copying out-of-project assets into `<doc_dir>/tex/`.
+
+    Eligible: `resolved_path` set AND its normalized-lowercased form does
+    NOT already start with the normalized `doc_dir` + separator (a
+    case-insensitive "already inside the project" check). Target path is
+    `os.path.join(doc_dir, "tex", basename(resolved_path))`.
+
+    Skip reasons: "in_project" (already under doc_dir), "unresolved"
+    (no resolved_path).
+    """
+    copy = []
+    skip = []
+    doc_key = normalize_path_key(doc_dir).rstrip("/") + "/"
+
+    for rec in records or []:
+        key = rec.get("key")
+        resolved = rec.get("resolved_path")
+        if not resolved:
+            skip.append({"key": key, "reason": "unresolved"})
+            continue
+        resolved_key = normalize_path_key(resolved)
+        if resolved_key.startswith(doc_key):
+            skip.append({"key": key, "reason": "in_project"})
+            continue
+        target_path = os.path.join(doc_dir, "tex", os.path.basename(resolved))
+        copy.append({
+            "key": key,
+            "resolved_path": resolved,
+            "target_path": target_path,
+        })
+
+    return {"copy": copy, "skip": skip}

@@ -3,7 +3,7 @@ import os
 import zipfile
 
 import pytest
-from sentinel import assets
+from sentinel import assets, imagemeta
 
 
 class TestNormalizePathKey:
@@ -502,3 +502,136 @@ class TestFitColumnWidths:
                                        budget=700, min_width=40)
         assert out["name"] == 100
         assert out["type"] == out["size"] == out["used"] == 40
+
+
+class TestShrinkTargetName:
+    def test_suffix_table(self):
+        assert assets.shrink_target_name("/a/wood.png", 4096) == "/a/wood_4K.png"
+        assert assets.shrink_target_name("/a/wood.png", 2048) == "/a/wood_2K.png"
+        assert assets.shrink_target_name("/a/wood.png", 1024) == "/a/wood_1K.png"
+
+    def test_unknown_target_uses_px_suffix(self):
+        assert assets.shrink_target_name("/a/wood.png", 512) == "/a/wood_512px.png"
+
+    def test_no_doubling_when_stem_already_ends_with_suffix(self):
+        assert assets.shrink_target_name("/a/wood_2K.png", 2048) == "/a/wood_2K.png"
+        assert assets.shrink_target_name("/a/wood_4K.exr", 4096) == "/a/wood_4K.exr"
+
+    def test_preserves_directory_and_extension(self):
+        assert (assets.shrink_target_name("/proj/tex/rock_diffuse.tif", 1024)
+                == "/proj/tex/rock_diffuse_1K.tif")
+
+
+class TestShrinkPlan:
+    def _meta(self, w, h, channels=4, bit_depth=8):
+        return {"width": w, "height": h, "channels": channels, "bit_depth": bit_depth}
+
+    def test_mixed_batch_eligibility_and_skip_reasons(self):
+        records = [
+            {"key": "a", "path": "/proj/tex/rock_diffuse.png",
+             "resolved_path": "/proj/tex/rock_diffuse.png",
+             "status": "ok", "asset_type": "texture"},
+            {"key": "b", "path": "/proj/tex/small.png",
+             "resolved_path": "/proj/tex/small.png",
+             "status": "ok", "asset_type": "texture"},
+            {"key": "c", "path": "/proj/tex/missing.png",
+             "resolved_path": None,
+             "status": "missing", "asset_type": "texture"},
+            {"key": "d", "path": "/proj/tex/nometa.png",
+             "resolved_path": "/proj/tex/nometa.png",
+             "status": "ok", "asset_type": "texture"},
+            {"key": "e", "path": "/proj/caches/char.abc",
+             "resolved_path": "/proj/caches/char.abc",
+             "status": "ok", "asset_type": "alembic"},
+        ]
+        metas = {
+            "a": self._meta(8192, 8192),
+            "b": self._meta(2048, 2048),
+            "e": self._meta(100, 100, channels=1),
+        }
+        plan = assets.shrink_plan(records, metas, 2048)
+
+        assert [item["key"] for item in plan["shrink"]] == ["a"]
+        item = plan["shrink"][0]
+        assert item["path"] == "/proj/tex/rock_diffuse.png"
+        assert item["resolved_path"] == "/proj/tex/rock_diffuse.png"
+        assert item["width"] == 8192 and item["height"] == 8192
+        assert item["new_width"] == 2048 and item["new_height"] == 2048
+
+        skipped = {s["key"]: s["reason"] for s in plan["skipped"]}
+        assert skipped["b"] == "already_small"
+        assert skipped["c"] == "not_ok"
+        assert skipped["d"] == "no_meta"
+        assert skipped["e"] == "not_image"
+
+    def test_vram_before_after_exact(self):
+        records = [{"key": "a", "path": "/a.png", "resolved_path": "/a.png",
+                    "status": "ok", "asset_type": "texture"}]
+        metas = {"a": self._meta(8192, 8192, channels=4, bit_depth=8)}
+        plan = assets.shrink_plan(records, metas, 2048)
+
+        expected_before = imagemeta.vram_bytes(8192, 8192, 4, 8)
+        expected_after = imagemeta.vram_bytes(2048, 2048, 4, 8)
+        assert plan["vram_before"] == expected_before
+        assert plan["vram_after"] == expected_after
+        assert plan["vram_before"] > plan["vram_after"]
+
+    def test_non_square_aspect_preserved(self):
+        records = [{"key": "f", "path": "/f.png", "resolved_path": "/f.png",
+                    "status": "ok", "asset_type": "hdri"}]
+        metas = {"f": self._meta(4000, 717, channels=3, bit_depth=8)}
+        plan = assets.shrink_plan(records, metas, 2048)
+
+        item = plan["shrink"][0]
+        assert item["new_width"] == 2048
+        assert item["new_height"] == 367
+
+    def test_hdri_eligible(self):
+        records = [{"key": "h", "path": "/h.hdr", "resolved_path": "/h.hdr",
+                    "status": "ok", "asset_type": "hdri"}]
+        metas = {"h": self._meta(4096, 2048, channels=3, bit_depth=32)}
+        plan = assets.shrink_plan(records, metas, 2048)
+        assert [item["key"] for item in plan["shrink"]] == ["h"]
+
+    def test_empty_records_returns_empty_plan(self):
+        plan = assets.shrink_plan([], {}, 2048)
+        assert plan == {"shrink": [], "skipped": [], "vram_before": 0, "vram_after": 0}
+
+
+class TestCopyPlan:
+    def test_in_project_skipped_case_insensitive(self):
+        records = [{"key": "a", "resolved_path": "/Proj/Scene/tex/wood.png"}]
+        plan = assets.copy_plan(records, "/proj/scene")
+        assert plan["copy"] == []
+        assert plan["skip"] == [{"key": "a", "reason": "in_project"}]
+
+    def test_out_of_project_included_with_target_path(self):
+        records = [{"key": "a", "resolved_path": "/other/place/wood.png"}]
+        plan = assets.copy_plan(records, "/proj/scene")
+        assert plan["skip"] == []
+        assert plan["copy"] == [{
+            "key": "a",
+            "resolved_path": "/other/place/wood.png",
+            "target_path": os.path.join("/proj/scene", "tex", "wood.png"),
+        }]
+
+    def test_unresolved_skipped(self):
+        records = [
+            {"key": "a", "resolved_path": None},
+            {"key": "b"},
+        ]
+        plan = assets.copy_plan(records, "/proj/scene")
+        assert plan["copy"] == []
+        skipped = {s["key"]: s["reason"] for s in plan["skip"]}
+        assert skipped["a"] == "unresolved"
+        assert skipped["b"] == "unresolved"
+
+    def test_mixed_batch(self):
+        records = [
+            {"key": "in", "resolved_path": "/proj/scene/tex/a.png"},
+            {"key": "out", "resolved_path": "/vendor/tex/b.png"},
+            {"key": "missing", "resolved_path": None},
+        ]
+        plan = assets.copy_plan(records, "/proj/scene")
+        assert [c["key"] for c in plan["copy"]] == ["out"]
+        assert {s["key"] for s in plan["skip"]} == {"in", "missing"}
