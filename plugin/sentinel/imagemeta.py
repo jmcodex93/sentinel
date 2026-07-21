@@ -65,13 +65,17 @@ def vram_bytes(width, height, channels, bit_depth):
 
 def res_bucket(max_px):
     """Bucket the larger image dimension into a display tier."""
+    if max_px >= 14336:
+        return {"label": "16K", "tier": "16k"}
     if max_px >= 7168:
         return {"label": "8K", "tier": "8k"}
     if max_px >= 3584:
         return {"label": "4K", "tier": "4k"}
     if max_px >= 1536:
         return {"label": "2K", "tier": "2k"}
-    return {"label": "<2K", "tier": "sm"}
+    if max_px >= 768:
+        return {"label": "1K", "tier": "1k"}
+    return {"label": "<1K", "tier": "sm"}
 
 
 # ---------------------------------------------------------------------------

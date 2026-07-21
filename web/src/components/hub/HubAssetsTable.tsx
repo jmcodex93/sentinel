@@ -28,19 +28,30 @@ import {
 const ROW_H = 44; // --space-table-row (2-line rows: name+chip+badge / path+dims+owner)
 
 /** Res-chip chroma → existing DESIGN.md tokens only (Task 4 mapping,
- * `docs/superpowers/plans/2026-07-20-hub-polish.md`). No `--color-status-warn-tint-15`
- * token exists yet, so 4k reuses the warn 10% badge tint (closest existing token). */
-// Resolution is a PROPERTY, not a state — 8K/4K chips use the accent scale
-// (--color-primary tints), never the fail/warn/pass status chroma, which is
-// reserved exclusively for state (missing/absolute badges etc.). 2k/sm stay
-// on the neutral surface scale, unchanged.
-// Single-hue property ramp — intensity = resolution, never the status chroma
-// (see DESIGN.md "Primary Tint Ramp"). Darkest tint + primary text at 8K down
-// to the lightest tint + muted text at sm, all on the one accent hue.
-const RES_CHIP_META: Record<HubResTier, { color: string; background: string }> = {
-  "8k": { color: "var(--color-primary)", background: "var(--color-primary-tint-20)" },
-  "4k": { color: "var(--color-primary)", background: "var(--color-primary-tint-14)" },
-  "2k": { color: "var(--color-ink-secondary)", background: "var(--color-primary-tint-08)" },
+ * `docs/superpowers/plans/2026-07-20-hub-polish.md`; extended to the full
+ * 16K→<1K six-tier ramp in the 2026-07-21 live-feedback pass). Resolution is
+ * a PROPERTY, not a state — chips use the accent scale (--color-primary
+ * tints), never the fail/warn/pass status chroma, which is reserved
+ * exclusively for state (missing/absolute badges etc.). Single-hue property
+ * ramp — intensity = resolution, never the status chroma (see DESIGN.md
+ * "Primary Tint Ramp"). Darkest tint + primary text at 16K down to the
+ * lightest tint + muted text at sm, all on the one accent hue. 16k/8k also
+ * get a subtle 1px accent-tint border for extra pop at the top of the
+ * ramp. */
+const RES_CHIP_META: Record<HubResTier, { color: string; background: string; border?: string }> = {
+  "16k": {
+    color: "var(--color-primary)",
+    background: "var(--color-primary-tint-32)",
+    border: "var(--color-primary-tint-32)",
+  },
+  "8k": {
+    color: "var(--color-primary)",
+    background: "var(--color-primary-tint-26)",
+    border: "var(--color-primary-tint-26)",
+  },
+  "4k": { color: "var(--color-primary)", background: "var(--color-primary-tint-20)" },
+  "2k": { color: "var(--color-ink-secondary)", background: "var(--color-primary-tint-14)" },
+  "1k": { color: "var(--color-ink-secondary)", background: "var(--color-primary-tint-08)" },
   sm: { color: "var(--color-muted)", background: "var(--color-primary-tint-04)" },
 };
 
@@ -50,7 +61,11 @@ function HubResChip({ meta }: { meta: HubMeta | undefined }) {
   return (
     <span
       className="text-label inline-block shrink-0 rounded-sm px-1.5 py-0.5"
-      style={{ color: chip.color, backgroundColor: chip.background }}
+      style={{
+        color: chip.color,
+        backgroundColor: chip.background,
+        border: chip.border ? `1px solid ${chip.border}` : undefined,
+      }}
     >
       {meta.res_label}
     </span>

@@ -17,7 +17,7 @@ export interface SortSpec {
 }
 
 /** Categorical ordering for `HubMeta.res_tier` so "res" sorts smallest→largest. */
-const RES_ORDER: Record<string, number> = { sm: 0, "2k": 1, "4k": 2, "8k": 3 };
+const RES_ORDER: Record<string, number> = { sm: 0, "1k": 1, "2k": 2, "4k": 3, "8k": 4, "16k": 5 };
 
 function basename(path: string): string {
   return path.split(/[\\/]/).pop() || path;

@@ -26,9 +26,12 @@
   --color-on-primary: #ffffff;
 
   /* Accent tints — single-hue ramp for a legitimate PROPERTY-scale use of the
-   * accent (the Hub's 8K/4K/2K/sm resolution chips: intensity = resolution),
-   * never for state. Four steps of --color-primary alpha, precomputed rgba()
-   * rather than CSS relative-color syntax for broader webview compatibility. */
+   * accent (the Hub's 16K/8K/4K/2K/1K/sm resolution chips: intensity =
+   * resolution), never for state. Six steps of --color-primary alpha,
+   * precomputed rgba() rather than CSS relative-color syntax for broader
+   * webview compatibility. */
+  --color-primary-tint-32: rgba(94, 106, 210, 0.32);
+  --color-primary-tint-26: rgba(94, 106, 210, 0.26);
   --color-primary-tint-20: rgba(94, 106, 210, 0.2);
   --color-primary-tint-14: rgba(94, 106, 210, 0.14);
   --color-primary-tint-08: rgba(94, 106, 210, 0.08);

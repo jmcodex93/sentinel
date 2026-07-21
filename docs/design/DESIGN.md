@@ -296,11 +296,11 @@ below); the two never overlap, so a lavender highlight is always
   `#828fff`.
 - **On Primary** (`{colors.on-primary}`): Text/icon color on top of a
   primary-filled surface — `#ffffff`.
-- **Primary Tint Ramp** (`{colors.primary-tint-20/14/08/04}`): a 4-step,
-  single-hue ramp of `--color-primary` at 20%/14%/8%/4% alpha — accent-scale
-  chip backgrounds for a PROPERTY, not a state, where intensity communicates
-  magnitude (the Asset Hub's 8K/4K/2K/sm resolution chips, darkest→lightest);
-  never a substitute for a status tint.
+- **Primary Tint Ramp** (`{colors.primary-tint-32/26/20/14/08/04}`): a 6-step,
+  single-hue ramp of `--color-primary` at 32%/26%/20%/14%/8%/4% alpha —
+  accent-scale chip backgrounds for a PROPERTY, not a state, where intensity
+  communicates magnitude (the Asset Hub's 16K/8K/4K/2K/1K/sm resolution
+  chips, darkest→lightest); never a substitute for a status tint.
 
 ### Status (exclusive to state — the accent never marks state)
 

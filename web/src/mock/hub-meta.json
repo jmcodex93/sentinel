@@ -62,8 +62,8 @@
     "colorspace": "sRGB",
     "vram_bytes": 4194304,
     "vram_label": "4.0 MB",
-    "res_label": "<2K",
-    "res_tier": "sm"
+    "res_label": "1K",
+    "res_tier": "1k"
   },
   "tex_props_ao": {
     "width": 2048,
@@ -106,7 +106,7 @@
     "colorspace": "linear",
     "vram_bytes": 5592405,
     "vram_label": "5.3 MB",
-    "res_label": "<2K",
-    "res_tier": "sm"
+    "res_label": "1K",
+    "res_tier": "1k"
   }
 }

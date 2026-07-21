@@ -710,7 +710,7 @@ export interface HubJobStatus {
  * (width, height, channels, bit_depth, colorspace) plus derived fields
  * (vram_bytes, vram_label, res_label, res_tier).
  */
-export type HubResTier = "8k" | "4k" | "2k" | "sm";
+export type HubResTier = "16k" | "8k" | "4k" | "2k" | "1k" | "sm";
 
 export interface HubMeta {
   width: number;
