@@ -14,7 +14,7 @@ import {
   File as FileIcon,
   type LucideIcon,
 } from "lucide-react";
-import type { HubAsset, HubAssetStatus, HubMeta, HubResTier } from "../../types";
+import type { HubAsset, HubAssetStatus, HubMeta, HubResTier, HubVariant } from "../../types";
 import {
   channelsLabel as sharedChannelsLabel,
   clampColWidth,
@@ -274,6 +274,7 @@ export function HubAssetsTable({
   onRowClick,
   onOwnerClick,
   metas,
+  variants,
   sort,
   onSortChange,
   colWidths,
@@ -285,6 +286,10 @@ export function HubAssetsTable({
   onRowClick: (key: string, modifiers: { meta: boolean; shift: boolean }) => void;
   onOwnerClick: (key: string) => void;
   metas: Record<string, HubMeta>;
+  /** Fase 5.3 — `hub/variants` sweep result, keyed by asset key. Optional so
+   * existing callers/tests that don't exercise the variants sweep don't
+   * need to pass an empty object explicitly. */
+  variants?: Record<string, HubVariant[]>;
   sort?: SortSpec | null;
   onSortChange?: (sort: SortSpec | null) => void;
   colWidths?: Partial<Record<ResizableColumn, number>>;
@@ -388,6 +393,7 @@ export function HubAssetsTable({
           {virtualizer.getVirtualItems().map((row) => {
             const a = assets[row.index];
             const meta = metas[a.key];
+            const variantGroup = variants?.[a.key];
             const pendingPath = pending.get(a.key);
             const displayPath = pendingPath ?? a.path;
             const basename = displayPath.split(/[\\/]/).pop() || displayPath;
@@ -466,8 +472,17 @@ export function HubAssetsTable({
                   {a.asset_type}
                 </span>
 
-                <div className="px-2">
+                <div className="flex items-center gap-1 px-2">
                   {meta ? <HubResChip meta={meta} /> : <span style={{ color: "var(--color-muted)" }}>—</span>}
+                  {variantGroup && (
+                    <span
+                      className="text-label"
+                      style={{ color: "var(--color-ink-secondary)" }}
+                      title={`${variantGroup.length} resolutions on disk`}
+                    >
+                      ⇄
+                    </span>
+                  )}
                 </div>
 
                 <div className="px-2">

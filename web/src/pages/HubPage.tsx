@@ -5,6 +5,7 @@ import { HubDeliverSection } from "../components/hub/HubDeliverSection";
 import { HubFacets } from "../components/hub/HubFacets";
 import { HubPreflightStrip } from "../components/hub/HubPreflightStrip";
 import { HubShrinkDialog } from "../components/hub/HubShrinkDialog";
+import { HubSwitchResDialog } from "../components/hub/HubSwitchResDialog";
 import { HubToolbar, type HubFilter } from "../components/hub/HubToolbar";
 import { EmptyState, ErrorState, LoadingState } from "../components/PageStates";
 import { Section } from "../components/Section";
@@ -17,6 +18,7 @@ import {
   fetchHubPresets,
   fetchHubStateStamp,
   fetchHubUiState,
+  fetchHubVariants,
   isMock,
   postHubApply,
   postHubCopyIntoProject,
@@ -24,6 +26,7 @@ import {
   postHubMatchFolder,
   postHubPickPath,
   postHubSelectOwner,
+  postHubSwitchRes,
   saveHubPreset,
   saveHubUiState,
   startHubShrink,
@@ -51,6 +54,7 @@ import type {
   HubPreset,
   HubShrinkResult,
   HubUiState,
+  HubVariant,
 } from "../types";
 
 /** Human-readable message for a `hub/shrink_start` / `hub/copy_into_project`
@@ -70,6 +74,13 @@ const COPY_ERROR_MESSAGES: Record<string, string> = {
   no_document: "No active Cinema 4D document.",
   unsaved_document: "Save the scene to a folder first, then try again.",
   mock: "Copy into project isn't available in mock/demo mode.",
+};
+
+const SWITCH_RES_ERROR_MESSAGES: Record<string, string> = {
+  no_document: "No active Cinema 4D document.",
+  invalid_target: "Invalid resolution target.",
+  too_many_keys: "Too many rows selected at once.",
+  mock: "Switch resolution isn't available in mock/demo mode.",
 };
 
 const SHRINK_JOB_POLL_MS = 500;
@@ -123,6 +134,9 @@ export function HubPage() {
   const [shrinkStarting, setShrinkStarting] = useState(false);
   const [shrinkJob, setShrinkJob] = useState<{ jobId: string; status: HubJobStatus | null } | null>(null);
   const [copyBusy, setCopyBusy] = useState(false);
+  const [variants, setVariants] = useState<Record<string, HubVariant[]>>({});
+  const [switchResDialogOpen, setSwitchResDialogOpen] = useState(false);
+  const [switchResBusy, setSwitchResBusy] = useState(false);
 
   // Refs so the polling interval (set up once) always reads the latest
   // values without re-creating the interval on every keystroke/selection.
@@ -241,6 +255,42 @@ export function HubPage() {
       // refreshInventory with an unchanged asset set) must be retried on
       // the next effect run, not silently treated as done.
       sweptKeysRef.current = signature;
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [state]);
+
+  // Variants sweep (Task 3, fase 5.3): resolution-sibling detection, same
+  // 64-chunk sequential pattern and re-arm-on-abort semantics as the meta
+  // sweep above. The plan allows this to run as its own effect with its own
+  // completion stamp rather than being literally chained after the meta
+  // sweep's promise — extracting a shared generic sweep helper out of the
+  // meta effect above wasn't a trivial refactor (the two write to different
+  // state setters and totals), so this stays a parallel effect keyed on the
+  // same `state`/key-signature, with its own `sweptVariantKeysRef` so a
+  // same-signature re-run (e.g. the 2s poll) skips re-fetching unchanged
+  // assets' variants exactly like the meta sweep does.
+  const sweptVariantKeysRef = useRef<string>("");
+  useEffect(() => {
+    if (state.kind !== "ok") return;
+    const keys = state.data.assets.map((a) => a.key);
+    const signature = keys.slice().sort().join("|");
+    if (signature === sweptVariantKeysRef.current) return;
+
+    let cancelled = false;
+    (async () => {
+      for (let i = 0; i < keys.length; i += META_CHUNK_SIZE) {
+        if (cancelled) return;
+        const chunk = keys.slice(i, i + META_CHUNK_SIZE);
+        const result = await fetchHubVariants(chunk);
+        if (cancelled) return;
+        if (Object.keys(result).length > 0) {
+          setVariants((prev) => ({ ...prev, ...result }));
+        }
+      }
+      if (cancelled) return;
+      sweptVariantKeysRef.current = signature;
     })();
     return () => {
       cancelled = true;
@@ -459,6 +509,35 @@ export function HubPage() {
     await refreshInventory(true);
   }
 
+  async function handleSwitchResConfirm(target: number | "highest") {
+    setSwitchResBusy(true);
+    const res = await postHubSwitchRes(Array.from(selectedKeys), target);
+    setSwitchResBusy(false);
+
+    if (!res.ok) {
+      toast({ message: SWITCH_RES_ERROR_MESSAGES[res.error ?? ""] ?? res.error ?? "Couldn't switch resolution.", variant: "warn" });
+      return;
+    }
+    setSwitchResDialogOpen(false);
+    if (res.stamp) stampRef.current = res.stamp;
+    const switchedCount = res.switched?.length ?? 0;
+    const skippedCount = res.skipped?.length ?? 0;
+    const errorCount = res.errors?.length ?? 0;
+    let message = `Switched ${switchedCount}.`;
+    if (skippedCount > 0) message += ` ${skippedCount} skipped.`;
+    if (errorCount > 0) message += ` ${errorCount} error${errorCount === 1 ? "" : "s"}.`;
+    toast({ message, variant: errorCount > 0 ? "warn" : "success" });
+    // Switched keys now resolve to a different sibling file — the cached
+    // variant groups for them still show the pre-switch basenames/px until
+    // re-swept, so force the parallel variants sweep effect above to refire
+    // even though the key SET is unchanged (its signature guard would
+    // otherwise skip a same-keys re-run).
+    sweptVariantKeysRef.current = "";
+    setSelectedKeys(new Set());
+    anchorRef.current = null;
+    await refreshInventory(true);
+  }
+
   async function handleApply() {
     if (pending.size === 0) return;
     const changes = Array.from(pending, ([key, new_path]) => ({ key, new_path }));
@@ -510,6 +589,7 @@ export function HubPage() {
     (asset) => asset.status === "ok" && (asset.asset_type === "texture" || asset.asset_type === "hdri"),
   );
   const copyEnabled = selectedAssets.some((asset) => asset.status === "absolute");
+  const switchResEnabled = selectedAssets.some((asset) => (variants[asset.key]?.length ?? 0) > 0);
   const jobRunning = shrinkJob !== null || shrinkStarting;
 
   return (
@@ -599,6 +679,8 @@ export function HubPage() {
         shrinkEnabled={shrinkEnabled}
         copyEnabled={copyEnabled}
         jobRunning={jobRunning || copyBusy}
+        onSwitchRes={() => setSwitchResDialogOpen(true)}
+        switchResEnabled={switchResEnabled}
       />
 
       {shrinkJob && (
@@ -637,6 +719,7 @@ export function HubPage() {
             onRowClick={handleRowClick}
             onOwnerClick={handleOwnerClick}
             metas={metas}
+            variants={variants}
             sort={sort}
             onSortChange={handleSortChange}
             colWidths={colWidths}
@@ -664,6 +747,16 @@ export function HubPage() {
           busy={shrinkStarting}
           onConfirm={handleShrinkConfirm}
           onClose={() => setShrinkDialogOpen(false)}
+        />
+      )}
+
+      {switchResDialogOpen && (
+        <HubSwitchResDialog
+          selectedKeys={selectedKeys}
+          variants={variants}
+          busy={switchResBusy}
+          onConfirm={handleSwitchResConfirm}
+          onClose={() => setSwitchResDialogOpen(false)}
         />
       )}
     </div>

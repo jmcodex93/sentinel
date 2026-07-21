@@ -1,4 +1,4 @@
-import { FolderInput, FolderSearch, Link2, Minimize2, RotateCcw, Search, Wand2 } from "lucide-react";
+import { ArrowLeftRight, FolderInput, FolderSearch, Link2, Minimize2, RotateCcw, Search, Wand2 } from "lucide-react";
 import { Button } from "../form/Button";
 import { Checkbox } from "../form/Checkbox";
 import { Select } from "../form/Select";
@@ -49,6 +49,12 @@ interface HubToolbarProps {
   shrinkEnabled: boolean;
   copyEnabled: boolean;
   jobRunning: boolean;
+  /** Fase 5.3 — "Switch res..." button. `switchResEnabled` is true when at
+   * least one selected row has a detected on-disk resolution variant group
+   * (the exact per-target availability is the dialog's own `switchTargets`
+   * call, since no target is chosen yet at the toolbar). */
+  onSwitchRes: () => void;
+  switchResEnabled: boolean;
 }
 
 /** Toolbar for the Asset Hub table -- search/filter row plus the bulk
@@ -87,6 +93,8 @@ export function HubToolbar({
   shrinkEnabled,
   copyEnabled,
   jobRunning,
+  onSwitchRes,
+  switchResEnabled,
 }: HubToolbarProps) {
   return (
     <div
@@ -216,6 +224,15 @@ export function HubToolbar({
           >
             <FolderInput size={14} strokeWidth={2.25} aria-hidden="true" />
             Copy into project
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={busy || jobRunning || !switchResEnabled}
+            title={selectedCount > 0 && !switchResEnabled ? "No selected rows have another resolution on disk." : undefined}
+            onClick={onSwitchRes}
+          >
+            <ArrowLeftRight size={14} strokeWidth={2.25} aria-hidden="true" />
+            Switch res...
           </Button>
           {selectedCount > 0 && (
             <span className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>

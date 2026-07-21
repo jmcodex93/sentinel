@@ -1,4 +1,4 @@
-import type { HubAsset, HubMeta } from "../types";
+import type { HubAsset, HubMeta, HubVariant } from "../types";
 
 /**
  * Pure sort/facet/resize helpers for the Asset Hub table (Task 5,
@@ -211,6 +211,79 @@ export function shrinkPreview(
   }
 
   return { eligible, skipped, vramBefore, vramAfter };
+}
+
+/** Longest-edge px -> the studio's own resolution-token labels (the same
+ * map `split_res_token`/`find_res_variants` recognize server-side, see
+ * assets.py). Falls back to a plain `<px>px` label for any px this map
+ * doesn't know about (defensive only — the server only ever emits the five
+ * mapped values). */
+const PX_LABELS: Record<number, string> = {
+  1024: "1K",
+  2048: "2K",
+  4096: "4K",
+  8192: "8K",
+  16384: "16K",
+};
+
+function pxLabel(px: number): string {
+  const known = PX_LABELS[px];
+  return known ? `${known} (${px}px)` : `${px}px`;
+}
+
+export interface SwitchTarget {
+  px: number | "highest";
+  label: string;
+  available: number;
+}
+
+export interface SwitchTargetsResult {
+  targets: SwitchTarget[];
+  total: number;
+}
+
+/** Pure "Switch res..." dialog computation (Task 3, fase 5.3 —
+ * `docs/superpowers/plans/2026-07-21-hub-variants.md`). `variants` is the
+ * `hub/variants` response keyed by asset key (absent key = no detected
+ * sibling group, same "absence means nothing to report" convention as
+ * `hub/meta`/`metas`). Builds the union of every px present across the
+ * SELECTED keys' variant groups (desc), with a synthetic `"highest"` target
+ * always first — `available` for `"highest"` counts every selected key that
+ * has ANY detected group (picking "Highest" always resolves to `group[0]`
+ * server-side, whatever that key's own top px is), while a concrete px
+ * target counts only the selected keys whose group actually contains that
+ * exact px. `total` is the selection size, so the dialog can render each
+ * target's "X/N available" against the same denominator. Selected keys with
+ * no `variants` entry at all contribute to `total` but to no target's
+ * `available` — they simply have nothing to switch. */
+export function switchTargets(
+  selectedKeys: Set<string>,
+  variants: Record<string, HubVariant[]>,
+): SwitchTargetsResult {
+  const total = selectedKeys.size;
+  let highestAvailable = 0;
+  const pxCounts = new Map<number, number>();
+
+  for (const key of selectedKeys) {
+    const group = variants[key];
+    if (!group || group.length === 0) continue;
+    highestAvailable += 1;
+    const pxSet = new Set(group.map((v) => v.px));
+    for (const px of pxSet) {
+      pxCounts.set(px, (pxCounts.get(px) ?? 0) + 1);
+    }
+  }
+
+  if (highestAvailable === 0) {
+    return { targets: [], total };
+  }
+
+  const pxDesc = Array.from(pxCounts.keys()).sort((a, b) => b - a);
+  const targets: SwitchTarget[] = [
+    { px: "highest", label: "Highest", available: highestAvailable },
+    ...pxDesc.map((px) => ({ px, label: pxLabel(px), available: pxCounts.get(px) as number })),
+  ];
+  return { targets, total };
 }
 
 export interface FacetState {

@@ -1,0 +1,15 @@
+{
+  "tex_body_diffuse": [
+    { "basename": "body_diffuse_8k.jpg", "px": 8192 },
+    { "basename": "body_diffuse_4k.jpg", "px": 4096 },
+    { "basename": "body_diffuse_2k.jpg", "px": 2048 }
+  ],
+  "tex_shared_noise": [
+    { "basename": "shared_noise_8k.jpg", "px": 8192 },
+    { "basename": "shared_noise_2k.jpg", "px": 2048 }
+  ],
+  "hdri_dome_studio": [
+    { "basename": "dome_studio_4k.exr", "px": 4096 },
+    { "basename": "dome_studio_2k.exr", "px": 2048 }
+  ]
+}

@@ -741,6 +741,35 @@ export interface HubMetaTotals {
 }
 
 /**
+ * Hub resolution-variant contract (Fase 5.3) — mirrors `_op_hub_variants` in
+ * plugin/sentinel/ui/hub_ops.py. `basename` is the sibling file's name only
+ * (never a full path — the client only needs it to build the relink via
+ * `postHubSwitchRes`); `px` is the longest-edge pixel size the shared
+ * `split_res_token` token maps to. A key only appears in the response's
+ * record when its detected group has >=2 members (itself included) — see
+ * `find_res_variants` in assets.py.
+ */
+export interface HubVariant {
+  basename: string;
+  px: number;
+}
+
+/** `POST /api/hub/switch_res` — see `_op_hub_switch_res` in hub_ops.py.
+ * Relink-only (no file writes), same trailing `stamp` reasoning as
+ * `HubApplyResponse`. `skipped` reasons are `"no_variant"` (no sibling at
+ * the requested target) or `"already_there"` (the current file already IS
+ * that target — covers "Highest" when nothing is higher). */
+export interface HubSwitchResponse {
+  ok: boolean;
+  /** "no_document" | "invalid_target" | "too_many_keys". */
+  error?: string;
+  switched?: string[];
+  skipped?: { key: string; reason: string }[];
+  errors?: { key: string; error: string }[];
+  stamp?: string;
+}
+
+/**
  * Hub UI State contract — mirrors the response from `GET /api/hub/ui_state`
  * and the payload for `POST /api/hub/ui_state/save` (see `_op_hub_ui_state`
  * and `_op_hub_ui_state_save` in hub_ops.py). Persisted in `sentinel_settings.json`

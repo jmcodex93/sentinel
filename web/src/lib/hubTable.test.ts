@@ -9,9 +9,10 @@ import {
   sanitizeSortSpec,
   shrinkPreview,
   sortAssets,
+  switchTargets,
   type FacetState,
 } from "./hubTable";
-import type { HubAsset, HubMeta } from "../types";
+import type { HubAsset, HubMeta, HubVariant } from "../types";
 
 function asset(overrides: Partial<HubAsset> & { key: string }): HubAsset {
   return {
@@ -378,5 +379,75 @@ describe("shrinkPreview", () => {
     const preview = shrinkPreview([a, b], metas, new Set(["a"]), 2048);
     expect(preview.eligible.map((i) => i.key)).toEqual(["a"]);
     expect(preview.skipped).toEqual([]);
+  });
+});
+
+describe("switchTargets", () => {
+  function variantGroup(...px: number[]): HubVariant[] {
+    return px.map((p) => ({ basename: `sibling_${p}.png`, px: p }));
+  }
+
+  it("empty selection: no targets, total 0", () => {
+    const result = switchTargets(new Set(), {});
+    expect(result).toEqual({ targets: [], total: 0 });
+  });
+
+  it("selection with no variants anywhere: Highest still isn't offered (available 0 -> omitted... union is empty)", () => {
+    const result = switchTargets(new Set(["a", "b"]), {});
+    expect(result.total).toBe(2);
+    expect(result.targets).toEqual([]);
+  });
+
+  it("unions px across the selection, sorted desc, with Highest first", () => {
+    const variants: Record<string, HubVariant[]> = {
+      a: variantGroup(8192, 4096, 2048),
+      b: variantGroup(4096, 2048),
+    };
+    const result = switchTargets(new Set(["a", "b"]), variants);
+    expect(result.total).toBe(2);
+    expect(result.targets.map((t) => t.px)).toEqual(["highest", 8192, 4096, 2048]);
+  });
+
+  it("counts availability per px: only keys whose variant group contains that px", () => {
+    const variants: Record<string, HubVariant[]> = {
+      a: variantGroup(8192, 4096, 2048),
+      b: variantGroup(4096, 2048),
+      c: variantGroup(4096, 2048),
+    };
+    const result = switchTargets(new Set(["a", "b", "c"]), variants);
+    const byPx = Object.fromEntries(result.targets.map((t) => [String(t.px), t.available]));
+    expect(byPx["8192"]).toBe(1);
+    expect(byPx["4096"]).toBe(3);
+    expect(byPx["2048"]).toBe(3);
+    expect(byPx["highest"]).toBe(3);
+  });
+
+  it("selected keys with no detected variant group don't count toward Highest or any px bucket", () => {
+    const variants: Record<string, HubVariant[]> = {
+      a: variantGroup(8192, 2048),
+      // b has no entry -- no variants detected for it
+    };
+    const result = switchTargets(new Set(["a", "b"]), variants);
+    expect(result.total).toBe(2);
+    const highest = result.targets.find((t) => t.px === "highest");
+    expect(highest?.available).toBe(1);
+  });
+
+  it("ignores variants for keys not in the selection", () => {
+    const variants: Record<string, HubVariant[]> = {
+      a: variantGroup(8192, 4096),
+      z: variantGroup(16384, 2048), // not selected -- must not leak into the union
+    };
+    const result = switchTargets(new Set(["a"]), variants);
+    expect(result.targets.map((t) => t.px)).toEqual(["highest", 8192, 4096]);
+  });
+
+  it("produces a human-readable label per px target", () => {
+    const variants: Record<string, HubVariant[]> = { a: variantGroup(8192, 1024) };
+    const result = switchTargets(new Set(["a"]), variants);
+    const labels = Object.fromEntries(result.targets.map((t) => [String(t.px), t.label]));
+    expect(labels.highest).toBe("Highest");
+    expect(labels["8192"]).toMatch(/8K/);
+    expect(labels["1024"]).toMatch(/1K/);
   });
 });

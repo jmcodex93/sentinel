@@ -6,6 +6,7 @@ import mockSaveVersion from "../mock/form-save-version.json";
 import mockSettings from "../mock/form-settings.json";
 import mockHubInventory from "../mock/hub-inventory.json";
 import mockHubMeta from "../mock/hub-meta.json";
+import mockHubVariants from "../mock/hub-variants.json";
 import mockPaletteActions from "../mock/palette-actions.json";
 import mockQcReport from "../mock/qc-report.json";
 import mockRenderValidationReport from "../mock/render-validation.json";
@@ -36,7 +37,9 @@ import type {
   HubPresetsSaveResponse,
   HubSelectOwnerResponse,
   HubShrinkStartResponse,
+  HubSwitchResponse,
   HubUiState,
+  HubVariant,
   NotesState,
   NotesStateResult,
   NotesSubmitPayload,
@@ -700,6 +703,54 @@ export async function postHubCopyIntoProject(keys: string[]): Promise<HubCopyRes
     return { ok: false, error: "mock" };
   }
   return postForm<HubCopyResponse>("/api/hub/copy_into_project", { keys });
+}
+
+/** `POST /api/hub/variants` — see `_op_hub_variants` in hub_ops.py
+ * (Fase 5.3). Same batched-read-only shape/cap/mock convention as
+ * `fetchHubMeta`: the caller (HubPage's variants sweep, chained after the
+ * meta sweep) chunks the full key set into sequential 64-key calls. Returns
+ * only the keys with a detected sibling group (>=2 on-disk variants); a key
+ * absent from the result has none. Returns `{}` on any error (never
+ * throws). Mock branch filters `hub-variants.json` by the requested keys. */
+export async function fetchHubVariants(keys: string[]): Promise<Record<string, HubVariant[]>> {
+  if (isMock()) {
+    const mockData = mockHubVariants as Record<string, HubVariant[]>;
+    const result: Record<string, HubVariant[]> = {};
+    for (const key of keys) {
+      if (key in mockData) {
+        result[key] = mockData[key];
+      }
+    }
+    return result;
+  }
+
+  try {
+    const response = await fetch("/api/hub/variants", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keys }),
+    });
+    const payload = await response.json();
+    if (response.ok && payload && typeof payload === "object" && "variants" in payload) {
+      return (payload as { variants: Record<string, HubVariant[]> }).variants;
+    }
+  } catch {
+    // Silently fall through to empty return
+  }
+  return {};
+}
+
+/** `POST /api/hub/switch_res` — see `_op_hub_switch_res` in hub_ops.py
+ * (Fase 5.3). Synchronous relink-only mutation (no job), same `?mock=1`
+ * policy as `startHubShrink`/`postHubCopyIntoProject` above — no stateful
+ * mock to relink against, so this returns an informative failure instead of
+ * fabricating a result. `target` is either an exact px or the literal
+ * `"highest"` (picks each key's own top variant). */
+export async function postHubSwitchRes(keys: string[], target: number | "highest"): Promise<HubSwitchResponse> {
+  if (isMock()) {
+    return { ok: false, error: "mock" };
+  }
+  return postForm<HubSwitchResponse>("/api/hub/switch_res", { keys, target });
 }
 
 /** `GET /api/hub/ui_state` — see `_op_hub_ui_state` in hub_ops.py.
