@@ -467,6 +467,54 @@ class TestPumpJobsKindDispatch:
             webbridge.JOBS = old
 
 
+class TestHubVariantsOps:
+    def test_ops_registered(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        for op in ("hub/variants", "hub/switch_res"):
+            assert op in hub_ops.HUB_OPS
+
+    def test_variants_without_document(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops.HUB_OPS["hub/variants"]({"keys": ["a"]}) == {"error": "no_document"}
+
+    def test_variants_over_batch_cap_still_doc_guarded_first(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        response = hub_ops.HUB_OPS["hub/variants"]({"keys": ["k"] * 65})
+        assert response == {"error": "no_document"}
+
+    def test_switch_res_without_document(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        response = hub_ops.HUB_OPS["hub/switch_res"]({"keys": ["a"], "target": "highest"})
+        assert response == {"ok": False, "error": "no_document"}
+
+
+class TestValidateSwitchTarget:
+    def test_highest_is_valid(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops._validate_switch_target("highest") is None
+
+    def test_positive_int_is_valid(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops._validate_switch_target(2048) is None
+
+    def test_zero_is_invalid(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops._validate_switch_target(0) == "invalid_target"
+
+    def test_string_number_is_invalid(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops._validate_switch_target("2k") == "invalid_target"
+
+    def test_none_is_invalid(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops._validate_switch_target(None) == "invalid_target"
+
+    def test_bool_is_invalid(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        assert hub_ops._validate_switch_target(True) == "invalid_target"
+        assert hub_ops._validate_switch_target(False) == "invalid_target"
+
+
 class TestOpenHubPalette:
     def test_palette_open_hub_still_registered(self, sentinel_module):
         """_palette_open_hub now tries the SPA hub (open_form) before

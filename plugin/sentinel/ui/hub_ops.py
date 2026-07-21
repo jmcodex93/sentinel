@@ -1089,6 +1089,168 @@ def _op_hub_meta_totals(payload):
     return _totals_from_cache(_THUMB_PATHS.values())
 
 
+def _op_hub_variants(payload):
+    """``hub/variants`` — batched read-only resolution-sibling detection for
+    a list of asset keys (fase 5.3). Doc-guard-first + the same batch cap
+    convention as ``hub/meta`` (a request past the cap is a client bug, not
+    a scene with a lot of textures). Keys already resolved in
+    ``_THUMB_PATHS`` (populated by ``hub/inventory``/other scans) are
+    served for free; an unknown key triggers one fresh
+    ``scan_scene_assets`` fallback scan (same policy as ``hub/thumb``/
+    ``hub/meta``), never one scan per unknown key. Builds the minimal
+    ``[{"key","resolved_path"}]`` shape ``assets_engine.find_res_variants``
+    needs, then reshapes its ``{key: [{"path","px"}]}`` result into
+    ``{key: [{"basename","px"}]}`` for the SPA — the client only ever
+    needs the sibling's filename (to build the relink), never the
+    absolute path. Only keys with a detected group (>=2 variants) appear
+    in the response, same "absent means nothing to report" convention as
+    ``hub/meta``.
+    """
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"error": "no_document"}
+    keys = payload.get("keys") or []
+    if len(keys) > _META_BATCH_CAP:
+        return {"error": "too_many_keys"}
+
+    if any(key not in _THUMB_PATHS for key in keys):
+        from sentinel.ui.flows import scan_scene_assets
+
+        records, _tex, _skipped = scan_scene_assets(doc)
+        _remember_thumb_paths(records)
+
+    minimal_records = []
+    for key in keys:
+        resolved = _THUMB_PATHS.get(key)
+        if not resolved:
+            continue
+        minimal_records.append({"key": key, "resolved_path": resolved})
+
+    raw_variants = assets_engine.find_res_variants(minimal_records)
+    variants = {
+        key: [{"basename": os.path.basename(v["path"]), "px": v["px"]} for v in group]
+        for key, group in raw_variants.items()
+    }
+    return {"variants": variants}
+
+
+def _validate_switch_target(target):
+    """Pure: ``hub/switch_res`` ``target`` validation, split out so it's
+    testable without a fake document (same convention as
+    ``_validate_shrink_payload``). Valid: the literal string ``"highest"``,
+    or a positive ``int``. ``bool`` is rejected explicitly — Python's
+    ``bool`` is an ``int`` subclass, so ``True``/``False`` would otherwise
+    silently pass the ``isinstance(target, int) and target > 0`` check
+    (``True == 1``)."""
+    if target == "highest":
+        return None
+    if isinstance(target, bool):
+        return "invalid_target"
+    if isinstance(target, int) and target > 0:
+        return None
+    return "invalid_target"
+
+
+def _op_hub_switch_res(payload):
+    """``hub/switch_res`` — synchronous relink-only mutation (fase 5.3):
+    switch every requested key to its ``"highest"``-px sibling or an exact
+    ``target`` px, staying within the same on-disk variant family
+    ``hub/variants`` already reported. NO file writes — this only ever
+    rewrites shader paths, mirroring ``_op_hub_apply_repath``'s single
+    ``StartUndo``/``EndUndo`` bracket + ``_settle_relink_results`` writer
+    bookkeeping (a failed writer must never report ``switched`` for a key
+    the scene still points at the old path).
+
+    Doc guard -> batch cap (same ``hub/meta`` pattern) -> ``_validate_
+    switch_target`` (a bad target never touches the scene) -> a *fresh*
+    scan (HTTP is stateless — same convention as every mutation op) so
+    ``find_res_variants`` sees the current on-disk state, restricted to the
+    requested keys. Per key: no detected group -> skip ``no_variant``;
+    ``"highest"`` picks ``group[0]`` (``find_res_variants`` already sorts
+    px desc); an exact ``target`` px with no matching sibling -> skip
+    ``no_variant``; a pick whose basename case-folds to the record's
+    current resolved basename -> skip ``already_there`` (covers the
+    ``"highest"`` case where the current file already IS the highest px).
+    Otherwise the change is staged via ``replace_basename_preserving_form``
+    on the record's *stored* ``path`` (not the resolved absolute path) so a
+    ``relative:///`` texture stays relative after the switch — same
+    lesson as the 5.2 shrink job.
+    """
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+    keys = payload.get("keys") or []
+    if len(keys) > _META_BATCH_CAP:
+        return {"ok": False, "error": "too_many_keys"}
+    target = payload.get("target")
+    error = _validate_switch_target(target)
+    if error:
+        return {"ok": False, "error": error}
+
+    from sentinel.ui.flows import scan_scene_assets
+    from sentinel.textures import apply_texture_path_change
+
+    records, tex_records, _skipped = scan_scene_assets(doc)
+    _remember_thumb_paths(records)
+
+    keys_set = set(keys)
+    by_key = {r.get("key"): r for r in records}
+    requested_records = [r for r in records if r.get("key") in keys_set]
+    variants = assets_engine.find_res_variants(requested_records)
+
+    skipped = []
+    changes = []
+    for key in keys:
+        rec = by_key.get(key)
+        group = variants.get(key) if rec is not None else None
+        if not group:
+            skipped.append({"key": key, "reason": "no_variant"})
+            continue
+        if target == "highest":
+            pick = group[0]
+        else:
+            pick = next((v for v in group if v["px"] == target), None)
+        if pick is None:
+            skipped.append({"key": key, "reason": "no_variant"})
+            continue
+        pick_basename = os.path.basename(pick["path"])
+        current_basename = os.path.basename(rec.get("resolved_path") or "")
+        if pick_basename.lower() == current_basename.lower():
+            skipped.append({"key": key, "reason": "already_there"})
+            continue
+        new_path = assets_engine.replace_basename_preserving_form(
+            rec.get("path"), pick_basename)
+        changes.append({"key": key, "new_path": new_path})
+
+    targets, resolve_errors = webbridge.resolve_repath_targets(records, changes)
+    errors = list(resolve_errors)
+    write_results = {}
+    doc.StartUndo()
+    try:
+        for t in targets:
+            row_ok = True
+            for tex_idx in t["tex_idxs"]:
+                try:
+                    live = tex_records[tex_idx]
+                except IndexError:
+                    row_ok = False
+                    continue
+                if not apply_texture_path_change(live, t["new_path"], doc=doc):
+                    row_ok = False
+            write_results[t["key"]] = row_ok
+    finally:
+        doc.EndUndo()
+    c4d.EventAdd()
+
+    planned = [{"key": t["key"]} for t in targets]
+    succeeded, writer_errors = _settle_relink_results(planned, write_results)
+    errors.extend(writer_errors)
+    switched = [s["key"] for s in succeeded]
+
+    return {"ok": True, "switched": switched, "skipped": skipped, "errors": errors,
+            "stamp": _stamp_for(doc)}
+
+
 def _op_hub_ui_state(payload):
     """``hub/ui_state`` — read-only. Not scene-dependent (column widths /
     sort are a machine-level UI preference, same tier as
@@ -1125,6 +1287,8 @@ HUB_OPS = {
     "hub/copy_into_project": _op_hub_copy_into_project,
     "hub/meta": _op_hub_meta,
     "hub/meta_totals": _op_hub_meta_totals,
+    "hub/variants": _op_hub_variants,
+    "hub/switch_res": _op_hub_switch_res,
     "hub/ui_state": _op_hub_ui_state,
     "hub/ui_state/save": _op_hub_ui_state_save,
 }
