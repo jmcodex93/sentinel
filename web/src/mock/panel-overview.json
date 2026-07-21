@@ -1,0 +1,39 @@
+{
+  "scene": {
+    "name": "SHOT_18_BODEGON_HYPE_007.c4d",
+    "path_set": true,
+    "shot_id": "SHOT_18_BODEGON_HYPE",
+    "artist": "JM",
+    "version_label": "v007 TR",
+    "version_age": "2h ago",
+    "polys_label": "1.2M polys"
+  },
+  "qc": {
+    "passed": 6,
+    "total": 12,
+    "disabled": 0,
+    "top": [
+      { "check_id": "lights", "label": "Lights", "count": 8 },
+      { "check_id": "fps_range", "label": "FPS", "count": 9 },
+      { "check_id": "default_names", "label": "Naming", "count": 5 }
+    ],
+    "fixable": ["fix_lights", "fix_fps"]
+  },
+  "assets": {
+    "count": 39,
+    "missing": 1,
+    "disk_label": "604 MB",
+    "vram_label": "3.3 GB"
+  },
+  "render": {
+    "preset_name": "RS-LookDev 2026",
+    "fps": 25,
+    "resolution": "1920x1080",
+    "multiformat": null
+  },
+  "deliver": {
+    "todos_pending": 2,
+    "notes_present": true,
+    "last_delivery_age": null
+  }
+}

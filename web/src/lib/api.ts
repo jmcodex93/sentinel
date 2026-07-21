@@ -2,6 +2,7 @@ import mockDeliveryReport from "../mock/delivery-summary.json";
 import mockDoctorReport from "../mock/doctor-report.json";
 import mockGate from "../mock/form-gate.json";
 import mockNotes from "../mock/form-notes.json";
+import mockPanelOverview from "../mock/panel-overview.json";
 import mockSaveVersion from "../mock/form-save-version.json";
 import mockSettings from "../mock/form-settings.json";
 import mockHubInventory from "../mock/hub-inventory.json";
@@ -44,6 +45,9 @@ import type {
   NotesStateResult,
   NotesSubmitPayload,
   NotesSubmitResponse,
+  PanelOpenFormResponse,
+  PanelOverview,
+  PanelOverviewResult,
   PaletteAction,
   PaletteActionsResult,
   PaletteRunResponse,
@@ -791,4 +795,47 @@ export async function saveHubUiState(state: HubUiState): Promise<void> {
   } catch {
     // Fire-and-forget; silently ignore errors
   }
+}
+
+// ---------------------------------------------------------------------------
+// Panel SPA (Fase 6.0) — see plugin/sentinel/ui/panel_ops.py (PANEL_OPS),
+// routed through the same `/api/<op>` dispatch as every other op above.
+// ---------------------------------------------------------------------------
+
+/** `GET /api/panel/state_stamp` — see `_op_panel_state_stamp` in
+ * panel_ops.py, reusing hub's `_stamp_for` unmodified. Same collapse to
+ * `string | null` as `fetchHubStateStamp`: the panel only ever compares
+ * stamps to detect change, so "no document" and a network failure are
+ * equally "nothing to compare". */
+export async function fetchPanelStamp(): Promise<string | null> {
+  if (isMock()) {
+    return "mock-stamp";
+  }
+  const result = await fetchReport<{ stamp: string }>("/api/panel/state_stamp", {});
+  return result.kind === "ok" ? result.data.stamp : null;
+}
+
+/** `GET /api/panel/overview` — see `_op_panel_overview`/`build_panel_overview`
+ * in panel_ops.py. Each of the 5 blocks may independently be `null` (a
+ * failure isolated to one subsystem) — the page must render those cards as
+ * unavailable, never crash. */
+export async function fetchPanelOverview(): Promise<PanelOverviewResult> {
+  if (isMock()) {
+    return { kind: "ok", data: mockPanelOverview as PanelOverview };
+  }
+  return fetchReport<PanelOverview>("/api/panel/overview", {
+    no_document: "No active Cinema 4D document. Open a scene to see its shot health.",
+  });
+}
+
+/** `POST /api/panel/open_form` — see `_op_panel_open_form` in panel_ops.py.
+ * Opens one of the three absorbed-later native windows (Save Version /
+ * Notes / Settings) from a dashboard card button. `?mock=1` has no native
+ * window to open, so it resolves `{ok: true}` without side effects, same
+ * fire-and-forget-in-mock convention as `saveHubUiState`. */
+export async function postPanelOpenForm(page: string): Promise<PanelOpenFormResponse> {
+  if (isMock()) {
+    return { ok: true };
+  }
+  return postForm<PanelOpenFormResponse>("/api/panel/open_form", { page });
 }
