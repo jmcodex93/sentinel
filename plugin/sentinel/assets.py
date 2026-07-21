@@ -595,17 +595,31 @@ def split_res_token(basename):
 
 
 def find_res_variants(records, list_dir=os.listdir):
-    """Detect on-disk resolution siblings for each record.
+    """Detect on-disk resolution siblings for each record — including the
+    "bare base" file a tokened variant was shrunk/derived from, which
+    carries no resolution token of its own (the Shrink tool creates
+    exactly this pair: `NAME.png` -> `NAME_2K.png`).
 
-    For every record with a `resolved_path`, split its basename; records
-    without a resolution token are skipped. Each directory is listed at
-    most once per call (cached by directory path — a `list_dir` failure
-    skips every record in that directory rather than raising). A sibling
-    groups with the record when its own split yields the same
-    case-folded `(prefix, suffix)`. Groups with fewer than 2 members
-    (self included) are dropped. Returns `{key: [{"path", "px"}, ...]}`
-    sorted by `px` descending, paths joined with the record's directory
-    after separators are normalized to `/` — same fix as `copy_plan`'s
+    Each directory is listed at most once per call (cached by directory
+    path — a `list_dir` failure skips every record in that directory
+    rather than raising). Two cases:
+
+    - Record's basename HAS a token (`split_res_token` succeeds): siblings
+      are dir entries whose own split yields the same case-folded
+      `(prefix, suffix)` (unchanged from before) PLUS, if present, the
+      bare base file — basename == `prefix.rstrip("_-.") + suffix` — added
+      with `"px": None` (unknown from the name alone).
+    - Record's basename has NO token: look for dir entries whose split
+      gives a prefix in `{stem + "_", stem + "-", stem + "."}`
+      (case-folded) and suffix == the record's own extension (case-folded)
+      — `stem` = the record's basename without extension. If any such
+      tokened siblings exist, the family is those siblings plus the bare
+      record itself (`"px": None`); otherwise the record has no family.
+
+    Groups with fewer than 2 members (self included) are dropped.
+    Returns `{key: [{"path", "px"}, ...]}` sorted by `px` descending with
+    `None` entries LAST, paths joined with the record's directory after
+    separators are normalized to `/` — same fix as `copy_plan`'s
     `match_missing_in_folder`: a Windows-authored `resolved_path`
     (`D:\\proj\\tex\\a.png`) opened on macOS has no separators
     `os.path.dirname`/`os.path.basename` recognize there, so without the
@@ -623,12 +637,6 @@ def find_res_variants(records, list_dir=os.listdir):
         resolved = str(resolved).replace("\\", "/")
         dir_path = os.path.dirname(resolved)
         basename = os.path.basename(resolved)
-        split = split_res_token(basename)
-        if split is None:
-            continue
-        prefix, _px, suffix = split
-        prefix_key = prefix.lower()
-        suffix_key = suffix.lower()
 
         if dir_path not in dir_listings:
             try:
@@ -639,18 +647,47 @@ def find_res_variants(records, list_dir=os.listdir):
         if entries is None:
             continue
 
+        split = split_res_token(basename)
         group = []
-        for entry in entries:
-            entry_split = split_res_token(entry)
-            if entry_split is None:
-                continue
-            e_prefix, e_px, e_suffix = entry_split
-            if e_prefix.lower() == prefix_key and e_suffix.lower() == suffix_key:
-                group.append({"path": os.path.join(dir_path, entry), "px": e_px})
+
+        if split is not None:
+            prefix, _px, suffix = split
+            prefix_key = prefix.lower()
+            suffix_key = suffix.lower()
+
+            for entry in entries:
+                entry_split = split_res_token(entry)
+                if entry_split is None:
+                    continue
+                e_prefix, e_px, e_suffix = entry_split
+                if e_prefix.lower() == prefix_key and e_suffix.lower() == suffix_key:
+                    group.append({"path": os.path.join(dir_path, entry), "px": e_px})
+
+            bare_name = prefix.rstrip("_-.") + suffix
+            if bare_name.lower() != basename.lower():
+                entries_lower = {e.lower(): e for e in entries}
+                found = entries_lower.get(bare_name.lower())
+                if found:
+                    group.append({"path": os.path.join(dir_path, found), "px": None})
+        else:
+            stem, ext = os.path.splitext(basename)
+            candidate_prefixes = {(stem + d).lower() for d in ("_", "-", ".")}
+            ext_key = ext.lower()
+
+            for entry in entries:
+                entry_split = split_res_token(entry)
+                if entry_split is None:
+                    continue
+                e_prefix, e_px, e_suffix = entry_split
+                if e_prefix.lower() in candidate_prefixes and e_suffix.lower() == ext_key:
+                    group.append({"path": os.path.join(dir_path, entry), "px": e_px})
+
+            if group:
+                group.append({"path": os.path.join(dir_path, basename), "px": None})
 
         if len(group) < 2:
             continue
-        group.sort(key=lambda g: -g["px"])
+        group.sort(key=lambda g: (g["px"] is None, -(g["px"] or 0)))
         result[key] = group
 
     return result

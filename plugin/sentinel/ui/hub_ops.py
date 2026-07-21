@@ -1104,7 +1104,11 @@ def _op_hub_variants(payload):
     needs the sibling's filename (to build the relink), never the
     absolute path. Only keys with a detected group (>=2 variants) appear
     in the response, same "absent means nothing to report" convention as
-    ``hub/meta``.
+    ``hub/meta``. A "bare base" sibling (the un-tokened original a Shrink
+    copy was derived from) comes back from ``find_res_variants`` with
+    ``"px": None`` — enriched here via ``_meta_for`` (real pixel
+    ``max(width, height)``) when the file parses as an image; left
+    ``None`` if it still can't be read.
     """
     doc = documents.GetActiveDocument()
     if not doc:
@@ -1127,10 +1131,17 @@ def _op_hub_variants(payload):
         minimal_records.append({"key": key, "resolved_path": resolved})
 
     raw_variants = assets_engine.find_res_variants(minimal_records)
-    variants = {
-        key: [{"basename": os.path.basename(v["path"]), "px": v["px"]} for v in group]
-        for key, group in raw_variants.items()
-    }
+    variants = {}
+    for key, group in raw_variants.items():
+        entries = []
+        for v in group:
+            px = v["px"]
+            if px is None:
+                meta = _meta_for(v["path"])
+                if meta:
+                    px = max(meta.get("width") or 0, meta.get("height") or 0) or None
+            entries.append({"basename": os.path.basename(v["path"]), "px": px})
+        variants[key] = entries
     return {"variants": variants}
 
 
@@ -1207,7 +1218,21 @@ def _op_hub_switch_res(payload):
             skipped.append({"key": key, "reason": "no_variant"})
             continue
         if target == "highest":
-            pick = group[0]
+            # A "bare base" sibling (Shrink's un-tokened original) comes
+            # back from find_res_variants with px=None — its real pixel
+            # size (if the file parses as an image) can still be the
+            # highest in the family, so it must not be excluded from
+            # "highest" just because its name carries no token. None
+            # that still can't be resolved is treated as the lowest.
+            def _px_for(v):
+                if v["px"] is not None:
+                    return v["px"]
+                meta = _meta_for(v["path"])
+                if meta:
+                    return max(meta.get("width") or 0, meta.get("height") or 0)
+                return -1
+
+            pick = max(group, key=_px_for)
         else:
             pick = next((v for v in group if v["px"] == target), None)
         if pick is None:

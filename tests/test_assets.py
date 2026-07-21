@@ -781,14 +781,74 @@ class TestFindResVariants:
         result = assets.find_res_variants(records, list_dir=fake_list_dir)
         assert "a" not in result
 
-    def test_no_token_record_skipped(self):
+    def test_bare_record_no_siblings_skipped(self):
+        # A bare (tokenless) file with no tokened sibling in the dir has
+        # no family — only an unrelated file is present.
+        records = [{"key": "a", "resolved_path": "/proj/tex/plain.png"}]
+
+        def fake_list_dir(path):
+            return ["plain.png", "unrelated.png"]
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert "a" not in result
+
+    def test_bare_record_finds_tokened_siblings(self):
+        # Shrink creates NAME_2K.png from NAME.png — the bare original
+        # carries no token of its own, so it must be paired via its stem
+        # + extension against the tokened siblings in the same dir.
         records = [{"key": "a", "resolved_path": "/proj/tex/plain.png"}]
 
         def fake_list_dir(path):
             return ["plain.png", "plain_2k.png"]
 
         result = assets.find_res_variants(records, list_dir=fake_list_dir)
-        assert "a" not in result
+        assert result["a"] == [
+            {"path": "/proj/tex/plain_2k.png", "px": 2048},
+            {"path": "/proj/tex/plain.png", "px": None},
+        ]
+
+    def test_bare_record_finds_two_tokened_siblings(self):
+        records = [{"key": "a", "resolved_path": "/proj/tex/plain.png"}]
+
+        def fake_list_dir(path):
+            return ["plain.png", "plain_2k.png", "plain_4k.png"]
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert result["a"] == [
+            {"path": "/proj/tex/plain_4k.png", "px": 4096},
+            {"path": "/proj/tex/plain_2k.png", "px": 2048},
+            {"path": "/proj/tex/plain.png", "px": None},
+        ]
+
+    def test_shrink_pair_bare_base_and_tokened_sibling(self):
+        # Real-world case reported by the user: Shrink creates
+        # "<name>_2K.png" from a bare base with spaces in the stem.
+        base = "CARBON GEN 2 HYPE CORAZON.png"
+        shrunk = "CARBON GEN 2 HYPE CORAZON_2K.png"
+        records = [{"key": "bare", "resolved_path": f"/proj/tex/{base}"},
+                   {"key": "tokened", "resolved_path": f"/proj/tex/{shrunk}"}]
+
+        def fake_list_dir(path):
+            return [base, shrunk]
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert result["bare"] == [
+            {"path": f"/proj/tex/{shrunk}", "px": 2048},
+            {"path": f"/proj/tex/{base}", "px": None},
+        ]
+        assert result["tokened"] == result["bare"]
+
+    def test_tokened_record_finds_its_bare_base(self):
+        records = [{"key": "a", "resolved_path": "/proj/tex/plain_2k.png"}]
+
+        def fake_list_dir(path):
+            return ["plain.png", "plain_2k.png"]
+
+        result = assets.find_res_variants(records, list_dir=fake_list_dir)
+        assert result["a"] == [
+            {"path": "/proj/tex/plain_2k.png", "px": 2048},
+            {"path": "/proj/tex/plain.png", "px": None},
+        ]
 
     def test_dir_listed_once_for_multiple_records_same_dir(self):
         records = [

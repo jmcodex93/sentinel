@@ -747,11 +747,15 @@ export interface HubMetaTotals {
  * `postHubSwitchRes`); `px` is the longest-edge pixel size the shared
  * `split_res_token` token maps to. A key only appears in the response's
  * record when its detected group has >=2 members (itself included) — see
- * `find_res_variants` in assets.py.
+ * `find_res_variants` in assets.py. `px` is `null` for a "bare base"
+ * sibling — the un-tokened original a Shrink copy was derived from — when
+ * the server couldn't enrich it with a real pixel size (`_meta_for` failed
+ * to parse the file); such an entry is never a valid exact-px switch
+ * target, but it does still count toward the family for "Highest".
  */
 export interface HubVariant {
   basename: string;
-  px: number;
+  px: number | null;
 }
 
 /** `POST /api/hub/switch_res` — see `_op_hub_switch_res` in hub_ops.py.

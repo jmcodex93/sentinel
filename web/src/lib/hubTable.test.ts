@@ -450,4 +450,17 @@ describe("switchTargets", () => {
     expect(labels["8192"]).toMatch(/8K/);
     expect(labels["1024"]).toMatch(/1K/);
   });
+
+  it("a null-px entry (bare base sibling the server couldn't enrich) still counts toward Highest but never becomes an exact-px target", () => {
+    const variants: Record<string, HubVariant[]> = {
+      a: [{ basename: "sibling_2k.png", px: 2048 }, { basename: "bare.png", px: null }],
+    };
+    const result = switchTargets(new Set(["a"]), variants);
+    // Highest is still available (the family exists) ...
+    expect(result.targets.map((t) => t.px)).toEqual(["highest", 2048]);
+    const highest = result.targets.find((t) => t.px === "highest");
+    expect(highest?.available).toBe(1);
+    // ... but "null" never shows up as its own selectable exact-px target.
+    expect(result.targets.some((t) => t.px === null)).toBe(false);
+  });
 });

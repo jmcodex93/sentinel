@@ -255,7 +255,12 @@ export interface SwitchTargetsResult {
  * exact px. `total` is the selection size, so the dialog can render each
  * target's "X/N available" against the same denominator. Selected keys with
  * no `variants` entry at all contribute to `total` but to no target's
- * `available` — they simply have nothing to switch. */
+ * `available` — they simply have nothing to switch. A `null`-px entry (a
+ * "bare base" sibling the server couldn't enrich with a real pixel size)
+ * still counts toward `highestAvailable` — the family exists, and picking
+ * "Highest" resolves server-side by real pixel size, never by this label —
+ * but it never contributes an exact-px target, since there is no concrete
+ * value a null entry could ever match. */
 export function switchTargets(
   selectedKeys: Set<string>,
   variants: Record<string, HubVariant[]>,
@@ -268,7 +273,7 @@ export function switchTargets(
     const group = variants[key];
     if (!group || group.length === 0) continue;
     highestAvailable += 1;
-    const pxSet = new Set(group.map((v) => v.px));
+    const pxSet = new Set(group.map((v) => v.px).filter((px): px is number => px !== null));
     for (const px of pxSet) {
       pxCounts.set(px, (pxCounts.get(px) ?? 0) + 1);
     }

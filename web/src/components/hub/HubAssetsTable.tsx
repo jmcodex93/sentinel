@@ -30,9 +30,13 @@ const ROW_H = 44; // --space-table-row (2-line rows: name+chip+badge / path+dims
 /** Res-chip chroma → existing DESIGN.md tokens only (Task 4 mapping,
  * `docs/superpowers/plans/2026-07-20-hub-polish.md`). No `--color-status-warn-tint-15`
  * token exists yet, so 4k reuses the warn 10% badge tint (closest existing token). */
+// Resolution is a PROPERTY, not a state — 8K/4K chips use the accent scale
+// (--color-primary tints), never the fail/warn/pass status chroma, which is
+// reserved exclusively for state (missing/absolute badges etc.). 2k/sm stay
+// on the neutral surface scale, unchanged.
 const RES_CHIP_META: Record<HubResTier, { color: string; background: string }> = {
-  "8k": { color: "var(--color-status-fail)", background: "var(--color-status-fail-tint-15)" },
-  "4k": { color: "var(--color-status-warn)", background: "var(--color-status-warn-tint-10)" },
+  "8k": { color: "var(--color-primary)", background: "var(--color-primary-tint-15)" },
+  "4k": { color: "var(--color-primary)", background: "var(--color-primary-tint-10)" },
   "2k": { color: "var(--color-ink-secondary)", background: "var(--color-surface-2)" },
   sm: { color: "var(--color-muted)", background: "var(--color-surface-2)" },
 };

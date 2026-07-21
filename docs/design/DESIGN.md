@@ -296,6 +296,12 @@ below); the two never overlap, so a lavender highlight is always
   `#828fff`.
 - **On Primary** (`{colors.on-primary}`): Text/icon color on top of a
   primary-filled surface — `#ffffff`.
+- **Primary Tint 15%** (`{colors.primary-tint-15}`): `rgba(94, 106, 210, 0.15)`
+  — accent-scale chip background for a PROPERTY, not a state (e.g. the Asset
+  Hub's 8K resolution chip); never a substitute for a status tint.
+- **Primary Tint 10%** (`{colors.primary-tint-10}`): `rgba(94, 106, 210, 0.1)`
+  — same accent-scale chip use, one step lighter (e.g. the Asset Hub's 4K
+  resolution chip).
 
 ### Status (exclusive to state — the accent never marks state)
 
