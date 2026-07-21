@@ -719,6 +719,34 @@ def qc_report_payload(scene_name, ruleset, score, structured_by_check):
     }
 
 
+def top_qc_checks(checks, limit=3):
+    """Pure: the worst ``limit`` checks by violation count, for
+    ``panel/overview``'s ``qc.top`` (see ``ui/panel_ops.py``). ``checks`` is
+    the ``"checks"`` list ``qc_report_payload`` already builds — this never
+    re-derives scoring, only ranks its output.
+
+    Count preference per row: ``new`` (baseline-aware violation count) when
+    present, else ``count`` (legacy violation count) — mirrors how
+    ``_qc_check_row`` itself only ever populates one of the two depending on
+    whether a baseline is active. A row with no count at all (``None`` or
+    ``0`` — i.e. passing or disabled) is excluded, never ranked as a
+    zero-severity "worst" entry.
+    """
+    scored = []
+    for entry in checks or []:
+        count = entry.get("new")
+        if count is None:
+            count = entry.get("count")
+        if not count:
+            continue
+        scored.append((count, entry))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [
+        {"check_id": entry.get("id"), "label": entry.get("label"), "count": count}
+        for count, entry in scored[:limit]
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Doctor report payload — doctor.run_all_diagnostics() -> SPA contract
 # ---------------------------------------------------------------------------
