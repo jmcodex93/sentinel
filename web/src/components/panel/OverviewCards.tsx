@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { PanelAssets, PanelDeliver, PanelOverview, PanelRender } from "../../types";
+import type { PaletteAction, PanelAssets, PanelDeliver, PanelOverview, PanelRender } from "../../types";
 
 /** Human label for a `qc.fixable` palette action id — the same four ids
  * `_PANEL_FIX_CHECK_ID` in panel_ops.py knows about. */
@@ -34,12 +34,23 @@ function CardActions({ children }: { children: ReactNode }) {
   return <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1">{children}</div>;
 }
 
-function CardAction({ label, onClick, disabled }: { label: string; onClick: () => void; disabled?: boolean }) {
+function CardAction({
+  label,
+  onClick,
+  disabled,
+  title,
+}: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
+      title={title}
       className="text-caption disabled:cursor-not-allowed disabled:opacity-50"
       style={{ color: "var(--color-primary)" }}
     >
@@ -60,11 +71,13 @@ function UnavailableCard({ title }: { title: string }) {
 
 function QcCard({
   qc,
+  actions,
   onFix,
   onOpenQc,
   busyFix,
 }: {
   qc: PanelOverview["qc"];
+  actions: PaletteAction[];
   onFix: (id: string) => void;
   onOpenQc: () => void;
   busyFix: string | null;
@@ -80,9 +93,22 @@ function QcCard({
         {topLine || "No violations."}
       </p>
       <CardActions>
-        {qc.fixable.map((id) => (
-          <CardAction key={id} label={FIX_LABELS[id] || id} onClick={() => onFix(id)} disabled={busyFix !== null} />
-        ))}
+        {qc.fixable.map((id) => {
+          // qc.fixable (panel/overview) and `actions` (palette/actions) are
+          // independently-timed snapshots — bind each button's disabled/title
+          // to the freshest known action, same as HubPreflightStrip's Fix
+          // buttons, rather than trusting the fixable id alone.
+          const action = actions.find((a) => a.id === id);
+          return (
+            <CardAction
+              key={id}
+              label={FIX_LABELS[id] || id}
+              onClick={() => onFix(id)}
+              disabled={busyFix !== null || (action ? !action.enabled : false)}
+              title={action && !action.enabled ? action.reason || undefined : undefined}
+            />
+          );
+        })}
         <CardAction label="Ver todo →" onClick={onOpenQc} />
       </CardActions>
     </Card>
@@ -161,6 +187,7 @@ function DeliverCard({
  * `runPaletteAction`/`postPanelOpenForm` wiring and the confirm contract. */
 export function OverviewCards({
   overview,
+  actions,
   onFix,
   busyFix,
   onOpenQc,
@@ -171,6 +198,7 @@ export function OverviewCards({
   onOpenDeliver,
 }: {
   overview: PanelOverview;
+  actions: PaletteAction[];
   onFix: (id: string) => void;
   busyFix: string | null;
   onOpenQc: () => void;
@@ -182,7 +210,7 @@ export function OverviewCards({
 }) {
   return (
     <div className="grid grid-cols-1 gap-3 p-3 sm:grid-cols-2">
-      <QcCard qc={overview.qc} onFix={onFix} onOpenQc={onOpenQc} busyFix={busyFix} />
+      <QcCard qc={overview.qc} actions={actions} onFix={onFix} onOpenQc={onOpenQc} busyFix={busyFix} />
       <AssetsCard assets={overview.assets} onOpenHub={onOpenHub} />
       <RenderCard render={overview.render} onValidate={onValidateRender} />
       <DeliverCard

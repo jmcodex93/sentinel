@@ -127,6 +127,15 @@ export function PanelPage() {
   }, [load]);
 
   async function runFix(action: PaletteAction, confirm?: boolean) {
+    // qc.fixable (panel/overview) and this actions list (palette/actions) are
+    // independently-timed snapshots — a fixable id can be stale by the time
+    // the artist clicks it. Gate on the freshest known enabled/reason before
+    // honoring requires_confirm or hitting the server, same as
+    // PalettePage.runAction / HubPreflightStrip.runFix.
+    if (!action.enabled) {
+      if (action.reason) toast({ message: action.reason, variant: "warn" });
+      return;
+    }
     if (action.requires_confirm && !confirm) {
       setConfirmAction(action);
       return;
@@ -200,6 +209,7 @@ export function PanelPage() {
               )}
               <OverviewCards
                 overview={state.data}
+                actions={actions}
                 busyFix={busyFixId}
                 onFix={handleFix}
                 onOpenQc={() => handleDeepLink("open_reports_qc")}
