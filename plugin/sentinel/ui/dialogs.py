@@ -10,6 +10,7 @@ from c4d import gui
 from sentinel import assets as assets_engine
 from sentinel import baseline
 from sentinel import doctor
+from sentinel import gate as quality_gate
 from sentinel import supervisor
 from sentinel.common.cache import check_cache
 from sentinel.common.helpers import open_in_explorer, safe_print
@@ -2506,12 +2507,11 @@ class AssetHubDialog(gui.GeDialog):
         issues, preflight_score, rules_context, gate_overrides,
         gate_evaluated, baseline_path, baseline_entries.
 
-        `issues` is derived from `score["counts"]` + each registry entry's
-        `preflight_template`, in `preflight_order` — the exact loop
-        collect_scene runs, duplicated here because that loop is entangled
-        with collect_scene's own MessageDialog flow (not factored out into
-        a reusable helper) and the Hub drives its own missing-asset gate
-        instead of that dialog.
+        `issues` comes from `quality_gate.build_preflight_issues(score)`
+        (gate.py) — the shared helper extracted from this method's former
+        inline loop over `score["counts"]` + each registry entry's
+        `preflight_template`/`preflight_order`, now reused verbatim by the
+        Hub SPA's `hub/collect_start` op (ui/hub_ops.py Task 6).
 
         Runs `_run_quality_gate` (the same modal gate collect_scene uses)
         BEFORE the pipeline when `gates_enabled` is set in the resolved
@@ -2521,19 +2521,7 @@ class AssetHubDialog(gui.GeDialog):
         from sentinel.ui.flows import (
             _run_quality_gate, _doc_full_path, _baseline_path_for_doc)
 
-        issues = []
-        preflight_entries = sorted(
-            enumerate(CHECK_REGISTRY),
-            key=lambda item: (
-                item[1].preflight_order
-                if item[1].preflight_order is not None
-                else item[0]
-            ),
-        )
-        for _idx, entry in preflight_entries:
-            count = (score.get("counts") or {}).get(entry.check_id, 0)
-            if count:
-                issues.append(entry.preflight_template.format(n=count))
+        issues = quality_gate.build_preflight_issues(score)
 
         baseline_path_for_payload = _baseline_path_for_doc(self.doc, only_existing=True)
         baseline_entries_for_payload = []

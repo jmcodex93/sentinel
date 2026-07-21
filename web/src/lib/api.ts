@@ -4,6 +4,8 @@ import mockGate from "../mock/form-gate.json";
 import mockNotes from "../mock/form-notes.json";
 import mockSaveVersion from "../mock/form-save-version.json";
 import mockSettings from "../mock/form-settings.json";
+import mockHubInventory from "../mock/hub-inventory.json";
+import mockHubMeta from "../mock/hub-meta.json";
 import mockPaletteActions from "../mock/palette-actions.json";
 import mockQcReport from "../mock/qc-report.json";
 import mockRenderValidationReport from "../mock/render-validation.json";
@@ -17,6 +19,22 @@ import type {
   GateStateResult,
   GateSubmitAction,
   GateSubmitResponse,
+  HubApplyChange,
+  HubApplyResponse,
+  HubCollectStartResponse,
+  HubInventory,
+  HubInventoryResult,
+  HubJobStatus,
+  HubMeta,
+  HubMetaTotals,
+  HubMakeRelativeResponse,
+  HubMatchFolderResponse,
+  HubPickPathResponse,
+  HubPreset,
+  HubPresetsResult,
+  HubPresetsSaveResponse,
+  HubSelectOwnerResponse,
+  HubUiState,
   NotesState,
   NotesStateResult,
   NotesSubmitPayload,
@@ -186,7 +204,7 @@ export async function fetchRenderValidationReport(): Promise<RenderValidationRep
 // only for a genuine network/JSON failure.
 // ---------------------------------------------------------------------------
 
-function isMock(): boolean {
+export function isMock(): boolean {
   return new URLSearchParams(window.location.search).get("mock") === "1";
 }
 
@@ -438,4 +456,263 @@ export async function runPaletteAction(id: string, confirm?: boolean): Promise<P
     return mockPaletteRun(id, confirm);
   }
   return postForm<PaletteRunResponse>("/api/palette/run", confirm ? { id, confirm: true } : { id });
+}
+
+// ---------------------------------------------------------------------------
+// Asset Hub (Phase 5) — see plugin/sentinel/ui/hub_ops.py `HUB_OPS`, routed
+// through the same `/api/<op>` dispatch as every op above. Pages are not
+// wired to this module yet (that's a later Phase 5 task); these functions
+// only need to compile and match the Python contract field-for-field.
+// ---------------------------------------------------------------------------
+
+/** `GET /api/hub/inventory` — see `_op_hub_inventory` in hub_ops.py. */
+export async function fetchHubInventory(): Promise<HubInventoryResult> {
+  if (isMock()) {
+    return { kind: "ok", data: mockHubInventory as HubInventory };
+  }
+  return fetchReport<HubInventory>("/api/hub/inventory", {
+    no_document: "No active Cinema 4D document. Open a scene, then reopen the Asset Hub.",
+  });
+}
+
+/** `GET /api/hub/state_stamp` — see `_op_hub_state_stamp` in hub_ops.py.
+ * Collapses the `{stamp}` / `{error}` envelope to `string | null`: the SPA
+ * only ever compares stamps to detect change, so "no document" and a
+ * network failure are equally "nothing to compare". */
+export async function fetchHubStateStamp(): Promise<string | null> {
+  if (isMock()) {
+    return "mock-stamp";
+  }
+  const result = await fetchReport<{ stamp: string }>("/api/hub/state_stamp", {});
+  return result.kind === "ok" ? result.data.stamp : null;
+}
+
+/** `GET /api/hub/presets` — see `_op_hub_presets` in hub_ops.py. */
+export async function fetchHubPresets(): Promise<HubPresetsResult> {
+  if (isMock()) {
+    return { kind: "ok", data: [] };
+  }
+  const result = await fetchReport<{ presets: HubPreset[] }>("/api/hub/presets", {});
+  if (result.kind === "empty") {
+    return { kind: "error", message: result.reason };
+  }
+  if (result.kind === "error") {
+    return result;
+  }
+  return { kind: "ok", data: Array.isArray(result.data.presets) ? result.data.presets : [] };
+}
+
+/** `POST /api/hub/presets/save` — see `_op_hub_presets_save` in hub_ops.py. */
+export async function saveHubPreset(find: string, replace: string): Promise<HubPresetsSaveResponse> {
+  if (isMock()) {
+    return { ok: true };
+  }
+  return postForm<HubPresetsSaveResponse>("/api/hub/presets/save", { find, replace });
+}
+
+/** `POST /api/hub/apply_repath` — see `_op_hub_apply_repath` in hub_ops.py. */
+export async function postHubApply(changes: HubApplyChange[]): Promise<HubApplyResponse> {
+  if (isMock()) {
+    return { ok: true, applied: changes.length, errors: [], stamp: "mock-stamp" };
+  }
+  return postForm<HubApplyResponse>("/api/hub/apply_repath", { changes });
+}
+
+/** `POST /api/hub/select_owner` — see `_op_hub_select_owner` in hub_ops.py. */
+export async function postHubSelectOwner(key: string): Promise<HubSelectOwnerResponse> {
+  if (isMock()) {
+    return { ok: true, stamp: "mock-stamp" };
+  }
+  return postForm<HubSelectOwnerResponse>("/api/hub/select_owner", { key });
+}
+
+/** `POST /api/hub/pick_path` — see `_op_hub_pick_path` in hub_ops.py
+ * (`directory` picks a folder instead of a file; `title` is the dialog
+ * caption). */
+export async function postHubPickPath(directory: boolean, title?: string): Promise<HubPickPathResponse> {
+  if (isMock()) {
+    return { ok: false, error: "cancelled" };
+  }
+  return postForm<HubPickPathResponse>("/api/hub/pick_path", { directory, title });
+}
+
+/** `POST /api/hub/collect_start` — see `_op_hub_collect_start` in
+ * hub_ops.py. `gateAck` must be exactly `true` to proceed past a blocking
+ * FAIL-severity gate (mirrors the fase-4 `form/gate` `confirm_required`
+ * contract — see that op's docstring). */
+export async function startHubCollect(
+  targetDir: string,
+  zip: boolean,
+  gateAck: boolean,
+): Promise<HubCollectStartResponse> {
+  if (isMock()) {
+    return { ok: true, job_id: "mock-job-1" };
+  }
+  return postForm<HubCollectStartResponse>("/api/hub/collect_start", {
+    target_dir: targetDir,
+    zip,
+    gate_ack: gateAck,
+  });
+}
+
+/** `GET /api/hub/job_status?job_id=<id>` — see `webbridge.JobRegistry.status`
+ * and the `hub/job_status` special-case in `reports_dialog.py` (answered
+ * directly on the HTTP server thread, so it is NOT routed through
+ * `fetchReport`'s `MainThreadQueue`-backed error envelope — the raw shape
+ * already carries `error` for an unknown/expired job_id). */
+export async function fetchHubJobStatus(jobId: string): Promise<HubJobStatus> {
+  if (isMock()) {
+    return { job_id: jobId, state: "done", phase: "run", detail: "", pct: 100, result: null };
+  }
+  try {
+    const response = await fetch("/api/hub/job_status?job_id=" + encodeURIComponent(jobId));
+    return (await response.json()) as HubJobStatus;
+  } catch {
+    return { error: "Could not reach the Sentinel server. Is the Asset Hub still open in Cinema 4D?" };
+  }
+}
+
+/** `POST /api/hub/match_folder` — see `_op_hub_match_folder` in hub_ops.py
+ * (Search Folder for Missing). */
+export async function postHubMatchFolder(root: string): Promise<HubMatchFolderResponse> {
+  if (isMock()) {
+    return { ok: true, matches: [], ambiguous: 0, truncated: false };
+  }
+  return postForm<HubMatchFolderResponse>("/api/hub/match_folder", { root });
+}
+
+/** `POST /api/hub/make_relative` — see `_op_hub_make_relative` in
+ * hub_ops.py (Make All Relative). Server-side because the rule
+ * (`compute_relative_texture_path`'s `os.path.relpath` + cross-drive/climb
+ * depth rejection) is not trivially reproducible in the browser. */
+export async function postHubMakeRelative(): Promise<HubMakeRelativeResponse> {
+  if (isMock()) {
+    return { ok: true, changes: [], skipped_cross_drive: 0 };
+  }
+  return postForm<HubMakeRelativeResponse>("/api/hub/make_relative", {});
+}
+
+/** `GET /api/hub/preflight` — see `_op_hub_preflight` in hub_ops.py. Same
+ * `qc_report_payload` shape as `GET /api/report/qc`, so this reuses
+ * `QcReport`/`QcReportResult` rather than a duplicate Hub-specific type. */
+export async function fetchHubPreflight(): Promise<QcReportResult> {
+  if (isMock()) {
+    return { kind: "ok", data: mockQcReport as QcReport };
+  }
+  return fetchReport<QcReport>("/api/hub/preflight", {
+    no_document: "No active Cinema 4D document. Open a scene, then reopen the Asset Hub.",
+  });
+}
+
+/** `POST /api/hub/meta` — see `_op_hub_meta` in hub_ops.py.
+ * Caps each request at 64 keys — the caller (HubPage's meta sweep) chunks
+ * the full asset key set into sequential 64-key calls rather than sending
+ * one giant request.
+ * Returns only the metas that were found; missing keys are absent.
+ * Returns `{}` on any error (never throws). Mock branch filters
+ * `hub-meta.json` by the requested keys. */
+export async function fetchHubMeta(keys: string[]): Promise<Record<string, HubMeta>> {
+  if (isMock()) {
+    const mockData = mockHubMeta as Record<string, HubMeta>;
+    const result: Record<string, HubMeta> = {};
+    for (const key of keys) {
+      if (key in mockData) {
+        result[key] = mockData[key];
+      }
+    }
+    return result;
+  }
+
+  try {
+    const response = await fetch("/api/hub/meta", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keys }),
+    });
+    const payload = await response.json();
+    if (response.ok && payload && typeof payload === "object" && "metas" in payload) {
+      return (payload as { metas: Record<string, HubMeta> }).metas;
+    }
+  } catch {
+    // Silently fall through to empty return
+  }
+  return {};
+}
+
+/** `GET /api/hub/meta_totals` — see `_op_hub_meta_totals` in hub_ops.py.
+ * Aggregated metrics over all assets that have cached metadata.
+ * Returns a default totals object on any error (never throws). */
+export async function fetchHubMetaTotals(): Promise<HubMetaTotals> {
+  const defaultTotals: HubMetaTotals = {
+    vram_bytes: 0,
+    vram_label: "—",
+    disk_bytes: 0,
+    disk_label: "—",
+    covered: 0,
+    total: 0,
+  };
+
+  if (isMock()) {
+    // Fixture totals (sum of all 10 hub-meta.json vram_bytes):
+    // tex_body_diffuse(67MB) + tex_body_normal(67MB) + tex_shared_noise(256MB)
+    // + tex_glass_normal(16MB) + hdri_dome_studio(32MB) + tex_label_diffuse(4MB)
+    // + tex_props_ao(5.3MB) + abc_hero_anim(45MB) + hdri_dome_backup(64MB)
+    // + abc_crowd_sim(5.3MB) = 582,658,730 bytes = 556 MB
+    return {
+      vram_bytes: 582658730,
+      vram_label: "556 MB",
+      disk_bytes: 536870912,
+      disk_label: "512 MB",
+      covered: 10,
+      total: 10,
+    };
+  }
+
+  try {
+    const response = await fetch("/api/hub/meta_totals");
+    if (!response.ok) return defaultTotals;
+    return (await response.json()) as HubMetaTotals;
+  } catch {
+    return defaultTotals;
+  }
+}
+
+/** `GET /api/hub/ui_state` — see `_op_hub_ui_state` in hub_ops.py.
+ * Retrieves persisted column widths and sort spec from `sentinel_settings.json`.
+ * Returns an empty state on any error (never throws). */
+export async function fetchHubUiState(): Promise<HubUiState> {
+  if (isMock()) {
+    return { col_widths: {}, sort: undefined };
+  }
+
+  try {
+    const response = await fetch("/api/hub/ui_state");
+    if (!response.ok) return {};
+    const payload = await response.json();
+    if (payload && typeof payload === "object" && "state" in payload) {
+      return (payload as { state: HubUiState }).state;
+    }
+  } catch {
+    // Silently fall through to empty return
+  }
+  return {};
+}
+
+/** `POST /api/hub/ui_state/save` — see `_op_hub_ui_state_save` in hub_ops.py.
+ * Fire-and-forget mutation: persists column widths and sort spec.
+ * Never throws; silently fails on network error. */
+export async function saveHubUiState(state: HubUiState): Promise<void> {
+  if (isMock()) {
+    return;
+  }
+
+  try {
+    await fetch("/api/hub/ui_state/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state }),
+    });
+  } catch {
+    // Fire-and-forget; silently ignore errors
+  }
 }

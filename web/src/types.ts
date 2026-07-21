@@ -474,3 +474,226 @@ export interface PaletteRunResponse {
    * e.g. "form/save_version") to switch to client-side. */
   navigate?: string;
 }
+
+/**
+ * Asset Hub contract (Phase 5) — mirrors `hub_inventory_payload` in
+ * plugin/sentinel/webbridge.py and the ops in
+ * plugin/sentinel/ui/hub_ops.py (`HUB_OPS`), routed through the same
+ * `/api/<op>` dispatch as every other op (see `reports_dialog.py`'s
+ * `HUB_OPS` merge + the `hub/job_status` special-case answered outside the
+ * `MainThreadQueue`). Produced by `GET /api/hub/inventory`.
+ */
+
+export type HubAssetStatus = "missing" | "absolute" | "empty" | "asset_uri" | "ok";
+
+export interface HubOwner {
+  name: string;
+  kind: string;
+  channel: string;
+}
+
+export interface HubAsset {
+  key: string;
+  path: string;
+  resolved_path: string | null;
+  status: HubAssetStatus;
+  asset_type: string;
+  size_bytes: number | null;
+  size_label: string;
+  owners: HubOwner[];
+  repathable: boolean;
+  has_thumb: boolean;
+}
+
+export interface HubTotals {
+  count: number;
+  missing: number;
+  absolute: number;
+  total_bytes: number;
+  unsized: number;
+  total_label: string;
+  by_type: Record<string, number>;
+}
+
+export interface HubInventory {
+  scene_name: string;
+  skipped: number;
+  assets: HubAsset[];
+  totals: HubTotals;
+}
+
+export type HubInventoryResult =
+  | { kind: "ok"; data: HubInventory }
+  | { kind: "empty"; reason: string }
+  | { kind: "error"; message: string };
+
+/** `GET /api/hub/state_stamp` — see `_op_hub_state_stamp` in hub_ops.py.
+ * Consumed by `fetchHubStateStamp`, which collapses this to `string | null`
+ * (the SPA never needs to distinguish "no document" from a network error —
+ * either way there's nothing to compare against). */
+export interface HubStateStamp {
+  stamp: string;
+}
+
+/** `GET /api/hub/presets` — see `_op_hub_presets` in hub_ops.py, reshaping
+ * `ui.dialogs.load_repath_presets` (persisted Texture Repathing Find/Replace
+ * history, capped at 5, de-duped). */
+export interface HubPreset {
+  find: string;
+  replace: string;
+}
+
+export type HubPresetsResult =
+  | { kind: "ok"; data: HubPreset[] }
+  | { kind: "error"; message: string };
+
+/** `POST /api/hub/presets/save` — see `_op_hub_presets_save` in hub_ops.py. */
+export interface HubPresetsSaveResponse {
+  ok: boolean;
+  error?: string;
+}
+
+/** One pending Find/Replace or relink edit, as sent to `hub/apply_repath`
+ * (`payload.get("changes")` in `_op_hub_apply_repath`) — `key` is the
+ * `HubAsset.key` this row was fetched with, re-resolved server-side against
+ * a fresh scan (HTTP is stateless, see the op's own docstring). */
+export interface HubApplyChange {
+  key: string;
+  new_path: string;
+}
+
+/** `POST /api/hub/apply_repath` — see `_op_hub_apply_repath` in
+ * hub_ops.py. `stamp` (added after the Task 3/4/6 payload block was
+ * written) is a fresh `hub/state_stamp`-equivalent fingerprint the mutation
+ * computes *after* its own `c4d.EventAdd()`, so the SPA can re-anchor its
+ * polling baseline from it and never mistake its own edit for an external
+ * scene change. */
+export interface HubApplyResponse {
+  ok: boolean;
+  error?: string;
+  applied?: number;
+  errors?: { key: string; error: string }[];
+  stamp?: string;
+}
+
+/** `POST /api/hub/select_owner` — see `_op_hub_select_owner` in
+ * hub_ops.py. Same trailing `stamp` reasoning as `HubApplyResponse`. */
+export interface HubSelectOwnerResponse {
+  ok: boolean;
+  error?: string;
+  stamp?: string;
+}
+
+/** `POST /api/hub/pick_path` — see `_op_hub_pick_path` in hub_ops.py (a
+ * blocking native `LoadDialog`, safe under the fase-4 per-request
+ * `MainThreadQueue` lock). */
+export interface HubPickPathResponse {
+  ok: boolean;
+  error?: string;
+  path?: string;
+}
+
+/** `POST /api/hub/match_folder` — see `_op_hub_match_folder` in hub_ops.py
+ * (Search Folder for Missing). `matches` are only the unambiguous
+ * single-candidate hits — ambiguous (2+ candidates) is just a count, the
+ * SPA never auto-picks. */
+export interface HubMatchFolderResponse {
+  ok: boolean;
+  error?: string;
+  matches?: { key: string; match: string }[];
+  ambiguous?: number;
+  truncated?: boolean;
+}
+
+/** `POST /api/hub/make_relative` — see `_op_hub_make_relative` in
+ * hub_ops.py (Make All Relative). Read-only: stages `changes` for the SPA
+ * to merge into `pending`, does not write anything itself. */
+export interface HubMakeRelativeResponse {
+  ok: boolean;
+  error?: string;
+  changes?: { key: string; new_path: string }[];
+  skipped_cross_drive?: number;
+}
+
+export interface HubCollectStartResponse {
+  ok: boolean;
+  error?: string;
+  job_id?: string;
+}
+
+export interface HubCollectResult {
+  target_dir: string;
+  delivery_filename: string;
+  assets_collected: number;
+  assets_missing: number;
+  zip: { zip_path: string; files: number; bytes: number } | null;
+  zip_error: string | null;
+  pending_todos: number;
+  report: DeliveryReport; // reuses the existing DeliveryReport type
+}
+
+/** `GET /api/hub/job_status?job_id=<id>` — see `webbridge.JobRegistry.status`
+ * and the `hub/job_status` special-case in `reports_dialog.py` (answered
+ * directly on the HTTP server thread, bypassing `MainThreadQueue`, so
+ * polling stays live while a collect job blocks the main thread). Returned
+ * raw (not wrapped in a `{kind: ...}` result) — the shape itself already
+ * carries every state the SPA needs to render, including an unknown/expired
+ * `job_id` via `error`. */
+export interface HubJobStatus {
+  job_id?: string;
+  state?: "pending" | "running" | "done" | "error";
+  phase?: string;
+  detail?: string;
+  pct?: number;
+  result?: HubCollectResult | null;
+  error?: string;
+}
+
+/**
+ * Hub Metadata contract — mirrors `_meta_for` in plugin/sentinel/ui/hub_ops.py
+ * (Task 2). Produced by `POST /api/hub/meta` with `{keys: [...]}` payload
+ * (see `_op_hub_meta`). Per-asset image metadata extracted from file headers
+ * (width, height, channels, bit_depth, colorspace) plus derived fields
+ * (vram_bytes, vram_label, res_label, res_tier).
+ */
+export type HubResTier = "8k" | "4k" | "2k" | "sm";
+
+export interface HubMeta {
+  width: number;
+  height: number;
+  channels: number;
+  bit_depth: number;
+  colorspace: string;
+  vram_bytes: number;
+  vram_label: string;
+  res_label: string;
+  res_tier: HubResTier;
+}
+
+/**
+ * Hub Metadata Totals contract — mirrors the response from
+ * `GET /api/hub/meta_totals` (see `_op_hub_meta_totals` in hub_ops.py).
+ * Aggregated metrics over all unique assets in the inventory that have
+ * cached metadata. `covered`/`total` indicates partial vs complete scan
+ * state (the SPA shows "~" prefix while `covered < total`).
+ */
+export interface HubMetaTotals {
+  vram_bytes: number;
+  vram_label: string;
+  disk_bytes: number;
+  disk_label: string;
+  covered: number;
+  total: number;
+}
+
+/**
+ * Hub UI State contract — mirrors the response from `GET /api/hub/ui_state`
+ * and the payload for `POST /api/hub/ui_state/save` (see `_op_hub_ui_state`
+ * and `_op_hub_ui_state_save` in hub_ops.py). Persisted in `sentinel_settings.json`
+ * under the key `hub_spa_ui`. Carries resizable column widths and sort spec
+ * across sessions.
+ */
+export interface HubUiState {
+  col_widths?: Record<string, number>;
+  sort?: { col: string; dir: "asc" | "desc" };
+}

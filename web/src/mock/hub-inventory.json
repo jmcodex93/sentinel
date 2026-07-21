@@ -1,0 +1,600 @@
+{
+  "scene_name": "shot_010_v012.c4d",
+  "skipped": 2,
+  "assets": [
+    {
+      "key": "tex_body_diffuse",
+      "path": "textures/shot_010/body_diffuse.png",
+      "resolved_path": "textures/shot_010/body_diffuse.png",
+      "status": "ok",
+      "asset_type": "texture",
+      "size_bytes": 4194304,
+      "size_label": "4.0 MB",
+      "owners": [
+        {
+          "name": "Body_Mat",
+          "kind": "material",
+          "channel": "Color"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": true
+    },
+    {
+      "key": "tex_body_normal",
+      "path": "textures/shot_010/body_normal.png",
+      "resolved_path": "textures/shot_010/body_normal.png",
+      "status": "ok",
+      "asset_type": "texture",
+      "size_bytes": 8388608,
+      "size_label": "8.0 MB",
+      "owners": [
+        {
+          "name": "Body_Mat",
+          "kind": "material",
+          "channel": "Bump"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": true
+    },
+    {
+      "key": "tex_body_rough",
+      "path": "textures/shot_010/body_roughness.png",
+      "resolved_path": "textures/shot_010/body_roughness.png",
+      "status": "ok",
+      "asset_type": "texture",
+      "size_bytes": 2097152,
+      "size_label": "2.0 MB",
+      "owners": [
+        {
+          "name": "Body_Mat",
+          "kind": "material",
+          "channel": "Roughness"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": true
+    },
+    {
+      "key": "tex_ground_diffuse",
+      "path": "textures/shot_010/ground_diffuse.png",
+      "resolved_path": "textures/shot_010/ground_diffuse.png",
+      "status": "ok",
+      "asset_type": "texture",
+      "size_bytes": 6291456,
+      "size_label": "6.0 MB",
+      "owners": [
+        {
+          "name": "Ground_Mat",
+          "kind": "material",
+          "channel": "Color"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": true
+    },
+    {
+      "key": "tex_ground_normal",
+      "path": "textures/shot_010/ground_normal.png",
+      "resolved_path": "textures/shot_010/ground_normal.png",
+      "status": "ok",
+      "asset_type": "texture",
+      "size_bytes": 6291456,
+      "size_label": "6.0 MB",
+      "owners": [
+        {
+          "name": "Ground_Mat",
+          "kind": "material",
+          "channel": "Bump"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": true
+    },
+    {
+      "key": "tex_props_diffuse",
+      "path": "textures/shot_010/props_diffuse.png",
+      "resolved_path": "textures/shot_010/props_diffuse.png",
+      "status": "ok",
+      "asset_type": "texture",
+      "size_bytes": 3145728,
+      "size_label": "3.0 MB",
+      "owners": [
+        {
+          "name": "Props_Mat",
+          "kind": "material",
+          "channel": "Color"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": true
+    },
+    {
+      "key": "tex_props_ao",
+      "path": "textures/shot_010/props_ao.png",
+      "resolved_path": "textures/shot_010/props_ao.png",
+      "status": "ok",
+      "asset_type": "texture",
+      "size_bytes": 1048576,
+      "size_label": "1.0 MB",
+      "owners": [
+        {
+          "name": "Props_Mat",
+          "kind": "material",
+          "channel": "AO"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": true
+    },
+    {
+      "key": "tex_shared_noise",
+      "path": "textures/shared/noise_pattern.png",
+      "resolved_path": "textures/shared/noise_pattern.png",
+      "status": "ok",
+      "asset_type": "texture",
+      "size_bytes": 524288,
+      "size_label": "512 KB",
+      "owners": [
+        {
+          "name": "Body_Mat",
+          "kind": "material",
+          "channel": "Displacement"
+        },
+        {
+          "name": "Props_Mat",
+          "kind": "material",
+          "channel": "Displacement"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": true
+    },
+    {
+      "key": "tex_label_diffuse",
+      "path": "textures/shot_010/label_diffuse.png",
+      "resolved_path": "textures/shot_010/label_diffuse.png",
+      "status": "ok",
+      "asset_type": "texture",
+      "size_bytes": 1572864,
+      "size_label": "1.5 MB",
+      "owners": [
+        {
+          "name": "Label_Mat",
+          "kind": "material",
+          "channel": "Color"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": true
+    },
+    {
+      "key": "tex_glass_normal",
+      "path": "textures/shot_010/glass_normal.png",
+      "resolved_path": "textures/shot_010/glass_normal.png",
+      "status": "ok",
+      "asset_type": "texture",
+      "size_bytes": 2097152,
+      "size_label": "2.0 MB",
+      "owners": [
+        {
+          "name": "Glass_Mat",
+          "kind": "material",
+          "channel": "Bump"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": true
+    },
+    {
+      "key": "hdri_dome_studio",
+      "path": "hdri/studio_soft_4k.hdr",
+      "resolved_path": "hdri/studio_soft_4k.hdr",
+      "status": "ok",
+      "asset_type": "hdri",
+      "size_bytes": 33554432,
+      "size_label": "32.0 MB",
+      "owners": [
+        {
+          "name": "Dome_Light",
+          "kind": "light",
+          "channel": "Dome HDR"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": true
+    },
+    {
+      "key": "hdri_dome_backup",
+      "path": "hdri/exterior_overcast_2k.hdr",
+      "resolved_path": "hdri/exterior_overcast_2k.hdr",
+      "status": "ok",
+      "asset_type": "hdri",
+      "size_bytes": 12582912,
+      "size_label": "12.0 MB",
+      "owners": [
+        {
+          "name": "Backup_Dome",
+          "kind": "light",
+          "channel": "Dome HDR"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": true
+    },
+    {
+      "key": "abc_hero_anim",
+      "path": "caches/hero_anim.abc",
+      "resolved_path": "caches/hero_anim.abc",
+      "status": "ok",
+      "asset_type": "alembic",
+      "size_bytes": 47185920,
+      "size_label": "45.0 MB",
+      "owners": [
+        {
+          "name": "Hero_Null",
+          "kind": "object",
+          "channel": "Alembic Cache"
+        }
+      ],
+      "repathable": false,
+      "has_thumb": false
+    },
+    {
+      "key": "abc_crowd_sim",
+      "path": "caches/crowd_sim.abc",
+      "resolved_path": "caches/crowd_sim.abc",
+      "status": "ok",
+      "asset_type": "alembic",
+      "size_bytes": 104857600,
+      "size_label": "100 MB",
+      "owners": [
+        {
+          "name": "Crowd_Null",
+          "kind": "object",
+          "channel": "Alembic Cache"
+        }
+      ],
+      "repathable": false,
+      "has_thumb": false
+    },
+    {
+      "key": "tex_old_metal",
+      "path": "textures/legacy/old_metal.png",
+      "resolved_path": null,
+      "status": "missing",
+      "asset_type": "texture",
+      "size_bytes": null,
+      "size_label": "\u2014",
+      "owners": [
+        {
+          "name": "OldTree_Mat",
+          "kind": "material",
+          "channel": "Color"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": false
+    },
+    {
+      "key": "tex_missing_spec",
+      "path": "textures/shot_010/vehicle_spec.png",
+      "resolved_path": null,
+      "status": "missing",
+      "asset_type": "texture",
+      "size_bytes": null,
+      "size_label": "\u2014",
+      "owners": [
+        {
+          "name": "Vehicle_Mat",
+          "kind": "material",
+          "channel": "Specular"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": false
+    },
+    {
+      "key": "hdri_missing_dome",
+      "path": "hdri/missing_night_sky.hdr",
+      "resolved_path": null,
+      "status": "missing",
+      "asset_type": "hdri",
+      "size_bytes": null,
+      "size_label": "\u2014",
+      "owners": [
+        {
+          "name": "Night_Dome",
+          "kind": "light",
+          "channel": "Dome HDR"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": false
+    },
+    {
+      "key": "abc_missing_debris",
+      "path": "caches/debris_sim.abc",
+      "resolved_path": null,
+      "status": "missing",
+      "asset_type": "alembic",
+      "size_bytes": null,
+      "size_label": "\u2014",
+      "owners": [
+        {
+          "name": "Debris_Null",
+          "kind": "object",
+          "channel": "Alembic Cache"
+        }
+      ],
+      "repathable": false,
+      "has_thumb": false
+    },
+    {
+      "key": "tex_abs_wood",
+      "path": "/Users/artist/Desktop/wood_diffuse.png",
+      "resolved_path": "/Users/artist/Desktop/wood_diffuse.png",
+      "status": "absolute",
+      "asset_type": "texture",
+      "size_bytes": 3670016,
+      "size_label": "3.5 MB",
+      "owners": [
+        {
+          "name": "Table_Mat",
+          "kind": "material",
+          "channel": "Color"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": true
+    },
+    {
+      "key": "tex_abs_metal",
+      "path": "C:/Users/artist/Pictures/metal_diffuse.png",
+      "resolved_path": "C:/Users/artist/Pictures/metal_diffuse.png",
+      "status": "absolute",
+      "asset_type": "texture",
+      "size_bytes": 4718592,
+      "size_label": "4.5 MB",
+      "owners": [
+        {
+          "name": "Railing_Mat",
+          "kind": "material",
+          "channel": "Color"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": true
+    },
+    {
+      "key": "tex_abs_fabric",
+      "path": "/Volumes/Scratch/fabric_diffuse.png",
+      "resolved_path": "/Volumes/Scratch/fabric_diffuse.png",
+      "status": "absolute",
+      "asset_type": "texture",
+      "size_bytes": 2621440,
+      "size_label": "2.5 MB",
+      "owners": [
+        {
+          "name": "Curtain_Mat",
+          "kind": "material",
+          "channel": "Color"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": true
+    },
+    {
+      "key": "hdri_abs_studio",
+      "path": "/Users/artist/Downloads/studio_hdri.hdr",
+      "resolved_path": "/Users/artist/Downloads/studio_hdri.hdr",
+      "status": "absolute",
+      "asset_type": "hdri",
+      "size_bytes": 20971520,
+      "size_label": "20.0 MB",
+      "owners": [
+        {
+          "name": "Studio_Dome",
+          "kind": "light",
+          "channel": "Dome HDR"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": true
+    },
+    {
+      "key": "tex_empty_slot_a",
+      "path": "",
+      "resolved_path": null,
+      "status": "empty",
+      "asset_type": "texture",
+      "size_bytes": null,
+      "size_label": "\u2014",
+      "owners": [
+        {
+          "name": "Placeholder_Mat",
+          "kind": "material",
+          "channel": "Color"
+        }
+      ],
+      "repathable": false,
+      "has_thumb": false
+    },
+    {
+      "key": "tex_empty_slot_b",
+      "path": "",
+      "resolved_path": null,
+      "status": "empty",
+      "asset_type": "texture",
+      "size_bytes": null,
+      "size_label": "\u2014",
+      "owners": [
+        {
+          "name": "Placeholder_Mat",
+          "kind": "material",
+          "channel": "Bump"
+        }
+      ],
+      "repathable": false,
+      "has_thumb": false
+    },
+    {
+      "key": "obj_empty_alembic",
+      "path": "",
+      "resolved_path": null,
+      "status": "empty",
+      "asset_type": "alembic",
+      "size_bytes": null,
+      "size_label": "\u2014",
+      "owners": [
+        {
+          "name": "Unused_Null",
+          "kind": "object",
+          "channel": "Alembic Cache"
+        }
+      ],
+      "repathable": false,
+      "has_thumb": false
+    },
+    {
+      "key": "tex_asset_uri_a",
+      "path": "asset:///abcdef1234567890.png",
+      "resolved_path": "asset:///abcdef1234567890.png",
+      "status": "asset_uri",
+      "asset_type": "texture",
+      "size_bytes": 1310720,
+      "size_label": "1.2 MB",
+      "owners": [
+        {
+          "name": "Logo_Mat",
+          "kind": "material",
+          "channel": "Color"
+        }
+      ],
+      "repathable": false,
+      "has_thumb": false
+    },
+    {
+      "key": "tex_asset_uri_b",
+      "path": "asset:///0987654321fedcba.png",
+      "resolved_path": "asset:///0987654321fedcba.png",
+      "status": "asset_uri",
+      "asset_type": "texture",
+      "size_bytes": 2359296,
+      "size_label": "2.2 MB",
+      "owners": [
+        {
+          "name": "Icon_Mat",
+          "kind": "material",
+          "channel": "Alpha"
+        }
+      ],
+      "repathable": false,
+      "has_thumb": false
+    },
+    {
+      "key": "hdri_asset_uri_c",
+      "path": "asset:///aabbccddeeff0011.hdr",
+      "resolved_path": "asset:///aabbccddeeff0011.hdr",
+      "status": "asset_uri",
+      "asset_type": "hdri",
+      "size_bytes": 15728640,
+      "size_label": "15.0 MB",
+      "owners": [
+        {
+          "name": "AssetBrowser_Dome",
+          "kind": "light",
+          "channel": "Dome HDR"
+        }
+      ],
+      "repathable": false,
+      "has_thumb": false
+    },
+    {
+      "key": "tex_sign_diffuse",
+      "path": "textures/shot_010/sign_diffuse.png",
+      "resolved_path": "textures/shot_010/sign_diffuse.png",
+      "status": "ok",
+      "asset_type": "texture",
+      "size_bytes": 1835008,
+      "size_label": "1.8 MB",
+      "owners": [
+        {
+          "name": "Sign_Mat",
+          "kind": "material",
+          "channel": "Color"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": true
+    },
+    {
+      "key": "tex_water_normal",
+      "path": "textures/shot_010/water_normal.png",
+      "resolved_path": "textures/shot_010/water_normal.png",
+      "status": "ok",
+      "asset_type": "texture",
+      "size_bytes": 5242880,
+      "size_label": "5.0 MB",
+      "owners": [
+        {
+          "name": "Water_Mat",
+          "kind": "material",
+          "channel": "Bump"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": true
+    },
+    {
+      "key": "hdri_dome_sunset",
+      "path": "hdri/sunset_clear_4k.hdr",
+      "resolved_path": "hdri/sunset_clear_4k.hdr",
+      "status": "ok",
+      "asset_type": "hdri",
+      "size_bytes": 29360128,
+      "size_label": "28.0 MB",
+      "owners": [
+        {
+          "name": "Sunset_Dome",
+          "kind": "light",
+          "channel": "Dome HDR"
+        }
+      ],
+      "repathable": true,
+      "has_thumb": true
+    },
+    {
+      "key": "abc_secondary_anim",
+      "path": "caches/secondary_anim.abc",
+      "resolved_path": "caches/secondary_anim.abc",
+      "status": "ok",
+      "asset_type": "alembic",
+      "size_bytes": 15728640,
+      "size_label": "15.0 MB",
+      "owners": [
+        {
+          "name": "Secondary_Null",
+          "kind": "object",
+          "channel": "Alembic Cache"
+        }
+      ],
+      "repathable": false,
+      "has_thumb": false
+    }
+  ],
+  "totals": {
+    "count": 32,
+    "missing": 4,
+    "absolute": 4,
+    "total_bytes": 337379328,
+    "unsized": 7,
+    "by_type": {
+      "texture": 21,
+      "hdri": 6,
+      "alembic": 5
+    },
+    "total_label": "322 MB"
+  }
+}

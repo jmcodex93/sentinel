@@ -1781,7 +1781,8 @@ class YSPanel(gui.GeDialog):
                          "in bulk (find/replace, make relative, "
                          "auto-find missing)?")
             if c4d.gui.QuestionDialog(info_msg):
-                self._open_asset_hub(doc)
+                self._open_form(doc, "hub",
+                                fallback=lambda: self._open_asset_hub(doc))
         else:
             # Popup triage (fase 2): result surfaces via c4d.gui.StatusSetText
             # (the QC row already shows [ OK ] for this check)
@@ -2234,7 +2235,7 @@ class YSPanel(gui.GeDialog):
             self._toggle_safe_area_mark(doc)
 
         elif cid == G.BTN_TEXTURE_REPATH:
-            self._open_asset_hub(doc)
+            self._open_form(doc, "hub", fallback=lambda: self._open_asset_hub(doc))
 
         elif cid == G.BTN_GITHUB:
             # Open GitHub repository
@@ -2315,7 +2316,9 @@ class YSPanel(gui.GeDialog):
                 c4d.gui.StatusSetText(f"QC Report saved: {save_path}")
 
         elif cid == G.BTN_COLLECT_SCENE:
-            self._open_asset_hub(doc, focus="deliver")
+            self._open_form(
+                doc, "hub", query={"focus": "deliver"},
+                fallback=lambda: self._open_asset_hub(doc, focus="deliver"))
 
         elif cid == G.BTN_SAVE_VERSION:
             # Save Version form (Phase 4 Task 4); native SaveVersionDialog +
@@ -2425,7 +2428,7 @@ class YSPanel(gui.GeDialog):
             else:
                 self._show_delivery_summary(doc)
 
-    def _open_form(self, doc, page, fallback=None):
+    def _open_form(self, doc, page, fallback=None, query=None):
         """Open a Sentinel form page (Phase 4 Task 4) — the ``FormDialog``
         host (``ui/reports_dialog.py`` ``open_form``) for Save Version /
         Edit Notes / Settings / the Command Palette. Calls ``fallback`` (a
@@ -2456,7 +2459,7 @@ class YSPanel(gui.GeDialog):
         """
         try:
             from sentinel.ui.reports_dialog import open_form
-            open_form(doc, page)
+            open_form(doc, page, query=query)
         except Exception as e:
             safe_print(f"Sentinel form '{page}' failed to open ({e}); "
                        f"falling back to native dialog")

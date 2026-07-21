@@ -264,7 +264,38 @@ def find_missing_texture_candidates(filename, doc_path,
     return candidates
 
 
-def _resolve_relative_texture(rel_path, doc_path):
+def _c4d_texture_search_dirs():
+    """C4D's own implicit texture search locations, beyond the doc folder.
+
+    C4D resolves relative texture paths not just under the document's
+    own tex/ subfolders but also via the user's startup "tex" folder and
+    any enabled global texture path (Preferences > Files > Texture Paths).
+    That's why GetAllAssetsNew can report a texture as "ok" while our
+    doc-folder-only scan reports it "missing" for the same file. Best
+    effort — must never raise, a scan should never break because this
+    lookup failed.
+    """
+    dirs = []
+    try:
+        startup = c4d.storage.GeGetStartupWritePath()
+        if startup:
+            dirs.append(os.path.join(startup, "tex"))
+    except Exception:
+        pass
+    try:
+        for entry in (c4d.GetGlobalTexturePaths() or []):
+            try:
+                path, enabled = entry
+            except Exception:
+                continue
+            if enabled and path:
+                dirs.append(path)
+    except Exception:
+        pass
+    return dirs
+
+
+def _resolve_relative_texture(rel_path, doc_path, global_dirs=None):
     """Find a relative texture by searching standard texture subfolders.
 
     Replicates Redshift's automatic texture search behavior: a path like
@@ -273,26 +304,49 @@ def _resolve_relative_texture(rel_path, doc_path):
     `relative:///foo.jpg` URL that points to a tex/ subfolder reads as
     MISSING even when RS Asset Manager shows it healthy.
 
+    `global_dirs`, when given, extends the search to C4D's own implicit
+    texture locations (user startup tex/ folder, enabled global texture
+    paths) — the same places `GetAllAssetsNew` resolves against. Each
+    global dir is tried both with the relative subpath joined on (mirrors
+    the doc_path search) and with just the bare filename (C4D also
+    matches global texture paths by filename alone).
+
     Returns the resolved absolute path or None if not found anywhere.
     """
-    if not rel_path or not doc_path:
+    if not rel_path:
         return None
     rel = rel_path.lstrip("/")
-    # Direct resolution first (covers paths that already include subdir)
-    direct = os.path.normpath(os.path.join(doc_path, rel))
-    if os.path.isfile(direct):
-        return direct
-    # Search common subdirs (matches RS texture search semantics)
-    for subdir in _TEXTURE_SEARCH_SUBDIRS:
-        if not subdir:
-            continue
-        cand = os.path.normpath(os.path.join(doc_path, subdir, rel))
-        if os.path.isfile(cand):
-            return cand
+
+    if doc_path:
+        # Direct resolution first (covers paths that already include subdir)
+        direct = os.path.normpath(os.path.join(doc_path, rel))
+        if os.path.isfile(direct):
+            return direct
+        # Search common subdirs (matches RS texture search semantics)
+        for subdir in _TEXTURE_SEARCH_SUBDIRS:
+            if not subdir:
+                continue
+            cand = os.path.normpath(os.path.join(doc_path, subdir, rel))
+            if os.path.isfile(cand):
+                return cand
+
+    if global_dirs:
+        basename = os.path.basename(rel)
+        for gdir in global_dirs:
+            if not gdir:
+                continue
+            cand = os.path.normpath(os.path.join(gdir, rel))
+            if os.path.isfile(cand):
+                return cand
+            if basename:
+                cand = os.path.normpath(os.path.join(gdir, basename))
+                if os.path.isfile(cand):
+                    return cand
+
     return None
 
 
-def _classify_texture_path(filepath, doc_path):
+def _classify_texture_path(filepath, doc_path, global_dirs=None):
     """Classify a texture path into a status string.
 
     Status values:
@@ -325,7 +379,7 @@ def _classify_texture_path(filepath, doc_path):
     # Maxon Url: relative://
     if s.startswith("relative://"):
         rel = s[len("relative://"):].lstrip("/")
-        resolved = _resolve_relative_texture(rel, doc_path)
+        resolved = _resolve_relative_texture(rel, doc_path, global_dirs)
         if resolved is not None:
             return "ok", resolved
         # Fall back to the direct path for the "expected location" report
@@ -345,7 +399,7 @@ def _classify_texture_path(filepath, doc_path):
         return "absolute", s
 
     # Plain relative path — same search-subdir fallback as relative://
-    resolved = _resolve_relative_texture(s, doc_path)
+    resolved = _resolve_relative_texture(s, doc_path, global_dirs)
     if resolved is not None:
         return "ok", resolved
     direct = os.path.normpath(os.path.join(doc_path or ".", s))
@@ -383,6 +437,7 @@ def scan_all_texture_paths(doc):
         return records
 
     doc_path = doc.GetDocumentPath() or ""
+    global_dirs = _c4d_texture_search_dirs()
     seen = set()  # dedupe by (host_id, channel, path) to avoid noise
 
     def _add(source_type, host, host_name, channel, context, path):
@@ -397,7 +452,7 @@ def scan_all_texture_paths(doc):
         if key in seen:
             return
         seen.add(key)
-        status, resolved = _classify_texture_path(str(path), doc_path)
+        status, resolved = _classify_texture_path(str(path), doc_path, global_dirs)
         records.append({
             "source_type": source_type,
             "host":        host,

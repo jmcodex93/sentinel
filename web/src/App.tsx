@@ -4,6 +4,7 @@ import { ToastProvider } from "./components/ToastProvider";
 import { DeliverySummaryPage } from "./pages/DeliverySummaryPage";
 import { DoctorPage } from "./pages/DoctorPage";
 import { GateTriagePage } from "./pages/GateTriagePage";
+import { HubPage } from "./pages/HubPage";
 import { NotesPage } from "./pages/NotesPage";
 import { PalettePage } from "./pages/PalettePage";
 import { QcReportPage } from "./pages/QcReportPage";
@@ -19,12 +20,18 @@ export type FormPage = "form/save_version" | "form/notes" | "form/settings" | "f
 // Sidebar. Kept as a distinct union member (not folded into FormPage) so
 // FormApp's per-page switch stays exhaustive and self-documenting.
 export type PalettePageId = "palette";
-export type Page = ReportPage | FormPage | PalettePageId;
+// Asset Hub (Phase 5) — its own full-bleed window, same as the form/palette
+// pages (no Sidebar entry, not a ReportPage). Kept as a distinct union
+// member for the same reason PalettePageId is: it has no `form/` op prefix
+// and no state/submit shape, just its own page component.
+export type HubPageId = "hub";
+export type Page = ReportPage | FormPage | PalettePageId | HubPageId;
 
 const REPORT_PAGES: ReportPage[] = ["delivery", "qc", "doctor", "supervisor", "render"];
 const FORM_PAGES: FormPage[] = ["form/save_version", "form/notes", "form/settings", "form/gate"];
 const PALETTE_PAGES: PalettePageId[] = ["palette"];
-const PAGES: Page[] = [...REPORT_PAGES, ...FORM_PAGES, ...PALETTE_PAGES];
+const HUB_PAGES: HubPageId[] = ["hub"];
+const PAGES: Page[] = [...REPORT_PAGES, ...FORM_PAGES, ...PALETTE_PAGES, ...HUB_PAGES];
 
 // Smallest possible deep-link: the C4D host opens the SPA with a
 // `?page=<name>` query param (see reports_dialog.py ReportsDialog, and
@@ -53,6 +60,10 @@ function isPalettePage(page: Page): page is PalettePageId {
   return (PALETTE_PAGES as string[]).includes(page);
 }
 
+function isHubPage(page: Page): page is HubPageId {
+  return (HUB_PAGES as string[]).includes(page);
+}
+
 /** Sentinel form pages (Save Version, Notes, Settings, Gate Triage) and the
  * Command Palette are each hosted one-per-window by a small native
  * `FormDialog` (Phase 4 Task 4) — no Sidebar, full-bleed canvas, each form
@@ -60,7 +71,7 @@ function isPalettePage(page: Page): page is PalettePageId {
  * own compact layout, see PalettePage.tsx). `onNavigate` lets a palette
  * `kind: "navigate"` result (e.g. picking "Save Version…") switch THIS SAME
  * window to the target form page client-side, no second native dialog. */
-function FormApp({ page, onNavigate }: { page: FormPage | PalettePageId; onNavigate: (page: Page) => void }) {
+function FormApp({ page, onNavigate }: { page: FormPage | PalettePageId | HubPageId; onNavigate: (page: Page) => void }) {
   return (
     <div className="h-screen" style={{ backgroundColor: "var(--color-canvas)" }}>
       {page === "form/save_version" && <SaveVersionPage />}
@@ -68,6 +79,7 @@ function FormApp({ page, onNavigate }: { page: FormPage | PalettePageId; onNavig
       {page === "form/settings" && <SettingsPage />}
       {page === "form/gate" && <GateTriagePage />}
       {page === "palette" && <PalettePage onNavigate={onNavigate} />}
+      {page === "hub" && <HubPage />}
     </div>
   );
 }
@@ -92,7 +104,7 @@ function App() {
 
   return (
     <ToastProvider>
-      {isFormPage(page) || isPalettePage(page) ? (
+      {isFormPage(page) || isPalettePage(page) || isHubPage(page) ? (
         <FormApp page={page} onNavigate={setPage} />
       ) : (
         <ReportsApp page={page} onNavigate={setPage} />

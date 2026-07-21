@@ -460,6 +460,49 @@ class TestPortSelection:
 
 
 # ---------------------------------------------------------------------------
+# Binary /thumb route
+# ---------------------------------------------------------------------------
+
+class TestThumbRoute:
+    def test_thumb_streams_png_bytes(self, web_root, tmp_path):
+        png = tmp_path / "t.png"
+        png.write_bytes(b"\x89PNG\r\n\x1a\nfakebody")
+        seen = {}
+
+        def api_handler(payload):
+            seen.update(payload)
+            return {"png_path": str(png)}
+
+        live = _LiveServer(web_root, api_handler=api_handler)
+        try:
+            resp, body = live.get("/thumb?key=tex%2Ffoo.png")
+            assert resp.status == 200
+            assert resp.getheader("Content-Type") == "image/png"
+            assert body.startswith(b"\x89PNG")
+            assert seen["op"] == "hub/thumb" and seen["key"] == "tex/foo.png"
+        finally:
+            live.close()
+
+    def test_thumb_error_payload_gives_404(self, web_root):
+        live = _LiveServer(web_root, api_handler=lambda p: {"error": "no_thumb"})
+        try:
+            resp, body = live.get("/thumb?key=x")
+            resp.read() if hasattr(resp, 'read') and not body else None
+            assert resp.status == 404
+        finally:
+            live.close()
+
+    def test_thumb_missing_file_gives_404(self, web_root, tmp_path):
+        live = _LiveServer(web_root, api_handler=lambda p: {"png_path": str(tmp_path / "gone.png")})
+        try:
+            resp, body = live.get("/thumb?key=x")
+            resp.read() if hasattr(resp, 'read') and not body else None
+            assert resp.status == 404
+        finally:
+            live.close()
+
+
+# ---------------------------------------------------------------------------
 # delivery_report_payload — sentinel_manifest.json -> SPA contract
 # ---------------------------------------------------------------------------
 
@@ -1397,3 +1440,112 @@ class TestPaletteActionsPayload:
                           "open_hub", "save_version", "settings"):
             assert actions[action_id]["requires_confirm"] is False
             assert actions[action_id]["confirm_label"] is None
+
+
+# ---------------------------------------------------------------------------
+# JobRegistry
+# ---------------------------------------------------------------------------
+
+class TestJobRegistry:
+    def test_lifecycle_start_take_update_finish(self):
+        reg = webbridge.JobRegistry()
+        job_id = reg.start({"kind": "collect", "target": "/tmp/x"})
+        assert reg.status(job_id)["state"] == "pending"
+        taken = reg.take_pending()
+        assert taken == (job_id, {"kind": "collect", "target": "/tmp/x"})
+        assert reg.status(job_id)["state"] == "running"
+        reg.update(job_id, "save", detail="Saving project…", pct=15)
+        st = reg.status(job_id)
+        assert (st["phase"], st["detail"], st["pct"]) == ("save", "Saving project…", 15)
+        reg.finish(job_id, {"manifest_path": "/tmp/x/m.json"})
+        st = reg.status(job_id)
+        assert st["state"] == "done" and st["result"]["manifest_path"] == "/tmp/x/m.json"
+
+    def test_single_job_slot_rejects_second_start(self):
+        reg = webbridge.JobRegistry()
+        reg.start({"kind": "collect"})
+        with pytest.raises(RuntimeError, match="job_running"):
+            reg.start({"kind": "collect"})
+
+    def test_new_start_allowed_after_done_or_error(self):
+        reg = webbridge.JobRegistry()
+        a = reg.start({"n": 1}); reg.take_pending(); reg.fail(a, "boom")
+        assert reg.status(a)["state"] == "error"
+        b = reg.start({"n": 2})
+        assert b != a and reg.status(b)["state"] == "pending"
+
+    def test_take_pending_empty_and_unknown_status(self):
+        reg = webbridge.JobRegistry()
+        assert reg.take_pending() is None
+        assert reg.status("nope") == {"error": "unknown_job"}
+
+    def test_status_is_a_copy_and_thread_safe_reads(self):
+        reg = webbridge.JobRegistry()
+        job_id = reg.start({})
+        snap = reg.status(job_id)
+        snap["state"] = "hacked"
+        assert reg.status(job_id)["state"] == "pending"
+
+
+# ---------------------------------------------------------------------------
+# Hub payload helpers
+# ---------------------------------------------------------------------------
+
+class TestHubPayloadHelpers:
+    def _record(self, **kw):
+        base = {"key": "k1", "path": "tex/a.png", "resolved_path": "/p/tex/a.png",
+                "status": "ok", "asset_type": "texture", "size_bytes": 2048,
+                "owners": [("Mat", "material", "Color")], "repathable": True,
+                "tex_idx": 0, "tex_idxs": [0, 3]}
+        base.update(kw)
+        return base
+
+    def test_inventory_payload_strips_live_refs_and_shapes_owners(self):
+        totals = {"count": 1, "missing": 0, "absolute": 0, "total_bytes": 2048,
+                  "unsized": 0, "by_type": {"texture": 1}}
+        payload = webbridge.hub_inventory_payload([self._record()], totals,
+                                                  scene_name="shot.c4d", skipped=2)
+        asset = payload["assets"][0]
+        assert "tex_idx" not in asset and "tex_idxs" not in asset
+        assert asset["owners"] == [{"name": "Mat", "kind": "material", "channel": "Color"}]
+        assert asset["size_label"] == "2.0 KB"
+        assert asset["has_thumb"] is True
+        assert payload["totals"]["total_label"] == "2.0 KB"
+        assert payload["scene_name"] == "shot.c4d" and payload["skipped"] == 2
+
+    def test_inventory_payload_no_thumb_for_missing_or_nonimage(self):
+        rec_missing = self._record(resolved_path=None, status="missing")
+        rec_abc = self._record(key="k2", resolved_path="/p/c.abc", asset_type="alembic")
+        # Live-verified (2026-07-20): a missing asset can still have a
+        # resolved_path (last-known location) — has_thumb must be False
+        # regardless, or the SPA fires a guaranteed-404 thumb request.
+        rec_missing_with_path = self._record(
+            key="k3", resolved_path="/p/gone.png", status="missing")
+        payload = webbridge.hub_inventory_payload(
+            [rec_missing, rec_abc, rec_missing_with_path],
+            {"count": 3, "missing": 2, "absolute": 0,
+             "total_bytes": 0, "unsized": 0, "by_type": {}})
+        assert [a["has_thumb"] for a in payload["assets"]] == [False, False, False]
+
+    def test_resolve_repath_targets_maps_all_sharing_shaders(self):
+        records = [self._record(), self._record(key="k2", repathable=False, tex_idxs=[])]
+        targets, errors = webbridge.resolve_repath_targets(
+            records, [{"key": "k1", "new_path": "/new/a.png"},
+                      {"key": "k2", "new_path": "/new/b.png"},
+                      {"key": "kX", "new_path": "/new/c.png"},
+                      {"key": "k1", "new_path": ""}])
+        assert targets == [{"key": "k1", "new_path": "/new/a.png", "tex_idxs": [0, 3]}]
+        assert {e["key"] for e in errors} == {"k2", "kX", "k1"}
+
+    def test_thumb_cache_name_stable_and_mtime_sensitive(self):
+        a = webbridge.thumb_cache_name("/p/a.png", 100.0)
+        assert a == webbridge.thumb_cache_name("/p/a.png", 100.0)
+        assert a != webbridge.thumb_cache_name("/p/a.png", 101.0)
+        assert a.endswith(".png")
+
+    def test_collect_phase_pct(self):
+        assert webbridge.collect_phase_pct("Saving project with assets…") == ("save", 15)
+        assert webbridge.collect_phase_pct("Re-scanning package…") == ("rescan", 60)
+        assert webbridge.collect_phase_pct("Writing manifest…") == ("manifest", 80)
+        assert webbridge.collect_phase_pct("Zipping 3/9…") == ("zip", 90)
+        assert webbridge.collect_phase_pct("anything else") == ("run", None)
