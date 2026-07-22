@@ -468,16 +468,24 @@ def _validate_select_check_id(check_id):
 
 
 def _select_qc_violations(doc, check_id, legacy_objs):
-    """Select in scene the objects/materials one QC check flagged — the
-    SAME selection logic each check's native ``_qc_select_*`` handler in
-    ``ui/panel.py`` performs (``_select_objects`` for the plain-object
-    checks; the material-deselect-then-select-all loop for
-    ``unused_mats``, mirroring ``_qc_select_unused_mats``'s own
-    deselect-all-materials step; the violation-dict-to-deduped-object walk
-    for ``cross_aspect``, mirroring ``_qc_select_cross_aspect``) — reused,
-    not duplicated, just driven off a fresh ``legacy_result`` list instead
-    of the GeDialog's cached per-instance state (this op has no dialog
-    instance to read that state from).
+    """Select in scene the objects/materials one QC check flagged, reusing
+    the native building blocks from ``ui/panel.py`` rather than duplicating
+    them: ``_select_objects`` for the plain-object checks (also used as the
+    fallback for ``names``); the deselect-all-materials-then-set-BIT_ACTIVE
+    mechanics for ``unused_mats`` (same primitive ``_qc_select_unused_mats``
+    uses); the violation-dict-to-deduped-object walk for ``cross_aspect``
+    (same dedupe ``_qc_select_cross_aspect`` uses).
+
+    INTENTIONAL DEVIATION for ``unused_mats`` and ``names``: the native
+    ``_qc_select_unused_mats``/``_qc_select_names`` handlers cycle ONE
+    flagged item per click, via GeDialog instance state
+    (``self._unused_mats_idx``/``self._names_idx``) that remembers the
+    cursor between clicks. This op is stateless HTTP — there is no request
+    instance to carry a cursor across calls — so both branches here select
+    ALL currently-flagged materials/objects in one shot instead of cycling.
+    That is the deliberate, better-suited behavior for a stateless op, not
+    an accidental gap versus native parity; see ``_op_panel_qc_select``
+    below for the same note at the op level.
     """
     from sentinel.ui.panel import _select_objects
 
@@ -512,6 +520,16 @@ def _op_panel_qc_select(payload):
     pass (this is a mutation-adjacent scene op, not the cached
     ``panel/qc`` read) to get the current ``legacy_result`` for the
     requested check, then dispatches to ``_select_qc_violations``.
+
+    INTENTIONAL DEVIATION from the native handlers for ``unused_mats`` and
+    ``names``: those cycle ONE flagged object per click, using GeDialog
+    instance state (``self._unused_mats_idx``/``self._names_idx``) to
+    remember where the cursor was. This op is stateless HTTP — there is no
+    per-instance cursor to carry between requests, and "cycle one" doesn't
+    map onto a discrete request/response anyway — so it selects ALL
+    currently-flagged objects/materials for the check in one shot instead.
+    This is the deliberate, better-suited behavior for a stateless op, not
+    an accidental gap versus the native cycle-one-per-click Select.
     """
     doc = documents.GetActiveDocument()
     if not doc:
