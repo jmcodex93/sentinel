@@ -92,6 +92,210 @@ class TestConfirmGate:
         assert "confirm_label" in response
 
 
+class TestAddFrameTagCore:
+    """``scene_tools._add_sentinel_frame_tag_core`` — the dialog-free core
+    (Fase 6.2 Task 1 CRITICAL fix). Must return a status dict and NEVER call
+    ``c4d.gui.MessageDialog`` — a headless HTTP caller running inside the
+    ``MainThreadQueue`` drain could never dismiss a dialog it can't see,
+    which would otherwise freeze all of C4D."""
+
+    class _FakeCam:
+        def __init__(self, type_id, tags=None, name="Camera"):
+            self._type = type_id
+            self._tags = tags or []
+            self._name = name
+
+        def GetType(self):
+            return self._type
+
+        def GetTags(self):
+            return self._tags
+
+        def GetName(self):
+            return self._name
+
+    class _FakeTag:
+        def __init__(self, type_id):
+            self._type = type_id
+
+        def GetType(self):
+            return self._type
+
+    class _FakeDoc:
+        def __init__(self, active_object=None):
+            self._active_object = active_object
+            self.active_tag = None
+
+        def GetActiveObject(self):
+            return self._active_object
+
+        def GetActiveBaseDraw(self):
+            return None
+
+        def SetActiveTag(self, tag, mode):
+            self.active_tag = tag
+
+    def _forbid_dialog(self, monkeypatch):
+        from sentinel.ui import scene_tools
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("MessageDialog must never be called from the core")
+
+        monkeypatch.setattr(scene_tools.c4d.gui, "MessageDialog", _boom)
+
+    def test_no_document_returns_status_without_dialog(self, sentinel_module, monkeypatch):
+        from sentinel.ui import scene_tools
+
+        self._forbid_dialog(monkeypatch)
+        assert scene_tools._add_sentinel_frame_tag_core(None) == {"status": "no_document"}
+
+    def test_no_camera_never_dialogs(self, sentinel_module, monkeypatch):
+        from sentinel.ui import scene_tools
+
+        self._forbid_dialog(monkeypatch)
+        doc = self._FakeDoc(active_object=None)
+        assert scene_tools._add_sentinel_frame_tag_core(doc) == {"status": "no_camera"}
+
+    def test_already_tagged_never_dialogs(self, sentinel_module, monkeypatch):
+        from sentinel.ui import scene_tools
+        from sentinel.ui.frame_tag import OCAMERA, SENTINEL_FRAME_TAG_PLUGIN_ID
+
+        self._forbid_dialog(monkeypatch)
+        existing_tag = self._FakeTag(SENTINEL_FRAME_TAG_PLUGIN_ID)
+        cam = self._FakeCam(OCAMERA, tags=[existing_tag])
+        doc = self._FakeDoc(active_object=cam)
+
+        result = scene_tools._add_sentinel_frame_tag_core(doc)
+        assert result["status"] == "already_tagged"
+        assert result["tag"] is existing_tag
+        assert result["camera"] is cam
+        assert doc.active_tag is existing_tag  # still selects it, just no dialog
+
+    def test_import_failure_never_dialogs(self, sentinel_module, monkeypatch):
+        import builtins
+
+        from sentinel.ui import scene_tools
+
+        self._forbid_dialog(monkeypatch)
+        doc = self._FakeDoc(active_object=None)
+
+        real_import = builtins.__import__
+
+        def _fake_import(name, *args, **kwargs):
+            if name == "sentinel.ui.frame_tag":
+                raise ImportError("boom")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _fake_import)
+        result = scene_tools._add_sentinel_frame_tag_core(doc)
+        assert result["status"] == "import_failure"
+        assert "boom" in result["error"]
+
+
+class TestAddFrameTagOpStatusMapping:
+    """``panel/render/add_frame_tag`` must propagate the core's real
+    status — never a hardcoded ``ok: True`` — so the SPA never toasts
+    success for a click that created nothing."""
+
+    class _FakeDoc:
+        pass
+
+    def test_ok_status_returns_ok_true_with_render(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        from sentinel.ui import scene_tools
+
+        doc = self._FakeDoc()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(scene_tools, "_add_sentinel_frame_tag_core",
+                             lambda d: {"status": "ok", "tag": object(), "camera": object()})
+        monkeypatch.setattr(panel_render_ops, "build_panel_render", lambda d: {"probe": True})
+        monkeypatch.setattr(panel_render_ops, "_stamp_for", lambda d: "stamp123")
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/add_frame_tag"]({})
+        assert response == {"ok": True, "stamp": "stamp123", "render": {"probe": True}}
+
+    def test_no_camera_status_is_not_reported_as_success(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        from sentinel.ui import scene_tools
+
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: self._FakeDoc())
+        monkeypatch.setattr(scene_tools, "_add_sentinel_frame_tag_core",
+                             lambda d: {"status": "no_camera"})
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/add_frame_tag"]({})
+        assert response == {"ok": False, "error": "no_camera"}
+
+    def test_already_tagged_status_is_not_reported_as_success(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        from sentinel.ui import scene_tools
+
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: self._FakeDoc())
+        monkeypatch.setattr(scene_tools, "_add_sentinel_frame_tag_core",
+                             lambda d: {"status": "already_tagged", "tag": object(), "camera": object()})
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/add_frame_tag"]({})
+        assert response == {"ok": False, "error": "already_tagged"}
+
+    def test_import_failure_status_is_not_reported_as_success(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        from sentinel.ui import scene_tools
+
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: self._FakeDoc())
+        monkeypatch.setattr(scene_tools, "_add_sentinel_frame_tag_core",
+                             lambda d: {"status": "import_failure", "error": "no module"})
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/add_frame_tag"]({})
+        assert response == {"ok": False, "error": "import_failure"}
+
+    def test_create_failed_status_is_not_reported_as_success(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        from sentinel.ui import scene_tools
+
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: self._FakeDoc())
+        monkeypatch.setattr(scene_tools, "_add_sentinel_frame_tag_core",
+                             lambda d: {"status": "create_failed", "camera": object()})
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/add_frame_tag"]({})
+        assert response == {"ok": False, "error": "create_failed"}
+
+
+class TestPresetBlockReusesPanelRenderBlock:
+    """``_panel_preset_block`` must CALL ``panel_ops._panel_render_block``
+    rather than duplicate its ``GetActiveRenderData``/XRES/YRES/fps reads —
+    verified by monkeypatching that function and checking its output flows
+    through unchanged (plus ``preset_names`` added on top)."""
+
+    def test_delegates_to_panel_render_block(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+
+        monkeypatch.setattr(
+            panel_render_ops, "_panel_render_block",
+            lambda d: {"preset_name": "render", "fps": 25, "resolution": "1920x1080",
+                       "multiformat": None})
+
+        class _FakeRd:
+            def __init__(self, name, nxt=None):
+                self._name = name
+                self._next = nxt
+
+            def GetName(self):
+                return self._name
+
+            def GetNext(self):
+                return self._next
+
+        class _FakeDoc:
+            def GetFirstRenderData(self):
+                return _FakeRd("Render")
+
+        result = panel_render_ops._panel_preset_block(_FakeDoc())
+        assert result["preset_name"] == "render"
+        assert result["fps"] == 25
+        assert result["resolution"] == "1920x1080"
+        assert "multiformat" not in result
+        assert result["preset_names"] == ["render"]
+
+
 class TestSelectFrameTagNoTag:
     def test_no_tag_in_scene_returns_no_tag_error(self, sentinel_module, monkeypatch):
         from sentinel.ui import panel_render_ops

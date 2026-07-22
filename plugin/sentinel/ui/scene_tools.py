@@ -529,19 +529,39 @@ def _toggle_aspect(doc, update_ui=None):
         safe_print(f"Error toggling aspect: {e}")
 
 
-def _add_sentinel_frame_tag(doc):
-    """Add a Sentinel Frame tag to the active/selected camera, or select the
-    existing one. The tag is the recommended per-camera multi-format entry
-    point (live guides + one-click, rename-safe WYSIWYG-crop delivery Takes).
+def _add_sentinel_frame_tag_core(doc):
+    """Dialog-free core of the Sentinel Frame tag add/select flow —
+    extracted from ``_add_sentinel_frame_tag`` (Fase 6.2 Task 1 fix, CRITICAL:
+    a non-interactive caller running this inside the ``MainThreadQueue``
+    drain must never hit a native ``MessageDialog`` — any of the 3 dialog
+    branches the old inline version had would otherwise freeze ALL of C4D
+    until someone manually dismissed a dialog nobody could see, since the
+    op runs headless over HTTP).
+
+    Resolves a camera (active selection if it's a camera, else the
+    viewport's scene camera), then either selects an existing Sentinel
+    Frame tag or creates a new one. Returns a status dict, never raises,
+    never shows a dialog:
+
+      {"status": "no_document"}
+      {"status": "import_failure", "error": str}
+      {"status": "no_camera"}
+      {"status": "already_tagged", "tag": <BaseTag>, "camera": <BaseObject>}
+      {"status": "create_failed", "camera": <BaseObject>}
+      {"status": "ok", "tag": <BaseTag>, "camera": <BaseObject>}
+
+    ``_add_sentinel_frame_tag`` below calls this then shows its own
+    dialogs based on the returned status — same text/order as before this
+    extraction (byte-equivalent native behavior).
     """
     if doc is None:
-        return
+        return {"status": "no_document"}
+
     try:
         from sentinel.ui.frame_tag import (
             SENTINEL_FRAME_TAG_PLUGIN_ID, is_valid_camera_host)
     except Exception as e:
-        c4d.gui.MessageDialog(f"Sentinel Frame tag unavailable: {e}")
-        return
+        return {"status": "import_failure", "error": str(e)}
 
     # Resolve a camera: the active selected object if it's a camera, else
     # the camera the viewport is looking through.
@@ -558,10 +578,7 @@ def _add_sentinel_frame_tag(doc):
         except Exception:
             cam = None
     if cam is None:
-        c4d.gui.MessageDialog(
-            "Select a camera (standard or Redshift), or look through one, "
-            "then click 'Add Sentinel Frame to camera'.")
-        return
+        return {"status": "no_camera"}
 
     existing = None
     for t in cam.GetTags():
@@ -574,10 +591,7 @@ def _add_sentinel_frame_tag(doc):
             c4d.EventAdd()
         except Exception:
             pass
-        c4d.gui.MessageDialog(
-            f"'{cam.GetName()}' already has a Sentinel Frame tag — "
-            "selected it in the Attribute Manager.")
-        return
+        return {"status": "already_tagged", "tag": existing, "camera": cam}
 
     tag = None
     doc.StartUndo()
@@ -594,9 +608,42 @@ def _add_sentinel_frame_tag(doc):
         c4d.EventAdd()
 
     if tag is None:
+        return {"status": "create_failed", "camera": cam}
+
+    safe_print(f"Sentinel Frame tag added to '{cam.GetName()}'")
+    return {"status": "ok", "tag": tag, "camera": cam}
+
+
+def _add_sentinel_frame_tag(doc):
+    """Add a Sentinel Frame tag to the active/selected camera, or select the
+    existing one. The tag is the recommended per-camera multi-format entry
+    point (live guides + one-click, rename-safe WYSIWYG-crop delivery Takes).
+
+    Thin dialog wrapper over ``_add_sentinel_frame_tag_core`` (Fase 6.2
+    Task 1 fix) — same dialog text/order as before the extraction.
+    """
+    result = _add_sentinel_frame_tag_core(doc)
+    status = result.get("status")
+
+    if status == "no_document":
+        return
+    if status == "import_failure":
+        c4d.gui.MessageDialog(f"Sentinel Frame tag unavailable: {result['error']}")
+        return
+    if status == "no_camera":
+        c4d.gui.MessageDialog(
+            "Select a camera (standard or Redshift), or look through one, "
+            "then click 'Add Sentinel Frame to camera'.")
+        return
+    if status == "already_tagged":
+        c4d.gui.MessageDialog(
+            f"'{result['camera'].GetName()}' already has a Sentinel Frame tag — "
+            "selected it in the Attribute Manager.")
+        return
+    if status == "create_failed":
         c4d.gui.MessageDialog("Could not create the Sentinel Frame tag.")
         return
-    safe_print(f"Sentinel Frame tag added to '{cam.GetName()}'")
+    # status == "ok" — safe_print already logged inside the core.
 
 
 def _hierarchy_to_layers(doc):

@@ -62,22 +62,17 @@ from sentinel.aovs import (
 from sentinel.checks.render import normalize_preset_name
 from sentinel.common.helpers import safe_print
 from sentinel.common.settings import GlobalSettings
-from sentinel.ui.panel_ops import _guarded_block, _stamp_for
+from sentinel.ui.panel_ops import _guarded_block, _panel_render_block, _stamp_for
 
 
 def _panel_preset_block(doc):
-    """Preset-card portion of ``panel/render`` — same reads
-    ``panel_ops._panel_render_block`` makes, extended with the full list of
-    normalized preset names available in this scene's render data chain (for
-    the SPA's preset ``<select>``)."""
-    rd = doc.GetActiveRenderData()
-    preset_name = normalize_preset_name(rd.GetName() or "") if rd else None
-    resolution = None
-    if rd:
-        try:
-            resolution = "%dx%d" % (int(rd[c4d.RDATA_XRES]), int(rd[c4d.RDATA_YRES]))
-        except Exception:
-            resolution = None
+    """Preset-card portion of ``panel/render`` — REUSES
+    ``panel_ops._panel_render_block`` for the ``preset_name``/``resolution``/
+    ``fps`` reads (rather than a second drifting copy of the same
+    ``GetActiveRenderData``/``RDATA_XRES``/``RDATA_YRES`` reads), and adds
+    ``preset_names``: the full list of normalized preset names available in
+    this scene's render data chain (for the SPA's preset ``<select>``)."""
+    base = _panel_render_block(doc)
 
     preset_names = []
     walk = doc.GetFirstRenderData()
@@ -88,10 +83,10 @@ def _panel_preset_block(doc):
         walk = walk.GetNext()
 
     return {
-        "preset_name": preset_name,
+        "preset_name": base.get("preset_name"),
         "preset_names": preset_names,
-        "fps": doc.GetFps(),
-        "resolution": resolution,
+        "fps": base.get("fps"),
+        "resolution": base.get("resolution"),
     }
 
 
@@ -310,19 +305,32 @@ def _op_panel_render_force_vertical(payload):
 
 
 def _op_panel_render_add_frame_tag(payload):
-    """``panel/render/add_frame_tag`` — reuses
-    ``scene_tools._add_sentinel_frame_tag`` verbatim (resolves the active
-    selected/viewport camera, adds the tag or selects the existing one).
-    No confirm gate — additive/idempotent, same as the native "Add
-    Sentinel Frame to camera" button."""
+    """``panel/render/add_frame_tag`` — runs
+    ``scene_tools._add_sentinel_frame_tag_core`` (CRITICAL fix: the dialog-
+    free core, NOT ``_add_sentinel_frame_tag`` itself — that function has 3
+    ``MessageDialog`` branches that would block the ``MainThreadQueue``
+    drain, freezing all of C4D, since a headless HTTP caller can never
+    dismiss a dialog it can't see). No confirm gate — additive/idempotent,
+    same as the native "Add Sentinel Frame to camera" button.
+
+    Propagates the core's real status instead of a hardcoded success: only
+    ``"ok"`` (a tag was actually created) returns ``{"ok": True, ...}``.
+    Every other status — ``no_camera``/``already_tagged``/``import_failure``/
+    ``create_failed`` — returns ``{"ok": False, "error": <status>}`` so the
+    SPA never toasts success for a click that didn't create anything."""
     doc = documents.GetActiveDocument()
     if not doc:
         return {"ok": False, "error": "no_document"}
 
     from sentinel.ui import scene_tools
 
-    scene_tools._add_sentinel_frame_tag(doc)
-    return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
+    result = scene_tools._add_sentinel_frame_tag_core(doc)
+    status = result.get("status")
+
+    if status == "ok":
+        return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
+
+    return {"ok": False, "error": status or "unknown"}
 
 
 def _op_panel_render_select_frame_tag(payload):
