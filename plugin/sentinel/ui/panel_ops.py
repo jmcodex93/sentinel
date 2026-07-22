@@ -203,6 +203,33 @@ def _vram_label_or_none(covered, vram_bytes):
     return assets_engine.format_size(vram_bytes)
 
 
+# Assets-card cache — see ``_assets_signature``/``_panel_assets_block``
+# below. Module-level (not per-doc) because the panel only ever tracks the
+# active document at a time, same singleton-cache convention as
+# ``hub_ops._META_CACHE``/``_THUMB_PATHS``.
+_ASSETS_BLOCK_CACHE = {"signature": None, "payload": None}
+
+
+def _assets_signature(doc):
+    """Cheap fingerprint for the Assets-card cache — deliberately NARROWER
+    than ``hub_ops._stamp_for`` (which also reads ``doc.GetDirty(DATA|
+    CHILDREN)``, bumped by every geometry/animation edit). Asset paths only
+    ever change via materials/textures, so this signature only looks at
+    material identity + material dirty state: ``(doc_path, material_count,
+    sum_of_material_dirty)``. All three reads are in-memory container
+    lookups, no filesystem — cheap enough to call on every
+    ``panel/overview`` fetch. Returns ``None`` when ``doc`` doesn't support
+    these reads, which the caller treats as an unconditional cache miss
+    (never stored, never matched) rather than raising.
+    """
+    try:
+        materials = doc.GetMaterials()
+        mat_dirty = sum(m.GetDirty(c4d.DIRTYFLAGS_DATA) for m in materials)
+        return (doc.GetDocumentPath() or "", len(materials), mat_dirty)
+    except Exception:
+        return None
+
+
 def _panel_assets_block(doc):
     """Assets-card portion of ``panel/overview`` — same scan + totals
     pipeline as ``hub_ops._op_hub_inventory``. ``vram_label`` rolls up
@@ -210,7 +237,23 @@ def _panel_assets_block(doc):
     helper ``hub/meta_totals`` uses) over this scan's own resolved paths,
     rather than the Hub's ``_THUMB_PATHS`` memo — the panel can be opened
     without ever opening the Hub, so it has no reason to depend on that
-    memo being populated. ``null`` (not "0 B") while the cache is cold."""
+    memo being populated. ``null`` (not "0 B") while the cache is cold.
+
+    Cached by ``_assets_signature`` (materials-only, see above): an
+    always-docked panel re-fetches ``panel/overview`` on every
+    ``panel/state_stamp`` change, and that stamp bumps on ANY scene edit
+    (``doc.GetDirty(DATA|CHILDREN)``). Without this cache, plain
+    modeling/animation work — which never touches a material — would
+    re-run the full asset scan + a filesystem ``stat()`` sweep over every
+    resolved path (often a Synology network share) on the C4D main thread
+    on every single edit. Only a material add/remove or a material-data
+    dirty bump (texture repath, shader edit, undo of either) invalidates
+    the cache and triggers a real re-scan.
+    """
+    signature = _assets_signature(doc)
+    if signature is not None and signature == _ASSETS_BLOCK_CACHE["signature"]:
+        return _ASSETS_BLOCK_CACHE["payload"]
+
     from sentinel.ui.flows import scan_scene_assets
 
     records, _tex_records, _skipped = scan_scene_assets(doc)
@@ -221,12 +264,18 @@ def _panel_assets_block(doc):
     resolved_paths = [r.get("resolved_path") for r in records]
     vram_totals = _totals_from_cache(resolved_paths)
 
-    return {
+    payload = {
         "count": totals["count"],
         "missing": totals["missing"],
         "disk_label": assets_engine.format_size(totals["total_bytes"]),
         "vram_label": _vram_label_or_none(vram_totals["covered"], vram_totals["vram_bytes"]),
     }
+
+    if signature is not None:
+        _ASSETS_BLOCK_CACHE["signature"] = signature
+        _ASSETS_BLOCK_CACHE["payload"] = payload
+
+    return payload
 
 
 def _panel_render_block(doc):

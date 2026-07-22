@@ -191,6 +191,125 @@ class TestPanelAssetsBlockVram:
         assert result["vram_label"] == assets_engine.format_size(3_300_000_000)
 
 
+class TestPanelAssetsBlockCache:
+    """``_panel_assets_block`` must NOT re-scan/re-stat on every call — an
+    always-docked panel re-fetches ``panel/overview`` whenever
+    ``panel/state_stamp`` changes, and that stamp bumps on ANY scene edit
+    (``doc.GetDirty(DATA|CHILDREN)``), including plain geometry/animation
+    work that never touches a material. ``_ASSETS_BLOCK_CACHE`` keyed by
+    ``_assets_signature`` (materials-only: doc path + material count +
+    summed material dirty) must make a second call with an unchanged
+    signature reuse the cached payload instead of re-running
+    ``scan_scene_assets``/``stat_sizes_batch``/``compute_totals``.
+    """
+
+    class _FakeMat:
+        def __init__(self, dirty=0):
+            self._dirty = dirty
+
+        def GetDirty(self, flags):
+            return self._dirty
+
+    class _FakeDoc:
+        def __init__(self, path="/scene.c4d", materials=None):
+            self._path = path
+            self._materials = materials or []
+
+        def GetDocumentPath(self):
+            return self._path
+
+        def GetMaterials(self):
+            return self._materials
+
+    def setup_method(self):
+        from sentinel.ui import panel_ops
+        panel_ops._ASSETS_BLOCK_CACHE["signature"] = None
+        panel_ops._ASSETS_BLOCK_CACHE["payload"] = None
+
+    def _patch_scan_counting(self, monkeypatch, records):
+        import sentinel.ui.flows as flows
+        calls = {"n": 0}
+
+        def _scan(doc):
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise AssertionError(
+                    "scan_scene_assets called again for an unchanged assets signature")
+            return (records, [], [])
+
+        monkeypatch.setattr(flows, "scan_scene_assets", _scan)
+        return calls
+
+    def test_second_call_same_signature_does_not_rescan(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_ops
+
+        records = [{"key": "a", "resolved_path": "/tex/a.png", "status": "ok",
+                    "asset_type": "texture", "size_bytes": 100}]
+        calls = self._patch_scan_counting(monkeypatch, records)
+        monkeypatch.setattr(panel_ops, "_totals_from_cache",
+                             lambda paths: {"vram_bytes": 0, "covered": 0})
+
+        doc = self._FakeDoc(materials=[self._FakeMat(dirty=0)])
+
+        first = panel_ops._panel_assets_block(doc)
+        second = panel_ops._panel_assets_block(doc)
+
+        assert calls["n"] == 1
+        assert second == first
+        assert first["count"] == 1
+
+    def test_material_dirty_change_invalidates_cache(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_ops
+        import sentinel.ui.flows as flows
+
+        records = [{"key": "a", "resolved_path": "/tex/a.png", "status": "ok",
+                    "asset_type": "texture", "size_bytes": 100}]
+        scans = {"n": 0}
+
+        def _scan(doc):
+            scans["n"] += 1
+            return (records, [], [])
+
+        monkeypatch.setattr(flows, "scan_scene_assets", _scan)
+        monkeypatch.setattr(panel_ops, "_totals_from_cache",
+                             lambda paths: {"vram_bytes": 0, "covered": 0})
+
+        mat = self._FakeMat(dirty=0)
+        doc = self._FakeDoc(materials=[mat])
+
+        panel_ops._panel_assets_block(doc)
+        mat._dirty = 1  # simulate a texture repath bumping material dirty
+        panel_ops._panel_assets_block(doc)
+
+        assert scans["n"] == 2
+
+    def test_signature_none_for_a_doc_without_material_reads_never_caches(
+            self, sentinel_module, monkeypatch):
+        """Falls back to always-recompute (never raises, never caches)
+        when ``doc`` doesn't support the reads the signature needs — same
+        object used by ``TestPanelAssetsBlockVram`` above."""
+        from sentinel.ui import panel_ops
+
+        records = [{"key": "a", "resolved_path": "/tex/a.png", "status": "ok",
+                    "asset_type": "texture", "size_bytes": 100}]
+        scans = {"n": 0}
+
+        import sentinel.ui.flows as flows
+
+        def _scan(doc):
+            scans["n"] += 1
+            return (records, [], [])
+
+        monkeypatch.setattr(flows, "scan_scene_assets", _scan)
+        monkeypatch.setattr(panel_ops, "_totals_from_cache",
+                             lambda paths: {"vram_bytes": 0, "covered": 0})
+
+        panel_ops._panel_assets_block(object())
+        panel_ops._panel_assets_block(object())
+
+        assert scans["n"] == 2
+
+
 class TestTopQcChecks:
     """Pure — no c4d import in webbridge.py, no harness needed."""
 
