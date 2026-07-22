@@ -227,6 +227,7 @@ export function PanelPage() {
     if (response.stamp) stampRef.current = response.stamp;
     if (response.qc) setQcState({ kind: "ok", data: response.qc });
     toast({ message: "Accepted into the baseline.", variant: "success" });
+    load(true); // keeps the rail/header QC badge in sync, same as runQcCardFix/runQcFixAll
     return { ok: true };
   }
 
