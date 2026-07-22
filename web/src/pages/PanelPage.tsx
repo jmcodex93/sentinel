@@ -2,21 +2,34 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { OverviewCards } from "../components/panel/OverviewCards";
 import { PanelHeader } from "../components/panel/PanelHeader";
 import { PanelRail } from "../components/panel/PanelRail";
+import { QcSection } from "../components/panel/QcSection";
 import { EmptyState, ErrorState, LoadingState } from "../components/PageStates";
 import { Button } from "../components/form/Button";
 import {
   fetchPaletteActions,
   fetchPanelOverview,
+  fetchPanelQc,
   fetchPanelStamp,
   isMock,
   postPanelOpenForm,
+  postPanelQcAccept,
+  postPanelQcFixAll,
+  postPanelQcSelect,
   runPaletteAction,
 } from "../lib/api";
 import { railBadges, railMode, type PanelSection } from "../lib/panel";
 import { useToast } from "../lib/toast";
-import type { PaletteAction, PanelOverviewResult } from "../types";
+import type { PaletteAction, PanelOverviewResult, PanelQcCheck, PanelQcResult } from "../types";
 
 type PageState = { kind: "loading" } | PanelOverviewResult;
+type QcPageState = { kind: "loading" } | PanelQcResult;
+
+/** What the inline confirm bar is about to run, for the QC section's Fix
+ * (per-card, via the shared palette action) and Fix-all (via
+ * `panel/qc/fix_all`) mutations — same "gate on the freshest known
+ * enabled/reason/requires_confirm before hitting the server" contract as
+ * Overview's `confirmAction`, just able to represent either mutation kind. */
+type QcConfirm = { kind: "card_fix"; action: PaletteAction } | { kind: "fix_all"; action: PaletteAction };
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -27,7 +40,6 @@ const POLL_INTERVAL_MS = 2000;
  * where the native panel's Tools tab sends "Asset Management" today, so
  * it's the closest stand-in until 6.4. */
 const PLACEHOLDER_DEEP_LINKS: Partial<Record<PanelSection["id"], { id: string; label: string }>> = {
-  qc: { id: "open_reports_qc", label: "Open QC Report" },
   render: { id: "open_reports_render_validation", label: "Open Render Validation" },
   deliver: { id: "open_reports_delivery", label: "Open Delivery Summary" },
   tools: { id: "open_hub", label: "Open Asset Hub" },
@@ -79,6 +91,9 @@ export function PanelPage() {
   const [actions, setActions] = useState<PaletteAction[]>([]);
   const [busyFixId, setBusyFixId] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<PaletteAction | null>(null);
+  const [qcState, setQcState] = useState<QcPageState>({ kind: "loading" });
+  const [busyQcId, setBusyQcId] = useState<string | null>(null);
+  const [qcConfirm, setQcConfirm] = useState<QcConfirm | null>(null);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const stampRef = useRef<string | null>(null);
@@ -94,9 +109,26 @@ export function PanelPage() {
     });
   }, []);
 
+  // `panel/qc` is its own fetch (Fase 6.1) — the section's full per-check
+  // FAIL/WARN/OK/disabled breakdown, not the top-3 summary `load` above
+  // already carries in `state.data.qc`. Fetched on entering the QC section
+  // and again on every stamp change while it's active (see the polling
+  // effect below), same "compare, then refetch only on change" idiom.
+  const loadQc = useCallback((silent: boolean) => {
+    if (!silent) setQcState({ kind: "loading" });
+    fetchPanelQc().then(async (result) => {
+      setQcState(result);
+      if (result.kind === "ok") stampRef.current = await fetchPanelStamp();
+    });
+  }, []);
+
   useEffect(() => {
     load(false);
   }, [load]);
+
+  useEffect(() => {
+    if (section === "qc") loadQc(false);
+  }, [section, loadQc]);
 
   // Adaptive rail breakpoint — ResizeObserver on the page root rather than
   // `window.resize`, since this page is hosted inside a native docked panel
@@ -122,9 +154,10 @@ export function PanelPage() {
       const newStamp = await fetchPanelStamp();
       if (newStamp === null || stampRef.current === null || newStamp === stampRef.current) return;
       load(true);
+      if (section === "qc") loadQc(true);
     }, POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
-  }, [load]);
+  }, [load, loadQc, section]);
 
   async function runFix(action: PaletteAction, confirm?: boolean) {
     // qc.fixable (panel/overview) and this actions list (palette/actions) are
@@ -170,6 +203,108 @@ export function PanelPage() {
   async function handleOpenForm(page: "form/save_version" | "form/notes") {
     const response = await postPanelOpenForm(page);
     if (!response.ok) toast({ message: response.error || "Couldn't open.", variant: "warn" });
+  }
+
+  async function handleQcSelect(checkId: string) {
+    setBusyQcId(`select:${checkId}`);
+    const response = await postPanelQcSelect(checkId);
+    setBusyQcId(null);
+    if (!response.ok) {
+      toast({ message: response.error || "Select failed.", variant: "warn" });
+      return;
+    }
+    if (response.stamp) stampRef.current = response.stamp;
+    const progress =
+      response.total && response.total > 0 ? ` ${response.cursor_pos}/${response.total}` : "";
+    toast({ message: `Selected in scene.${progress}`, variant: "success" });
+  }
+
+  async function handleQcAccept(checkId: string, author: string, reason: string) {
+    setBusyQcId(`accept:${checkId}`);
+    const response = await postPanelQcAccept(checkId, author, reason);
+    setBusyQcId(null);
+    if (!response.ok) {
+      return { ok: false, error: response.error };
+    }
+    if (response.stamp) stampRef.current = response.stamp;
+    if (response.qc) setQcState({ kind: "ok", data: response.qc });
+    toast({ message: "Accepted into the baseline.", variant: "success" });
+    load(true); // keeps the rail/header QC badge in sync, same as runQcCardFix/runQcFixAll
+    return { ok: true };
+  }
+
+  // Per-card Fix reuses the exact same shared palette action (fix_lights/
+  // fix_cameras/fix_materials/fix_fps) + enabled/reason + requires_confirm
+  // gate as Overview's `runFix` above — the QC section's Fix button is not
+  // a distinct mutation, just a different entry point into `palette/run`.
+  async function runQcCardFix(action: PaletteAction, confirm?: boolean) {
+    if (!action.enabled) {
+      if (action.reason) toast({ message: action.reason, variant: "warn" });
+      return;
+    }
+    if (action.requires_confirm && !confirm) {
+      setQcConfirm({ kind: "card_fix", action });
+      return;
+    }
+    setBusyQcId(`fix:${action.id}`);
+    const response = await runPaletteAction(action.id, confirm);
+    setBusyQcId(null);
+    setQcConfirm(null);
+
+    if (!response.ok) {
+      toast({ message: response.error || "Fix failed.", variant: "warn" });
+      return;
+    }
+    toast({ message: response.message || "Fixed.", variant: "success" });
+    loadQc(true);
+    load(true); // keeps the rail/header QC badge and the palette action list in sync
+  }
+
+  function handleQcFix(check: PanelQcCheck) {
+    const action = actions.find((a) => a.id === check.fix_action_id);
+    if (!action) {
+      toast({ message: "Fix action unavailable.", variant: "warn" });
+      return;
+    }
+    runQcCardFix(action);
+  }
+
+  /** Fix-all is its own op (`panel/qc/fix_all`, `fixes.apply_fixes` over
+   * every currently-fixable check in one undo) — not a loop over
+   * `runPaletteAction`. The confirm gate still has to reflect the palette's
+   * `requires_confirm` contract for materials/fps, so this looks up whether
+   * any check the batch would touch matches a destructive palette action. */
+  function qcFixAllConfirmAction(): PaletteAction | null {
+    if (qcState.kind !== "ok") return null;
+    for (const check of [...qcState.data.fail, ...qcState.data.warn]) {
+      if (!check.can_fix) continue;
+      const action = actions.find((a) => a.id === check.fix_action_id);
+      if (action?.requires_confirm) return action;
+    }
+    return null;
+  }
+
+  async function runQcFixAll(confirm?: boolean) {
+    if (!confirm) {
+      const needsConfirm = qcFixAllConfirmAction();
+      if (needsConfirm) {
+        setQcConfirm({ kind: "fix_all", action: needsConfirm });
+        return;
+      }
+    }
+    setBusyQcId("fix_all");
+    const response = await postPanelQcFixAll();
+    setBusyQcId(null);
+    setQcConfirm(null);
+
+    if (!response.ok) {
+      toast({ message: response.error || "Fix all failed.", variant: "warn" });
+      return;
+    }
+    if (response.stamp) stampRef.current = response.stamp;
+    if (response.qc) setQcState({ kind: "ok", data: response.qc });
+    toast({ message: "Fixed.", variant: "success" });
+    load(true); // keeps the rail/header QC badge and the palette action list in sync
   }
 
   const badges = state.kind === "ok" ? railBadges(state.data) : { qc: null, assets: null };
@@ -222,7 +357,53 @@ export function PanelPage() {
             </>
           )}
 
-          {state.kind === "ok" && section !== "overview" && (
+          {state.kind === "ok" && section === "qc" && (
+            <>
+              {qcConfirm && (
+                <div
+                  className="mx-3 mt-3 flex flex-wrap items-center gap-2 rounded-lg border p-3"
+                  style={{ backgroundColor: "var(--color-surface-1)", borderColor: "var(--color-hairline)" }}
+                >
+                  <span className="text-body" style={{ color: "var(--color-ink)" }}>
+                    {qcConfirm.action.confirm_label}
+                  </span>
+                  <div className="ml-auto flex gap-2">
+                    <Button variant="secondary" disabled={busyQcId !== null} onClick={() => setQcConfirm(null)}>
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      disabled={busyQcId !== null}
+                      onClick={() =>
+                        qcConfirm.kind === "card_fix" ? runQcCardFix(qcConfirm.action, true) : runQcFixAll(true)
+                      }
+                    >
+                      Confirm
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {qcState.kind === "loading" && <LoadingState />}
+              {qcState.kind === "error" && (
+                <ErrorState title="Couldn't load QC" message={qcState.message} onRetry={() => loadQc(false)} />
+              )}
+              {qcState.kind === "empty" && <EmptyState title="No document open" reason={qcState.reason} />}
+              {qcState.kind === "ok" && (
+                <QcSection
+                  qc={qcState.data}
+                  actions={actions}
+                  artistName={state.data.scene?.artist ?? ""}
+                  busy={busyQcId}
+                  onSelect={handleQcSelect}
+                  onFix={handleQcFix}
+                  onAccept={handleQcAccept}
+                  onFixAll={() => runQcFixAll()}
+                />
+              )}
+            </>
+          )}
+
+          {state.kind === "ok" && section !== "overview" && section !== "qc" && (
             <SectionPlaceholder section={section} onDeepLink={handleDeepLink} />
           )}
         </div>

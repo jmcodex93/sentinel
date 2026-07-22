@@ -43,10 +43,12 @@ describe("railBadges", () => {
     expect(badges.qc).toBe(6);
   });
 
-  it("subtracts disabled checks from the denominator before computing fails", () => {
-    // 8 passed, 11 total, 1 disabled -> 11 - 1 - 8 = 2 new failures, not 3.
+  it("does not subtract disabled checks again — qc.total is already net of them", () => {
+    // qc.total from the score engine already excludes disabled checks
+    // (qc/score.py: disabled checks `continue` before entering `counts`).
+    // 8 passed, 11 total (already net) -> 11 - 8 = 3 new failures, not 2.
     const badges = railBadges(overview({ qc: { passed: 8, total: 11, disabled: 1, top: [], fixable: [] } }));
-    expect(badges.qc).toBe(2);
+    expect(badges.qc).toBe(3);
   });
 
   it("has no assets badge when nothing is missing", () => {

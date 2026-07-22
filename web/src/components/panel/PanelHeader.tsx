@@ -1,11 +1,14 @@
 import type { PanelQc, PanelScene } from "../../types";
 
 /** QC score bar — same tone rule as `QcReportPage` (`scoreTone`): full pass
- * is `status-pass`, anything short of it is `status-fail`. Width is the
- * passed/(total-disabled) fraction; `total === disabled` (every check
- * turned off) draws an empty, neutral bar rather than dividing by zero. */
+ * is `status-pass`, anything short of it is `status-fail`. `qc.total` is
+ * already net of disabled checks (see `qc/score.py` — disabled checks never
+ * enter `counts`), so the denominator is `total` directly, no further
+ * subtraction. Width is the passed/total fraction; `total === 0` (every
+ * check turned off) draws an empty, neutral bar rather than dividing by
+ * zero. */
 function QcBar({ qc }: { qc: PanelQc }) {
-  const denominator = qc.total - qc.disabled;
+  const denominator = qc.total;
   const fraction = denominator > 0 ? qc.passed / denominator : 0;
   const tone = denominator > 0 && qc.passed === denominator ? "pass" : "fail";
   const color = denominator > 0 ? (tone === "pass" ? "var(--color-status-pass)" : "var(--color-status-fail)") : "var(--color-status-neutral)";

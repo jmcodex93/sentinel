@@ -83,7 +83,7 @@ function QcCard({
   busyFix: string | null;
 }) {
   if (!qc) return <UnavailableCard title="QC" />;
-  const denominator = qc.total - qc.disabled;
+  const denominator = qc.total;
   const passing = denominator > 0 && qc.passed === denominator;
   const topLine = qc.top.map((c) => `${c.label} ${c.count}`).join(" · ");
 

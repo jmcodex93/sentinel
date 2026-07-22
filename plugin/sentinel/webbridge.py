@@ -1384,6 +1384,85 @@ def palette_actions_payload(doc_present, doc_saved=False, qc_counts=None):
 
 
 # ---------------------------------------------------------------------------
+# panel/qc grouping — ui/panel_ops.py (Fase 6.1 Task 1)
+# ---------------------------------------------------------------------------
+
+_FIX_ACTION_ID_BY_CHECK_ID = {
+    action["check_id"]: action["id"]
+    for action in PALETTE_ACTIONS
+    if action.get("group") == "Quick Fix" and action.get("check_id")
+}
+
+
+def group_qc_by_severity(checks):
+    """Pure: partition ``qc_report_payload``'s ``checks`` list into the
+    ``panel/qc`` shape (``ui/panel_ops.py``) — FAIL cards, WARN cards, a
+    folded OK count, and a disabled count. Never re-derives scoring, only
+    reshapes rows ``qc_report_payload`` already built.
+
+    Each FAIL/WARN card is enriched with the per-card action flags the SPA
+    needs, sourced from ``CHECK_REGISTRY``/``PALETTE_ACTIONS`` — never
+    invented: ``can_select``/``can_fix`` come straight from the entry's
+    declared ``actions`` tuple (same source ``qc_report_payload`` uses for
+    ``has_fix``), and ``fix_action_id`` is the matching ``PALETTE_ACTIONS``
+    "Quick Fix" id for that check_id (``None`` for a check with no Quick
+    Fix action, e.g. one that's ``has_fix`` but document-scoped only... in
+    practice every ``has_fix`` check_id already has a Quick Fix entry).
+
+    ``accepted_all`` is true when every CURRENT violation of the check is
+    already baselined (``new == 0`` and ``accepted > 0``) — the row can
+    still be a FAIL/WARN card (status derives from the raw legacy ``count``,
+    not the baseline-aware ``new``), it just reads "0 new (N accepted)".
+    Without an active baseline (``new`` is ``None``), ``accepted_all`` is
+    always ``False``.
+
+    A row with ``status`` "ok" or "disabled" is excluded from both card
+    lists — the SPA renders the OK/disabled counts as a single folded line,
+    not individual cards.
+    """
+    registry_by_id = {entry.check_id: entry for entry in CHECK_REGISTRY}
+    fail, warn = [], []
+    ok_count = 0
+    disabled_count = 0
+
+    for row in checks or []:
+        status = row.get("status")
+        if status == "disabled":
+            disabled_count += 1
+            continue
+        if status == "ok":
+            ok_count += 1
+            continue
+
+        check_id = row.get("id")
+        entry = registry_by_id.get(check_id)
+        actions = getattr(entry, "actions", ()) if entry else ()
+        new = row.get("new")
+        accepted = row.get("accepted")
+
+        card = {
+            "id": check_id,
+            "label": row.get("label"),
+            "severity": row.get("severity"),
+            "count": row.get("count"),
+            "new": new,
+            "accepted": accepted,
+            "detail": row.get("details") or [],
+            "can_select": "select" in actions,
+            "can_fix": "fix" in actions,
+            "fix_action_id": _FIX_ACTION_ID_BY_CHECK_ID.get(check_id),
+            "accepted_all": bool(new == 0 and (accepted or 0) > 0),
+        }
+        if row.get("severity") == "FAIL":
+            fail.append(card)
+        else:
+            warn.append(card)
+
+    return {"fail": fail, "warn": warn, "ok_count": ok_count,
+            "disabled_count": disabled_count}
+
+
+# ---------------------------------------------------------------------------
 # Hub payload helpers
 # ---------------------------------------------------------------------------
 

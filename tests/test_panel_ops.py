@@ -15,7 +15,9 @@ helpers that ARE pure (``_validate_form_page`` here,
 class TestPanelOpsTable:
     def test_ops_registered(self, sentinel_module):
         from sentinel.ui import panel_ops
-        for op in ("panel/state_stamp", "panel/overview", "panel/open_form"):
+        for op in ("panel/state_stamp", "panel/overview", "panel/open_form",
+                   "panel/qc", "panel/qc/select", "panel/qc/accept",
+                   "panel/qc/fix_all"):
             assert op in panel_ops.PANEL_OPS
 
     def test_state_stamp_without_document(self, sentinel_module):
@@ -30,6 +32,166 @@ class TestPanelOpsTable:
         from sentinel.ui import panel_ops
         response = panel_ops.PANEL_OPS["panel/open_form"]({"page": "form/save_version"})
         assert response == {"ok": False, "error": "no_document"}
+
+    def test_panel_qc_without_document(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops.PANEL_OPS["panel/qc"]({}) == {"error": "no_document"}
+
+    def test_panel_qc_select_without_document(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        response = panel_ops.PANEL_OPS["panel/qc/select"]({"check_id": "lights"})
+        assert response == {"ok": False, "error": "no_document"}
+
+    def test_panel_qc_accept_without_document(self, sentinel_module):
+        # Validation runs BEFORE the doc guard (per the plan's own ordering),
+        # so a well-formed payload reaches the no_document branch.
+        from sentinel.ui import panel_ops
+        response = panel_ops.PANEL_OPS["panel/qc/accept"](
+            {"check_id": "lights", "author": "Javier", "reason": "known issue"})
+        assert response == {"ok": False, "error": "no_document"}
+
+    def test_panel_qc_fix_all_without_document(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops.PANEL_OPS["panel/qc/fix_all"]({}) == {"ok": False, "error": "no_document"}
+
+
+class TestValidateAcceptPayload:
+    """Pure — reachable without the fake-c4d harness or a document (same
+    convention as ``TestValidateFormPage``): validation runs BEFORE the doc
+    guard for ``panel/qc/accept``, but is still split out and unit tested
+    directly rather than only through the op.
+    """
+
+    def test_valid_payload_passes(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._validate_accept_payload(
+            {"check_id": "lights", "author": "Javier", "reason": "known issue"}) is None
+
+    def test_missing_check_id_rejected(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._validate_accept_payload(
+            {"author": "Javier", "reason": "known issue"}) == "check_id_required"
+
+    def test_missing_author_rejected(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._validate_accept_payload(
+            {"check_id": "lights", "author": "  ", "reason": "known issue"}) == "author_required"
+
+    def test_missing_reason_rejected(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._validate_accept_payload(
+            {"check_id": "lights", "author": "Javier", "reason": ""}) == "reason_required"
+
+    def test_empty_payload_rejected(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._validate_accept_payload({}) == "check_id_required"
+
+    def test_none_payload_never_raises(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._validate_accept_payload(None) == "check_id_required"
+
+
+class TestValidateSelectCheckId:
+    """Pure — ``panel/qc/select`` is doc-guard-first, so the "unknown or
+    non-selectable check_id" branch is unreachable through the op in the
+    harness (``GetActiveDocument()`` is always ``None``); split out and
+    tested directly, same convention as ``TestValidateFormPage``.
+    """
+
+    def test_selectable_check_ids_pass(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        for check_id in ("lights", "vis", "keys", "cam", "unused_mats",
+                          "names", "cross_aspect"):
+            assert panel_ops._validate_select_check_id(check_id) is None
+
+    def test_info_only_check_id_rejected(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._validate_select_check_id("rdc") == "not_selectable"
+
+    def test_unknown_check_id_rejected(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._validate_select_check_id("nonexistent") == "not_selectable"
+        assert panel_ops._validate_select_check_id(None) == "not_selectable"
+        assert panel_ops._validate_select_check_id("") == "not_selectable"
+
+
+class TestAdvanceCursor:
+    """Pure — ``_advance_cursor`` is the cycle-one-per-click math behind
+    ``panel/qc/select`` (live-caught fix #2: restores the native
+    ``self._idx`` cycle that Fase 6.1 replaced with select-all). Mirrors
+    the native ``if self._idx >= len(self._bad): self._idx = 0`` guard, plus
+    resets to 0 when the flagged set's SIZE changed since the last click.
+    """
+
+    def test_first_click_starts_at_zero(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._advance_cursor(0, -1, 5) == 0
+
+    def test_advances_within_bounds(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._advance_cursor(2, 5, 5) == 2
+
+    def test_wraps_when_stored_pos_ran_off_the_end(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._advance_cursor(5, 5, 5) == 0
+
+    def test_resets_when_flagged_set_size_changed(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._advance_cursor(3, 5, 4) == 0
+
+    def test_zero_total_returns_zero(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._advance_cursor(0, -1, 0) == 0
+        assert panel_ops._advance_cursor(2, 5, 0) == 0
+
+
+class TestQcFlaggedItems:
+    """Pure — the flagged-item list ``panel/qc/select`` cycles through."""
+
+    def test_plain_check_returns_legacy_result_as_is(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        objs = ["obj_a", "obj_b"]
+        assert panel_ops._qc_flagged_items("lights", objs) == objs
+
+    def test_cross_aspect_dedupes_by_object(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        obj_a, obj_b = object(), object()
+        violations = [
+            {"object": obj_a, "format": "9x16"},
+            {"object": obj_a, "format": "1x1"},
+            {"object": obj_b, "format": "9x16"},
+        ]
+        assert panel_ops._qc_flagged_items("cross_aspect", violations) == [obj_a, obj_b]
+
+    def test_none_legacy_result_returns_empty_list(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._qc_flagged_items("lights", None) == []
+        assert panel_ops._qc_flagged_items("cross_aspect", None) == []
+
+
+class TestQcAcceptUnsavedDocument:
+    """``panel/qc/accept`` on an unsaved document (live-caught fix #1): the
+    op used to return ``{"ok": True}`` even though
+    ``_baseline_path_for_doc`` has nowhere to write (no ``.c4d`` path yet),
+    silently losing the acceptance. Monkeypatches ``documents.GetActiveDocument``
+    (the fake module the harness installs at ``c4d.documents``, imported by
+    ``panel_ops`` as ``from c4d import documents``) to return a fake doc
+    whose ``GetDocumentPath()`` is empty — same technique needed here as
+    nowhere else in this file gets past the doc guard.
+    """
+
+    def test_unsaved_document_rejected_before_baseline_write(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_ops
+
+        class _FakeDoc:
+            def GetDocumentPath(self):
+                return ""
+
+        monkeypatch.setattr(panel_ops.documents, "GetActiveDocument", lambda: _FakeDoc())
+
+        response = panel_ops.PANEL_OPS["panel/qc/accept"](
+            {"check_id": "lights", "author": "Javier", "reason": "known issue"})
+        assert response == {"ok": False, "error": "unsaved_document"}
 
 
 class TestOverviewBlockIsolation:
