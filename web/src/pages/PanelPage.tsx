@@ -214,7 +214,9 @@ export function PanelPage() {
       return;
     }
     if (response.stamp) stampRef.current = response.stamp;
-    toast({ message: "Selected in scene.", variant: "success" });
+    const progress =
+      response.total && response.total > 0 ? ` ${response.cursor_pos}/${response.total}` : "";
+    toast({ message: `Selected in scene.${progress}`, variant: "success" });
   }
 
   async function handleQcAccept(checkId: string, author: string, reason: string) {

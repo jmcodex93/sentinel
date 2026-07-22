@@ -115,6 +115,85 @@ class TestValidateSelectCheckId:
         assert panel_ops._validate_select_check_id("") == "not_selectable"
 
 
+class TestAdvanceCursor:
+    """Pure — ``_advance_cursor`` is the cycle-one-per-click math behind
+    ``panel/qc/select`` (live-caught fix #2: restores the native
+    ``self._idx`` cycle that Fase 6.1 replaced with select-all). Mirrors
+    the native ``if self._idx >= len(self._bad): self._idx = 0`` guard, plus
+    resets to 0 when the flagged set's SIZE changed since the last click.
+    """
+
+    def test_first_click_starts_at_zero(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._advance_cursor(0, -1, 5) == 0
+
+    def test_advances_within_bounds(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._advance_cursor(2, 5, 5) == 2
+
+    def test_wraps_when_stored_pos_ran_off_the_end(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._advance_cursor(5, 5, 5) == 0
+
+    def test_resets_when_flagged_set_size_changed(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._advance_cursor(3, 5, 4) == 0
+
+    def test_zero_total_returns_zero(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._advance_cursor(0, -1, 0) == 0
+        assert panel_ops._advance_cursor(2, 5, 0) == 0
+
+
+class TestQcFlaggedItems:
+    """Pure — the flagged-item list ``panel/qc/select`` cycles through."""
+
+    def test_plain_check_returns_legacy_result_as_is(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        objs = ["obj_a", "obj_b"]
+        assert panel_ops._qc_flagged_items("lights", objs) == objs
+
+    def test_cross_aspect_dedupes_by_object(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        obj_a, obj_b = object(), object()
+        violations = [
+            {"object": obj_a, "format": "9x16"},
+            {"object": obj_a, "format": "1x1"},
+            {"object": obj_b, "format": "9x16"},
+        ]
+        assert panel_ops._qc_flagged_items("cross_aspect", violations) == [obj_a, obj_b]
+
+    def test_none_legacy_result_returns_empty_list(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._qc_flagged_items("lights", None) == []
+        assert panel_ops._qc_flagged_items("cross_aspect", None) == []
+
+
+class TestQcAcceptUnsavedDocument:
+    """``panel/qc/accept`` on an unsaved document (live-caught fix #1): the
+    op used to return ``{"ok": True}`` even though
+    ``_baseline_path_for_doc`` has nowhere to write (no ``.c4d`` path yet),
+    silently losing the acceptance. Monkeypatches ``documents.GetActiveDocument``
+    (the fake module the harness installs at ``c4d.documents``, imported by
+    ``panel_ops`` as ``from c4d import documents``) to return a fake doc
+    whose ``GetDocumentPath()`` is empty — same technique needed here as
+    nowhere else in this file gets past the doc guard.
+    """
+
+    def test_unsaved_document_rejected_before_baseline_write(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_ops
+
+        class _FakeDoc:
+            def GetDocumentPath(self):
+                return ""
+
+        monkeypatch.setattr(panel_ops.documents, "GetActiveDocument", lambda: _FakeDoc())
+
+        response = panel_ops.PANEL_OPS["panel/qc/accept"](
+            {"check_id": "lights", "author": "Javier", "reason": "known issue"})
+        assert response == {"ok": False, "error": "unsaved_document"}
+
+
 class TestOverviewBlockIsolation:
     """``build_panel_overview`` (panel_ops.py) must isolate each of the 5
     card builders: one raising builder degrades to ``None`` for that key

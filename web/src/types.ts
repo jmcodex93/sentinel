@@ -911,11 +911,16 @@ export type PanelQcResult =
   | { kind: "empty"; reason: string }
   | { kind: "error"; message: string };
 
-/** `POST /api/panel/qc/select` — see `_op_panel_qc_select` in panel_ops.py. */
+/** `POST /api/panel/qc/select` — see `_op_panel_qc_select` in panel_ops.py.
+ * Cycles ONE flagged object/material per call (module-side cursor keyed by
+ * check_id, mirrors the native per-instance idx); `cursor_pos`/`total` let
+ * the SPA show progress like "Select 3/8". */
 export interface PanelQcSelectResponse {
   ok: boolean;
   error?: string;
   stamp?: string;
+  cursor_pos?: number;
+  total?: number;
 }
 
 /** `POST /api/panel/qc/accept` — see `_op_panel_qc_accept` in panel_ops.py.

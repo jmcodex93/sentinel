@@ -467,69 +467,102 @@ def _validate_select_check_id(check_id):
     return None
 
 
-def _select_qc_violations(doc, check_id, legacy_objs):
-    """Select in scene the objects/materials one QC check flagged, reusing
-    the native building blocks from ``ui/panel.py`` rather than duplicating
-    them: ``_select_objects`` for the plain-object checks (also used as the
-    fallback for ``names``); the deselect-all-materials-then-set-BIT_ACTIVE
-    mechanics for ``unused_mats`` (same primitive ``_qc_select_unused_mats``
-    uses); the violation-dict-to-deduped-object walk for ``cross_aspect``
-    (same dedupe ``_qc_select_cross_aspect`` uses).
+# Per-check select cursor (Fase 6.1 live-caught fix #2) — REVERSES the
+# earlier select-all deviation. The native ``ui/panel.py`` handlers
+# (``_qc_select_unused_mats``/``_qc_select_names``, and by user request now
+# every selectable check) cycle ONE flagged item per click via a GeDialog
+# instance attribute (``self._unused_mats_idx``/``self._names_idx``) that
+# remembers the cursor between clicks. This op is stateless HTTP — there is
+# no per-request instance to carry that state — so the cursor lives here at
+# module scope instead, keyed by ``check_id``. Same kind of module-level
+# singleton exception as ``hub_ops._META_CACHE``/panel_ops's own
+# ``_ASSETS_BLOCK_CACHE``: one active document at a time, one cursor per
+# check_id is enough.
+_QC_SELECT_CURSOR = {}
 
-    INTENTIONAL DEVIATION for ``unused_mats`` and ``names``: the native
-    ``_qc_select_unused_mats``/``_qc_select_names`` handlers cycle ONE
-    flagged item per click, via GeDialog instance state
-    (``self._unused_mats_idx``/``self._names_idx``) that remembers the
-    cursor between clicks. This op is stateless HTTP — there is no request
-    instance to carry a cursor across calls — so both branches here select
-    ALL currently-flagged materials/objects in one shot instead of cycling.
-    That is the deliberate, better-suited behavior for a stateless op, not
-    an accidental gap versus native parity; see ``_op_panel_qc_select``
-    below for the same note at the op level.
+
+def _advance_cursor(prior_pos, prior_total, new_total):
+    """Pure: the index to select THIS click, given the cursor stored from
+    the previous click (``prior_pos``/``prior_total``) and the freshly
+    computed flagged-count for this check right now (``new_total``).
+
+    Mirrors the native ``if self._idx >= len(self._bad): self._idx = 0``
+    guard (wrap when the stored position has run off the end), plus resets
+    to 0 whenever the flagged set's SIZE has changed since the last click
+    (an object was fixed/added/removed between clicks — the stored position
+    no longer points at the same conceptual "next" item). ``new_total == 0``
+    always yields ``0`` (nothing to select; caller checks ``new_total``
+    before indexing).
     """
-    from sentinel.ui.panel import _select_objects
+    if new_total <= 0:
+        return 0
+    if prior_total != new_total or prior_pos >= new_total:
+        return 0
+    return prior_pos
 
+
+def _qc_flagged_items(check_id, legacy_result):
+    """The list of concrete items (objects, or materials for
+    ``unused_mats``) one check's ``legacy_result`` flags, in cycle order.
+    ``cross_aspect``'s ``legacy_result`` is a list of violation dicts keyed
+    by ``"object"`` — deduped here the same way the native
+    ``_qc_select_cross_aspect`` handler dedupes (an object can violate more
+    than one format). Every other selectable check's ``legacy_result`` is
+    already the flagged-item list itself (materials for ``unused_mats``,
+    objects otherwise).
+    """
     if check_id == "cross_aspect":
         objs = []
         seen = set()
-        for violation in legacy_objs or []:
+        for violation in legacy_result or []:
             obj = violation.get("object") if isinstance(violation, dict) else None
             if obj is None or id(obj) in seen:
                 continue
             seen.add(id(obj))
             objs.append(obj)
-        _select_objects(doc, objs)
-    elif check_id == "unused_mats":
+        return objs
+    return list(legacy_result or [])
+
+
+def _select_single_qc_item(doc, check_id, item):
+    """Select exactly ONE flagged item in the scene — the cycle-one-per-click
+    counterpart to the old select-all. ``unused_mats`` cycles MATERIALS
+    (deselect-all-materials then ``SetBit(BIT_ACTIVE)`` on the one, same
+    primitive ``_qc_select_unused_mats`` uses); every other check cycles
+    OBJECTS via the native ``ui/panel._select_objects`` helper (which itself
+    deselects everything first), passed a single-item list.
+    """
+    if check_id == "unused_mats":
         for mat in doc.GetMaterials():
             mat.DelBit(c4d.BIT_ACTIVE)
-        for mat in legacy_objs or []:
+        if item is not None:
             try:
-                mat.SetBit(c4d.BIT_ACTIVE)
+                item.SetBit(c4d.BIT_ACTIVE)
             except Exception:
                 pass
         c4d.EventAdd()
     else:
-        _select_objects(doc, legacy_objs or [])
+        from sentinel.ui.panel import _select_objects
+        _select_objects(doc, [item] if item is not None else [])
 
 
 def _op_panel_qc_select(payload):
-    """``panel/qc/select`` — select in scene the objects/materials one QC
-    check currently flags. Doc-guard first, then check_id validation
-    (``_validate_select_check_id``) — an unknown/info-only check_id is
-    rejected without running a scan. Runs its own fresh ``run_all_checks``
-    pass (this is a mutation-adjacent scene op, not the cached
-    ``panel/qc`` read) to get the current ``legacy_result`` for the
-    requested check, then dispatches to ``_select_qc_violations``.
+    """``panel/qc/select`` — cycle to the NEXT flagged object/material one
+    QC check currently flags, one item per click (mirrors the native
+    per-instance idx cycle — see ``_QC_SELECT_CURSOR`` above for why the
+    cursor lives at module scope instead of a GeDialog instance attribute).
 
-    INTENTIONAL DEVIATION from the native handlers for ``unused_mats`` and
-    ``names``: those cycle ONE flagged object per click, using GeDialog
-    instance state (``self._unused_mats_idx``/``self._names_idx``) to
-    remember where the cursor was. This op is stateless HTTP — there is no
-    per-instance cursor to carry between requests, and "cycle one" doesn't
-    map onto a discrete request/response anyway — so it selects ALL
-    currently-flagged objects/materials for the check in one shot instead.
-    This is the deliberate, better-suited behavior for a stateless op, not
-    an accidental gap versus the native cycle-one-per-click Select.
+    This REVERSES the earlier Fase 6.1 select-all deviation per user
+    feedback: select-all was a deliberate but unwanted departure from the
+    native cycle-one-per-click behavior; this restores parity (see
+    ``docs/superpowers/specs/2026-07-22-panel-qc-design.md`` Desviación 1).
+
+    Doc-guard first, then check_id validation (``_validate_select_check_id``)
+    — an unknown/info-only check_id is rejected without running a scan.
+    Runs its own fresh ``run_all_checks`` pass (mutation-adjacent scene op,
+    not the cached ``panel/qc`` read) to get the current flagged list,
+    advances the cursor (``_advance_cursor``), and selects only that one
+    item via ``_select_single_qc_item``.
     """
     doc = documents.GetActiveDocument()
     if not doc:
@@ -545,9 +578,24 @@ def _op_panel_qc_select(payload):
     rules_context = active_rules_for_doc(doc)
     registry_results = run_all_checks(doc, _current_module(), rules_context)
     pair = registry_results.get(check_id) or {}
-    _select_qc_violations(doc, check_id, pair.get("legacy_result"))
+    flagged = _qc_flagged_items(check_id, pair.get("legacy_result"))
+    total = len(flagged)
 
-    return {"ok": True, "stamp": _stamp_for(doc)}
+    prior = _QC_SELECT_CURSOR.get(check_id) or {}
+    pos = _advance_cursor(prior.get("pos", 0), prior.get("total", -1), total)
+
+    item = flagged[pos] if total else None
+    _select_single_qc_item(doc, check_id, item)
+
+    next_pos = (pos + 1) % total if total else 0
+    _QC_SELECT_CURSOR[check_id] = {"pos": next_pos, "total": total}
+
+    return {
+        "ok": True,
+        "stamp": _stamp_for(doc),
+        "cursor_pos": (pos + 1) if total else 0,
+        "total": total,
+    }
 
 
 def _validate_accept_payload(payload):
@@ -577,6 +625,13 @@ def _op_panel_qc_accept(payload):
     batch of checks. Invalidates ``check_cache`` on any real acceptance and
     echoes a fresh ``panel/qc`` payload so the SPA never needs a second
     round trip.
+
+    Unsaved-document guard (live-caught fix, Fase 6.1): ``_baseline_path_for_doc``
+    returns ``None`` for a document with no ``.c4d`` path — there is no sidecar
+    to write the acceptance to. Before this guard the op returned ``{"ok":
+    True}`` anyway, silently discarding the acceptance (the score never
+    changed) — a misleading success. Same unsaved-doc guard convention as
+    ``copy_into_project``/``collect`` in ``ui/flows.py``.
     """
     error = _validate_accept_payload(payload)
     if error:
@@ -585,6 +640,9 @@ def _op_panel_qc_accept(payload):
     doc = documents.GetActiveDocument()
     if not doc:
         return {"ok": False, "error": "no_document"}
+
+    if not doc.GetDocumentPath():
+        return {"ok": False, "error": "unsaved_document"}
 
     from sentinel import baseline as baseline_engine
     from sentinel.common.cache import check_cache

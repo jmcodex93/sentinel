@@ -74,7 +74,15 @@ export function QcCard({
     const response = await onAccept(author.trim(), reason.trim());
     setSubmitting(false);
     if (!response.ok) {
-      setAcceptError(response.error || "Accept failed.");
+      // "unsaved_document": the baseline sidecar lives next to the .c4d —
+      // an unsaved doc has no path to write it to, so the acceptance would
+      // otherwise silently go nowhere. Surface a specific, actionable
+      // message instead of the generic failure, and keep the form open.
+      setAcceptError(
+        response.error === "unsaved_document"
+          ? "Save the scene first to accept violations."
+          : response.error || "Accept failed.",
+      );
       return;
     }
     setAcceptOpen(false);
