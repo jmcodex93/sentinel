@@ -20,9 +20,9 @@ export function presetStatusLine(preset: PanelRenderPreset | null): string {
 }
 
 /** Frame card status line: `"No Sentinel Frame tag."` / `"On <camera>."`,
- * with an optional `"· N formats"` tail once an engine helper populates
- * `format_count` (currently always `null`/`undefined` — see the type's own
- * doc comment). */
+ * with a `"· N formats"` tail when the server populates `format_count`
+ * (from the Sentinel Frame tag's enabled-format ids; `null` if the tag has
+ * none or the read failed). */
 export function frameStatusLine(frame: PanelRenderFrame | null): string {
   if (frame === null) return "Frame status unavailable.";
   if (!frame.has_tag || !frame.camera_name) return "No Sentinel Frame tag.";
