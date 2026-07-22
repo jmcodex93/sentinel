@@ -1064,19 +1064,29 @@ def get_effective_snapshot_dir():
     return GlobalSettings.get_snapshot_dir(), "manual"
 
 
-def snapshot_save_still(doc, artist_name):
-    """Main entry point: find latest EXR, convert with ACES, save to project"""
+def snapshot_save_still_core(doc, artist_name):
+    """Dialog-free core of ``snapshot_save_still`` — extracted (Fase 6.2
+    Task 2) so a non-interactive caller (``panel_render_ops.py``'s
+    ``save_still`` op) can find-convert-save without the native
+    ``MessageDialog``/Picture Viewer chain (same reasoning as
+    ``snapshot_auto_convert``'s docstring: a modal/blocking call in a
+    headless caller's path can never be dismissed).
+
+    Returns ``{"ok": True, "path": png_path, "output_dir": output_dir}`` on
+    success, or ``{"ok": False, "stage": "artist"|"exr"|"convert", "error":
+    <message>}`` — never raises, never shows a dialog or opens the Picture
+    Viewer. ``snapshot_save_still`` below calls this core then owns the
+    dialog/PV/StatusSetText presentation (byte-equivalent native behavior).
+    """
     if not artist_name:
-        c4d.gui.MessageDialog("Please set your artist name first!")
-        return
+        return {"ok": False, "stage": "artist", "error": "Please set your artist name first!"}
 
     # Find latest EXR — resolve the effective snapshot source dir the same
     # way the panel caption and the watchfolder prime do (auto-detect first).
     snap_dir, _origin = get_effective_snapshot_dir()
     exr_path, error = _find_latest_exr(snap_dir)
     if not exr_path:
-        c4d.gui.MessageDialog(error)
-        return
+        return {"ok": False, "stage": "exr", "error": error}
 
     # Build output path
     output_dir = _get_stills_dir(doc, artist_name)
@@ -1098,8 +1108,26 @@ def snapshot_save_still(doc, artist_name):
     # Convert
     success, error = _convert_exr_to_png(exr_path, png_path, slate_data=slate_data)
     if not success:
-        c4d.gui.MessageDialog(f"Conversion failed:\n{error}")
+        return {"ok": False, "stage": "convert", "error": error}
+
+    safe_print(f"Still saved: {png_path}")
+    return {"ok": True, "path": png_path, "output_dir": output_dir}
+
+
+def snapshot_save_still(doc, artist_name):
+    """Main entry point: find latest EXR, convert with ACES, save to
+    project. Thin dialog wrapper over ``snapshot_save_still_core`` (Fase
+    6.2 Task 2)."""
+    result = snapshot_save_still_core(doc, artist_name)
+    if not result.get("ok"):
+        if result.get("stage") == "convert":
+            c4d.gui.MessageDialog(f"Conversion failed:\n{result.get('error')}")
+        else:
+            c4d.gui.MessageDialog(result.get("error"))
         return
+
+    png_path = result["path"]
+    output_dir = result["output_dir"]
 
     # Show in Picture Viewer — the still itself is the confirmation, so the
     # result is a status-bar caption rather than a redundant MessageDialog
@@ -1113,8 +1141,6 @@ def snapshot_save_still(doc, artist_name):
             f"Still saved: {os.path.basename(png_path)} ({w}x{h}) -> {output_dir}")
     else:
         c4d.gui.StatusSetText(f"Still saved: {png_path}")
-
-    safe_print(f"Still saved: {png_path}")
 
 
 def snapshot_auto_convert(doc, artist_name, snap_path):
@@ -1183,16 +1209,34 @@ def snapshot_auto_convert(doc, artist_name, snap_path):
         return False, "conversion error"
 
 
-def snapshot_open_folder(doc, artist_name):
-    """Open the artist's stills folder"""
+def snapshot_open_folder_core(doc, artist_name):
+    """Dialog-free core of ``snapshot_open_folder`` (Fase 6.2 Task 2) — the
+    cross-platform ``open_in_explorer`` call itself is a plain OS-level
+    launch (``subprocess.Popen``/``os.startfile``), not a blocking C4D
+    dialog, so it's safe to keep in the core; only the two
+    ``MessageDialog`` branches move to the wrapper.
+
+    Returns ``{"ok": True, "path": output_dir}`` on success, or ``{"ok":
+    False, "error": "no_artist_name"|"folder_not_found", "path"?}``.
+    """
     if not artist_name:
-        c4d.gui.MessageDialog("Please set your artist name first!")
-        return
+        return {"ok": False, "error": "no_artist_name"}
     output_dir = _get_stills_dir(doc, artist_name)
-    if os.path.exists(output_dir):
-        open_in_explorer(output_dir)
-    else:
-        c4d.gui.MessageDialog(f"Folder not found:\n{output_dir}")
+    if not os.path.exists(output_dir):
+        return {"ok": False, "error": "folder_not_found", "path": output_dir}
+    open_in_explorer(output_dir)
+    return {"ok": True, "path": output_dir}
+
+
+def snapshot_open_folder(doc, artist_name):
+    """Open the artist's stills folder. Thin dialog wrapper over
+    ``snapshot_open_folder_core`` (Fase 6.2 Task 2)."""
+    result = snapshot_open_folder_core(doc, artist_name)
+    if not result.get("ok"):
+        if result.get("error") == "no_artist_name":
+            c4d.gui.MessageDialog("Please set your artist name first!")
+        else:
+            c4d.gui.MessageDialog(f"Folder not found:\n{result.get('path')}")
 
 
 def scan_scene_assets(doc):

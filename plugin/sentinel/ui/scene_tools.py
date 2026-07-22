@@ -40,8 +40,75 @@ except ImportError:
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 
 
+def _toggle_light_groups_core(doc):
+    """Dialog-free core of the Light Groups on Beauty toggle — extracted
+    from ``_toggle_light_groups`` (Fase 6.2 Task 2) so a non-interactive
+    caller (``panel_render_ops.py``'s ``aov_tier`` op, ``tier="light_groups"``)
+    can flip the flag without the native ``QuestionDialog``/diagnostic
+    ``MessageDialog`` chain. Never asks for confirmation itself — the op
+    layer owns the confirm-gate, same contract as ``_force_render_settings_core``.
+
+    Returns a status dict, one of:
+      ``{"status": "redshift_unavailable"}``
+      ``{"status": "no_videopost"}``
+      ``{"status": "no_lights"}``
+      ``{"status": "no_groups_assigned", "ungrouped": [...]}``
+      ``{"status": "no_beauty_aov"}``
+      ``{"status": "activated"|"deactivated", "groups": [...]}``
+    Never raises.
+    """
+    if not REDSHIFT_AVAILABLE:
+        return {"status": "redshift_unavailable"}
+
+    vprs = _get_rs_videopost(doc)
+    if not vprs:
+        return {"status": "no_videopost"}
+
+    groups, ungrouped = _scan_light_groups(doc)
+    lg_active = _is_lg_active_on_beauty(doc)
+
+    if not groups and not ungrouped:
+        return {"status": "no_lights"}
+
+    if not groups:
+        return {"status": "no_groups_assigned", "ungrouped": ungrouped}
+
+    try:
+        aovs = redshift.RendererGetAOVs(vprs)
+        found = False
+        for aov in aovs:
+            try:
+                if aov.GetParameter(c4d.REDSHIFT_AOV_NAME) == "Beauty":
+                    new_state = not lg_active
+                    aov.SetParameter(c4d.REDSHIFT_AOV_LIGHTGROUP_ALL, new_state)
+                    found = True
+                    break
+            except Exception:
+                pass
+
+        if not found:
+            return {"status": "no_beauty_aov"}
+
+        redshift.RendererSetAOVs(vprs, aovs)
+        check_cache.clear()
+        c4d.EventAdd()
+        if not lg_active:
+            safe_print(f"Light Groups activated ({len(groups)} groups)")
+            return {"status": "activated", "groups": sorted(groups.keys())}
+        safe_print("Light Groups deactivated")
+        return {"status": "deactivated", "groups": sorted(groups.keys())}
+
+    except Exception as e:
+        safe_print(f"Error toggling light groups: {e}")
+        return {"status": "error", "error": str(e)}
+
+
 def _toggle_light_groups(doc):
-    """Toggle Light Groups on Beauty AOV with diagnostic"""
+    """Toggle Light Groups on Beauty AOV with diagnostic. Thin dialog
+    wrapper over ``_toggle_light_groups_core`` (Fase 6.2 Task 2) — asks the
+    confirm question BEFORE toggling (the core has no side effects until
+    called), so the diagnostic message + question are built from the same
+    pre-toggle scan, then only calls the core once the artist confirms."""
     if not REDSHIFT_AVAILABLE:
         c4d.gui.MessageDialog("Redshift module not available.")
         return
@@ -81,38 +148,21 @@ def _toggle_light_groups(doc):
     if not c4d.gui.QuestionDialog(msg):
         return
 
-    # Toggle on Beauty AOV
-    try:
-        aovs = redshift.RendererGetAOVs(vprs)
-        found = False
-        for aov in aovs:
-            try:
-                if aov.GetParameter(c4d.REDSHIFT_AOV_NAME) == "Beauty":
-                    new_state = not lg_active
-                    aov.SetParameter(c4d.REDSHIFT_AOV_LIGHTGROUP_ALL, new_state)
-                    found = True
-                    break
-            except Exception:
-                pass
+    result = _toggle_light_groups_core(doc)
+    status = result.get("status")
 
-        if found:
-            redshift.RendererSetAOVs(vprs, aovs)
-            check_cache.clear()
-            c4d.EventAdd()
-            if not lg_active:
-                safe_print(f"Light Groups activated ({len(groups)} groups)")
-                c4d.gui.MessageDialog(f"Light Groups ACTIVATED on Beauty\n\n"
-                                     f"{len(groups)} group(s): {', '.join(sorted(groups.keys()))}\n"
-                                     f"RS will generate Beauty_[GroupName] sub-AOVs.")
-            else:
-                safe_print("Light Groups deactivated")
-                c4d.gui.MessageDialog("Light Groups DEACTIVATED on Beauty")
-        else:
-            c4d.gui.MessageDialog("Beauty AOV not found.\n\nRun Essentials or Production first.")
-
-    except Exception as e:
-        safe_print(f"Error toggling light groups: {e}")
-        c4d.gui.MessageDialog(f"Error: {e}")
+    if status == "activated":
+        c4d.gui.MessageDialog(f"Light Groups ACTIVATED on Beauty\n\n"
+                             f"{len(result['groups'])} group(s): {', '.join(result['groups'])}\n"
+                             f"RS will generate Beauty_[GroupName] sub-AOVs.")
+    elif status == "deactivated":
+        c4d.gui.MessageDialog("Light Groups DEACTIVATED on Beauty")
+    elif status == "no_beauty_aov":
+        c4d.gui.MessageDialog("Beauty AOV not found.\n\nRun Essentials or Production first.")
+    elif status == "error":
+        c4d.gui.MessageDialog(f"Error: {result.get('error')}")
+    # redshift_unavailable/no_videopost/no_lights/no_groups_assigned can't
+    # happen here — already handled above using the same pre-toggle scan.
 
 
 def _force_aov_tier(doc, tier_list, tier_name):

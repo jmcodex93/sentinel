@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Panel SPA Render-section ops (Fase 6.2 Task 1) — ``panel/render`` (per-block
-isolated read) plus the preset/frame mutation ops (``set_preset``,
+"""Panel SPA Render-section ops — ``panel/render`` (per-block isolated read)
+plus the mutation/action ops. Task 1: preset/frame mutations (``set_preset``,
 ``reset_all``, ``force_vertical``, ``add_frame_tag``, ``select_frame_tag``).
-Sibling of ``ui/panel_ops.py`` (same ``MainThreadQueue`` dispatch-target
-contract, same doc-guard-first / per-block-isolation conventions — see that
-module's docstring and ``_guarded_block`` for the invariant every handler
-below must honor). Host-agnostic: no dialog imports at module scope; merged
-into ``reports_dialog._OPS`` alongside ``PANEL_OPS``/``HUB_OPS``.
+Task 2: AOVs + snapshots (``aov_tier``, ``toggle_multipart``, ``aov_list``,
+``toggle_watchfolder``, ``save_still``, ``open_folder``). Sibling of
+``ui/panel_ops.py`` (same ``MainThreadQueue`` dispatch-target contract, same
+doc-guard-first / per-block-isolation conventions — see that module's
+docstring and ``_guarded_block`` for the invariant every handler below must
+honor). Host-agnostic: no dialog imports at module scope; merged into
+``reports_dialog._OPS`` alongside ``PANEL_OPS``/``HUB_OPS``.
 
 Every field in ``panel/render`` is copied from an existing call site, never
 invented:
@@ -52,12 +54,15 @@ from c4d import documents
 
 from sentinel import postrender
 from sentinel.aovs import (
+    AOV_TIER_ESSENTIALS,
     AOV_TIER_PRODUCTION,
     REDSHIFT_AVAILABLE,
     _is_lg_active_on_beauty,
     _scan_light_groups,
     check_rs_aovs,
+    force_aov_tier,
     get_aov_multipart,
+    set_scene_multipart,
 )
 from sentinel.checks.render import normalize_preset_name
 from sentinel.common.helpers import safe_print
@@ -357,6 +362,167 @@ def _op_panel_render_select_frame_tag(payload):
     return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
 
 
+_AOV_TIER_CONFIRM_LABELS = {
+    "essentials": "Add missing Essentials AOVs?",
+    "production": "Add missing Production AOVs?",
+    "light_groups": "Toggle Light Groups on the Beauty AOV?",
+}
+
+
+def _op_panel_render_aov_tier(payload):
+    """``panel/render/aov_tier`` — destructive-adjacent (rewrites RS AOV
+    render settings), confirm-gated. ``tier`` must be one of
+    ``essentials``/``production``/``light_groups``; anything else is
+    ``invalid_tier`` regardless of ``confirm`` (a bad tier is a client bug,
+    not something a confirm click fixes).
+
+    ``essentials``/``production`` build the tier list
+    (``AOV_TIER_ESSENTIALS``/``AOV_TIER_PRODUCTION``) and run
+    ``aovs.force_aov_tier`` — already dialog-free, no core extraction
+    needed. ``light_groups`` is NOT an AOV list at all (there's no tier of
+    AOV names to add) — it's the native "Light Groups" button's toggle-on-
+    Beauty behavior, so it runs
+    ``scene_tools._toggle_light_groups_core`` (the dialog-free core
+    extracted from ``_toggle_light_groups`` for this task), reporting any
+    non-``activated``/``deactivated`` status as an error.
+    """
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+
+    tier = (payload or {}).get("tier")
+    if tier not in _AOV_TIER_CONFIRM_LABELS:
+        return {"ok": False, "error": "invalid_tier"}
+
+    if _needs_confirm(payload):
+        return {"ok": False, "error": "confirm_required",
+                "confirm_label": _AOV_TIER_CONFIRM_LABELS[tier]}
+
+    if tier == "light_groups":
+        from sentinel.ui import scene_tools
+
+        result = scene_tools._toggle_light_groups_core(doc)
+        status = result.get("status")
+        if status in ("activated", "deactivated"):
+            return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
+        return {"ok": False, "error": result.get("error") or status or "unknown"}
+
+    tier_list = AOV_TIER_ESSENTIALS if tier == "essentials" else AOV_TIER_PRODUCTION
+    added, error = force_aov_tier(doc, tier_list)
+    if error:
+        return {"ok": False, "error": error}
+
+    return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
+
+
+def _op_panel_render_toggle_multipart(payload):
+    """``panel/render/toggle_multipart`` — flips the Multi-Part EXR flag to
+    the opposite of its current live value (``aovs.get_aov_multipart`` /
+    ``aovs.set_scene_multipart``, the same reversible scene-scoped writer
+    the Render tab's own checkbox uses). No confirm gate — reversible,
+    matches the native checkbox's own lack of a confirmation step."""
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+
+    current = get_aov_multipart(doc)
+    ok, error = set_scene_multipart(doc, not current)
+    if not ok:
+        return {"ok": False, "error": error}
+
+    return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
+
+
+def _op_panel_render_aov_list(payload):
+    """``panel/render/aov_list`` — read-only, for the inline "Show AOVs"
+    expand. Mirrors the exact data ``ui/panel.py``'s ``BTN_INFO_AOVS``
+    handler assembles (~line 2152-2192) into a JSON-shaped payload instead
+    of a ``MessageDialog`` string: ``{aovs: [{name, type}], target,
+    light_groups, tier_coverage: {essentials_missing, production_missing}}``.
+    ``{"error": "redshift_unavailable"}`` when the Redshift Python module
+    itself isn't importable — never a crash."""
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"error": "no_document"}
+
+    if not REDSHIFT_AVAILABLE:
+        return {"error": "redshift_unavailable"}
+
+    ess = check_rs_aovs(doc, AOV_TIER_ESSENTIALS)
+    prod = check_rs_aovs(doc, AOV_TIER_PRODUCTION)
+    target_name = "Nuke" if int(GlobalSettings.get('comp_target', 0)) == 0 else "After Effects"
+    lg_active = bool(_is_lg_active_on_beauty(doc))
+    prod_only_missing = [n for n in prod.get("missing") or [] if n not in (ess.get("missing") or [])]
+
+    return {
+        "aovs": [{"name": aov.get("name"), "type": aov.get("type")}
+                 for aov in (prod.get("aovs") or [])],
+        "target": target_name,
+        "light_groups": lg_active,
+        "tier_coverage": {
+            "essentials_missing": ess.get("missing") or [],
+            "production_missing": prod_only_missing,
+        },
+    }
+
+
+def _op_panel_render_toggle_watchfolder(payload):
+    """``panel/render/toggle_watchfolder`` — flips the snapshot watchfolder
+    auto-convert flag (``GlobalSettings.get_snapshot_watch``/
+    ``set_snapshot_watch``, the same key ``CHK_SNAPSHOT_WATCH`` writes).
+    No confirm gate — reversible, matches the native checkbox."""
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+
+    GlobalSettings.set_snapshot_watch(not GlobalSettings.get_snapshot_watch())
+
+    return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
+
+
+def _op_panel_render_save_still(payload):
+    """``panel/render/save_still`` — runs
+    ``flows.snapshot_save_still_core`` (the dialog-free/Picture-Viewer-free
+    core extracted from ``snapshot_save_still`` for this task — CRITICAL:
+    NOT ``scene_tools._take_renderview_snapshot``/``flows.snapshot_save_still``
+    themselves, which show ``MessageDialog`` and open the Picture Viewer, a
+    modal/blocking pair that would freeze the ``MainThreadQueue`` drain).
+    Artist name comes from ``GlobalSettings.load_artist_name()`` (no widget
+    to read in the op path). Toast in the SPA takes the place of the
+    native's ``StatusSetText``/Picture-Viewer confirmation."""
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+
+    from sentinel.ui import flows
+
+    artist_name = GlobalSettings.load_artist_name()
+    result = flows.snapshot_save_still_core(doc, artist_name)
+    if not result.get("ok"):
+        return {"ok": False, "error": result.get("error") or result.get("stage") or "unknown"}
+
+    return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
+
+
+def _op_panel_render_open_folder(payload):
+    """``panel/render/open_folder`` — runs
+    ``flows.snapshot_open_folder_core`` (the dialog-free core extracted
+    from ``snapshot_open_folder``) to launch the effective snapshot stills
+    dir in the OS file manager. Artist name from ``GlobalSettings``."""
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+
+    from sentinel.ui import flows
+
+    artist_name = GlobalSettings.load_artist_name()
+    result = flows.snapshot_open_folder_core(doc, artist_name)
+    if not result.get("ok"):
+        return {"ok": False, "error": result.get("error")}
+
+    return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
+
+
 PANEL_RENDER_OPS = {
     "panel/render": _op_panel_render,
     "panel/render/set_preset": _op_panel_render_set_preset,
@@ -364,4 +530,10 @@ PANEL_RENDER_OPS = {
     "panel/render/force_vertical": _op_panel_render_force_vertical,
     "panel/render/add_frame_tag": _op_panel_render_add_frame_tag,
     "panel/render/select_frame_tag": _op_panel_render_select_frame_tag,
+    "panel/render/aov_tier": _op_panel_render_aov_tier,
+    "panel/render/toggle_multipart": _op_panel_render_toggle_multipart,
+    "panel/render/aov_list": _op_panel_render_aov_list,
+    "panel/render/toggle_watchfolder": _op_panel_render_toggle_watchfolder,
+    "panel/render/save_still": _op_panel_render_save_still,
+    "panel/render/open_folder": _op_panel_render_open_folder,
 }

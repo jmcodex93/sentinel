@@ -420,3 +420,381 @@ class TestFindSentinelFrameTag:
                 return None
 
         assert panel_render_ops._find_sentinel_frame_tag(_FakeDoc()) is None
+
+
+class TestPanelRenderOpsTableTask2:
+    def test_task2_ops_registered(self, sentinel_module):
+        from sentinel.ui import panel_render_ops
+        for op in ("panel/render/aov_tier", "panel/render/toggle_multipart",
+                   "panel/render/aov_list", "panel/render/toggle_watchfolder",
+                   "panel/render/save_still", "panel/render/open_folder"):
+            assert op in panel_render_ops.PANEL_RENDER_OPS
+
+
+class TestAovTierNoDocument:
+    def test_aov_tier_without_document(self, sentinel_module):
+        from sentinel.ui import panel_render_ops
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"](
+            {"tier": "essentials", "confirm": True})
+        assert response == {"ok": False, "error": "no_document"}
+
+    def test_toggle_multipart_without_document(self, sentinel_module):
+        from sentinel.ui import panel_render_ops
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/toggle_multipart"]({})
+        assert response == {"ok": False, "error": "no_document"}
+
+    def test_aov_list_without_document(self, sentinel_module):
+        from sentinel.ui import panel_render_ops
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_list"]({})
+        assert response == {"error": "no_document"}
+
+    def test_toggle_watchfolder_without_document(self, sentinel_module):
+        from sentinel.ui import panel_render_ops
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/toggle_watchfolder"]({})
+        assert response == {"ok": False, "error": "no_document"}
+
+    def test_save_still_without_document(self, sentinel_module):
+        from sentinel.ui import panel_render_ops
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/save_still"]({})
+        assert response == {"ok": False, "error": "no_document"}
+
+    def test_open_folder_without_document(self, sentinel_module):
+        from sentinel.ui import panel_render_ops
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/open_folder"]({})
+        assert response == {"ok": False, "error": "no_document"}
+
+
+class _FakeDocBase:
+    """Minimal fake doc — enough for ops that don't reach real GetActiveRenderData
+    walks in this test class (aov_tier/toggle_multipart/toggle_watchfolder gate
+    tests only need a doc object that is truthy)."""
+
+
+class TestAovTierConfirmGateAndValidation:
+    def test_missing_confirm_returns_confirm_required(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: _FakeDocBase())
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"]({"tier": "essentials"})
+        assert response["ok"] is False
+        assert response["error"] == "confirm_required"
+        assert "confirm_label" in response
+
+    def test_invalid_tier_rejected_even_with_confirm(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: _FakeDocBase())
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"](
+            {"tier": "bogus", "confirm": True})
+        assert response == {"ok": False, "error": "invalid_tier"}
+
+    def test_invalid_tier_rejected_without_confirm_too(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: _FakeDocBase())
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"]({"tier": "bogus"})
+        assert response == {"ok": False, "error": "invalid_tier"}
+
+    def test_essentials_tier_confirmed_runs_force_aov_tier(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(panel_render_ops, "build_panel_render", lambda d: {"probe": True})
+        monkeypatch.setattr(panel_render_ops, "_stamp_for", lambda d: "stamp-1")
+
+        calls = []
+
+        def _fake_force(d, tier_list):
+            calls.append(("force", d, tuple(tier_list)))
+            return 3, None
+
+        monkeypatch.setattr(panel_render_ops, "force_aov_tier", _fake_force)
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"](
+            {"tier": "essentials", "confirm": True})
+
+        assert response == {"ok": True, "stamp": "stamp-1", "render": {"probe": True}}
+        assert calls[0][0] == "force"
+        assert calls[0][1] is doc
+        from sentinel.aovs import AOV_TIER_ESSENTIALS
+        assert calls[0][2] == tuple(AOV_TIER_ESSENTIALS)
+
+    def test_production_tier_confirmed_runs_force_aov_tier(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(panel_render_ops, "build_panel_render", lambda d: {})
+        monkeypatch.setattr(panel_render_ops, "_stamp_for", lambda d: "s")
+
+        calls = []
+        monkeypatch.setattr(panel_render_ops, "force_aov_tier",
+                             lambda d, tier_list: (calls.append(tuple(tier_list)), (5, None))[1])
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"](
+            {"tier": "production", "confirm": True})
+
+        assert response["ok"] is True
+        from sentinel.aovs import AOV_TIER_PRODUCTION
+        assert calls[0] == tuple(AOV_TIER_PRODUCTION)
+
+    def test_force_aov_tier_error_propagates(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(panel_render_ops, "force_aov_tier",
+                             lambda d, tier_list: (0, "Redshift module not available"))
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"](
+            {"tier": "essentials", "confirm": True})
+        assert response == {"ok": False, "error": "Redshift module not available"}
+
+    def test_light_groups_tier_confirmed_runs_dialog_free_core(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        from sentinel.ui import scene_tools
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(panel_render_ops, "build_panel_render", lambda d: {})
+        monkeypatch.setattr(panel_render_ops, "_stamp_for", lambda d: "s")
+        monkeypatch.setattr(scene_tools, "_toggle_light_groups_core",
+                             lambda d: {"status": "activated", "groups": ["Key"]})
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"](
+            {"tier": "light_groups", "confirm": True})
+        assert response["ok"] is True
+
+    def test_light_groups_tier_failure_status_reported(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        from sentinel.ui import scene_tools
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(scene_tools, "_toggle_light_groups_core",
+                             lambda d: {"status": "no_beauty_aov"})
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"](
+            {"tier": "light_groups", "confirm": True})
+        assert response == {"ok": False, "error": "no_beauty_aov"}
+
+
+class TestToggleMultipart:
+    def test_toggles_to_opposite_of_current_state(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(panel_render_ops, "build_panel_render", lambda d: {})
+        monkeypatch.setattr(panel_render_ops, "_stamp_for", lambda d: "s")
+        monkeypatch.setattr(panel_render_ops, "get_aov_multipart", lambda d: True)
+
+        calls = []
+
+        def _fake_set(d, enabled):
+            calls.append(enabled)
+            return True, None
+
+        monkeypatch.setattr(panel_render_ops, "set_scene_multipart", _fake_set)
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/toggle_multipart"]({})
+        assert response["ok"] is True
+        assert calls == [False]
+
+    def test_set_scene_multipart_error_propagates(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(panel_render_ops, "get_aov_multipart", lambda d: False)
+        monkeypatch.setattr(panel_render_ops, "set_scene_multipart",
+                             lambda d, enabled: (False, "Redshift VideoPost not found"))
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/toggle_multipart"]({})
+        assert response == {"ok": False, "error": "Redshift VideoPost not found"}
+
+
+class TestAovListRedshiftUnavailable:
+    def test_redshift_unavailable_degrades_cleanly(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        # Fake harness has no real `redshift` module importable, so
+        # REDSHIFT_AVAILABLE is already False — assert the degrade path
+        # explicitly rather than relying on import-time luck.
+        monkeypatch.setattr(panel_render_ops, "REDSHIFT_AVAILABLE", False)
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_list"]({})
+        assert response == {"error": "redshift_unavailable"}
+
+    def test_available_reshapes_check_rs_aovs(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(panel_render_ops, "REDSHIFT_AVAILABLE", True)
+
+        def _fake_check(d, tier):
+            from sentinel.aovs import AOV_TIER_ESSENTIALS, AOV_TIER_PRODUCTION
+            if tier == AOV_TIER_ESSENTIALS:
+                return {"available": True, "aovs": [{"name": "Beauty", "type": 0, "enabled": True}],
+                        "missing": ["GI"], "tier": tier}
+            return {"available": True, "aovs": [{"name": "Beauty", "type": 0, "enabled": True}],
+                    "missing": ["GI", "Normals"], "tier": tier}
+
+        monkeypatch.setattr(panel_render_ops, "check_rs_aovs", _fake_check)
+        monkeypatch.setattr(panel_render_ops, "_is_lg_active_on_beauty", lambda d: True)
+        monkeypatch.setattr(panel_render_ops, "_scan_light_groups", lambda d: ({"Key": ["Light1"]}, []))
+        monkeypatch.setattr(panel_render_ops.GlobalSettings, "get", lambda key, default=0: 0)
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_list"]({})
+        assert response["aovs"] == [{"name": "Beauty", "type": 0}]
+        assert response["target"] == "Nuke"
+        assert response["light_groups"] is True
+        assert response["tier_coverage"]["essentials_missing"] == ["GI"]
+        assert response["tier_coverage"]["production_missing"] == ["Normals"]
+
+
+class TestToggleWatchfolder:
+    def test_flips_setting_and_returns_new_state(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        from sentinel.common.settings import GlobalSettings
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(panel_render_ops, "build_panel_render", lambda d: {})
+        monkeypatch.setattr(panel_render_ops, "_stamp_for", lambda d: "s")
+
+        state = {"watch": False}
+        monkeypatch.setattr(GlobalSettings, "get_snapshot_watch", lambda: state["watch"])
+
+        def _fake_set(enabled):
+            state["watch"] = enabled
+            return True
+
+        monkeypatch.setattr(GlobalSettings, "set_snapshot_watch", _fake_set)
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/toggle_watchfolder"]({})
+        assert response["ok"] is True
+        assert state["watch"] is True
+
+        # Round-trip: calling again flips it back off.
+        response2 = panel_render_ops.PANEL_RENDER_OPS["panel/render/toggle_watchfolder"]({})
+        assert response2["ok"] is True
+        assert state["watch"] is False
+
+
+class TestSaveStillAndOpenFolderNeverDialog:
+    """Fase 6.2 Task 2 self-review requirement: no op path may reach
+    ``c4d.gui.MessageDialog`` — a modal in the ``MainThreadQueue`` drain
+    freezes all of C4D since a headless HTTP caller can never dismiss a
+    dialog it can't see. Same treatment as Task 1's frame-tag fix."""
+
+    def test_save_still_no_artist_name_never_shows_dialog(self, sentinel_module, monkeypatch):
+        import c4d
+        from sentinel.ui import panel_render_ops
+        from sentinel.common.settings import GlobalSettings
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(GlobalSettings, "load_artist_name", lambda: "")
+
+        def _forbid(*args, **kwargs):
+            raise AssertionError("MessageDialog must never be reachable from an op path")
+
+        monkeypatch.setattr(c4d.gui, "MessageDialog", _forbid)
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/save_still"]({})
+        assert response["ok"] is False
+        assert response["error"]
+
+    def test_save_still_no_exr_never_shows_dialog(self, sentinel_module, monkeypatch):
+        import c4d
+        from sentinel.ui import panel_render_ops
+        from sentinel.common.settings import GlobalSettings
+        from sentinel.ui import flows
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(GlobalSettings, "load_artist_name", lambda: "Motioneer")
+        monkeypatch.setattr(flows, "snapshot_save_still_core",
+                             lambda d, artist: {"ok": False, "stage": "exr", "error": "No EXR found"})
+
+        def _forbid(*args, **kwargs):
+            raise AssertionError("MessageDialog must never be reachable from an op path")
+
+        monkeypatch.setattr(c4d.gui, "MessageDialog", _forbid)
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/save_still"]({})
+        assert response == {"ok": False, "error": "No EXR found"}
+
+    def test_save_still_success_returns_render_payload(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        from sentinel.common.settings import GlobalSettings
+        from sentinel.ui import flows
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(GlobalSettings, "load_artist_name", lambda: "Motioneer")
+        monkeypatch.setattr(flows, "snapshot_save_still_core",
+                             lambda d, artist: {"ok": True, "path": "/x/shot.png", "output_dir": "/x"})
+        monkeypatch.setattr(panel_render_ops, "build_panel_render", lambda d: {})
+        monkeypatch.setattr(panel_render_ops, "_stamp_for", lambda d: "s")
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/save_still"]({})
+        assert response == {"ok": True, "stamp": "s", "render": {}}
+
+    def test_open_folder_missing_folder_never_shows_dialog(self, sentinel_module, monkeypatch):
+        import c4d
+        from sentinel.ui import panel_render_ops
+        from sentinel.common.settings import GlobalSettings
+        from sentinel.ui import flows
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(GlobalSettings, "load_artist_name", lambda: "Motioneer")
+        monkeypatch.setattr(flows, "snapshot_open_folder_core",
+                             lambda d, artist: {"ok": False, "error": "folder_not_found", "path": "/x"})
+
+        def _forbid(*args, **kwargs):
+            raise AssertionError("MessageDialog must never be reachable from an op path")
+
+        monkeypatch.setattr(c4d.gui, "MessageDialog", _forbid)
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/open_folder"]({})
+        assert response == {"ok": False, "error": "folder_not_found"}
+
+    def test_open_folder_no_artist_name_never_shows_dialog(self, sentinel_module, monkeypatch):
+        import c4d
+        from sentinel.ui import panel_render_ops
+        from sentinel.common.settings import GlobalSettings
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(GlobalSettings, "load_artist_name", lambda: "")
+
+        def _forbid(*args, **kwargs):
+            raise AssertionError("MessageDialog must never be reachable from an op path")
+
+        monkeypatch.setattr(c4d.gui, "MessageDialog", _forbid)
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/open_folder"]({})
+        assert response == {"ok": False, "error": "no_artist_name"}
+
+    def test_open_folder_success_returns_render_payload(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        from sentinel.common.settings import GlobalSettings
+        from sentinel.ui import flows
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(GlobalSettings, "load_artist_name", lambda: "Motioneer")
+        monkeypatch.setattr(flows, "snapshot_open_folder_core",
+                             lambda d, artist: {"ok": True, "path": "/x"})
+        monkeypatch.setattr(panel_render_ops, "build_panel_render", lambda d: {})
+        monkeypatch.setattr(panel_render_ops, "_stamp_for", lambda d: "s")
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/open_folder"]({})
+        assert response == {"ok": True, "stamp": "s", "render": {}}
