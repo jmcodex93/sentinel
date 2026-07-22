@@ -865,3 +865,71 @@ export interface PanelOpenFormResponse {
   ok: boolean;
   error?: string;
 }
+
+/**
+ * Panel QC section contract (Fase 6.1) — mirrors `_op_panel_qc`'s full
+ * per-check FAIL/WARN/OK/disabled breakdown and its three mutations
+ * (`panel/qc/select`, `panel/qc/accept`, `panel/qc/fix_all`) in
+ * plugin/sentinel/ui/panel_ops.py, reshaped via the pure
+ * `webbridge.group_qc_by_severity`. Named `PanelQcSection`, not `PanelQc`,
+ * to avoid colliding with the existing top-3 `PanelQc` overview-card type
+ * above — the two are different shapes for the same underlying data.
+ */
+export interface PanelQcCheck {
+  id: string;
+  label: string;
+  severity: "FAIL" | "WARN";
+  count: number;
+  /** Baseline-aware "new" violation count; `null` with no active baseline. */
+  new: number | null;
+  /** Baseline-aware accepted count; `null` with no active baseline. */
+  accepted: number | null;
+  detail: string[];
+  can_select: boolean;
+  can_fix: boolean;
+  /** Matching `PALETTE_ACTIONS` quick-fix id, or `null` if this check has
+   * no Quick Fix action. */
+  fix_action_id: string | null;
+  /** True when every current violation is already baselined (`new === 0`
+   * and `accepted > 0`) — the row still renders as a FAIL/WARN card. */
+  accepted_all: boolean;
+}
+
+export interface PanelQcSection {
+  score: { passed: number; total: number; disabled: number };
+  fail: PanelQcCheck[];
+  warn: PanelQcCheck[];
+  ok_count: number;
+  disabled_count: number;
+}
+
+export type PanelQcResult =
+  | { kind: "ok"; data: PanelQcSection }
+  | { kind: "empty"; reason: string }
+  | { kind: "error"; message: string };
+
+/** `POST /api/panel/qc/select` — see `_op_panel_qc_select` in panel_ops.py. */
+export interface PanelQcSelectResponse {
+  ok: boolean;
+  error?: string;
+  stamp?: string;
+}
+
+/** `POST /api/panel/qc/accept` — see `_op_panel_qc_accept` in panel_ops.py.
+ * `qc` echoes a fresh `panel/qc` payload so the SPA never needs a second
+ * round trip after a successful acceptance. */
+export interface PanelQcAcceptResponse {
+  ok: boolean;
+  error?: string;
+  stamp?: string;
+  qc?: PanelQcSection;
+}
+
+/** `POST /api/panel/qc/fix_all` — see `_op_panel_qc_fix_all` in panel_ops.py.
+ * Same `qc` echo as `PanelQcAcceptResponse`. */
+export interface PanelQcFixAllResponse {
+  ok: boolean;
+  error?: string;
+  stamp?: string;
+  qc?: PanelQcSection;
+}

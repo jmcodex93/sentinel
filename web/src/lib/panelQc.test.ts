@@ -1,0 +1,76 @@
+import { describe, expect, it } from "vitest";
+import { cardActions, orderedSections } from "./panelQc";
+import type { PanelQcCheck, PanelQcSection } from "../types";
+
+function check(overrides: Partial<PanelQcCheck> = {}): PanelQcCheck {
+  return {
+    id: "lights",
+    label: "Lights Organization",
+    severity: "FAIL",
+    count: 8,
+    new: 8,
+    accepted: 0,
+    detail: ["8 lights outside the group."],
+    can_select: true,
+    can_fix: true,
+    fix_action_id: "fix_lights",
+    accepted_all: false,
+    ...overrides,
+  };
+}
+
+describe("cardActions", () => {
+  it("enables select and fix for a fixable + selectable check", () => {
+    const actions = cardActions(check());
+    expect(actions).toEqual({ select: true, fix: true, info: true, accept: true });
+  });
+
+  it("disables select and fix for an info-only check", () => {
+    const actions = cardActions(
+      check({ id: "textures", can_select: false, can_fix: false, fix_action_id: null }),
+    );
+    expect(actions).toEqual({ select: false, fix: false, info: true, accept: true });
+  });
+
+  it("still exposes info/accept for a WARN check with no quick fix", () => {
+    const actions = cardActions(
+      check({
+        id: "default_names",
+        severity: "WARN",
+        can_select: true,
+        can_fix: false,
+        fix_action_id: null,
+      }),
+    );
+    expect(actions).toEqual({ select: true, fix: false, info: true, accept: true });
+  });
+});
+
+function qc(overrides: Partial<PanelQcSection> = {}): PanelQcSection {
+  return {
+    score: { passed: 6, total: 10, disabled: 0 },
+    fail: [check()],
+    warn: [check({ id: "default_names", severity: "WARN" })],
+    ok_count: 6,
+    disabled_count: 0,
+    ...overrides,
+  };
+}
+
+describe("orderedSections", () => {
+  it("surfaces fail/warn lists and the folded ok/disabled counts", () => {
+    const sections = orderedSections(qc());
+    expect(sections.fail).toEqual(qc().fail);
+    expect(sections.warn).toEqual(qc().warn);
+    expect(sections.okCount).toBe(6);
+    expect(sections.disabledCount).toBe(0);
+  });
+
+  it("handles empty fail/warn groups (all checks passing)", () => {
+    const sections = orderedSections(qc({ fail: [], warn: [], ok_count: 12, disabled_count: 1 }));
+    expect(sections.fail).toEqual([]);
+    expect(sections.warn).toEqual([]);
+    expect(sections.okCount).toBe(12);
+    expect(sections.disabledCount).toBe(1);
+  });
+});

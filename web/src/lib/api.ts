@@ -3,6 +3,7 @@ import mockDoctorReport from "../mock/doctor-report.json";
 import mockGate from "../mock/form-gate.json";
 import mockNotes from "../mock/form-notes.json";
 import mockPanelOverview from "../mock/panel-overview.json";
+import mockPanelQc from "../mock/panel-qc.json";
 import mockSaveVersion from "../mock/form-save-version.json";
 import mockSettings from "../mock/form-settings.json";
 import mockHubInventory from "../mock/hub-inventory.json";
@@ -48,6 +49,11 @@ import type {
   PanelOpenFormResponse,
   PanelOverview,
   PanelOverviewResult,
+  PanelQcAcceptResponse,
+  PanelQcFixAllResponse,
+  PanelQcResult,
+  PanelQcSection,
+  PanelQcSelectResponse,
   PaletteAction,
   PaletteActionsResult,
   PaletteRunResponse,
@@ -838,4 +844,56 @@ export async function postPanelOpenForm(page: string): Promise<PanelOpenFormResp
     return { ok: true };
   }
   return postForm<PanelOpenFormResponse>("/api/panel/open_form", { page });
+}
+
+/** `GET /api/panel/qc` — see `_op_panel_qc` in panel_ops.py (Fase 6.1 Task
+ * 1). Full per-check FAIL/WARN/OK/disabled breakdown for the panel's QC
+ * section; same doc-guard/`{"error": "no_document"}` shape as
+ * `fetchPanelOverview`, hence the same `fetchReport` handling. */
+export async function fetchPanelQc(): Promise<PanelQcResult> {
+  if (isMock()) {
+    return { kind: "ok", data: mockPanelQc as PanelQcSection };
+  }
+  return fetchReport<PanelQcSection>("/api/panel/qc", {
+    no_document: "No active Cinema 4D document. Open a scene, then reopen the panel.",
+  });
+}
+
+/** `POST /api/panel/qc/select` — see `_op_panel_qc_select` in panel_ops.py.
+ * No stateful mock scene to select against, so `?mock=1` resolves an
+ * informative failure — same convention as `postHubCopyIntoProject`/
+ * `postHubSwitchRes` above. */
+export async function postPanelQcSelect(checkId: string): Promise<PanelQcSelectResponse> {
+  if (isMock()) {
+    return { ok: false, error: "mock" };
+  }
+  return postForm<PanelQcSelectResponse>("/api/panel/qc/select", { check_id: checkId });
+}
+
+/** `POST /api/panel/qc/accept` — see `_op_panel_qc_accept` in panel_ops.py.
+ * Author/reason validation happens server-side (`_validate_accept_payload`);
+ * this call always forwards whatever the inline form collected. Same
+ * no-stateful-mock convention as `postPanelQcSelect`. */
+export async function postPanelQcAccept(
+  checkId: string,
+  author: string,
+  reason: string,
+): Promise<PanelQcAcceptResponse> {
+  if (isMock()) {
+    return { ok: false, error: "mock" };
+  }
+  return postForm<PanelQcAcceptResponse>("/api/panel/qc/accept", {
+    check_id: checkId,
+    author,
+    reason,
+  });
+}
+
+/** `POST /api/panel/qc/fix_all` — see `_op_panel_qc_fix_all` in panel_ops.py.
+ * Same no-stateful-mock convention as `postPanelQcSelect`/`postPanelQcAccept`. */
+export async function postPanelQcFixAll(): Promise<PanelQcFixAllResponse> {
+  if (isMock()) {
+    return { ok: false, error: "mock" };
+  }
+  return postForm<PanelQcFixAllResponse>("/api/panel/qc/fix_all", {});
 }
