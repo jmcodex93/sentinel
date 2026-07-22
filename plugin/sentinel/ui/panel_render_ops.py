@@ -67,6 +67,7 @@ from sentinel.aovs import (
 from sentinel.checks.render import normalize_preset_name
 from sentinel.common.helpers import safe_print
 from sentinel.common.settings import GlobalSettings
+from sentinel.ui.frame_tag import _enabled_format_ids_from_params
 from sentinel.ui.panel_ops import _guarded_block, _panel_render_block, _stamp_for
 
 
@@ -121,12 +122,18 @@ def _find_sentinel_frame_tag(doc):
 
 def _panel_frame_block(doc):
     """Frame-card portion of ``panel/render`` — whether a Sentinel Frame
-    tag exists anywhere in the scene and, if so, its host camera's name."""
+    tag exists anywhere in the scene and, if so, its host camera's name and
+    the count of enabled delivery formats."""
     found = _find_sentinel_frame_tag(doc)
     if found is None:
-        return {"has_tag": False, "camera_name": None}
-    _tag, host = found
-    return {"has_tag": True, "camera_name": host.GetName() or ""}
+        return {"has_tag": False, "camera_name": None, "format_count": None}
+    tag, host = found
+    format_count = None
+    try:
+        format_count = len(_enabled_format_ids_from_params(tag))
+    except Exception:
+        pass
+    return {"has_tag": True, "camera_name": host.GetName() or "", "format_count": format_count}
 
 
 def _panel_aovs_block(doc):

@@ -422,6 +422,116 @@ class TestFindSentinelFrameTag:
         assert panel_render_ops._find_sentinel_frame_tag(_FakeDoc()) is None
 
 
+class TestPanelFrameBlockFormatCount:
+    """``_panel_frame_block`` must populate ``format_count`` with the number of
+    enabled delivery formats in the Sentinel Frame tag (via
+    ``_enabled_format_ids_from_params``), or None on failure."""
+
+    class _FakeTag:
+        def __init__(self, type_id):
+            self._type = type_id
+
+        def GetType(self):
+            return self._type
+
+    class _FakeObj:
+        def __init__(self, name, tags=None, down=None, next_=None):
+            self._name = name
+            self._tags = tags or []
+            self._down = down
+            self._next = next_
+
+        def GetName(self):
+            return self._name
+
+        def GetTags(self):
+            return self._tags
+
+        def GetDown(self):
+            return self._down
+
+        def GetNext(self):
+            return self._next
+
+    def test_no_tag_returns_format_count_none(self, sentinel_module):
+        from sentinel.ui import panel_render_ops
+
+        class _FakeDoc:
+            def GetFirstObject(self):
+                return None
+
+        result = panel_render_ops._panel_frame_block(_FakeDoc())
+        assert result["has_tag"] is False
+        assert result["camera_name"] is None
+        assert result["format_count"] is None
+
+    def test_tag_with_enabled_formats_returns_count(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        from sentinel.ui.frame_tag import SENTINEL_FRAME_TAG_PLUGIN_ID
+
+        tag = self._FakeTag(SENTINEL_FRAME_TAG_PLUGIN_ID)
+        cam = self._FakeObj("Camera", tags=[tag])
+        null_ = self._FakeObj("Null", down=cam)
+
+        class _FakeDoc:
+            def GetFirstObject(self):
+                return null_
+
+        def _fake_enabled(node):
+            return ["16x9", "9x16", "1x1"]  # 3 enabled formats
+
+        monkeypatch.setattr(panel_render_ops, "_enabled_format_ids_from_params", _fake_enabled)
+
+        result = panel_render_ops._panel_frame_block(_FakeDoc())
+        assert result["has_tag"] is True
+        assert result["camera_name"] == "Camera"
+        assert result["format_count"] == 3
+
+    def test_tag_with_zero_enabled_formats_returns_zero(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        from sentinel.ui.frame_tag import SENTINEL_FRAME_TAG_PLUGIN_ID
+
+        tag = self._FakeTag(SENTINEL_FRAME_TAG_PLUGIN_ID)
+        cam = self._FakeObj("Camera", tags=[tag])
+        null_ = self._FakeObj("Null", down=cam)
+
+        class _FakeDoc:
+            def GetFirstObject(self):
+                return null_
+
+        def _fake_enabled(node):
+            return []  # 0 enabled formats
+
+        monkeypatch.setattr(panel_render_ops, "_enabled_format_ids_from_params", _fake_enabled)
+
+        result = panel_render_ops._panel_frame_block(_FakeDoc())
+        assert result["has_tag"] is True
+        assert result["camera_name"] == "Camera"
+        assert result["format_count"] == 0
+
+    def test_tag_with_enabled_formats_failure_returns_none(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        from sentinel.ui.frame_tag import SENTINEL_FRAME_TAG_PLUGIN_ID
+
+        tag = self._FakeTag(SENTINEL_FRAME_TAG_PLUGIN_ID)
+        cam = self._FakeObj("Camera", tags=[tag])
+        null_ = self._FakeObj("Null", down=cam)
+
+        class _FakeDoc:
+            def GetFirstObject(self):
+                return null_
+
+        def _fake_broken(node):
+            raise RuntimeError("tag parsing failed")
+
+        monkeypatch.setattr(panel_render_ops, "_enabled_format_ids_from_params", _fake_broken)
+
+        result = panel_render_ops._panel_frame_block(_FakeDoc())
+        assert result["has_tag"] is True
+        assert result["camera_name"] == "Camera"
+        assert result["format_count"] is None
+
+
 class TestPanelRenderOpsTableTask2:
     def test_task2_ops_registered(self, sentinel_module):
         from sentinel.ui import panel_render_ops
