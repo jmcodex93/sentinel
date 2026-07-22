@@ -30,10 +30,12 @@ invented:
 - Assets (``count``/``missing``/``disk_label``/``vram_label``):
   ``ui.flows.scan_scene_assets`` + ``assets.stat_sizes_batch`` +
   ``assets.compute_totals``, the same pipeline ``hub_ops._op_hub_inventory``
-  runs; ``vram_label`` reuses ``hub_ops._cached_vram_total`` verbatim (a
-  rollup over whatever the Hub has already parsed this session — 0/empty
-  until the Hub has been opened at least once, a documented characteristic
-  of that cache, not a bug here).
+  runs; ``vram_label`` rolls up ``hub_ops._META_CACHE`` via
+  ``hub_ops._totals_from_cache`` (same helper ``hub/meta_totals`` uses) over
+  this scan's own resolved paths. The cache is empty until the Hub has been
+  opened at least once this session — that "cold" state (``covered == 0``)
+  reports ``vram_label: null`` instead of a misleading "0 B" (a scene can
+  easily carry real VRAM the Hub simply hasn't parsed yet).
 - Render (``preset_name``/``fps``/``resolution``): ``doc.GetActiveRenderData()``
   + ``checks.render.normalize_preset_name`` + ``doc.GetFps()`` +
   ``rd[c4d.RDATA_XRES]``/``rd[c4d.RDATA_YRES]``, the same reads
@@ -68,7 +70,7 @@ from sentinel.common.settings import GlobalSettings
 from sentinel.notes import get_notes_path, load_notes
 from sentinel.qc.score import compute_score, count_violations, run_all_checks
 from sentinel.rules_context import active_rules_for_doc
-from sentinel.ui.hub_ops import _cached_vram_total, _stamp_for
+from sentinel.ui.hub_ops import _stamp_for, _totals_from_cache
 from sentinel.versioning import format_version_row, get_latest_version_info
 
 
@@ -188,10 +190,27 @@ def _panel_scene_block(doc):
     }
 
 
+def _vram_label_or_none(covered, vram_bytes):
+    """``vram_label`` for the Assets card: ``None`` while the Hub's image
+    metadata cache is cold (``covered == 0`` — no resolved path from this
+    scan has a parsed cache entry yet, whether because the Hub was never
+    opened this session or the scene has no thumbnailable images), else the
+    formatted total over whatever the cache does cover. Cold cache renders
+    as "no data" rather than the misleading "0 B" a genuinely-empty scan
+    would also produce."""
+    if covered == 0:
+        return None
+    return assets_engine.format_size(vram_bytes)
+
+
 def _panel_assets_block(doc):
     """Assets-card portion of ``panel/overview`` — same scan + totals
-    pipeline as ``hub_ops._op_hub_inventory``, ``vram_label`` reusing that
-    module's cached rollup rather than re-parsing every image header."""
+    pipeline as ``hub_ops._op_hub_inventory``. ``vram_label`` rolls up
+    ``hub_ops._META_CACHE`` (via ``hub_ops._totals_from_cache``, the same
+    helper ``hub/meta_totals`` uses) over this scan's own resolved paths,
+    rather than the Hub's ``_THUMB_PATHS`` memo — the panel can be opened
+    without ever opening the Hub, so it has no reason to depend on that
+    memo being populated. ``null`` (not "0 B") while the cache is cold."""
     from sentinel.ui.flows import scan_scene_assets
 
     records, _tex_records, _skipped = scan_scene_assets(doc)
@@ -199,13 +218,14 @@ def _panel_assets_block(doc):
     while start < len(records):
         start = assets_engine.stat_sizes_batch(records, start, 64)
     totals = assets_engine.compute_totals(records)
-    vram_bytes = _cached_vram_total()
+    resolved_paths = [r.get("resolved_path") for r in records]
+    vram_totals = _totals_from_cache(resolved_paths)
 
     return {
         "count": totals["count"],
         "missing": totals["missing"],
         "disk_label": assets_engine.format_size(totals["total_bytes"]),
-        "vram_label": assets_engine.format_size(vram_bytes),
+        "vram_label": _vram_label_or_none(vram_totals["covered"], vram_totals["vram_bytes"]),
     }
 
 

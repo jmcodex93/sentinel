@@ -121,7 +121,7 @@ function AssetsCard({ assets, onOpenHub }: { assets: PanelAssets | null; onOpenH
     <Card tone={assets.missing > 0 ? "warn" : "pass"} title={`Assets ${assets.count}`}>
       <p className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
         {assets.missing > 0 ? `${assets.missing} missing · ` : ""}
-        {assets.disk_label} · {assets.vram_label} VRAM
+        {assets.disk_label} · {assets.vram_label ?? "—"} VRAM
       </p>
       <CardActions>
         <CardAction label="Hub →" onClick={onOpenHub} />

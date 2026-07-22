@@ -119,6 +119,78 @@ class TestValidateFormPage:
         assert panel_ops._validate_form_page(None) == "invalid_page"
 
 
+class TestVramLabelOrNone:
+    """``_vram_label_or_none`` — pure decision behind the Assets card's
+    ``vram_label``: ``None`` while the Hub's image-metadata cache is cold
+    (``covered == 0``), a real formatted label once anything is covered."""
+
+    def test_cold_cache_is_none(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        assert panel_ops._vram_label_or_none(0, 12345) is None
+
+    def test_zero_bytes_but_covered_is_a_real_label_not_none(self, sentinel_module):
+        # Degenerate but distinct from "cold": something IS cached, it just
+        # happens to sum to 0 bytes (e.g. a single unreadable image header).
+        from sentinel.ui import panel_ops
+        assert panel_ops._vram_label_or_none(1, 0) == "0 B"
+
+    def test_warm_cache_formats_the_total(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        from sentinel import assets as assets_engine
+        assert panel_ops._vram_label_or_none(3, 3_300_000_000) == assets_engine.format_size(3_300_000_000)
+
+
+class TestPanelAssetsBlockVram:
+    """``_panel_assets_block`` must ask ``hub_ops._totals_from_cache`` about
+    THIS scan's own resolved paths (not the Hub's ``_THUMB_PATHS`` memo, which
+    can be empty even with a warm ``_META_CACHE`` if the Hub was opened on a
+    different scene this session) and report ``None`` while that lookup is
+    cold rather than the misleading "0 B"."""
+
+    def _records(self):
+        return [
+            {"key": "a", "resolved_path": "/tex/a.png", "status": "ok",
+             "asset_type": "texture", "size_bytes": 100},
+            {"key": "b", "resolved_path": "/tex/b.png", "status": "ok",
+             "asset_type": "texture", "size_bytes": 200},
+        ]
+
+    def _patch_scan(self, monkeypatch, records):
+        import sentinel.ui.flows as flows
+        monkeypatch.setattr(flows, "scan_scene_assets", lambda doc: (records, [], []))
+
+    def test_cold_totals_cache_yields_none_vram_label(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_ops
+
+        self._patch_scan(monkeypatch, self._records())
+        monkeypatch.setattr(
+            panel_ops, "_totals_from_cache",
+            lambda paths: {"vram_bytes": 0, "vram_label": "0 B",
+                            "disk_bytes": 0, "disk_label": "0 B",
+                            "covered": 0, "total": 2})
+
+        result = panel_ops._panel_assets_block(object())
+
+        assert result["vram_label"] is None
+        assert result["count"] == 2
+        assert result["missing"] == 0
+
+    def test_warm_totals_cache_yields_real_vram_label(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_ops
+        from sentinel import assets as assets_engine
+
+        self._patch_scan(monkeypatch, self._records())
+        monkeypatch.setattr(
+            panel_ops, "_totals_from_cache",
+            lambda paths: {"vram_bytes": 3_300_000_000, "vram_label": "3.3 GB",
+                            "disk_bytes": 300, "disk_label": "300 B",
+                            "covered": 2, "total": 2})
+
+        result = panel_ops._panel_assets_block(object())
+
+        assert result["vram_label"] == assets_engine.format_size(3_300_000_000)
+
+
 class TestTopQcChecks:
     """Pure — no c4d import in webbridge.py, no harness needed."""
 

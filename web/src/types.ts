@@ -825,7 +825,9 @@ export interface PanelAssets {
   count: number;
   missing: number;
   disk_label: string;
-  vram_label: string;
+  /** Null while the Hub's image-metadata cache is cold this session (never
+   * opened yet) — the overview shows "—" rather than a misleading "0 B". */
+  vram_label: string | null;
 }
 
 export interface PanelRender {
