@@ -68,6 +68,7 @@ from sentinel.checks.render import normalize_preset_name
 from sentinel.common.helpers import safe_print
 from sentinel.common.settings import GlobalSettings
 from sentinel.notes import get_notes_path, load_notes
+from sentinel.qc.registry import CHECK_REGISTRY
 from sentinel.qc.score import compute_score, count_violations, run_all_checks
 from sentinel.rules_context import active_rules_for_doc
 from sentinel.ui.hub_ops import _stamp_for, _totals_from_cache
@@ -98,13 +99,18 @@ _PANEL_FIX_CHECK_ID = {
 }
 
 
-def _panel_qc_block(doc):
-    """QC portion of ``panel/overview`` — one ``run_all_checks`` pass
-    reused for both the score/top-checks payload (via
-    ``webbridge.qc_report_payload``, same call shape as
-    ``reports_dialog._op_report_qc``) and the fixable-action gating (via
-    ``webbridge.palette_actions_payload``, same call shape as
-    ``web_ops._op_palette_actions``)."""
+def _run_qc_scoring(doc):
+    """One ``run_all_checks`` + ``compute_score`` + ``qc_report_payload``
+    pass — the exact call shape shared by ``panel/overview``'s QC card
+    (``_panel_qc_block``, top-3 + fixable) and ``panel/qc``'s full
+    per-check list (``_op_panel_qc``), so either read op computes the
+    score exactly once, never twice for the same request.
+
+    Returns ``(rules_context, registry_results, qc_report)`` — callers pick
+    whichever pieces they need (``_panel_qc_block`` also needs
+    ``registry_results`` for its own ``qc_counts``/fixable pass;
+    ``_op_panel_qc`` only needs ``qc_report``).
+    """
     from sentinel.ui.flows import _baseline_path_for_doc, _current_module
 
     rules_context = active_rules_for_doc(doc)
@@ -127,6 +133,15 @@ def _panel_qc_block(doc):
     }
     scene_name = doc.GetDocumentName() or "Untitled"
     qc_report = webbridge.qc_report_payload(scene_name, ruleset, score, structured_by_check)
+    return rules_context, registry_results, qc_report
+
+
+def _panel_qc_block(doc):
+    """QC portion of ``panel/overview`` — reuses ``_run_qc_scoring``'s
+    single check pass for both the score/top-checks payload and the
+    fixable-action gating (via ``webbridge.palette_actions_payload``, same
+    call shape as ``web_ops._op_palette_actions``)."""
+    _rules_context, registry_results, qc_report = _run_qc_scoring(doc)
 
     qc_counts = {}
     for action_id, check_id in _PANEL_FIX_CHECK_ID.items():
@@ -407,8 +422,221 @@ def _op_panel_open_form(payload):
     return {"ok": True}
 
 
+_CHECK_REGISTRY_BY_ID = {entry.check_id: entry for entry in CHECK_REGISTRY}
+
+
+def _op_panel_qc(payload):
+    """``panel/qc`` — the full per-check FAIL/WARN/OK/disabled breakdown
+    for the panel's QC section (Fase 6.1 Task 1). Reuses
+    ``_run_qc_scoring``'s single ``run_all_checks``/``compute_score`` pass
+    — the SAME call ``panel/overview``'s QC card (``_panel_qc_block``)
+    makes — reshaped via the new pure ``webbridge.group_qc_by_severity``.
+    This op never triggers a second check pass; the SPA polls
+    ``panel/state_stamp`` and only re-fetches on change. Read-only.
+    """
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"error": "no_document"}
+
+    _rules_context, _registry_results, qc_report = _run_qc_scoring(doc)
+    grouped = webbridge.group_qc_by_severity(qc_report["checks"])
+    return {
+        "score": {
+            "passed": qc_report["score"]["passed"],
+            "total": qc_report["score"]["total"],
+            "disabled": qc_report["score"]["disabled_count"],
+        },
+        "fail": grouped["fail"],
+        "warn": grouped["warn"],
+        "ok_count": grouped["ok_count"],
+        "disabled_count": grouped["disabled_count"],
+    }
+
+
+def _validate_select_check_id(check_id):
+    """Pure: ``panel/qc/select``'s check_id validation — a check_id must be
+    a known registry entry that declares the ``"select"`` action. Split out
+    so it's testable without a document (same convention as
+    ``_validate_form_page``): the op itself is doc-guard-first, so this
+    branch is unreachable through the op under the fake-c4d harness
+    (``GetActiveDocument()`` is always ``None`` there).
+    """
+    entry = _CHECK_REGISTRY_BY_ID.get(check_id)
+    if entry is None or "select" not in entry.actions:
+        return "not_selectable"
+    return None
+
+
+def _select_qc_violations(doc, check_id, legacy_objs):
+    """Select in scene the objects/materials one QC check flagged — the
+    SAME selection logic each check's native ``_qc_select_*`` handler in
+    ``ui/panel.py`` performs (``_select_objects`` for the plain-object
+    checks; the material-deselect-then-select-all loop for
+    ``unused_mats``, mirroring ``_qc_select_unused_mats``'s own
+    deselect-all-materials step; the violation-dict-to-deduped-object walk
+    for ``cross_aspect``, mirroring ``_qc_select_cross_aspect``) — reused,
+    not duplicated, just driven off a fresh ``legacy_result`` list instead
+    of the GeDialog's cached per-instance state (this op has no dialog
+    instance to read that state from).
+    """
+    from sentinel.ui.panel import _select_objects
+
+    if check_id == "cross_aspect":
+        objs = []
+        seen = set()
+        for violation in legacy_objs or []:
+            obj = violation.get("object") if isinstance(violation, dict) else None
+            if obj is None or id(obj) in seen:
+                continue
+            seen.add(id(obj))
+            objs.append(obj)
+        _select_objects(doc, objs)
+    elif check_id == "unused_mats":
+        for mat in doc.GetMaterials():
+            mat.DelBit(c4d.BIT_ACTIVE)
+        for mat in legacy_objs or []:
+            try:
+                mat.SetBit(c4d.BIT_ACTIVE)
+            except Exception:
+                pass
+        c4d.EventAdd()
+    else:
+        _select_objects(doc, legacy_objs or [])
+
+
+def _op_panel_qc_select(payload):
+    """``panel/qc/select`` — select in scene the objects/materials one QC
+    check currently flags. Doc-guard first, then check_id validation
+    (``_validate_select_check_id``) — an unknown/info-only check_id is
+    rejected without running a scan. Runs its own fresh ``run_all_checks``
+    pass (this is a mutation-adjacent scene op, not the cached
+    ``panel/qc`` read) to get the current ``legacy_result`` for the
+    requested check, then dispatches to ``_select_qc_violations``.
+    """
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+
+    check_id = payload.get("check_id")
+    error = _validate_select_check_id(check_id)
+    if error:
+        return {"ok": False, "error": error}
+
+    from sentinel.ui.flows import _current_module
+
+    rules_context = active_rules_for_doc(doc)
+    registry_results = run_all_checks(doc, _current_module(), rules_context)
+    pair = registry_results.get(check_id) or {}
+    _select_qc_violations(doc, check_id, pair.get("legacy_result"))
+
+    return {"ok": True, "stamp": _stamp_for(doc)}
+
+
+def _validate_accept_payload(payload):
+    """Pure: ``panel/qc/accept``'s ``{check_id, author, reason}``
+    validation — runs BEFORE the doc guard (unlike every other mutating
+    panel op; the interface calls for author/reason to be checked first),
+    but is still split out and unit tested directly, same convention as
+    ``_validate_form_page``.
+    """
+    payload = payload or {}
+    if not payload.get("check_id"):
+        return "check_id_required"
+    if not (payload.get("author") or "").strip():
+        return "author_required"
+    if not (payload.get("reason") or "").strip():
+        return "reason_required"
+    return None
+
+
+def _op_panel_qc_accept(payload):
+    """``panel/qc/accept`` — accept every CURRENT violation of ONE check
+    into the baseline (author + reason mandatory). COPIES the ``accept``
+    branch of ``web_ops._op_form_gate_submit`` (``_gate_new_violations`` +
+    ``baseline.entry_from_violation`` + ``baseline.add_acceptance``),
+    restricted to a single ``check_id`` instead of a list — the panel's
+    "Accept" button accepts one check's violations at a time, never a
+    batch of checks. Invalidates ``check_cache`` on any real acceptance and
+    echoes a fresh ``panel/qc`` payload so the SPA never needs a second
+    round trip.
+    """
+    error = _validate_accept_payload(payload)
+    if error:
+        return {"ok": False, "error": error}
+
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+
+    from sentinel import baseline as baseline_engine
+    from sentinel.common.cache import check_cache
+    from sentinel.ui.flows import _compute_gate_snapshot, _doc_full_path, _gate_new_violations
+
+    check_id = payload.get("check_id")
+    author = payload.get("author").strip()
+    reason = payload.get("reason").strip()
+
+    rules_context = active_rules_for_doc(doc)
+    doc_full_path = _doc_full_path(doc)
+    snapshot = _compute_gate_snapshot(doc, rules_context, doc_full_path)
+    gate_result = snapshot["gate_result"]
+
+    path = snapshot["baseline_path"]
+    accepted_any = False
+    for violation in _gate_new_violations(gate_result, check_id):
+        acceptance = baseline_engine.entry_from_violation(
+            violation, author, reason,
+            current_params=getattr(rules_context, "params", {}))
+        if acceptance and baseline_engine.add_acceptance(path, acceptance):
+            accepted_any = True
+
+    if accepted_any:
+        check_cache.clear()
+        c4d.EventAdd()
+
+    return {"ok": True, "stamp": _stamp_for(doc), "qc": _op_panel_qc({})}
+
+
+def _op_panel_qc_fix_all(payload):
+    """``panel/qc/fix_all`` — batch-fix every currently fixable check in
+    ONE undo step. COPIES the ``fix_all`` branch of
+    ``web_ops._op_form_gate_submit`` (``fixes.apply_fixes`` via
+    ``_gate_fix_payload``) verbatim — same single-undo batch, all
+    fixables, not restricted to one check. Invalidates ``check_cache`` and
+    echoes a fresh ``panel/qc`` payload.
+    """
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+
+    from sentinel.common.cache import check_cache
+    from sentinel.fixes import apply_fixes
+    from sentinel.ui.flows import _compute_gate_snapshot, _doc_full_path, _gate_fix_payload
+
+    rules_context = active_rules_for_doc(doc)
+    doc_full_path = _doc_full_path(doc)
+    snapshot = _compute_gate_snapshot(doc, rules_context, doc_full_path)
+    gate_result = snapshot["gate_result"]
+
+    fixable_ids = [item.get("check_id") for item in gate_result.get("fixable") or []]
+    if fixable_ids:
+        fixes = [
+            _gate_fix_payload(check_id, snapshot["registry_results"], gate_result)
+            for check_id in fixable_ids
+        ]
+        apply_fixes(doc, fixes)
+        check_cache.clear()
+        c4d.EventAdd()
+
+    return {"ok": True, "stamp": _stamp_for(doc), "qc": _op_panel_qc({})}
+
+
 PANEL_OPS = {
     "panel/state_stamp": _op_panel_state_stamp,
     "panel/overview": _op_panel_overview,
     "panel/open_form": _op_panel_open_form,
+    "panel/qc": _op_panel_qc,
+    "panel/qc/select": _op_panel_qc_select,
+    "panel/qc/accept": _op_panel_qc_accept,
+    "panel/qc/fix_all": _op_panel_qc_fix_all,
 }

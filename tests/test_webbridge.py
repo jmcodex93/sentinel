@@ -805,6 +805,99 @@ class TestQcReportPayload:
         assert payload["disabled"] == []
 
 
+class TestGroupQcBySeverity:
+    """``group_qc_by_severity`` — panel/qc's (ui/panel_ops.py, Fase 6.1 Task 1)
+    grouping of ``qc_report_payload``'s ``checks`` list into fail/warn/ok/
+    disabled, enriched with the per-card action flags CHECK_REGISTRY is the
+    single source for (can_select/can_fix/fix_action_id) — never invented,
+    never re-derives scoring (pure reshaping of an already-computed list).
+    """
+
+    def test_partitions_by_severity_and_counts_ok_and_disabled(self):
+        score = _legacy_score_fixture(
+            counts={"lights": 3, "vis": 2, "rdc": 1}, disabled=["takes"])
+        payload = webbridge.qc_report_payload("scene.c4d", {}, score, {})
+        grouped = webbridge.group_qc_by_severity(payload["checks"])
+
+        fail_ids = {c["id"] for c in grouped["fail"]}
+        warn_ids = {c["id"] for c in grouped["warn"]}
+        assert fail_ids == {"lights", "rdc"}
+        assert warn_ids == {"vis"}
+        assert grouped["ok_count"] == 8
+        assert grouped["disabled_count"] == 1
+
+    def test_card_action_flags_from_registry_not_invented(self):
+        score = _legacy_score_fixture(counts={"lights": 3, "rdc": 1, "vis": 2})
+        payload = webbridge.qc_report_payload("scene.c4d", {}, score, {})
+        grouped = webbridge.group_qc_by_severity(payload["checks"])
+
+        lights = next(c for c in grouped["fail"] if c["id"] == "lights")
+        assert lights["can_select"] is True
+        assert lights["can_fix"] is True
+        assert lights["fix_action_id"] == "fix_lights"
+
+        rdc = next(c for c in grouped["fail"] if c["id"] == "rdc")
+        assert rdc["can_select"] is False
+        assert rdc["can_fix"] is False
+        assert rdc["fix_action_id"] is None
+
+        vis = next(c for c in grouped["warn"] if c["id"] == "vis")
+        assert vis["can_select"] is True
+        assert vis["can_fix"] is False
+        assert vis["fix_action_id"] is None
+
+    def test_fix_action_id_mapping_matches_palette_actions(self):
+        score = _legacy_score_fixture(
+            counts={"cam": 1, "unused_mats": 1, "fps_range": 1})
+        payload = webbridge.qc_report_payload("scene.c4d", {}, score, {})
+        grouped = webbridge.group_qc_by_severity(payload["checks"])
+        by_id = {c["id"]: c for c in grouped["fail"] + grouped["warn"]}
+        assert by_id["cam"]["fix_action_id"] == "fix_cameras"
+        assert by_id["unused_mats"]["fix_action_id"] == "fix_materials"
+        assert by_id["fps_range"]["fix_action_id"] == "fix_fps"
+
+    def test_accepted_all_true_when_new_is_zero_and_accepted_positive(self):
+        score = {
+            "score": "11/12", "pass": False, "passed": 11, "total": 12,
+            "counts": {"lights": 2}, "new_counts": {"lights": 0},
+            "accepted_counts": {"lights": 2}, "stale_counts": {"lights": 0},
+            "baseline_matches": {"lights": {"new": [], "accepted": [
+                _violation("lights", "/Rig/Old A", "accepted 1"),
+                _violation("lights", "/Rig/Old B", "accepted 2"),
+            ]}},
+            "baseline_status": "ok", "baseline_path": "/scene_baseline.json",
+            "disabled": [], "disabled_count": 0, "schema": 2,
+            "new": 0, "accepted": 2, "stale": 0,
+        }
+        payload = webbridge.qc_report_payload("scene.c4d", {}, score, {})
+        grouped = webbridge.group_qc_by_severity(payload["checks"])
+        lights = next(c for c in grouped["fail"] if c["id"] == "lights")
+        assert lights["new"] == 0
+        assert lights["accepted"] == 2
+        assert lights["accepted_all"] is True
+
+    def test_accepted_all_false_without_baseline(self):
+        score = _legacy_score_fixture(counts={"lights": 3})
+        payload = webbridge.qc_report_payload("scene.c4d", {}, score, {})
+        grouped = webbridge.group_qc_by_severity(payload["checks"])
+        lights = next(c for c in grouped["fail"] if c["id"] == "lights")
+        assert lights["new"] is None
+        assert lights["accepted_all"] is False
+
+    def test_ok_and_disabled_checks_excluded_from_fail_warn(self):
+        score = _legacy_score_fixture(disabled=["takes"])
+        payload = webbridge.qc_report_payload("scene.c4d", {}, score, {})
+        grouped = webbridge.group_qc_by_severity(payload["checks"])
+        assert grouped["fail"] == []
+        assert grouped["warn"] == []
+        assert grouped["ok_count"] == 11
+        assert grouped["disabled_count"] == 1
+
+    def test_empty_checks_never_raises(self):
+        assert webbridge.group_qc_by_severity([]) == {
+            "fail": [], "warn": [], "ok_count": 0, "disabled_count": 0}
+
+
 # ---------------------------------------------------------------------------
 # doctor_report_payload — doctor.run_all_diagnostics() -> SPA contract
 # ---------------------------------------------------------------------------
