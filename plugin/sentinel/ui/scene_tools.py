@@ -339,25 +339,58 @@ def _get_template_path():
     return os.path.join(_ROOT, "c4d", "new.c4d")
 
 
-def _force_render_settings(doc, update_ui=None):
-    """Reset all 4 render presets from template file"""
+def _apply_preset_core(doc, preset_name):
+    """Dialog-free core of preset switching — extracted from ``ui/panel.py``
+    ``_apply_preset`` (Fase 6.2 Task 1) so a non-``GeDialog`` caller
+    (``panel_render_ops.py``) can apply a preset without touching
+    ``self._active_preset``/UI widgets. Finds the render data whose
+    normalized name matches ``preset_name`` and makes it active. Returns the
+    matched ``RenderData`` object, or ``None`` if ``doc`` is falsy or no
+    render data with that normalized name exists. The native
+    ``ui/panel.py`` ``_apply_preset`` calls this, then owns its own
+    button/caption/``_active_preset`` updates and log line.
+    """
     if not doc:
-        return
+        return None
+    normalized_target = normalize_preset_name(preset_name)
+    rd = doc.GetFirstRenderData()
+    while rd:
+        normalized_rd = normalize_preset_name(rd.GetName() or "")
+        if normalized_rd == normalized_target:
+            doc.SetActiveRenderData(rd)
+            check_cache.clear()  # Clear cache to update compliance check immediately
+            c4d.EventAdd()
+            return rd
+        rd = rd.GetNext()
+    return None
+
+
+def _force_render_settings_core(doc, update_ui=None):
+    """Dialog-free core of the "Reset All" flow — extracted from
+    ``_force_render_settings`` (Fase 6.2 Task 1) so a non-interactive
+    caller (``panel_render_ops.py``'s confirm-gated op) can run the reset
+    without the native ``QuestionDialog``/summary ``MessageDialog``.
+    Clones the 4 standard presets from the bundled template and replaces
+    the doc's render data entries with them.
+
+    Returns ``{"ok": True, "count": N, "active_name": str, "resolution":
+    "WxH"}`` on success, or ``{"ok": False, "error": <message>}`` — never
+    shows a dialog, never raises. ``_force_render_settings`` below still
+    shows both the confirm question and the result dialog, calling this
+    core in between (byte-equivalent native behavior).
+    """
+    if not doc:
+        return {"ok": False, "error": "no_document"}
 
     template_path = _get_template_path()
     if not os.path.exists(template_path):
-        c4d.gui.MessageDialog(f"Template file not found!\n\nExpected at:\n{template_path}")
-        return
-
-    if not c4d.gui.QuestionDialog("Reset ALL render presets from template?\n\nThis replaces existing presets with standard settings."):
-        return
+        return {"ok": False, "error": f"Template file not found!\n\nExpected at:\n{template_path}"}
 
     template_doc = None
     try:
         template_doc = c4d.documents.LoadDocument(template_path, c4d.SCENEFILTER_NONE)
         if not template_doc:
-            c4d.gui.MessageDialog("Failed to load template file")
-            return
+            return {"ok": False, "error": "Failed to load template file"}
 
         # Clone all presets from template
         standard_presets = ["previz", "pre_render", "render", "stills"]
@@ -375,8 +408,7 @@ def _force_render_settings(doc, update_ui=None):
         template_doc = None
 
         if not cloned:
-            c4d.gui.MessageDialog("No standard presets found in template")
-            return
+            return {"ok": False, "error": "No standard presets found in template"}
 
         # Remove existing presets
         rd = doc.GetFirstRenderData()
@@ -396,16 +428,92 @@ def _force_render_settings(doc, update_ui=None):
         c4d.EventAdd()
 
         safe_print(f"Reset {len(cloned)} presets from template")
-        c4d.gui.MessageDialog(f"Reset {len(cloned)} render presets from template\n\n"
-                             f"Active: {cloned[0].GetName()}\n"
-                             f"Resolution: {int(cloned[0][c4d.RDATA_XRES])}x{int(cloned[0][c4d.RDATA_YRES])}")
+        return {
+            "ok": True,
+            "count": len(cloned),
+            "active_name": cloned[0].GetName(),
+            "resolution": "%dx%d" % (int(cloned[0][c4d.RDATA_XRES]), int(cloned[0][c4d.RDATA_YRES])),
+        }
 
     except Exception as e:
         safe_print(f"Error resetting presets: {e}")
-        c4d.gui.MessageDialog(f"Error: {e}")
+        return {"ok": False, "error": str(e)}
     finally:
         if template_doc:
             c4d.documents.KillDocument(template_doc)
+
+
+def _force_render_settings(doc, update_ui=None):
+    """Reset all 4 render presets from template file"""
+    if not doc:
+        return
+
+    template_path = _get_template_path()
+    if not os.path.exists(template_path):
+        c4d.gui.MessageDialog(f"Template file not found!\n\nExpected at:\n{template_path}")
+        return
+
+    if not c4d.gui.QuestionDialog("Reset ALL render presets from template?\n\nThis replaces existing presets with standard settings."):
+        return
+
+    result = _force_render_settings_core(doc, update_ui=update_ui)
+    if not result["ok"]:
+        c4d.gui.MessageDialog(result["error"])
+        return
+
+    c4d.gui.MessageDialog(f"Reset {result['count']} render presets from template\n\n"
+                         f"Active: {result['active_name']}\n"
+                         f"Resolution: {result['resolution']}")
+
+
+def _toggle_aspect_core(doc, update_ui=None):
+    """Dialog-free core of the Force 9:16 / 16:9 toggle — extracted from
+    ``_toggle_aspect`` (Fase 6.2 Task 1) so a non-interactive caller
+    (``panel_render_ops.py``) can run it without the native
+    ``MessageDialog`` on the "no active render preset" branch.
+
+    Returns ``{"ok": True, "resolution": "WxH", "label": "16:9"|"9:16"}``
+    or ``{"ok": False, "error": <message>}``. Never shows a dialog.
+    """
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+
+    rd = doc.GetActiveRenderData()
+    if not rd:
+        return {"ok": False, "error": "No active render preset"}
+
+    old_w = int(rd[c4d.RDATA_XRES])
+    old_h = int(rd[c4d.RDATA_YRES])
+    is_vertical = old_h > old_w
+
+    if is_vertical:
+        # Currently vertical → switch to horizontal 16:9
+        if old_h >= 3840:
+            w, h = 3840, 2160
+        elif old_h >= 1920:
+            w, h = 1920, 1080
+        else:
+            w, h = 1280, 720
+    else:
+        # Currently horizontal → switch to vertical 9:16
+        if old_w >= 3840:
+            w, h = 2160, 3840
+        elif old_w >= 1920:
+            w, h = 1080, 1920
+        else:
+            w, h = 720, 1280
+
+    rd[c4d.RDATA_XRES] = w
+    rd[c4d.RDATA_YRES] = h
+
+    check_cache.clear()
+    c4d.EventAdd()
+    if update_ui is not None:
+        update_ui()
+
+    label = "16:9" if w > h else "9:16"
+    safe_print(f"Aspect: {old_w}x{old_h} → {w}x{h} ({label})")
+    return {"ok": True, "resolution": "%dx%d" % (w, h), "label": label}
 
 
 def _toggle_aspect(doc, update_ui=None):
@@ -414,43 +522,9 @@ def _toggle_aspect(doc, update_ui=None):
         return
 
     try:
-        rd = doc.GetActiveRenderData()
-        if not rd:
-            c4d.gui.MessageDialog("No active render preset")
-            return
-
-        old_w = int(rd[c4d.RDATA_XRES])
-        old_h = int(rd[c4d.RDATA_YRES])
-        is_vertical = old_h > old_w
-
-        if is_vertical:
-            # Currently vertical → switch to horizontal 16:9
-            if old_h >= 3840:
-                w, h = 3840, 2160
-            elif old_h >= 1920:
-                w, h = 1920, 1080
-            else:
-                w, h = 1280, 720
-        else:
-            # Currently horizontal → switch to vertical 9:16
-            if old_w >= 3840:
-                w, h = 2160, 3840
-            elif old_w >= 1920:
-                w, h = 1080, 1920
-            else:
-                w, h = 720, 1280
-
-        rd[c4d.RDATA_XRES] = w
-        rd[c4d.RDATA_YRES] = h
-
-        check_cache.clear()
-        c4d.EventAdd()
-        if update_ui is not None:
-            update_ui()
-
-        label = "16:9" if w > h else "9:16"
-        safe_print(f"Aspect: {old_w}x{old_h} → {w}x{h} ({label})")
-
+        result = _toggle_aspect_core(doc, update_ui=update_ui)
+        if not result["ok"]:
+            c4d.gui.MessageDialog(result["error"])
     except Exception as e:
         safe_print(f"Error toggling aspect: {e}")
 
