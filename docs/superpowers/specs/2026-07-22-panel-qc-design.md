@@ -32,6 +32,7 @@
 - **Fix**: reutiliza `palette/run {id: fix_action_id, confirm?}` (confirm contract existente para materials/fps) — cero op nueva.
 - **Info**: sin op — es el campo `detail` del payload, expandido en cliente.
 - **Fix all fixables**: reutiliza el flujo batch existente (`apply_fixes` vía la op que ya lo expone — verificar cuál; si no hay una directa, `palette/run` por cada fixable NO — usar el `apply_fixes` batch en un solo undo como hace el gate/collect). Op `panel/qc/fix_all` fina sobre `apply_fixes` scope objetos, un undo, `{ok, stamp, qc}`.
+- **Stills detection (check Y fix, misma decisión)**: `is_stills_preset` (compartida por `check_fps_range` y `_fix_one_render_data`) es **substring-based** — un preset cuenta como stills si su nombre normalizado CONTIENE cualquier token de `stills_presets` (default `["stills", "lookdev", "look_dev", "beauty"]`, configurable por ruleset). Un preset de proyecto que contenga uno de estos tokens en cualquier parte del nombre (p.ej. "RS-LookDev 2026") se trata como stills; nombrar presets de estudio con esto en mente (evitar tokens genéricos que aparezcan dentro de nombres de animación).
 
 ### 2. SPA — `PanelQcSection`
 

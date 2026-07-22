@@ -25,7 +25,7 @@ PRESETS = ["previz", "pre_render", "render", "stills"]
 # so descriptive lookdev/beauty preset names (e.g. "RS-LookDev 2026") count as
 # stills instead of being flagged as an invalid animation range. Ruleset-configurable
 # via sentinel_rules.json "stills_presets".
-STILLS_PRESET_TOKENS = ["stills", "still", "lookdev", "look_dev", "beauty"]
+STILLS_PRESET_TOKENS = ["stills", "lookdev", "look_dev", "beauty"]
 
 DEFAULT_OBJECT_NAMES = (
     "null",

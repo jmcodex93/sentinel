@@ -9,12 +9,13 @@ import c4d
 from sentinel.common.cache import check_cache
 from sentinel.common.helpers import safe_print
 from sentinel.common.settings import GlobalSettings
-from sentinel.checks.render import normalize_preset_name
+from sentinel.checks.render import is_stills_preset
+from sentinel.common.constants import STILLS_PRESET_TOKENS
 from sentinel.qc.registry import CHECK_REGISTRY, resolve_function
 from sentinel.rules_context import active_rules_for_doc as _active_rules_for_doc
 
 
-def _fix_one_render_data(doc, rd, standard_fps, start_frame=1001):
+def _fix_one_render_data(doc, rd, standard_fps, start_frame=1001, stills_tokens=STILLS_PRESET_TOKENS):
     """Fix a single render data. Returns list of human-readable change strings.
 
     Caller is responsible for StartUndo/EndUndo and AddUndo. Returns final
@@ -22,8 +23,10 @@ def _fix_one_render_data(doc, rd, standard_fps, start_frame=1001):
     """
     changes = []
     preset_name = rd.GetName()
-    preset_norm = normalize_preset_name(preset_name)
-    is_stills = preset_norm == "stills"
+    # Token-based, ruleset-configurable: must match check_fps_range's
+    # is_stills_preset so the fix never rewrites a stills-token preset
+    # (e.g. "RS-LookDev 2026") into an animation range.
+    is_stills = is_stills_preset(preset_name, stills_tokens)
     tag = f"[{preset_name}]"
 
     rd_fps_old = int(rd[c4d.RDATA_FRAMERATE])
@@ -87,6 +90,7 @@ def _apply_fps_range(doc):
     rules_context = _active_rules_for_doc(doc)
     standard_fps = int(rules_context.params.get("standard_fps", GlobalSettings.get_standard_fps()))
     start_frame = int(rules_context.params.get("start_frame", 1001))
+    stills_tokens = rules_context.params.get("stills_presets", STILLS_PRESET_TOKENS)
     active_rd = doc.GetActiveRenderData()
 
     # --- Document-level FPS (once) ---
@@ -104,7 +108,7 @@ def _apply_fps_range(doc):
     while rd:
         doc.AddUndo(c4d.UNDOTYPE_CHANGE, rd)
         changes, final_start, final_end = _fix_one_render_data(
-            doc, rd, standard_fps, start_frame)
+            doc, rd, standard_fps, start_frame, stills_tokens)
         fixes.extend(changes)
         if rd == active_rd:
             active_final_start = final_start

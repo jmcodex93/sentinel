@@ -102,3 +102,75 @@ def test_public_fps_wrapper_still_opens_its_own_undo(sentinel_module, monkeypatc
     assert doc.start_undo_count == 1
     assert doc.end_undo_count == 1
     assert len(doc.undo_operations) == 1
+
+
+class _FakeRenderData(dict):
+    """Minimal RenderData stand-in: dict-backed container + GetName/GetNext."""
+
+    def __init__(self, name, values):
+        super().__init__(values)
+        self._name = name
+
+    def GetName(self):
+        return self._name
+
+    def GetNext(self):
+        return None
+
+
+def test_fix_one_render_data_does_not_rewrite_stills_token_preset_to_animation(sentinel_module):
+    """Parity with check_fps_range's is_stills_preset: a token-matched stills
+    preset (e.g. 'RS-LookDev 2026') left in Current Frame mode must NOT be
+    forced into a 1001-anchored Manual animation range by the fix, even
+    though its name isn't the exact literal 'stills'.
+    """
+    import c4d
+    from sentinel.fixes import _fix_one_render_data
+
+    standard_fps = 25
+    start_frame = 1001
+    current_start, current_end = 1, 100
+
+    rd = _FakeRenderData("RS-LookDev 2026", {
+        c4d.RDATA_FRAMERATE: float(standard_fps),
+        c4d.RDATA_FRAMEFROM: c4d.BaseTime(current_start, standard_fps),
+        c4d.RDATA_FRAMETO: c4d.BaseTime(current_end, standard_fps),
+        c4d.RDATA_FRAMESEQUENCE: c4d.RDATA_FRAMESEQUENCE_CURRENTFRAME,
+        c4d.RDATA_FRAMESTEP: 1,
+    })
+
+    changes, final_start, final_end = _fix_one_render_data(
+        None, rd, standard_fps, start_frame, stills_tokens=["stills", "lookdev"])
+
+    assert not any("Frame range" in c for c in changes)
+    assert not any("Frame mode" in c for c in changes)
+    assert rd[c4d.RDATA_FRAMESEQUENCE] == c4d.RDATA_FRAMESEQUENCE_CURRENTFRAME
+
+
+def test_fix_one_render_data_rewrites_animation_preset_to_start_frame(sentinel_module):
+    """Control case: a non-stills-token preset in Current Frame mode IS
+    forced into a 1001-anchored Manual range by the fix, proving the
+    stills-token case above is actually exercising the branch (not
+    passing vacuously)."""
+    import c4d
+    from sentinel.fixes import _fix_one_render_data
+
+    standard_fps = 25
+    start_frame = 1001
+    current_start, current_end = 1, 100
+
+    rd = _FakeRenderData("RS-HighRez Animation 2026", {
+        c4d.RDATA_FRAMERATE: float(standard_fps),
+        c4d.RDATA_FRAMEFROM: c4d.BaseTime(current_start, standard_fps),
+        c4d.RDATA_FRAMETO: c4d.BaseTime(current_end, standard_fps),
+        c4d.RDATA_FRAMESEQUENCE: c4d.RDATA_FRAMESEQUENCE_CURRENTFRAME,
+        c4d.RDATA_FRAMESTEP: 1,
+    })
+
+    changes, final_start, final_end = _fix_one_render_data(
+        None, rd, standard_fps, start_frame, stills_tokens=["stills", "lookdev"])
+
+    assert any("Frame mode" in c for c in changes)
+    assert rd[c4d.RDATA_FRAMESEQUENCE] == c4d.RDATA_FRAMESEQUENCE_MANUAL
+    assert final_start == start_frame
+    assert final_end == start_frame + (current_end - current_start)
