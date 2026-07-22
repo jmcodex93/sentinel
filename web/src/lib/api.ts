@@ -4,6 +4,8 @@ import mockGate from "../mock/form-gate.json";
 import mockNotes from "../mock/form-notes.json";
 import mockPanelOverview from "../mock/panel-overview.json";
 import mockPanelQc from "../mock/panel-qc.json";
+import mockPanelRender from "../mock/panel-render.json";
+import mockPanelRenderAovList from "../mock/panel-render-aov-list.json";
 import mockSaveVersion from "../mock/form-save-version.json";
 import mockSettings from "../mock/form-settings.json";
 import mockHubInventory from "../mock/hub-inventory.json";
@@ -54,6 +56,11 @@ import type {
   PanelQcResult,
   PanelQcSection,
   PanelQcSelectResponse,
+  PanelRenderAovListOk,
+  PanelRenderAovListResult,
+  PanelRenderMutationResponse,
+  PanelRenderResult,
+  PanelRenderSection,
   PaletteAction,
   PaletteActionsResult,
   PaletteRunResponse,
@@ -896,4 +903,160 @@ export async function postPanelQcFixAll(): Promise<PanelQcFixAllResponse> {
     return { ok: false, error: "mock" };
   }
   return postForm<PanelQcFixAllResponse>("/api/panel/qc/fix_all", {});
+}
+
+// ---------------------------------------------------------------------------
+// Panel Render section (Fase 6.2 Task 3) — see `PANEL_RENDER_OPS` in
+// plugin/sentinel/ui/panel_render_ops.py. Each of the 5 blocks may
+// independently be `null` (`_guarded_block` isolation, same convention as
+// `fetchPanelOverview`/`fetchPanelQc`). Mutation posters follow the shared
+// `{ok, error?, stamp?, render?, confirm_label?}` contract; the three
+// destructive ops (`reset_all`, `force_vertical`, `aov_tier`) take an
+// optional `confirm` flag mirroring `runPaletteAction`'s own confirm param.
+// ---------------------------------------------------------------------------
+
+/** `GET /api/panel/render` — see `_op_panel_render`/`build_panel_render` in
+ * panel_render_ops.py. */
+export async function fetchPanelRender(): Promise<PanelRenderResult> {
+  if (isMock()) {
+    return { kind: "ok", data: mockPanelRender as PanelRenderSection };
+  }
+  return fetchReport<PanelRenderSection>("/api/panel/render", {
+    no_document: "No active Cinema 4D document. Open a scene, then reopen the panel.",
+  });
+}
+
+/** Client-only mock for the render-section mutations — used ONLY in
+ * `?mock=1` mode. Mirrors the confirm-gate contract for the three
+ * destructive ops (same reasoning as `mockPaletteRun`) so a mock/screenshot
+ * session can exercise the inline confirm step; every other op echoes the
+ * bundled fixture back as `render` (no stateful scene to actually mutate,
+ * same no-stateful convention as `postPanelQcSelect`). */
+const MOCK_RENDER_CONFIRM_LABELS: Record<string, string> = {
+  reset_all: "Reset ALL render presets from template? This replaces existing presets with standard settings.",
+  force_vertical: "Force the active render preset's aspect ratio (9:16 / 16:9)?",
+  aov_tier: "Add missing AOVs / toggle Light Groups?",
+};
+
+function mockPanelRenderMutation(op: string, confirm?: boolean): PanelRenderMutationResponse {
+  const label = MOCK_RENDER_CONFIRM_LABELS[op];
+  if (label && !confirm) {
+    return { ok: false, error: "confirm_required", confirm_label: label };
+  }
+  return { ok: true, stamp: "mock-stamp", render: mockPanelRender as PanelRenderSection };
+}
+
+/** `POST /api/panel/render/set_preset` — see `_op_panel_render_set_preset`. */
+export async function postPanelRenderSetPreset(preset: string): Promise<PanelRenderMutationResponse> {
+  if (isMock()) {
+    return mockPanelRenderMutation("set_preset");
+  }
+  return postForm<PanelRenderMutationResponse>("/api/panel/render/set_preset", { preset });
+}
+
+/** `POST /api/panel/render/reset_all` — destructive, confirm-gated (see
+ * `_op_panel_render_reset_all`). */
+export async function postPanelRenderResetAll(confirm?: boolean): Promise<PanelRenderMutationResponse> {
+  if (isMock()) {
+    return mockPanelRenderMutation("reset_all", confirm);
+  }
+  return postForm<PanelRenderMutationResponse>(
+    "/api/panel/render/reset_all",
+    confirm ? { confirm: true } : {},
+  );
+}
+
+/** `POST /api/panel/render/force_vertical` — destructive, confirm-gated
+ * (see `_op_panel_render_force_vertical`). */
+export async function postPanelRenderForceVertical(confirm?: boolean): Promise<PanelRenderMutationResponse> {
+  if (isMock()) {
+    return mockPanelRenderMutation("force_vertical", confirm);
+  }
+  return postForm<PanelRenderMutationResponse>(
+    "/api/panel/render/force_vertical",
+    confirm ? { confirm: true } : {},
+  );
+}
+
+/** `POST /api/panel/render/add_frame_tag` — see
+ * `_op_panel_render_add_frame_tag`. Additive/idempotent, no confirm gate. */
+export async function postPanelRenderAddFrameTag(): Promise<PanelRenderMutationResponse> {
+  if (isMock()) {
+    return mockPanelRenderMutation("add_frame_tag");
+  }
+  return postForm<PanelRenderMutationResponse>("/api/panel/render/add_frame_tag", {});
+}
+
+/** `POST /api/panel/render/select_frame_tag` — see
+ * `_op_panel_render_select_frame_tag`. `{ok: false, error: "no_tag"}` when
+ * the scene has no Sentinel Frame tag. */
+export async function postPanelRenderSelectFrameTag(): Promise<PanelRenderMutationResponse> {
+  if (isMock()) {
+    return mockPanelRenderMutation("select_frame_tag");
+  }
+  return postForm<PanelRenderMutationResponse>("/api/panel/render/select_frame_tag", {});
+}
+
+/** `POST /api/panel/render/aov_tier` — destructive, confirm-gated (see
+ * `_op_panel_render_aov_tier`). `tier` must be one of
+ * `"essentials"`/`"production"`/`"light_groups"`. */
+export async function postPanelRenderAovTier(
+  tier: "essentials" | "production" | "light_groups",
+  confirm?: boolean,
+): Promise<PanelRenderMutationResponse> {
+  if (isMock()) {
+    return mockPanelRenderMutation("aov_tier", confirm);
+  }
+  return postForm<PanelRenderMutationResponse>(
+    "/api/panel/render/aov_tier",
+    confirm ? { tier, confirm: true } : { tier },
+  );
+}
+
+/** `POST /api/panel/render/toggle_multipart` — see
+ * `_op_panel_render_toggle_multipart`. Reversible, no confirm gate. */
+export async function postPanelRenderToggleMultipart(): Promise<PanelRenderMutationResponse> {
+  if (isMock()) {
+    return mockPanelRenderMutation("toggle_multipart");
+  }
+  return postForm<PanelRenderMutationResponse>("/api/panel/render/toggle_multipart", {});
+}
+
+/** `GET /api/panel/render/aov_list` — see `_op_panel_render_aov_list`.
+ * Read-only, for the inline "Show AOVs" expand. `{error:
+ * "redshift_unavailable"}` degrades to the `"empty"` kind, same convention
+ * as every other `fetchReport`-backed report op. */
+export async function fetchPanelRenderAovList(): Promise<PanelRenderAovListResult> {
+  if (isMock()) {
+    return { kind: "ok", data: mockPanelRenderAovList as PanelRenderAovListOk };
+  }
+  return fetchReport<PanelRenderAovListOk>("/api/panel/render/aov_list", {
+    no_document: "No active Cinema 4D document. Open a scene, then reopen the panel.",
+    redshift_unavailable: "Redshift is not available in this Cinema 4D session.",
+  });
+}
+
+/** `POST /api/panel/render/toggle_watchfolder` — see
+ * `_op_panel_render_toggle_watchfolder`. Reversible, no confirm gate. */
+export async function postPanelRenderToggleWatchfolder(): Promise<PanelRenderMutationResponse> {
+  if (isMock()) {
+    return mockPanelRenderMutation("toggle_watchfolder");
+  }
+  return postForm<PanelRenderMutationResponse>("/api/panel/render/toggle_watchfolder", {});
+}
+
+/** `POST /api/panel/render/save_still` — see `_op_panel_render_save_still`. */
+export async function postPanelRenderSaveStill(): Promise<PanelRenderMutationResponse> {
+  if (isMock()) {
+    return mockPanelRenderMutation("save_still");
+  }
+  return postForm<PanelRenderMutationResponse>("/api/panel/render/save_still", {});
+}
+
+/** `POST /api/panel/render/open_folder` — see `_op_panel_render_open_folder`. */
+export async function postPanelRenderOpenFolder(): Promise<PanelRenderMutationResponse> {
+  if (isMock()) {
+    return mockPanelRenderMutation("open_folder");
+  }
+  return postForm<PanelRenderMutationResponse>("/api/panel/render/open_folder", {});
 }

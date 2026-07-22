@@ -1,0 +1,21 @@
+{
+  "aovs": [
+    { "name": "Beauty", "type": "Beauty" },
+    { "name": "Diffuse Lighting", "type": "DiffuseLighting" },
+    { "name": "Diffuse Filter", "type": "DiffuseFilter" },
+    { "name": "Reflections", "type": "Reflections" },
+    { "name": "Refractions", "type": "Refractions" },
+    { "name": "GI", "type": "GI" },
+    { "name": "Specular Lighting", "type": "Specular" },
+    { "name": "Shadows", "type": "Shadows" },
+    { "name": "Depth", "type": "Z" },
+    { "name": "Cryptomatte", "type": "Cryptomatte" },
+    { "name": "Puzzle Matte", "type": "PuzzleMatte" }
+  ],
+  "target": "Nuke",
+  "light_groups": true,
+  "tier_coverage": {
+    "essentials_missing": [],
+    "production_missing": ["Motion Vectors"]
+  }
+}

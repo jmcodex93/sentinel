@@ -941,3 +941,109 @@ export interface PanelQcFixAllResponse {
   stamp?: string;
   qc?: PanelQcSection;
 }
+
+/**
+ * Panel Render section contract (Fase 6.2) — mirrors `build_panel_render`
+ * and its mutation/action ops in `plugin/sentinel/ui/panel_render_ops.py`.
+ * Field names copied 1:1 from that module (`_panel_preset_block`,
+ * `_panel_frame_block`, `_panel_aovs_block`, `_panel_snapshots_block`,
+ * `_panel_postrender_block`) — every block is independently nullable
+ * (`_guarded_block`), and `PanelRenderAovs` additionally carries its own
+ * `{error: "redshift_unavailable"}` shape when the RS Python module isn't
+ * importable.
+ */
+export interface PanelRenderPreset {
+  preset_name: string | null;
+  preset_names: string[];
+  fps: number | null;
+  resolution: string | null;
+}
+
+export interface PanelRenderFrame {
+  has_tag: boolean;
+  camera_name: string | null;
+  /** Not populated by `_panel_frame_block` in v1 (only `has_tag`/
+   * `camera_name` are read there) — present for forward compat with the
+   * `format_count` field the Task 3 brief describes; `null` until an
+   * engine helper answers it, same convention as `PanelRender.multiformat`
+   * in the overview card. */
+  format_count?: number | null;
+}
+
+export interface PanelRenderAovsOk {
+  count: number;
+  multipart: boolean;
+  target: string;
+  light_groups: boolean;
+  light_group_names: string[];
+}
+
+export type PanelRenderAovs = PanelRenderAovsOk | { error: "redshift_unavailable" };
+
+export interface PanelRenderSnapshots {
+  dir: string | null;
+  origin: "auto" | "manual";
+  watch_enabled: boolean;
+}
+
+export interface PanelRenderPostrenderAvailable {
+  available: true;
+  generated_at: string;
+  passed: boolean;
+}
+
+export interface PanelRenderPostrenderUnavailable {
+  available: false;
+}
+
+export type PanelRenderPostrender = PanelRenderPostrenderAvailable | PanelRenderPostrenderUnavailable;
+
+export interface PanelRenderSection {
+  preset: PanelRenderPreset | null;
+  frame: PanelRenderFrame | null;
+  aovs: PanelRenderAovs | null;
+  snapshots: PanelRenderSnapshots | null;
+  postrender: PanelRenderPostrender | null;
+}
+
+export type PanelRenderResult =
+  | { kind: "ok"; data: PanelRenderSection }
+  | { kind: "empty"; reason: string }
+  | { kind: "error"; message: string };
+
+/** Every `panel/render/*` mutation returns this same shape (see the
+ * module docstring in `panel_render_ops.py`): `render` echoes a fresh
+ * `panel/render` payload so the SPA never needs a second round trip after
+ * a successful mutation, and a destructive op without `confirm: true`
+ * returns `{ok: false, error: "confirm_required", confirm_label}`. */
+export interface PanelRenderMutationResponse {
+  ok: boolean;
+  error?: string;
+  stamp?: string;
+  render?: PanelRenderSection;
+  confirm_label?: string;
+}
+
+/** `GET /api/panel/render/aov_list` — see `_op_panel_render_aov_list` in
+ * panel_render_ops.py. Read-only, for the inline "Show AOVs" expand.
+ * `{error: "redshift_unavailable"}` when the RS Python module isn't
+ * importable — never a crash. */
+export interface PanelRenderAovListEntry {
+  name: string;
+  type: string;
+}
+
+export interface PanelRenderAovListOk {
+  aovs: PanelRenderAovListEntry[];
+  target: string;
+  light_groups: boolean;
+  tier_coverage: {
+    essentials_missing: string[];
+    production_missing: string[];
+  };
+}
+
+export type PanelRenderAovListResult =
+  | { kind: "ok"; data: PanelRenderAovListOk }
+  | { kind: "empty"; reason: string }
+  | { kind: "error"; message: string };

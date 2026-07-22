@@ -1,0 +1,29 @@
+{
+  "preset": {
+    "preset_name": "Render",
+    "preset_names": ["Previz", "Pre-Render", "Render", "Stills"],
+    "fps": 25,
+    "resolution": "1920x1080"
+  },
+  "frame": {
+    "has_tag": false,
+    "camera_name": null
+  },
+  "aovs": {
+    "count": 11,
+    "multipart": true,
+    "target": "Nuke",
+    "light_groups": true,
+    "light_group_names": ["fg", "bg", "rim"]
+  },
+  "snapshots": {
+    "dir": "/Users/artist/projects/shot_018/renders/snapshots",
+    "origin": "auto",
+    "watch_enabled": true
+  },
+  "postrender": {
+    "available": true,
+    "generated_at": "2026-07-20T10:32:00",
+    "passed": true
+  }
+}
