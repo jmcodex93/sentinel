@@ -21,6 +21,12 @@ SENTINEL_PANEL_SPA_PLUGIN_ID = 2099076
 # The system accepts both "pre_render" and "pre-render" (case-insensitive)
 PRESETS = ["previz", "pre_render", "render", "stills"]
 
+# Tokens (normalized form) that mark a preset as "stills" for QC #11 fps_range,
+# so descriptive lookdev/beauty preset names (e.g. "RS-LookDev 2026") count as
+# stills instead of being flagged as an invalid animation range. Ruleset-configurable
+# via sentinel_rules.json "stills_presets".
+STILLS_PRESET_TOKENS = ["stills", "still", "lookdev", "look_dev", "beauty"]
+
 DEFAULT_OBJECT_NAMES = (
     "null",
     "cube",

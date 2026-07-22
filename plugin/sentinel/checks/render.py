@@ -4,7 +4,7 @@
 import c4d
 from collections import defaultdict
 
-from sentinel.common.constants import PRESETS
+from sentinel.common.constants import PRESETS, STILLS_PRESET_TOKENS
 from sentinel.common.helpers import safe_print
 from sentinel.common.settings import GlobalSettings
 from sentinel.qc.results import (
@@ -28,6 +28,21 @@ def normalize_preset_name(name):
     if not name:
         return ""
     return name.strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def is_stills_preset(preset_name, tokens=STILLS_PRESET_TOKENS):
+    """Token-based, ruleset-configurable stills detection for QC #11 fps_range.
+
+    A preset counts as "stills" if its normalized name CONTAINS any normalized
+    token from ``tokens`` (default STILLS_PRESET_TOKENS), so descriptive
+    lookdev/beauty preset names (e.g. "RS-LookDev 2026") count as stills
+    instead of being flagged as an invalid animation range.
+    """
+    preset_norm = normalize_preset_name(preset_name)
+    if not preset_norm:
+        return False
+    normalized_tokens = [normalize_preset_name(tok) for tok in (tokens or ())]
+    return any(tok and tok in preset_norm for tok in normalized_tokens)
 
 
 def _render_conflicts_result(legacy_value, violations_data=None):
@@ -318,7 +333,11 @@ def check_fps_range(doc, rules_context=None):
         while rd:
             preset_name = rd.GetName()
             preset_norm = normalize_preset_name(preset_name)
-            is_stills = preset_norm == "stills"
+            # Token-based, ruleset-configurable: a descriptive preset name (e.g.
+            # "RS-LookDev 2026") counts as stills if it contains any stills token,
+            # not just an exact "stills" match.
+            stills_tokens = context.params.get("stills_presets", STILLS_PRESET_TOKENS)
+            is_stills = is_stills_preset(preset_name, stills_tokens)
             is_active = (rd == active_rd)
             tag = f"[{preset_name}]"
 

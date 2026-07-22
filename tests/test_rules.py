@@ -211,14 +211,39 @@ def test_integral_float_standard_fps_is_normalized(tmp_path):
 
 
 def test_default_rules_are_sourced_from_registry_and_constants(sentinel_module):
-    from sentinel.common.constants import DEFAULT_OBJECT_NAMES, PRESETS
+    from sentinel.common.constants import DEFAULT_OBJECT_NAMES, PRESETS, STILLS_PRESET_TOKENS
     from sentinel.qc.registry import CHECK_REGISTRY
 
     assert rules.DEFAULTS["approved_presets"] == list(PRESETS)
     assert rules.DEFAULTS["default_names"] == list(DEFAULT_OBJECT_NAMES)
+    assert rules.DEFAULTS["stills_presets"] == list(STILLS_PRESET_TOKENS)
     assert rules.CHECK_DEFAULT_SEVERITY == {
         entry.check_id: entry.severity for entry in CHECK_REGISTRY
     }
+
+
+def test_stills_presets_ruleset_override_accepted(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(scene_dir, {"stills_presets": ["stills", "hero"]})
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert context.params["stills_presets"] == ["stills", "hero"]
+    assert context.field_sources["stills_presets"] == "project"
+
+
+def test_stills_presets_non_list_is_rejected_by_name(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(scene_dir, {"stills_presets": "stills"})
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert context.params["stills_presets"] == rules.DEFAULTS["stills_presets"]
+    assert any("stills_presets" in warning for warning in context.warnings)
 
 
 def test_no_rules_file_and_no_machine_settings_returns_embedded_defaults(tmp_path):

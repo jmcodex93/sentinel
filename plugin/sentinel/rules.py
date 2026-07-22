@@ -11,7 +11,7 @@ from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
-from sentinel.common.constants import DEFAULT_OBJECT_NAMES, PRESETS
+from sentinel.common.constants import DEFAULT_OBJECT_NAMES, PRESETS, STILLS_PRESET_TOKENS
 from sentinel.qc.registry import CHECK_REGISTRY
 
 RULES_FILENAME = "sentinel_rules.json"
@@ -28,6 +28,7 @@ DEFAULTS = {
     "slate": False,
     "approved_presets": list(PRESETS),
     "default_names": list(DEFAULT_OBJECT_NAMES),
+    "stills_presets": list(STILLS_PRESET_TOKENS),
     "safe_area_insets": {
         "16x9": {"top": 0.05, "bottom": 0.05, "left": 0.05, "right": 0.05},
         "9x16": {"top": 0.08, "bottom": 0.15, "left": 0.05, "right": 0.10},
@@ -308,7 +309,7 @@ def _validate_key(key: str, value: Any) -> tuple[bool, Any, str | None]:
             return True, value, None
         return False, None, "expected a bool"
 
-    if key in {"approved_presets", "default_names"}:
+    if key in {"approved_presets", "default_names", "stills_presets"}:
         if _is_str_list(value):
             return True, list(value), None
         return False, None, "expected a list of strings"

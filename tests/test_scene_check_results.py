@@ -304,3 +304,27 @@ def test_render_conflicts_structured_identity_reduces_to_legacy_int(sentinel_mod
         },
     ]
     json.dumps(structured)
+
+
+@pytest.mark.parametrize(
+    "preset_name,expected",
+    [
+        ("RS-LookDev 2026", True),
+        ("RS-HighRez Animation 2026", False),
+        ("Stills", True),
+        ("beauty_pass", True),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_is_stills_preset_default_tokens(sentinel_module, preset_name, expected):
+    from sentinel.checks.render import is_stills_preset
+
+    assert is_stills_preset(preset_name) is expected
+
+
+def test_is_stills_preset_custom_ruleset_token(sentinel_module):
+    from sentinel.checks.render import is_stills_preset
+
+    assert is_stills_preset("HeroFrame", tokens=["hero"]) is True
+    assert is_stills_preset("HeroFrame", tokens=[]) is False
