@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cardActions, countLabel, orderedSections } from "./panelQc";
+import { cardActions, countLabel, detailPreview, orderedSections } from "./panelQc";
 import type { PanelQcCheck, PanelQcSection } from "../types";
 
 function check(overrides: Partial<PanelQcCheck> = {}): PanelQcCheck {
@@ -10,7 +10,7 @@ function check(overrides: Partial<PanelQcCheck> = {}): PanelQcCheck {
     count: 8,
     new: 8,
     accepted: 0,
-    detail: ["8 lights outside the group."],
+    detail: [{ label: "/ Sun Light", message: "Light is not inside the group.", extras: null }],
     can_select: true,
     can_fix: true,
     fix_action_id: "fix_lights",
@@ -68,6 +68,34 @@ describe("countLabel", () => {
 
   it("renders '<new> new (<accepted> accepted)' when some are baselined", () => {
     expect(countLabel(check({ new: 3, accepted: 2 }))).toBe("3 new (2 accepted)");
+  });
+});
+
+describe("detailPreview", () => {
+  it("returns empty string for no violations", () => {
+    expect(detailPreview([])).toBe("");
+  });
+
+  it("renders 'label — message' for a single violation", () => {
+    expect(
+      detailPreview([{ label: "/ Sun Light", message: "Light is not inside the group.", extras: null }]),
+    ).toBe("/ Sun Light — Light is not inside the group.");
+  });
+
+  it("renders bare message when the violation has no label", () => {
+    expect(detailPreview([{ label: "", message: "9 texture paths are missing.", extras: null }])).toBe(
+      "9 texture paths are missing.",
+    );
+  });
+
+  it("appends a '(+N more)' tail when there are additional violations", () => {
+    expect(
+      detailPreview([
+        { label: "/ Sun Light", message: "Light is not inside the group.", extras: null },
+        { label: "/ Rim Light.1", message: "Light is not inside the group.", extras: null },
+        { label: "/ Fill Light", message: "Light is not inside the group.", extras: null },
+      ]),
+    ).toBe("/ Sun Light — Light is not inside the group. (+2 more)");
   });
 });
 

@@ -3,7 +3,7 @@ import { Button } from "../form/Button";
 import { FieldRow } from "../form/FieldRow";
 import { TextArea } from "../form/TextArea";
 import { TextInput } from "../form/TextInput";
-import { cardActions, countLabel } from "../../lib/panelQc";
+import { cardActions, countLabel, detailPreview } from "../../lib/panelQc";
 import type { PaletteAction, PanelQcCheck } from "../../types";
 
 /** One FAIL/WARN card — "option C refinada" from the approved mockup
@@ -96,16 +96,24 @@ export function QcCard({
         </button>
       </div>
 
-      {check.detail.length > 0 && (
+      {check.detail.length > 0 ? (
         <p className="text-caption mt-1" style={{ color: "var(--color-ink-secondary)" }}>
-          {check.detail[0]}
+          {detailPreview(check.detail)}
         </p>
+      ) : (
+        infoOpen && (
+          <p className="text-caption mt-1" style={{ color: "var(--color-ink-secondary)" }}>
+            No details.
+          </p>
+        )
       )}
-      {infoOpen && check.detail.length > 1 && (
-        <ul className="mt-1 list-inside list-disc">
-          {check.detail.slice(1).map((line, index) => (
-            <li key={index} className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
-              {line}
+      {infoOpen && check.detail.length > 0 && (
+        <ul className="mt-1 max-h-48 list-inside list-disc overflow-y-auto">
+          {check.detail.map((detail, index) => (
+            <li key={`${detail.label}:${index}`} className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
+              {detail.label && <span style={{ color: "var(--color-ink)" }}>{detail.label}</span>}
+              {detail.label && detail.message && " — "}
+              <span style={{ color: "var(--color-ink-secondary)" }}>{detail.message}</span>
             </li>
           ))}
         </ul>

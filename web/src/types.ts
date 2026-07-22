@@ -884,7 +884,10 @@ export interface PanelQcCheck {
   new: number | null;
   /** Baseline-aware accepted count; `null` with no active baseline. */
   accepted: number | null;
-  detail: string[];
+  /** Same shape as `QcCheck.details` above (`{label, message, extras}`) —
+   * `group_qc_by_severity` passes `row["details"]` straight through, never a
+   * flattened string list. */
+  detail: QcCheckDetail[];
   can_select: boolean;
   can_fix: boolean;
   /** Matching `PALETTE_ACTIONS` quick-fix id, or `null` if this check has

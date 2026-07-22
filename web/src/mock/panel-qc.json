@@ -8,7 +8,11 @@
       "count": 8,
       "new": 8,
       "accepted": 0,
-      "detail": ["8 lights outside the \"lights\" group."],
+      "detail": [
+        { "label": "/ Sun Light", "message": "Light is not inside the \"lights\" group.", "extras": null },
+        { "label": "/ Rim Light.1", "message": "Light is not inside the \"lights\" group.", "extras": null },
+        { "label": "/ Fill Light", "message": "Light is not inside the \"lights\" group.", "extras": null }
+      ],
       "can_select": true,
       "can_fix": true,
       "fix_action_id": "fix_lights",
@@ -21,7 +25,10 @@
       "count": 9,
       "new": 9,
       "accepted": 0,
-      "detail": ["9 render presets do not match the studio standard (25 fps, start 1001)."],
+      "detail": [
+        { "label": "rs_1080_still", "message": "FPS 24 does not match studio standard 25.", "extras": { "fps": 24 } },
+        { "label": "rs_1080_anim", "message": "Start frame 0 does not match VFX standard 1001.", "extras": { "start": 0 } }
+      ],
       "can_select": false,
       "can_fix": true,
       "fix_action_id": "fix_fps",
@@ -34,7 +41,10 @@
       "count": 9,
       "new": 9,
       "accepted": 0,
-      "detail": ["9 texture paths are missing or absolute."],
+      "detail": [
+        { "label": "Material.001 / diffuse", "message": "Texture path is missing.", "extras": { "path": "textures/diffuse_01.png" } },
+        { "label": "Material.002 / bump", "message": "Texture path is absolute.", "extras": { "path": "/Users/artist/Desktop/bump.png" } }
+      ],
       "can_select": false,
       "can_fix": false,
       "fix_action_id": null,
@@ -49,7 +59,11 @@
       "count": 5,
       "new": 3,
       "accepted": 2,
-      "detail": ["3 objects still use a C4D default name (Cube, Null)."],
+      "detail": [
+        { "label": "/ [0]", "message": "Object has a default or generic name.", "extras": { "name": "Cube" } },
+        { "label": "/ [3]", "message": "Object has a default or generic name.", "extras": { "name": "Null" } },
+        { "label": "/ Cloner [1]", "message": "Object has a default or generic name.", "extras": { "name": "Null.1" } }
+      ],
       "can_select": true,
       "can_fix": false,
       "fix_action_id": null,
@@ -62,7 +76,10 @@
       "count": 2,
       "new": null,
       "accepted": null,
-      "detail": ["2 cameras have non-zero shift values."],
+      "detail": [
+        { "label": "/ Camera", "message": "Camera has non-zero shift values.", "extras": { "shift_x": 0.05, "shift_y": 0.0 } },
+        { "label": "/ Camera.1", "message": "Camera has non-zero shift values.", "extras": { "shift_x": 0.0, "shift_y": -0.02 } }
+      ],
       "can_select": true,
       "can_fix": true,
       "fix_action_id": "fix_cameras",

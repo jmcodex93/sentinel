@@ -1,4 +1,16 @@
-import type { PanelQcCheck, PanelQcSection } from "../types";
+import type { PanelQcCheck, PanelQcSection, QcCheckDetail } from "../types";
+
+/** One line for the collapsed card: the first violation's "label — message"
+ * (or bare message when there's no label), plus a "(+N more)" tail when the
+ * check has more violations than shown. `check.detail` is the same
+ * `{label, message, extras}` shape as `QcCheck.details` (Reports QC) — never
+ * a plain string, see `webbridge.group_qc_by_severity`. */
+export function detailPreview(detail: QcCheckDetail[]): string {
+  if (detail.length === 0) return "";
+  const [first, ...rest] = detail;
+  const line = first.label ? `${first.label} — ${first.message}` : first.message;
+  return rest.length > 0 ? `${line} (+${rest.length} more)` : line;
+}
 
 /** Per-card action availability, derived straight from the check's own
  * `can_select`/`can_fix` flags (sourced server-side from `CHECK_REGISTRY` —
