@@ -26,7 +26,8 @@ Op inventory (Phase 2 Task 1 adds report/qc, report/doctor,
 report/supervisor, report/render_validation alongside report/delivery;
 Phase 4 Task 2 adds the form/* + palette/* ops, implemented in the sibling
 ``ui/web_ops.py`` and merged into ``_OPS`` below — split out once this
-file's op count grew past the ~600 line guideline). Every op is dispatched
+file's op count grew past the ~600 line guideline; Fase 6.0 Task 2 adds the
+panel/* ops from ``ui/panel_ops.py`` the same way). Every op is dispatched
 from ``MainThreadQueue.drain`` — see its docstring for the mutation-safe
 invariant every handler below must honor: post-commit 69d7a7a a handler MAY
 mutate the document (a client-abandoned/timed-out request is guaranteed
@@ -54,6 +55,7 @@ from sentinel.common.settings import GlobalSettings
 from sentinel.qc.score import compute_score, run_all_checks
 from sentinel.rules_context import active_rules_for_doc
 from sentinel.ui.hub_ops import HUB_OPS, pump_jobs
+from sentinel.ui.panel_ops import PANEL_OPS
 from sentinel.ui.web_ops import FORM_OPS
 from sentinel import webbridge
 from sentinel.webbridge import (
@@ -302,8 +304,9 @@ def _op_report_render_validation(payload):
 
 
 # op name (as the SPA requests it, e.g. "report/delivery") -> handler(payload).
-# form/* and palette/* ops are defined in the sibling ui/web_ops.py (FORM_OPS)
-# and merged in here so the server still has a single op table.
+# form/* and palette/* ops are defined in the sibling ui/web_ops.py (FORM_OPS),
+# hub/* in ui/hub_ops.py (HUB_OPS), and panel/* in ui/panel_ops.py (PANEL_OPS)
+# — all merged in here so the server still has a single op table.
 _OPS = {
     "report/delivery": _op_report_delivery,
     "report/qc": _op_report_qc,
@@ -312,6 +315,7 @@ _OPS = {
     "report/render_validation": _op_report_render_validation,
     **FORM_OPS,
     **HUB_OPS,
+    **PANEL_OPS,
 }
 
 

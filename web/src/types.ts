@@ -784,3 +784,84 @@ export interface HubUiState {
   col_widths?: Record<string, number>;
   sort?: { col: string; dir: "asc" | "desc" };
 }
+
+/**
+ * Panel SPA "shot health" dashboard contract (Fase 6.0) — mirrors
+ * ``build_panel_overview`` / ``PANEL_OPS`` in
+ * plugin/sentinel/ui/panel_ops.py. Produced by ``GET /api/panel/overview``.
+ * Each block is independently nullable: a failure isolated to one subsystem
+ * (see that module's ``_guarded_block``) degrades only that card, never the
+ * whole dashboard — every consumer of this type MUST render a null block as
+ * an unavailable/empty card, not crash.
+ */
+
+export interface PanelQcTopCheck {
+  check_id: string;
+  label: string;
+  count: number;
+}
+
+export interface PanelQc {
+  passed: number;
+  total: number;
+  disabled: number;
+  top: PanelQcTopCheck[];
+  /** Palette action ids (fix_lights/fix_cameras/fix_materials/fix_fps)
+   * currently enabled — see `_PANEL_FIX_CHECK_ID` in panel_ops.py. */
+  fixable: string[];
+}
+
+export interface PanelScene {
+  name: string;
+  path_set: boolean;
+  shot_id: string;
+  artist: string;
+  version_label: string | null;
+  version_age: string | null;
+  polys_label: string;
+}
+
+export interface PanelAssets {
+  count: number;
+  missing: number;
+  disk_label: string;
+  /** Null while the Hub's image-metadata cache is cold this session (never
+   * opened yet) — the overview shows "—" rather than a misleading "0 B". */
+  vram_label: string | null;
+}
+
+export interface PanelRender {
+  preset_name: string | null;
+  fps: number;
+  resolution: string | null;
+  /** Always null in v1 — no engine helper answers "does this scene have a
+   * multiformat Take" without a from-scratch scene walk (see panel_ops.py
+   * module docstring). */
+  multiformat: boolean | null;
+}
+
+export interface PanelDeliver {
+  todos_pending: number;
+  notes_present: boolean;
+  /** Always null in v1 — no "last collected" accessor exists yet. */
+  last_delivery_age: string | null;
+}
+
+export interface PanelOverview {
+  scene: PanelScene | null;
+  qc: PanelQc | null;
+  assets: PanelAssets | null;
+  render: PanelRender | null;
+  deliver: PanelDeliver | null;
+}
+
+export type PanelOverviewResult =
+  | { kind: "ok"; data: PanelOverview }
+  | { kind: "empty"; reason: string }
+  | { kind: "error"; message: string };
+
+/** `POST /api/panel/open_form` — see `_op_panel_open_form` in panel_ops.py. */
+export interface PanelOpenFormResponse {
+  ok: boolean;
+  error?: string;
+}

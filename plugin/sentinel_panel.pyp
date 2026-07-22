@@ -19,6 +19,8 @@ from sentinel.ui import dialogs as _dialogs
 from sentinel.ui import ids as _ids
 from sentinel.ui import user_areas as _user_areas
 from sentinel.ui.panel import YSPanelCmd, SentinelPaletteCmd
+from sentinel.common.constants import SENTINEL_PANEL_SPA_PLUGIN_ID
+from sentinel.ui.panel_spa import SentinelPanelSPACmd
 
 # Phase 4 Task 4 — Command Palette. Own CommandData (distinct from
 # PLUGIN_ID/the main panel) so the artist can bind it a shortcut
@@ -94,6 +96,24 @@ def Register():
         safe_print(f"{PLUGIN_NAME} registered successfully")
     else:
         safe_print("Failed to register Guardian panel")
+
+    # Sentinel Panel (SPA) (Fase 6.0 Task 2) — new dockable command living
+    # alongside the native panel above (parallel-panel strategy, native panel
+    # untouched). Same icon-loader idiom, own plugin id
+    # (SENTINEL_PANEL_SPA_PLUGIN_ID, see common/constants.py for the 2099xxx
+    # range note).
+    ok_panel_spa = plugins.RegisterCommandPlugin(
+        id=SENTINEL_PANEL_SPA_PLUGIN_ID,
+        str="Sentinel Panel (SPA)",
+        info=0,
+        icon=icon,
+        help="Open the Sentinel Panel (SPA)",
+        dat=SentinelPanelSPACmd()
+    )
+    if ok_panel_spa:
+        safe_print("Sentinel Panel (SPA) registered successfully")
+    else:
+        safe_print("Failed to register Sentinel Panel (SPA)")
 
     # Command Palette (Phase 4 Task 4) — separate CommandData, own shortcut
     # slot in Preferences > Customize Commands (search "Sentinel: Command
