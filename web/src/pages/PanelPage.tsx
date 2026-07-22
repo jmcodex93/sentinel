@@ -3,26 +3,53 @@ import { OverviewCards } from "../components/panel/OverviewCards";
 import { PanelHeader } from "../components/panel/PanelHeader";
 import { PanelRail } from "../components/panel/PanelRail";
 import { QcSection } from "../components/panel/QcSection";
+import { RenderSection } from "../components/panel/RenderSection";
 import { EmptyState, ErrorState, LoadingState } from "../components/PageStates";
 import { Button } from "../components/form/Button";
 import {
   fetchPaletteActions,
   fetchPanelOverview,
   fetchPanelQc,
+  fetchPanelRender,
   fetchPanelStamp,
   isMock,
   postPanelOpenForm,
   postPanelQcAccept,
   postPanelQcFixAll,
   postPanelQcSelect,
+  postPanelRenderAddFrameTag,
+  postPanelRenderAovTier,
+  postPanelRenderForceVertical,
+  postPanelRenderOpenFolder,
+  postPanelRenderResetAll,
+  postPanelRenderSaveStill,
+  postPanelRenderSelectFrameTag,
+  postPanelRenderSetPreset,
+  postPanelRenderToggleMultipart,
+  postPanelRenderToggleWatchfolder,
   runPaletteAction,
 } from "../lib/api";
 import { railBadges, railMode, type PanelSection } from "../lib/panel";
 import { useToast } from "../lib/toast";
-import type { PaletteAction, PanelOverviewResult, PanelQcCheck, PanelQcResult } from "../types";
+import type {
+  PaletteAction,
+  PanelOverviewResult,
+  PanelQcCheck,
+  PanelQcResult,
+  PanelRenderMutationResponse,
+  PanelRenderResult,
+} from "../types";
 
 type PageState = { kind: "loading" } | PanelOverviewResult;
 type QcPageState = { kind: "loading" } | PanelQcResult;
+type RenderPageState = { kind: "loading" } | PanelRenderResult;
+
+/** What the Render section's inline confirm bar is about to run — set once
+ * a destructive op (`reset_all`/`force_vertical`/`aov_tier`) comes back
+ * `confirm_required`, so Confirm can re-issue the exact same op with
+ * `confirm: true` (the server, not the SPA, owns the copy in `label`). */
+type AovTier = "essentials" | "production" | "light_groups";
+type RenderConfirm = { op: "reset_all" | "force_vertical" | "aov_tier"; tier?: AovTier; label: string };
 
 /** What the inline confirm bar is about to run, for the QC section's Fix
  * (per-card, via the shared palette action) and Fix-all (via
@@ -94,6 +121,9 @@ export function PanelPage() {
   const [qcState, setQcState] = useState<QcPageState>({ kind: "loading" });
   const [busyQcId, setBusyQcId] = useState<string | null>(null);
   const [qcConfirm, setQcConfirm] = useState<QcConfirm | null>(null);
+  const [renderState, setRenderState] = useState<RenderPageState>({ kind: "loading" });
+  const [busyRenderId, setBusyRenderId] = useState<string | null>(null);
+  const [renderConfirm, setRenderConfirm] = useState<RenderConfirm | null>(null);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const stampRef = useRef<string | null>(null);
@@ -122,6 +152,16 @@ export function PanelPage() {
     });
   }, []);
 
+  // `panel/render` (Fase 6.2) — same "own fetch on entering the section,
+  // own stamp-driven refetch" idiom as `panel/qc` above.
+  const loadRender = useCallback((silent: boolean) => {
+    if (!silent) setRenderState({ kind: "loading" });
+    fetchPanelRender().then(async (result) => {
+      setRenderState(result);
+      if (result.kind === "ok") stampRef.current = await fetchPanelStamp();
+    });
+  }, []);
+
   useEffect(() => {
     load(false);
   }, [load]);
@@ -129,6 +169,10 @@ export function PanelPage() {
   useEffect(() => {
     if (section === "qc") loadQc(false);
   }, [section, loadQc]);
+
+  useEffect(() => {
+    if (section === "render") loadRender(false);
+  }, [section, loadRender]);
 
   // Adaptive rail breakpoint — ResizeObserver on the page root rather than
   // `window.resize`, since this page is hosted inside a native docked panel
@@ -155,9 +199,10 @@ export function PanelPage() {
       if (newStamp === null || stampRef.current === null || newStamp === stampRef.current) return;
       load(true);
       if (section === "qc") loadQc(true);
+      if (section === "render") loadRender(true);
     }, POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
-  }, [load, loadQc, section]);
+  }, [load, loadQc, loadRender, section]);
 
   async function runFix(action: PaletteAction, confirm?: boolean) {
     // qc.fixable (panel/overview) and this actions list (palette/actions) are
@@ -307,6 +352,95 @@ export function PanelPage() {
     load(true); // keeps the rail/header QC badge and the palette action list in sync
   }
 
+  /** Shared tail for every `panel/render/*` mutation: apply the echoed
+   * `render` + fresh stamp, toast, and `load(true)` so the rail/header stay
+   * in sync — same lesson as the QC accept/fix handlers above. Errors never
+   * apply a false-success toast (e.g. add_frame_tag's `no_camera`/
+   * `already_tagged`/`import_failure` all land here as a warn toast, not a
+   * "Done." success). */
+  function applyRenderMutation(response: PanelRenderMutationResponse, successMsg = "Done.") {
+    if (!response.ok) {
+      toast({ message: response.error || "Action failed.", variant: "warn" });
+      return;
+    }
+    if (response.stamp) stampRef.current = response.stamp;
+    if (response.render) setRenderState({ kind: "ok", data: response.render });
+    toast({ message: successMsg, variant: "success" });
+    load(true);
+  }
+
+  async function handleSetPreset(preset: string) {
+    setBusyRenderId("set_preset");
+    const response = await postPanelRenderSetPreset(preset);
+    setBusyRenderId(null);
+    applyRenderMutation(response, `Preset set to ${preset}.`);
+  }
+
+  /** Destructive ops (Reset All, Force 9:16, an AOV tier) never confirm
+   * client-side — the first call omits `confirm`, and a `confirm_required`
+   * response is what opens the inline bar, with the server's own
+   * `confirm_label` as the copy (never SPA-authored text). */
+  async function runRenderDestructive(op: "reset_all" | "force_vertical" | "aov_tier", tier?: AovTier, confirm?: boolean) {
+    const busyId = tier ? `${op}:${tier}` : op;
+    setBusyRenderId(busyId);
+    const response =
+      op === "reset_all"
+        ? await postPanelRenderResetAll(confirm)
+        : op === "force_vertical"
+          ? await postPanelRenderForceVertical(confirm)
+          : await postPanelRenderAovTier(tier ?? "essentials", confirm);
+    setBusyRenderId(null);
+
+    if (!response.ok && response.error === "confirm_required") {
+      setRenderConfirm({ op, tier, label: response.confirm_label || "Are you sure?" });
+      return;
+    }
+    setRenderConfirm(null);
+    applyRenderMutation(response);
+  }
+
+  async function handleAddFrameTag() {
+    setBusyRenderId("add_frame_tag");
+    const response = await postPanelRenderAddFrameTag();
+    setBusyRenderId(null);
+    applyRenderMutation(response, "Sentinel Frame added.");
+  }
+
+  async function handleSelectFrameTag() {
+    setBusyRenderId("select_frame_tag");
+    const response = await postPanelRenderSelectFrameTag();
+    setBusyRenderId(null);
+    applyRenderMutation(response, "Tag selected.");
+  }
+
+  async function handleToggleMultipart() {
+    setBusyRenderId("toggle_multipart");
+    const response = await postPanelRenderToggleMultipart();
+    setBusyRenderId(null);
+    applyRenderMutation(response);
+  }
+
+  async function handleToggleWatch() {
+    setBusyRenderId("toggle_watchfolder");
+    const response = await postPanelRenderToggleWatchfolder();
+    setBusyRenderId(null);
+    applyRenderMutation(response);
+  }
+
+  async function handleSaveStill() {
+    setBusyRenderId("save_still");
+    const response = await postPanelRenderSaveStill();
+    setBusyRenderId(null);
+    applyRenderMutation(response, "Still saved.");
+  }
+
+  async function handleOpenFolder() {
+    setBusyRenderId("open_folder");
+    const response = await postPanelRenderOpenFolder();
+    setBusyRenderId(null);
+    applyRenderMutation(response, "Folder opened.");
+  }
+
   const badges = state.kind === "ok" ? railBadges(state.data) : { qc: null, assets: null };
 
   return (
@@ -403,7 +537,35 @@ export function PanelPage() {
             </>
           )}
 
-          {state.kind === "ok" && section !== "overview" && section !== "qc" && (
+          {state.kind === "ok" && section === "render" && (
+            <>
+              {renderState.kind === "loading" && <LoadingState />}
+              {renderState.kind === "error" && (
+                <ErrorState title="Couldn't load Render" message={renderState.message} onRetry={() => loadRender(false)} />
+              )}
+              {renderState.kind === "empty" && <EmptyState title="No document open" reason={renderState.reason} />}
+              {renderState.kind === "ok" && (
+                <RenderSection
+                  render={renderState.data}
+                  busy={busyRenderId}
+                  confirmLabel={renderConfirm?.label ?? null}
+                  onSetPreset={handleSetPreset}
+                  onDestructive={(op, tier) => runRenderDestructive(op, tier)}
+                  onAddFrameTag={handleAddFrameTag}
+                  onSelectFrameTag={handleSelectFrameTag}
+                  onToggleMultipart={handleToggleMultipart}
+                  onToggleWatch={handleToggleWatch}
+                  onSaveStill={handleSaveStill}
+                  onOpenFolder={handleOpenFolder}
+                  onValidate={() => handleDeepLink("open_reports_render_validation")}
+                  onConfirm={() => renderConfirm && runRenderDestructive(renderConfirm.op, renderConfirm.tier, true)}
+                  onCancelConfirm={() => setRenderConfirm(null)}
+                />
+              )}
+            </>
+          )}
+
+          {state.kind === "ok" && section !== "overview" && section !== "qc" && section !== "render" && (
             <SectionPlaceholder section={section} onDeepLink={handleDeepLink} />
           )}
         </div>
