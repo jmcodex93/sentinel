@@ -46,7 +46,9 @@ export function railBadges(overview: PanelOverview): PanelRailBadges {
   const qc = overview.qc;
   let qcBadge: number | null = null;
   if (qc) {
-    const denominator = qc.total - qc.disabled;
+    // `qc.total` is already net of disabled checks (see qc/score.py), so
+    // it's the denominator directly — no further subtraction.
+    const denominator = qc.total;
     const fails = denominator - qc.passed;
     if (fails > 0) qcBadge = fails;
   }

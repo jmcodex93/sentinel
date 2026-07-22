@@ -1,5 +1,5 @@
 {
-  "score": { "passed": 6, "total": 10, "disabled": 0 },
+  "score": { "passed": 5, "total": 10, "disabled": 0 },
   "fail": [
     {
       "id": "lights",
@@ -54,8 +54,21 @@
       "can_fix": false,
       "fix_action_id": null,
       "accepted_all": false
+    },
+    {
+      "id": "camera_shift",
+      "label": "Camera Shift Detection",
+      "severity": "WARN",
+      "count": 2,
+      "new": null,
+      "accepted": null,
+      "detail": ["2 cameras have non-zero shift values."],
+      "can_select": true,
+      "can_fix": true,
+      "fix_action_id": "fix_cameras",
+      "accepted_all": false
     }
   ],
-  "ok_count": 6,
+  "ok_count": 5,
   "disabled_count": 0
 }

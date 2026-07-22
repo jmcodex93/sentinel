@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cardActions, orderedSections } from "./panelQc";
+import { cardActions, countLabel, orderedSections } from "./panelQc";
 import type { PanelQcCheck, PanelQcSection } from "../types";
 
 function check(overrides: Partial<PanelQcCheck> = {}): PanelQcCheck {
@@ -56,6 +56,20 @@ function qc(overrides: Partial<PanelQcSection> = {}): PanelQcSection {
     ...overrides,
   };
 }
+
+describe("countLabel", () => {
+  it("renders bare count when there is no active baseline (new === null)", () => {
+    expect(countLabel(check({ count: 4, new: null, accepted: null }))).toBe("4");
+  });
+
+  it("renders '<new> new' with no accepted violations", () => {
+    expect(countLabel(check({ new: 8, accepted: 0 }))).toBe("8 new");
+  });
+
+  it("renders '<new> new (<accepted> accepted)' when some are baselined", () => {
+    expect(countLabel(check({ new: 3, accepted: 2 }))).toBe("3 new (2 accepted)");
+  });
+});
 
 describe("orderedSections", () => {
   it("surfaces fail/warn lists and the folded ok/disabled counts", () => {

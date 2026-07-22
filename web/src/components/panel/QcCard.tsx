@@ -3,21 +3,8 @@ import { Button } from "../form/Button";
 import { FieldRow } from "../form/FieldRow";
 import { TextArea } from "../form/TextArea";
 import { TextInput } from "../form/TextInput";
-import { cardActions } from "../../lib/panelQc";
+import { cardActions, countLabel } from "../../lib/panelQc";
 import type { PaletteAction, PanelQcCheck } from "../../types";
-
-/** `check.new`/`check.accepted` are baseline-aware and `null` with no active
- * baseline (see PanelQcCheck) — render the legacy `count` alone rather than
- * a misleading "null new". */
-function countLabel(check: PanelQcCheck): string {
-  if (check.new === null) {
-    return `${check.count}`;
-  }
-  if (check.accepted && check.accepted > 0) {
-    return `${check.new} new (${check.accepted} accepted)`;
-  }
-  return `${check.new} new`;
-}
 
 /** One FAIL/WARN card — "option C refinada" from the approved mockup
  * (.superpowers/brainstorm/40035-1784707797/content/qc-list.html): severity

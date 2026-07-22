@@ -39,7 +39,7 @@ export function QcSection({
 }) {
   const [okOpen, setOkOpen] = useState(false);
   const { fail, warn, okCount, disabledCount } = orderedSections(qc);
-  const denominator = qc.score.total - qc.score.disabled;
+  const denominator = qc.score.total;
   const fixableCount = [...fail, ...warn].filter((c) => c.can_fix).length;
   const isBusy = busy !== null;
 

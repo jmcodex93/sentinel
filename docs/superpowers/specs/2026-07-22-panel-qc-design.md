@@ -58,7 +58,7 @@
 
 - pytest: `panel/qc` (agrupado fail/warn/ok, flags desde CHECK_REGISTRY), `panel/qc/select`/`accept` (contrato, no_document, accept invalida caché + valida author/reason), `panel/qc/fix_all` (un undo). Reutiliza el harness fake-c4d.
 - vitest: agrupado por severidad + qué acciones muestra cada check (pura), confirm gating.
-- Live C4D (escena real SHOT_18): aceptar Lights con autor+razón → el denominador baja (`X/11 · 1 accepted`); Fix inline de un fixable; Select selecciona en escena; Fix all; Cmd+Z revierte un fix; sin popups en todo el flujo.
+- Live C4D (escena real SHOT_18): aceptar Lights con autor+razón → el numerador sube, el check pasa a contar como accepted y el denominador (`total`) no cambia (`X/11 · 1 accepted`); Fix inline de un fixable; Select selecciona en escena; Fix all; Cmd+Z revierte un fix; sin popups en todo el flujo.
 
 ## Desviaciones de implementación
 

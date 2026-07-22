@@ -42,3 +42,16 @@ export function orderedSections(qc: PanelQcSection): OrderedQcSections {
     disabledCount: qc.disabled_count,
   };
 }
+
+/** `check.new`/`check.accepted` are baseline-aware and `null` with no active
+ * baseline (see PanelQcCheck) — render the legacy `count` alone rather than
+ * a misleading "null new". */
+export function countLabel(check: PanelQcCheck): string {
+  if (check.new === null) {
+    return `${check.count}`;
+  }
+  if (check.accepted && check.accepted > 0) {
+    return `${check.new} new (${check.accepted} accepted)`;
+  }
+  return `${check.new} new`;
+}
