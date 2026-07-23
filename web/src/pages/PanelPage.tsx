@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { DeliverSection } from "../components/panel/DeliverSection";
 import { OverviewCards } from "../components/panel/OverviewCards";
 import { PanelHeader } from "../components/panel/PanelHeader";
 import { PanelRail } from "../components/panel/PanelRail";
@@ -8,12 +9,15 @@ import { EmptyState, ErrorState, LoadingState } from "../components/PageStates";
 import { Button } from "../components/form/Button";
 import {
   fetchPaletteActions,
+  fetchPanelDeliver,
   fetchPanelOverview,
   fetchPanelQc,
   fetchPanelRender,
   fetchPanelStamp,
   isMock,
+  postPanelOpenCollect,
   postPanelOpenForm,
+  postPanelOpenVersion,
   postPanelQcAccept,
   postPanelQcFixAll,
   postPanelQcSelect,
@@ -34,6 +38,7 @@ import { railBadges, railMode, type PanelSection } from "../lib/panel";
 import { useToast } from "../lib/toast";
 import type {
   PaletteAction,
+  PanelDeliverState,
   PanelOverviewResult,
   PanelQcCheck,
   PanelQcResult,
@@ -44,6 +49,11 @@ import type {
 type PageState = { kind: "loading" } | PanelOverviewResult;
 type QcPageState = { kind: "loading" } | PanelQcResult;
 type RenderPageState = { kind: "loading" } | PanelRenderResult;
+// `panel/deliver` never returns an error/empty envelope of its own (see
+// fetchPanelDeliver's docstring) — every block degrades to `null`
+// individually, so the only extra state this section needs is "haven't
+// fetched yet".
+type DeliverPageState = { kind: "loading" } | { kind: "ok"; data: PanelDeliverState };
 
 /** What the Render section's inline confirm bar is about to run — set once
  * a destructive op (`reset_all`/`force_vertical`) comes back
@@ -70,7 +80,6 @@ const POLL_INTERVAL_MS = 2000;
  * it's the closest stand-in until 6.4. */
 const PLACEHOLDER_DEEP_LINKS: Partial<Record<PanelSection["id"], { id: string; label: string }>> = {
   render: { id: "open_reports_render_validation", label: "Open Render Validation" },
-  deliver: { id: "open_reports_delivery", label: "Open Delivery Summary" },
   tools: { id: "open_hub", label: "Open Asset Hub" },
 };
 
@@ -126,6 +135,8 @@ export function PanelPage() {
   const [renderState, setRenderState] = useState<RenderPageState>({ kind: "loading" });
   const [busyRenderId, setBusyRenderId] = useState<string | null>(null);
   const [renderConfirm, setRenderConfirm] = useState<RenderConfirm | null>(null);
+  const [deliverState, setDeliverState] = useState<DeliverPageState>({ kind: "loading" });
+  const [busyDeliverId, setBusyDeliverId] = useState<string | null>(null);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const stampRef = useRef<string | null>(null);
@@ -164,6 +175,19 @@ export function PanelPage() {
     });
   }, []);
 
+  // `panel/deliver` (Fase 6.3 Task 5) — same "own fetch on entering the
+  // section, own stamp-driven refetch" idiom as `panel/qc`/`panel/render`
+  // above. `fetchPanelDeliver` never rejects (it resolves to an all-null
+  // state on failure), so there's no `result.kind === "ok"` branch to gate
+  // the stamp re-anchor on — it always re-anchors.
+  const loadDeliver = useCallback((silent: boolean) => {
+    if (!silent) setDeliverState({ kind: "loading" });
+    fetchPanelDeliver().then(async (data) => {
+      setDeliverState({ kind: "ok", data });
+      stampRef.current = await fetchPanelStamp();
+    });
+  }, []);
+
   useEffect(() => {
     load(false);
   }, [load]);
@@ -175,6 +199,10 @@ export function PanelPage() {
   useEffect(() => {
     if (section === "render") loadRender(false);
   }, [section, loadRender]);
+
+  useEffect(() => {
+    if (section === "deliver") loadDeliver(false);
+  }, [section, loadDeliver]);
 
   // Adaptive rail breakpoint — ResizeObserver on the page root rather than
   // `window.resize`, since this page is hosted inside a native docked panel
@@ -202,9 +230,10 @@ export function PanelPage() {
       load(true);
       if (section === "qc") loadQc(true);
       if (section === "render") loadRender(true);
+      if (section === "deliver") loadDeliver(true);
     }, POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
-  }, [load, loadQc, loadRender, section]);
+  }, [load, loadQc, loadRender, loadDeliver, section]);
 
   async function runFix(action: PaletteAction, confirm?: boolean) {
     // qc.fixable (panel/overview) and this actions list (palette/actions) are
@@ -461,6 +490,34 @@ export function PanelPage() {
     applyRenderMutation(response, "Folder opened.");
   }
 
+  /** `panel/deliver/open_version` — returns `{ok, error?}` (not void) so
+   * DeliverSection's confirm bar can tell an `unsaved_changes` response
+   * (re-prompt with `force: true`) apart from every other outcome (toasted
+   * here and the confirm bar closes), same Promise-returning contract as
+   * `handleQcAccept`. */
+  async function handleOpenVersion(path: string, force: boolean): Promise<{ ok: boolean; error?: string }> {
+    setBusyDeliverId("open_version");
+    const response = await postPanelOpenVersion(path, force);
+    setBusyDeliverId(null);
+
+    if (!response.ok) {
+      if (response.error === "unsaved_changes") return { ok: false, error: response.error };
+      toast({ message: response.detail || "Couldn't open that version.", variant: "warn" });
+      return { ok: false, error: response.error };
+    }
+    if (response.stamp) stampRef.current = response.stamp;
+    toast({ message: "Version opened.", variant: "success" });
+    loadDeliver(true);
+    return { ok: true };
+  }
+
+  async function handleCollect() {
+    setBusyDeliverId("open_collect");
+    const response = await postPanelOpenCollect();
+    setBusyDeliverId(null);
+    if (!response.ok) toast({ message: response.error || "Couldn't open the Asset Hub.", variant: "warn" });
+  }
+
   const badges = state.kind === "ok" ? railBadges(state.data) : { qc: null, assets: null };
 
   return (
@@ -587,9 +644,28 @@ export function PanelPage() {
             </>
           )}
 
-          {state.kind === "ok" && section !== "overview" && section !== "qc" && section !== "render" && (
-            <SectionPlaceholder section={section} onDeepLink={handleDeepLink} />
+          {state.kind === "ok" && section === "deliver" && (
+            <>
+              {deliverState.kind === "loading" && <LoadingState />}
+              {deliverState.kind === "ok" && (
+                <DeliverSection
+                  deliver={deliverState.data}
+                  busy={busyDeliverId}
+                  onOpenVersion={handleOpenVersion}
+                  onCollect={handleCollect}
+                  onOpenSupervisor={() => handleDeepLink("open_reports_supervisor")}
+                  onOpenDeliverySummary={() => handleDeepLink("open_reports_delivery")}
+                  onDone={() => loadDeliver(false)}
+                />
+              )}
+            </>
           )}
+
+          {state.kind === "ok" &&
+            section !== "overview" &&
+            section !== "qc" &&
+            section !== "render" &&
+            section !== "deliver" && <SectionPlaceholder section={section} onDeepLink={handleDeepLink} />}
         </div>
       </div>
     </div>
