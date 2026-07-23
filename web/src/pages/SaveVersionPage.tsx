@@ -137,6 +137,7 @@ export function SaveVersionPage({
 
   return (
     <FormPageShell
+      embedded={Boolean(onBack)}
       title="Save Version"
       meta={
         <div className="mt-1.5 flex flex-wrap items-center gap-3">

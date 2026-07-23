@@ -1155,21 +1155,17 @@ export async function fetchPanelDeliver(): Promise<PanelDeliverState> {
   return data as PanelDeliverState;
 }
 
-/** `POST /api/panel/deliver/open_version` — open a version .c4d via the
- * dialog-free core (`flows.open_version_core`). A first call without
- * `force` can surface `error: "unsaved_changes"` for the SPA to confirm
- * inline before re-posting with `force: true`. */
+/** `POST /api/panel/deliver/open_version` — open (or re-activate) a version
+ * .c4d via the dialog-free core (`flows.open_version_core`). Non-destructive:
+ * an already-open version comes back `{switched: true}`, an unopened one
+ * `{opened: true}`; no confirm/force step. */
 export async function postPanelOpenVersion(
   path: string,
-  force?: boolean,
 ): Promise<PanelOpenVersionResponse> {
   if (isMock()) {
     return { ok: true, opened: true, stamp: "mock-stamp" };
   }
-  return postForm<PanelOpenVersionResponse>(
-    "/api/panel/deliver/open_version",
-    force ? { path, force: true } : { path },
-  );
+  return postForm<PanelOpenVersionResponse>("/api/panel/deliver/open_version", { path });
 }
 
 /** `POST /api/panel/deliver/open_collect` — open the Asset Hub focused on

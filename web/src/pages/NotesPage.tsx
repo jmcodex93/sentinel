@@ -113,6 +113,7 @@ export function NotesPage({
 
   return (
     <FormPageShell
+      embedded={Boolean(onBack)}
       title="Scene Notes"
       meta={
         <p className="text-caption mt-1.5" style={{ color: "var(--color-ink-secondary)" }}>

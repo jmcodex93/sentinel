@@ -144,18 +144,19 @@ def _op_panel_deliver(payload):
 
 
 def _op_panel_deliver_open_version(payload):
-    """Open a version .c4d via the dialog-free core. Confirm/unsaved logic
-    lives in the SPA: a first call without ``force`` surfaces
-    ``unsaved_changes`` for the client to confirm inline, then the SPA
-    re-posts with ``force: true`` to override the core's unsaved-changes
-    guard and force the load through."""
+    """Open (or re-activate) a version .c4d via the dialog-free core.
+
+    Non-destructive: an already-open version is re-activated
+    (``switched``), an unopened one is loaded from disk (``opened``) as a
+    new document with the current one left untouched — so there's no
+    confirm/force step (see ``flows.open_version_core``)."""
     from sentinel.ui import flows
-    doc = c4d.documents.GetActiveDocument()
     path = (payload or {}).get("path") or ""
-    force = bool((payload or {}).get("force"))
-    result = flows.open_version_core(path, force=force)
+    result = flows.open_version_core(path)
     if result.get("ok"):
-        result["stamp"] = _stamp_for(doc) if doc else None
+        # Re-stamp against the NOW-active doc (the load/switch changed it).
+        active = c4d.documents.GetActiveDocument()
+        result["stamp"] = _stamp_for(active) if active else None
     return result
 
 

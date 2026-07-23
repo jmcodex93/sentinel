@@ -1110,7 +1110,10 @@ export interface PanelDeliverState {
 export interface PanelOpenVersionResponse {
   ok: boolean;
   error?: string;
+  /** Loaded from disk as a new document. */
   opened?: boolean;
+  /** Re-activated a version that was already open (no disk reload). */
+  switched?: boolean;
   stamp?: string | null;
   detail?: string;
 }

@@ -41,6 +41,12 @@
   --color-status-warn: #ffb74d;
   --color-status-pass: #68b06a;
   --color-status-neutral: #8a8a8a;
+  /* Review-status "in review" blue — a distinct hue for the CR (Client
+   * Review) version badge, matching the native panel's blue badge so the
+   * artist's WIP=grey / TR=amber / CR=blue / FINAL=green mental model
+   * carries over. Deliberately bluer than the indigo accent (#5e6ad2) so a
+   * badge never reads as the "selected" accent. */
+  --color-status-info: #4a90d9;
 
   /* Badge background = "~10% tint of the status color" (DESIGN.md `badge`
    * component). Precomputed as rgba() rather than CSS relative-color
@@ -51,6 +57,7 @@
   --color-status-warn-tint-10: rgba(255, 183, 77, 0.1);
   --color-status-pass-tint-10: rgba(104, 176, 106, 0.1);
   --color-status-neutral-tint-10: rgba(138, 138, 138, 0.1);
+  --color-status-info-tint-10: rgba(74, 144, 217, 0.1);
 
   /* `status-strip` background = "~15% tint of the status color" (DESIGN.md
    * `status-strip` component) — darker than the badge's 10% tint because

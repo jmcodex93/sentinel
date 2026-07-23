@@ -10,7 +10,7 @@ import {
   statusBadgeTone,
   versionStatusLine,
 } from "../../lib/panelDeliver";
-import type { PanelDeliverState, PanelVersionEntry } from "../../types";
+import type { PanelDeliverState } from "../../types";
 
 /** Reuses the same 4-block "eyebrow + status + actions" shell as
  * RenderSection's `RenderBlock` — Deliver is a sibling section, so it must
@@ -40,16 +40,15 @@ function DeliverBlock({
   );
 }
 
-/** Status tone → CSS var pair. Only 4 semantic status tokens exist
- * (fail/warn/pass/neutral) and none of them mean "this is an error" for a
- * review-status badge, so WIP maps to neutral (in progress), TR/CR both map
- * to warn (pending review — the row's own "TR"/"CR" text still disambiguates
- * them), and FINAL maps to pass (done). Never the accent — accent marks
- * "selected", not status. */
+/** Status tone → CSS var pair, matching the native panel's badge palette so
+ * the artist's mental model carries over: WIP = neutral grey (in progress),
+ * TR = amber (team review), CR = blue (client review), FINAL = green (done).
+ * Each review stage gets its own hue. Never the accent — accent marks
+ * "selected", not status; the CR blue is deliberately distinct from it. */
 const BADGE_TONE_VARS: Record<ReturnType<typeof statusBadgeTone>, { color: string; background: string }> = {
   wip: { color: "var(--color-status-neutral)", background: "var(--color-status-neutral-tint-10)" },
   tr: { color: "var(--color-status-warn)", background: "var(--color-status-warn-tint-10)" },
-  cr: { color: "var(--color-status-warn)", background: "var(--color-status-warn-tint-10)" },
+  cr: { color: "var(--color-status-info)", background: "var(--color-status-info-tint-10)" },
   final: { color: "var(--color-status-pass)", background: "var(--color-status-pass-tint-10)" },
 };
 
@@ -64,11 +63,6 @@ function VersionBadge({ status }: { status: string }) {
     </span>
   );
 }
-
-/** What the open-version confirm bar is about to run — either the plain
- * open, or (after an `unsaved_changes` response) the forced re-open with the
- * unsaved-changes warning copy. */
-type OpenConfirm = { entry: PanelVersionEntry; forced: boolean };
 
 type DeliverView = "main" | "save_version" | "notes";
 
@@ -92,11 +86,10 @@ export function DeliverSection({
    * busy-lock idiom as the other sections. */
   busy: string | null;
   /** Runs `panel/deliver/open_version` (toast + stamp re-anchor + refetch
-   * live in PanelPage, same as every other mutation) and reports back
-   * whether the SPA needs to re-confirm with `force: true` — mirrors
-   * QcSection's `onAccept` Promise-returning contract, since the confirm
-   * bar's copy/state depends on the result, not just success/failure. */
-  onOpenVersion: (path: string, force: boolean, filename: string) => Promise<{ ok: boolean; error?: string }>;
+   * live in PanelPage). Opening a version is non-destructive — an already
+   * open one is re-activated, an unopened one loads as a new document — so
+   * a single click opens/switches, no confirm step. */
+  onOpenVersion: (path: string, filename: string) => void;
   onCollect: () => void;
   onOpenSupervisor: () => void;
   onOpenDeliverySummary: () => void;
@@ -106,7 +99,6 @@ export function DeliverSection({
 }) {
   const [view, setView] = useState<DeliverView>("main");
   const [filter, setFilter] = useState<string>(FILTER_ALL);
-  const [openConfirm, setOpenConfirm] = useState<OpenConfirm | null>(null);
   const isBusy = busy !== null;
 
   function backToMain() {
@@ -126,50 +118,11 @@ export function DeliverSection({
   const deliverAccess = deliver.deliver;
   const recent = version && !version.unsaved ? filterRecent(version.recent, filter) : [];
 
-  function handleRowClick(entry: PanelVersionEntry) {
-    setOpenConfirm({ entry, forced: false });
-  }
-
-  async function handleConfirmOpen() {
-    if (!openConfirm) return;
-    const result = await onOpenVersion(openConfirm.entry.path, openConfirm.forced, openConfirm.entry.filename);
-    // `unsaved_changes` on the FIRST attempt re-prompts with the forced
-    // warning copy instead of clearing — every other outcome (ok, or any
-    // other error — already_active/file_not_found/load_failed/bad_path,
-    // toasted by the caller) closes the bar.
-    if (!result.ok && result.error === "unsaved_changes" && !openConfirm.forced) {
-      setOpenConfirm({ entry: openConfirm.entry, forced: true });
-      return;
-    }
-    setOpenConfirm(null);
-  }
-
   return (
     <div className="flex flex-col gap-3 p-3">
-      {openConfirm && (
-        <div
-          className="flex flex-wrap items-center gap-2 rounded-lg border p-3"
-          style={{ backgroundColor: "var(--color-surface-1)", borderColor: "var(--color-hairline)" }}
-        >
-          <span className="text-body" style={{ color: "var(--color-ink)" }}>
-            {openConfirm.forced
-              ? "You have unsaved changes — opening this version will discard them. Continue?"
-              : `Open ${openConfirm.entry.filename}?`}
-          </span>
-          <div className="ml-auto flex gap-2">
-            <Button variant="secondary" disabled={isBusy} onClick={() => setOpenConfirm(null)}>
-              Cancel
-            </Button>
-            <Button variant="primary" disabled={isBusy} onClick={handleConfirmOpen}>
-              Confirm
-            </Button>
-          </div>
-        </div>
-      )}
-
       {/* Version */}
       <DeliverBlock eyebrow="Version" status={versionStatusLine(version)}>
-        <Button variant="secondary" disabled={isBusy} onClick={() => setView("save_version")}>
+        <Button variant="primary" disabled={isBusy} onClick={() => setView("save_version")}>
           Save Version
         </Button>
       </DeliverBlock>
@@ -209,7 +162,8 @@ export function DeliverSection({
                 key={entry.path}
                 type="button"
                 disabled={isBusy}
-                onClick={() => handleRowClick(entry)}
+                onClick={() => onOpenVersion(entry.path, entry.filename)}
+                title={`Open ${entry.filename}`}
                 className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-100 ease-out hover:bg-[var(--color-surface-2)] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <VersionBadge status={entry.status} />

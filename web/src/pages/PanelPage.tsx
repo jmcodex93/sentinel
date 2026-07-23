@@ -490,25 +490,17 @@ export function PanelPage() {
     applyRenderMutation(response, "Folder opened.");
   }
 
-  /** `panel/deliver/open_version` — returns `{ok, error?}` (not void) so
-   * DeliverSection's confirm bar can tell an `unsaved_changes` response
-   * (re-prompt with `force: true`) apart from every other outcome (toasted
-   * here and the confirm bar closes), same Promise-returning contract as
-   * `handleQcAccept`. */
-  async function handleOpenVersion(
-    path: string,
-    force: boolean,
-    filename: string,
-  ): Promise<{ ok: boolean; error?: string }> {
+  /** `panel/deliver/open_version` — opening a version is non-destructive
+   * (an already-open one is re-activated, an unopened one loads as a new
+   * document, current doc untouched), so a single click opens/switches with
+   * no confirm. Distinct toasts per outcome, mirroring the native
+   * `_on_history_row_click` copy. */
+  async function handleOpenVersion(path: string, filename: string) {
     setBusyDeliverId("open_version");
-    const response = await postPanelOpenVersion(path, force);
+    const response = await postPanelOpenVersion(path);
     setBusyDeliverId(null);
 
     if (!response.ok) {
-      if (response.error === "unsaved_changes") return { ok: false, error: response.error };
-      // Token → message parity with the native `_on_history_row_click`
-      // (panel.py) — each guard in `open_version_core` gets its own copy
-      // instead of one generic fallback for every error.
       switch (response.error) {
         case "already_active":
           toast({ message: `Already viewing ${filename}.`, variant: "info" });
@@ -526,12 +518,14 @@ export function PanelPage() {
         default:
           toast({ message: response.detail || "Couldn't open that version.", variant: "warn" });
       }
-      return { ok: false, error: response.error };
+      return;
     }
     if (response.stamp) stampRef.current = response.stamp;
-    toast({ message: "Version opened.", variant: "success" });
+    toast({
+      message: response.switched ? `Switched to ${filename}.` : `Opened ${filename}.`,
+      variant: "success",
+    });
     loadDeliver(true);
-    return { ok: true };
   }
 
   async function handleCollect() {
