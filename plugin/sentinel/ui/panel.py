@@ -1040,30 +1040,26 @@ class YSPanel(gui.GeDialog):
             safe_print(f"Error applying shot name: {e}")
 
     def _apply_preset(self, doc, preset_name):
-        """Apply preset - accepts pre_render, pre-render, Pre-Render, etc."""
+        """Apply preset - accepts pre_render, pre-render, Pre-Render, etc.
+
+        Thin wrapper over ``scene_tools._apply_preset_core`` (Fase 6.2 Task
+        1 extraction) — the core finds/activates the matching render data;
+        this method still owns the dialog's own UI state (``_dirty``,
+        ``_active_preset``, button caption) and log line.
+        """
         if not doc:
             return
 
         try:
-            # Normalize the target preset name
             normalized_target = normalize_preset_name(preset_name)
-            rd = doc.GetFirstRenderData()
-
-            while rd:
-                # Normalize the render data name for comparison
-                normalized_rd = normalize_preset_name(rd.GetName() or "")
-                if normalized_rd == normalized_target:
-                    doc.SetActiveRenderData(rd)
-                    check_cache.clear()  # Clear cache to update compliance check immediately
-                    c4d.EventAdd()
-                    # Mark dirty so a fast switch to QC recomputes preset
-                    # compliance without waiting for the async EVMSG_CHANGE.
-                    self._dirty = True
-                    self._active_preset = normalized_target
-                    self._update_preset_buttons()
-                    safe_print(f"Switched to render preset: {rd.GetName()} (normalized: {normalized_target})")
-                    break
-                rd = rd.GetNext()
+            rd = scene_tools._apply_preset_core(doc, preset_name)
+            if rd is not None:
+                # Mark dirty so a fast switch to QC recomputes preset
+                # compliance without waiting for the async EVMSG_CHANGE.
+                self._dirty = True
+                self._active_preset = normalized_target
+                self._update_preset_buttons()
+                safe_print(f"Switched to render preset: {rd.GetName()} (normalized: {normalized_target})")
         except Exception as e:
             safe_print(f"Error applying render preset: {e}")
 

@@ -40,8 +40,75 @@ except ImportError:
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 
 
+def _toggle_light_groups_core(doc):
+    """Dialog-free core of the Light Groups on Beauty toggle — extracted
+    from ``_toggle_light_groups`` (Fase 6.2 Task 2) so a non-interactive
+    caller (``panel_render_ops.py``'s ``aov_tier`` op, ``tier="light_groups"``)
+    can flip the flag without the native ``QuestionDialog``/diagnostic
+    ``MessageDialog`` chain. Never asks for confirmation itself — the op
+    layer owns the confirm-gate, same contract as ``_force_render_settings_core``.
+
+    Returns a status dict, one of:
+      ``{"status": "redshift_unavailable"}``
+      ``{"status": "no_videopost"}``
+      ``{"status": "no_lights"}``
+      ``{"status": "no_groups_assigned", "ungrouped": [...]}``
+      ``{"status": "no_beauty_aov"}``
+      ``{"status": "activated"|"deactivated", "groups": [...]}``
+    Never raises.
+    """
+    if not REDSHIFT_AVAILABLE:
+        return {"status": "redshift_unavailable"}
+
+    vprs = _get_rs_videopost(doc)
+    if not vprs:
+        return {"status": "no_videopost"}
+
+    groups, ungrouped = _scan_light_groups(doc)
+    lg_active = _is_lg_active_on_beauty(doc)
+
+    if not groups and not ungrouped:
+        return {"status": "no_lights"}
+
+    if not groups:
+        return {"status": "no_groups_assigned", "ungrouped": ungrouped}
+
+    try:
+        aovs = redshift.RendererGetAOVs(vprs)
+        found = False
+        for aov in aovs:
+            try:
+                if aov.GetParameter(c4d.REDSHIFT_AOV_NAME) == "Beauty":
+                    new_state = not lg_active
+                    aov.SetParameter(c4d.REDSHIFT_AOV_LIGHTGROUP_ALL, new_state)
+                    found = True
+                    break
+            except Exception:
+                pass
+
+        if not found:
+            return {"status": "no_beauty_aov"}
+
+        redshift.RendererSetAOVs(vprs, aovs)
+        check_cache.clear()
+        c4d.EventAdd()
+        if not lg_active:
+            safe_print(f"Light Groups activated ({len(groups)} groups)")
+            return {"status": "activated", "groups": sorted(groups.keys())}
+        safe_print("Light Groups deactivated")
+        return {"status": "deactivated", "groups": sorted(groups.keys())}
+
+    except Exception as e:
+        safe_print(f"Error toggling light groups: {e}")
+        return {"status": "error", "error": str(e)}
+
+
 def _toggle_light_groups(doc):
-    """Toggle Light Groups on Beauty AOV with diagnostic"""
+    """Toggle Light Groups on Beauty AOV with diagnostic. Thin dialog
+    wrapper over ``_toggle_light_groups_core`` (Fase 6.2 Task 2) — asks the
+    confirm question BEFORE toggling (the core has no side effects until
+    called), so the diagnostic message + question are built from the same
+    pre-toggle scan, then only calls the core once the artist confirms."""
     if not REDSHIFT_AVAILABLE:
         c4d.gui.MessageDialog("Redshift module not available.")
         return
@@ -81,38 +148,21 @@ def _toggle_light_groups(doc):
     if not c4d.gui.QuestionDialog(msg):
         return
 
-    # Toggle on Beauty AOV
-    try:
-        aovs = redshift.RendererGetAOVs(vprs)
-        found = False
-        for aov in aovs:
-            try:
-                if aov.GetParameter(c4d.REDSHIFT_AOV_NAME) == "Beauty":
-                    new_state = not lg_active
-                    aov.SetParameter(c4d.REDSHIFT_AOV_LIGHTGROUP_ALL, new_state)
-                    found = True
-                    break
-            except Exception:
-                pass
+    result = _toggle_light_groups_core(doc)
+    status = result.get("status")
 
-        if found:
-            redshift.RendererSetAOVs(vprs, aovs)
-            check_cache.clear()
-            c4d.EventAdd()
-            if not lg_active:
-                safe_print(f"Light Groups activated ({len(groups)} groups)")
-                c4d.gui.MessageDialog(f"Light Groups ACTIVATED on Beauty\n\n"
-                                     f"{len(groups)} group(s): {', '.join(sorted(groups.keys()))}\n"
-                                     f"RS will generate Beauty_[GroupName] sub-AOVs.")
-            else:
-                safe_print("Light Groups deactivated")
-                c4d.gui.MessageDialog("Light Groups DEACTIVATED on Beauty")
-        else:
-            c4d.gui.MessageDialog("Beauty AOV not found.\n\nRun Essentials or Production first.")
-
-    except Exception as e:
-        safe_print(f"Error toggling light groups: {e}")
-        c4d.gui.MessageDialog(f"Error: {e}")
+    if status == "activated":
+        c4d.gui.MessageDialog(f"Light Groups ACTIVATED on Beauty\n\n"
+                             f"{len(result['groups'])} group(s): {', '.join(result['groups'])}\n"
+                             f"RS will generate Beauty_[GroupName] sub-AOVs.")
+    elif status == "deactivated":
+        c4d.gui.MessageDialog("Light Groups DEACTIVATED on Beauty")
+    elif status == "no_beauty_aov":
+        c4d.gui.MessageDialog("Beauty AOV not found.\n\nRun Essentials or Production first.")
+    elif status == "error":
+        c4d.gui.MessageDialog(f"Error: {result.get('error')}")
+    # redshift_unavailable/no_videopost/no_lights/no_groups_assigned can't
+    # happen here — already handled above using the same pre-toggle scan.
 
 
 def _force_aov_tier(doc, tier_list, tier_name):
@@ -339,25 +389,58 @@ def _get_template_path():
     return os.path.join(_ROOT, "c4d", "new.c4d")
 
 
-def _force_render_settings(doc, update_ui=None):
-    """Reset all 4 render presets from template file"""
+def _apply_preset_core(doc, preset_name):
+    """Dialog-free core of preset switching — extracted from ``ui/panel.py``
+    ``_apply_preset`` (Fase 6.2 Task 1) so a non-``GeDialog`` caller
+    (``panel_render_ops.py``) can apply a preset without touching
+    ``self._active_preset``/UI widgets. Finds the render data whose
+    normalized name matches ``preset_name`` and makes it active. Returns the
+    matched ``RenderData`` object, or ``None`` if ``doc`` is falsy or no
+    render data with that normalized name exists. The native
+    ``ui/panel.py`` ``_apply_preset`` calls this, then owns its own
+    button/caption/``_active_preset`` updates and log line.
+    """
     if not doc:
-        return
+        return None
+    normalized_target = normalize_preset_name(preset_name)
+    rd = doc.GetFirstRenderData()
+    while rd:
+        normalized_rd = normalize_preset_name(rd.GetName() or "")
+        if normalized_rd == normalized_target:
+            doc.SetActiveRenderData(rd)
+            check_cache.clear()  # Clear cache to update compliance check immediately
+            c4d.EventAdd()
+            return rd
+        rd = rd.GetNext()
+    return None
+
+
+def _force_render_settings_core(doc, update_ui=None):
+    """Dialog-free core of the "Reset All" flow — extracted from
+    ``_force_render_settings`` (Fase 6.2 Task 1) so a non-interactive
+    caller (``panel_render_ops.py``'s confirm-gated op) can run the reset
+    without the native ``QuestionDialog``/summary ``MessageDialog``.
+    Clones the 4 standard presets from the bundled template and replaces
+    the doc's render data entries with them.
+
+    Returns ``{"ok": True, "count": N, "active_name": str, "resolution":
+    "WxH"}`` on success, or ``{"ok": False, "error": <message>}`` — never
+    shows a dialog, never raises. ``_force_render_settings`` below still
+    shows both the confirm question and the result dialog, calling this
+    core in between (byte-equivalent native behavior).
+    """
+    if not doc:
+        return {"ok": False, "error": "no_document"}
 
     template_path = _get_template_path()
     if not os.path.exists(template_path):
-        c4d.gui.MessageDialog(f"Template file not found!\n\nExpected at:\n{template_path}")
-        return
-
-    if not c4d.gui.QuestionDialog("Reset ALL render presets from template?\n\nThis replaces existing presets with standard settings."):
-        return
+        return {"ok": False, "error": f"Template file not found!\n\nExpected at:\n{template_path}"}
 
     template_doc = None
     try:
         template_doc = c4d.documents.LoadDocument(template_path, c4d.SCENEFILTER_NONE)
         if not template_doc:
-            c4d.gui.MessageDialog("Failed to load template file")
-            return
+            return {"ok": False, "error": "Failed to load template file"}
 
         # Clone all presets from template
         standard_presets = ["previz", "pre_render", "render", "stills"]
@@ -375,8 +458,7 @@ def _force_render_settings(doc, update_ui=None):
         template_doc = None
 
         if not cloned:
-            c4d.gui.MessageDialog("No standard presets found in template")
-            return
+            return {"ok": False, "error": "No standard presets found in template"}
 
         # Remove existing presets
         rd = doc.GetFirstRenderData()
@@ -396,16 +478,92 @@ def _force_render_settings(doc, update_ui=None):
         c4d.EventAdd()
 
         safe_print(f"Reset {len(cloned)} presets from template")
-        c4d.gui.MessageDialog(f"Reset {len(cloned)} render presets from template\n\n"
-                             f"Active: {cloned[0].GetName()}\n"
-                             f"Resolution: {int(cloned[0][c4d.RDATA_XRES])}x{int(cloned[0][c4d.RDATA_YRES])}")
+        return {
+            "ok": True,
+            "count": len(cloned),
+            "active_name": cloned[0].GetName(),
+            "resolution": "%dx%d" % (int(cloned[0][c4d.RDATA_XRES]), int(cloned[0][c4d.RDATA_YRES])),
+        }
 
     except Exception as e:
         safe_print(f"Error resetting presets: {e}")
-        c4d.gui.MessageDialog(f"Error: {e}")
+        return {"ok": False, "error": str(e)}
     finally:
         if template_doc:
             c4d.documents.KillDocument(template_doc)
+
+
+def _force_render_settings(doc, update_ui=None):
+    """Reset all 4 render presets from template file"""
+    if not doc:
+        return
+
+    template_path = _get_template_path()
+    if not os.path.exists(template_path):
+        c4d.gui.MessageDialog(f"Template file not found!\n\nExpected at:\n{template_path}")
+        return
+
+    if not c4d.gui.QuestionDialog("Reset ALL render presets from template?\n\nThis replaces existing presets with standard settings."):
+        return
+
+    result = _force_render_settings_core(doc, update_ui=update_ui)
+    if not result["ok"]:
+        c4d.gui.MessageDialog(result["error"])
+        return
+
+    c4d.gui.MessageDialog(f"Reset {result['count']} render presets from template\n\n"
+                         f"Active: {result['active_name']}\n"
+                         f"Resolution: {result['resolution']}")
+
+
+def _toggle_aspect_core(doc, update_ui=None):
+    """Dialog-free core of the Force 9:16 / 16:9 toggle — extracted from
+    ``_toggle_aspect`` (Fase 6.2 Task 1) so a non-interactive caller
+    (``panel_render_ops.py``) can run it without the native
+    ``MessageDialog`` on the "no active render preset" branch.
+
+    Returns ``{"ok": True, "resolution": "WxH", "label": "16:9"|"9:16"}``
+    or ``{"ok": False, "error": <message>}``. Never shows a dialog.
+    """
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+
+    rd = doc.GetActiveRenderData()
+    if not rd:
+        return {"ok": False, "error": "No active render preset"}
+
+    old_w = int(rd[c4d.RDATA_XRES])
+    old_h = int(rd[c4d.RDATA_YRES])
+    is_vertical = old_h > old_w
+
+    if is_vertical:
+        # Currently vertical → switch to horizontal 16:9
+        if old_h >= 3840:
+            w, h = 3840, 2160
+        elif old_h >= 1920:
+            w, h = 1920, 1080
+        else:
+            w, h = 1280, 720
+    else:
+        # Currently horizontal → switch to vertical 9:16
+        if old_w >= 3840:
+            w, h = 2160, 3840
+        elif old_w >= 1920:
+            w, h = 1080, 1920
+        else:
+            w, h = 720, 1280
+
+    rd[c4d.RDATA_XRES] = w
+    rd[c4d.RDATA_YRES] = h
+
+    check_cache.clear()
+    c4d.EventAdd()
+    if update_ui is not None:
+        update_ui()
+
+    label = "16:9" if w > h else "9:16"
+    safe_print(f"Aspect: {old_w}x{old_h} → {w}x{h} ({label})")
+    return {"ok": True, "resolution": "%dx%d" % (w, h), "label": label}
 
 
 def _toggle_aspect(doc, update_ui=None):
@@ -414,60 +572,46 @@ def _toggle_aspect(doc, update_ui=None):
         return
 
     try:
-        rd = doc.GetActiveRenderData()
-        if not rd:
-            c4d.gui.MessageDialog("No active render preset")
-            return
-
-        old_w = int(rd[c4d.RDATA_XRES])
-        old_h = int(rd[c4d.RDATA_YRES])
-        is_vertical = old_h > old_w
-
-        if is_vertical:
-            # Currently vertical → switch to horizontal 16:9
-            if old_h >= 3840:
-                w, h = 3840, 2160
-            elif old_h >= 1920:
-                w, h = 1920, 1080
-            else:
-                w, h = 1280, 720
-        else:
-            # Currently horizontal → switch to vertical 9:16
-            if old_w >= 3840:
-                w, h = 2160, 3840
-            elif old_w >= 1920:
-                w, h = 1080, 1920
-            else:
-                w, h = 720, 1280
-
-        rd[c4d.RDATA_XRES] = w
-        rd[c4d.RDATA_YRES] = h
-
-        check_cache.clear()
-        c4d.EventAdd()
-        if update_ui is not None:
-            update_ui()
-
-        label = "16:9" if w > h else "9:16"
-        safe_print(f"Aspect: {old_w}x{old_h} → {w}x{h} ({label})")
-
+        result = _toggle_aspect_core(doc, update_ui=update_ui)
+        if not result["ok"]:
+            c4d.gui.MessageDialog(result["error"])
     except Exception as e:
         safe_print(f"Error toggling aspect: {e}")
 
 
-def _add_sentinel_frame_tag(doc):
-    """Add a Sentinel Frame tag to the active/selected camera, or select the
-    existing one. The tag is the recommended per-camera multi-format entry
-    point (live guides + one-click, rename-safe WYSIWYG-crop delivery Takes).
+def _add_sentinel_frame_tag_core(doc):
+    """Dialog-free core of the Sentinel Frame tag add/select flow —
+    extracted from ``_add_sentinel_frame_tag`` (Fase 6.2 Task 1 fix, CRITICAL:
+    a non-interactive caller running this inside the ``MainThreadQueue``
+    drain must never hit a native ``MessageDialog`` — any of the 3 dialog
+    branches the old inline version had would otherwise freeze ALL of C4D
+    until someone manually dismissed a dialog nobody could see, since the
+    op runs headless over HTTP).
+
+    Resolves a camera (active selection if it's a camera, else the
+    viewport's scene camera), then either selects an existing Sentinel
+    Frame tag or creates a new one. Returns a status dict, never raises,
+    never shows a dialog:
+
+      {"status": "no_document"}
+      {"status": "import_failure", "error": str}
+      {"status": "no_camera"}
+      {"status": "already_tagged", "tag": <BaseTag>, "camera": <BaseObject>}
+      {"status": "create_failed", "camera": <BaseObject>}
+      {"status": "ok", "tag": <BaseTag>, "camera": <BaseObject>}
+
+    ``_add_sentinel_frame_tag`` below calls this then shows its own
+    dialogs based on the returned status — same text/order as before this
+    extraction (byte-equivalent native behavior).
     """
     if doc is None:
-        return
+        return {"status": "no_document"}
+
     try:
         from sentinel.ui.frame_tag import (
             SENTINEL_FRAME_TAG_PLUGIN_ID, is_valid_camera_host)
     except Exception as e:
-        c4d.gui.MessageDialog(f"Sentinel Frame tag unavailable: {e}")
-        return
+        return {"status": "import_failure", "error": str(e)}
 
     # Resolve a camera: the active selected object if it's a camera, else
     # the camera the viewport is looking through.
@@ -484,10 +628,7 @@ def _add_sentinel_frame_tag(doc):
         except Exception:
             cam = None
     if cam is None:
-        c4d.gui.MessageDialog(
-            "Select a camera (standard or Redshift), or look through one, "
-            "then click 'Add Sentinel Frame to camera'.")
-        return
+        return {"status": "no_camera"}
 
     existing = None
     for t in cam.GetTags():
@@ -500,10 +641,7 @@ def _add_sentinel_frame_tag(doc):
             c4d.EventAdd()
         except Exception:
             pass
-        c4d.gui.MessageDialog(
-            f"'{cam.GetName()}' already has a Sentinel Frame tag — "
-            "selected it in the Attribute Manager.")
-        return
+        return {"status": "already_tagged", "tag": existing, "camera": cam}
 
     tag = None
     doc.StartUndo()
@@ -520,9 +658,42 @@ def _add_sentinel_frame_tag(doc):
         c4d.EventAdd()
 
     if tag is None:
+        return {"status": "create_failed", "camera": cam}
+
+    safe_print(f"Sentinel Frame tag added to '{cam.GetName()}'")
+    return {"status": "ok", "tag": tag, "camera": cam}
+
+
+def _add_sentinel_frame_tag(doc):
+    """Add a Sentinel Frame tag to the active/selected camera, or select the
+    existing one. The tag is the recommended per-camera multi-format entry
+    point (live guides + one-click, rename-safe WYSIWYG-crop delivery Takes).
+
+    Thin dialog wrapper over ``_add_sentinel_frame_tag_core`` (Fase 6.2
+    Task 1 fix) — same dialog text/order as before the extraction.
+    """
+    result = _add_sentinel_frame_tag_core(doc)
+    status = result.get("status")
+
+    if status == "no_document":
+        return
+    if status == "import_failure":
+        c4d.gui.MessageDialog(f"Sentinel Frame tag unavailable: {result['error']}")
+        return
+    if status == "no_camera":
+        c4d.gui.MessageDialog(
+            "Select a camera (standard or Redshift), or look through one, "
+            "then click 'Add Sentinel Frame to camera'.")
+        return
+    if status == "already_tagged":
+        c4d.gui.MessageDialog(
+            f"'{result['camera'].GetName()}' already has a Sentinel Frame tag — "
+            "selected it in the Attribute Manager.")
+        return
+    if status == "create_failed":
         c4d.gui.MessageDialog("Could not create the Sentinel Frame tag.")
         return
-    safe_print(f"Sentinel Frame tag added to '{cam.GetName()}'")
+    # status == "ok" — safe_print already logged inside the core.
 
 
 def _hierarchy_to_layers(doc):

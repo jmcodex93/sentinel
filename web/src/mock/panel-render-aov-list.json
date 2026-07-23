@@ -1,0 +1,21 @@
+{
+  "aovs": [
+    { "name": "Beauty", "type": 41 },
+    { "name": "Diffuse Lighting", "type": 5 },
+    { "name": "Diffuse Filter", "type": 18 },
+    { "name": "Reflections", "type": 6 },
+    { "name": "Refractions", "type": 8 },
+    { "name": "GI", "type": 4 },
+    { "name": "Specular Lighting", "type": 7 },
+    { "name": "Shadows", "type": 20 },
+    { "name": "Depth", "type": 1 },
+    { "name": "Cryptomatte", "type": 24 },
+    { "name": "AOV #999", "type": 999 }
+  ],
+  "target": "Nuke",
+  "light_groups": true,
+  "tier_coverage": {
+    "essentials_missing": [],
+    "production_missing": ["Motion Vectors"]
+  }
+}

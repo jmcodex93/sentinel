@@ -195,6 +195,35 @@ def _resolve_aov_type(name):
             return val
     return None
 
+
+def _build_aov_type_name_map():
+    """Reverse ``_AOV_DEFS`` into ``type_int -> friendly name`` — the inverse
+    of ``_resolve_aov_type``. Built fresh per call (cheap: iterates the ~28
+    entries of ``_AOV_DEFS``, not the scene's live AOV list); first def to
+    resolve a given type wins, so aliases like Depth/Z Fog sharing a type
+    constant keep the first-declared friendly name."""
+    mapping = {}
+    for name in _AOV_DEFS:
+        val = _resolve_aov_type(name)
+        if val is not None and val not in mapping:
+            mapping[val] = name
+    return mapping
+
+
+def aov_type_name(type_int, type_map=None):
+    """Resolve a live RS AOV type int (``REDSHIFT_AOV_TYPE``) back to its
+    friendly Sentinel name. ``REDSHIFT_AOV_NAME`` is empty by default for
+    every standard AOV the artist hasn't manually renamed, so callers that
+    need a display label (e.g. the panel's Show AOVs list) must fall back to
+    this instead of showing the raw type enum int. Pass a prebuilt
+    ``type_map`` (``_build_aov_type_name_map()``) when resolving a whole
+    list to avoid rebuilding it per-entry. Returns ``None`` for a type not
+    in ``_AOV_DEFS`` (a custom AOV) or unresolvable in this c4d build."""
+    if type_map is None:
+        type_map = _build_aov_type_name_map()
+    return type_map.get(type_int)
+
+
 def get_rs_aovs(doc):
     """Get list of current RS AOVs"""
     vprs = _get_rs_videopost(doc)
