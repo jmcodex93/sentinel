@@ -145,13 +145,15 @@ def _op_panel_deliver(payload):
 
 def _op_panel_deliver_open_version(payload):
     """Open a version .c4d via the dialog-free core. Confirm/unsaved logic
-    lives in the SPA; this op runs the load once the client has confirmed.
-    ``force`` is accepted for parity with the native flow (both open in a
-    new window regardless) and is a no-op guard passthrough."""
+    lives in the SPA: a first call without ``force`` surfaces
+    ``unsaved_changes`` for the client to confirm inline, then the SPA
+    re-posts with ``force: true`` to override the core's unsaved-changes
+    guard and force the load through."""
     from sentinel.ui import flows
     doc = c4d.documents.GetActiveDocument()
     path = (payload or {}).get("path") or ""
-    result = flows.open_version_core(path)
+    force = bool((payload or {}).get("force"))
+    result = flows.open_version_core(path, force=force)
     if result.get("ok"):
         result["stamp"] = _stamp_for(doc) if doc else None
     return result

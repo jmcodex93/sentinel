@@ -76,3 +76,104 @@ class TestDeliveryManifestAvailable:
     def test_no_path_false(self, sentinel_module):
         from sentinel.ui import panel_deliver_ops
         assert panel_deliver_ops.delivery_manifest_available(_FakeDoc(path="")) is False
+
+
+class TestOpenVersion:
+    def _forbid_dialog(self, monkeypatch, sentinel_module):
+        from sentinel.ui import flows
+
+        def _boom(*a, **k):
+            raise AssertionError("no dialog allowed in open_version_core")
+
+        monkeypatch.setattr(flows.c4d.gui, "MessageDialog", _boom)
+        monkeypatch.setattr(flows.c4d.gui, "QuestionDialog", _boom)
+
+    def test_bad_path(self, sentinel_module, monkeypatch):
+        from sentinel.ui import flows
+        self._forbid_dialog(monkeypatch, sentinel_module)
+        assert flows.open_version_core("   ") == {"ok": False, "error": "bad_path"}
+
+    def test_file_not_found(self, sentinel_module, monkeypatch):
+        from sentinel.ui import flows
+        self._forbid_dialog(monkeypatch, sentinel_module)
+        assert flows.open_version_core("/no/such/shot_v001.c4d") == {
+            "ok": False, "error": "file_not_found"}
+
+    def test_already_active(self, sentinel_module, monkeypatch, tmp_path):
+        from sentinel.ui import flows
+        self._forbid_dialog(monkeypatch, sentinel_module)
+        f = tmp_path / "shot_v002.c4d"
+        f.write_text("x")
+        doc = _FakeDoc(path=str(tmp_path), name="shot_v002.c4d")
+        monkeypatch.setattr(flows.c4d.documents, "GetActiveDocument", lambda: doc)
+        assert flows.open_version_core(str(f)) == {"ok": False, "error": "already_active"}
+
+    def test_unsaved_changes_blocks_without_force(self, sentinel_module, monkeypatch, tmp_path):
+        from sentinel.ui import flows
+        self._forbid_dialog(monkeypatch, sentinel_module)
+        f = tmp_path / "shot_v003.c4d"
+        f.write_text("x")
+        doc = _FakeDoc(path=str(tmp_path), name="other.c4d", changed=True)
+        monkeypatch.setattr(flows.c4d.documents, "GetActiveDocument", lambda: doc)
+        assert flows.open_version_core(str(f)) == {"ok": False, "error": "unsaved_changes"}
+
+    def test_force_opens_despite_unsaved(self, sentinel_module, monkeypatch, tmp_path):
+        from sentinel.ui import flows
+        self._forbid_dialog(monkeypatch, sentinel_module)
+        f = tmp_path / "shot_v004.c4d"
+        f.write_text("x")
+        doc = _FakeDoc(path=str(tmp_path), name="other.c4d", changed=True)
+        monkeypatch.setattr(flows.c4d.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(flows.c4d.documents, "LoadFile", lambda p: True)
+        assert flows.open_version_core(str(f), force=True) == {"ok": True, "opened": True}
+
+    def test_load_failed(self, sentinel_module, monkeypatch, tmp_path):
+        from sentinel.ui import flows
+        self._forbid_dialog(monkeypatch, sentinel_module)
+        f = tmp_path / "shot_v005.c4d"
+        f.write_text("x")
+        doc = _FakeDoc(path=str(tmp_path), name="other.c4d", changed=False)
+        monkeypatch.setattr(flows.c4d.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(flows.c4d.documents, "LoadFile", lambda p: False)
+        assert flows.open_version_core(str(f)) == {"ok": False, "error": "load_failed"}
+
+    def test_op_maps_core_result(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_deliver_ops
+        monkeypatch.setattr(panel_deliver_ops.c4d.documents,
+                            "GetActiveDocument", lambda: None)
+        # path missing → bad_path from the core, surfaced by the op
+        out = panel_deliver_ops._op_panel_deliver_open_version({"path": ""})
+        assert out == {"ok": False, "error": "bad_path"}
+
+    def test_op_forwards_force_true(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_deliver_ops
+        from sentinel.ui import flows
+        monkeypatch.setattr(panel_deliver_ops.c4d.documents,
+                            "GetActiveDocument", lambda: None)
+        captured = {}
+
+        def _fake_core(path, force=False):
+            captured["path"] = path
+            captured["force"] = force
+            return {"ok": False, "error": "unsaved_changes"}
+
+        monkeypatch.setattr(flows, "open_version_core", _fake_core)
+        panel_deliver_ops._op_panel_deliver_open_version(
+            {"path": "/some/shot_v002.c4d", "force": True})
+        assert captured == {"path": "/some/shot_v002.c4d", "force": True}
+
+    def test_op_forwards_force_false_when_absent(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_deliver_ops
+        from sentinel.ui import flows
+        monkeypatch.setattr(panel_deliver_ops.c4d.documents,
+                            "GetActiveDocument", lambda: None)
+        captured = {}
+
+        def _fake_core(path, force=False):
+            captured["path"] = path
+            captured["force"] = force
+            return {"ok": False, "error": "unsaved_changes"}
+
+        monkeypatch.setattr(flows, "open_version_core", _fake_core)
+        panel_deliver_ops._op_panel_deliver_open_version({"path": "/some/shot_v002.c4d"})
+        assert captured == {"path": "/some/shot_v002.c4d", "force": False}

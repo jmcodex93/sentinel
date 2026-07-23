@@ -1209,6 +1209,46 @@ def snapshot_auto_convert(doc, artist_name, snap_path):
         return False, "conversion error"
 
 
+def open_version_core(path, force=False):
+    """Dialog-free core for opening a version .c4d from Recent Versions.
+
+    Returns a status dict; NEVER shows a dialog (a MessageDialog inside the
+    panel's Timer drain freezes C4D — v1.21.0 pattern). Guards mirror the
+    native ``_on_history_row_click`` in panel.py: bad/blank path, missing
+    file, re-opening the active doc, and unsaved changes in the current
+    doc (surfaced as ``unsaved_changes`` so the SPA can confirm-and-force
+    rather than block behind a modal)."""
+    path = (path or "").strip()
+    if not path:
+        return {"ok": False, "error": "bad_path"}
+    if not os.path.exists(path):
+        return {"ok": False, "error": "file_not_found"}
+
+    current = c4d.documents.GetActiveDocument()
+    if current:
+        try:
+            cur_full = os.path.join(current.GetDocumentPath() or "",
+                                    current.GetDocumentName() or "")
+            if os.path.normcase(os.path.normpath(cur_full)) == \
+               os.path.normcase(os.path.normpath(path)):
+                return {"ok": False, "error": "already_active"}
+        except Exception:
+            pass
+        try:
+            if current.GetChanged() and not force:
+                return {"ok": False, "error": "unsaved_changes"}
+        except Exception:
+            pass
+
+    try:
+        ok = c4d.documents.LoadFile(path)
+    except Exception as exc:
+        return {"ok": False, "error": "load_error", "detail": str(exc)}
+    if ok:
+        return {"ok": True, "opened": True}
+    return {"ok": False, "error": "load_failed"}
+
+
 def snapshot_open_folder_core(doc, artist_name):
     """Dialog-free core of ``snapshot_open_folder`` (Fase 6.2 Task 2) — the
     cross-platform ``open_in_explorer`` call itself is a plain OS-level
