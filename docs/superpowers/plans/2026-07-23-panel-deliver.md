@@ -140,8 +140,8 @@ class TestPanelDeliverRead:
         monkeypatch.setattr(panel_deliver_ops, "_panel_version_block", _boom)
         result = panel_deliver_ops._op_panel_deliver({})
         assert result["version"] is None          # guarded → None
-        assert result["notes"] is not None or result["notes"] is None  # notes still built
-        assert "deliver" in result
+        assert result["notes"] is not None        # unaffected block still built
+        assert result["deliver"] is not None       # unaffected block still built
 
 
 class TestDeliveryManifestAvailable:
