@@ -1137,11 +1137,22 @@ export async function fetchPanelDeliver(): Promise<PanelDeliverState> {
   } catch {
     return EMPTY_PANEL_DELIVER;
   }
+  let data: unknown;
   try {
-    return (await response.json()) as PanelDeliverState;
+    data = await response.json();
   } catch {
     return EMPTY_PANEL_DELIVER;
   }
+  // The Python dispatch layer can return an `{error, traceback}` envelope at
+  // HTTP 200 (op raised) or `{error}` at HTTP 500 (submit timeout during a
+  // long Collect job). Either way `data.version`/`data.notes`/`data.deliver`
+  // would be `undefined` (not `null`), which the null-block status-line
+  // helpers don't guard against — degrade to the all-null state instead of
+  // letting `undefined` reach `block.last` and crash (React #31).
+  if (!response.ok || (data && typeof data === "object" && "error" in data && (data as { error?: unknown }).error)) {
+    return EMPTY_PANEL_DELIVER;
+  }
+  return data as PanelDeliverState;
 }
 
 /** `POST /api/panel/deliver/open_version` — open a version .c4d via the

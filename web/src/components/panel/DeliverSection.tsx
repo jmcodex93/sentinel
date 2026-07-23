@@ -96,7 +96,7 @@ export function DeliverSection({
    * whether the SPA needs to re-confirm with `force: true` — mirrors
    * QcSection's `onAccept` Promise-returning contract, since the confirm
    * bar's copy/state depends on the result, not just success/failure. */
-  onOpenVersion: (path: string, force: boolean) => Promise<{ ok: boolean; error?: string }>;
+  onOpenVersion: (path: string, force: boolean, filename: string) => Promise<{ ok: boolean; error?: string }>;
   onCollect: () => void;
   onOpenSupervisor: () => void;
   onOpenDeliverySummary: () => void;
@@ -132,7 +132,7 @@ export function DeliverSection({
 
   async function handleConfirmOpen() {
     if (!openConfirm) return;
-    const result = await onOpenVersion(openConfirm.entry.path, openConfirm.forced);
+    const result = await onOpenVersion(openConfirm.entry.path, openConfirm.forced, openConfirm.entry.filename);
     // `unsaved_changes` on the FIRST attempt re-prompts with the forced
     // warning copy instead of clearing — every other outcome (ok, or any
     // other error — already_active/file_not_found/load_failed/bad_path,

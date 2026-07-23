@@ -137,6 +137,21 @@ class TestOpenVersion:
         monkeypatch.setattr(flows.c4d.documents, "LoadFile", lambda p: False)
         assert flows.open_version_core(str(f)) == {"ok": False, "error": "load_failed"}
 
+    def test_load_error(self, sentinel_module, monkeypatch, tmp_path):
+        from sentinel.ui import flows
+        self._forbid_dialog(monkeypatch, sentinel_module)
+        f = tmp_path / "shot_v006.c4d"
+        f.write_text("x")
+        doc = _FakeDoc(path=str(tmp_path), name="other.c4d", changed=False)
+        monkeypatch.setattr(flows.c4d.documents, "GetActiveDocument", lambda: doc)
+
+        def _boom(p):
+            raise RuntimeError("disk read error")
+
+        monkeypatch.setattr(flows.c4d.documents, "LoadFile", _boom)
+        assert flows.open_version_core(str(f)) == {
+            "ok": False, "error": "load_error", "detail": "disk read error"}
+
     def test_op_maps_core_result(self, sentinel_module, monkeypatch):
         from sentinel.ui import panel_deliver_ops
         monkeypatch.setattr(panel_deliver_ops.c4d.documents,

@@ -495,14 +495,37 @@ export function PanelPage() {
    * (re-prompt with `force: true`) apart from every other outcome (toasted
    * here and the confirm bar closes), same Promise-returning contract as
    * `handleQcAccept`. */
-  async function handleOpenVersion(path: string, force: boolean): Promise<{ ok: boolean; error?: string }> {
+  async function handleOpenVersion(
+    path: string,
+    force: boolean,
+    filename: string,
+  ): Promise<{ ok: boolean; error?: string }> {
     setBusyDeliverId("open_version");
     const response = await postPanelOpenVersion(path, force);
     setBusyDeliverId(null);
 
     if (!response.ok) {
       if (response.error === "unsaved_changes") return { ok: false, error: response.error };
-      toast({ message: response.detail || "Couldn't open that version.", variant: "warn" });
+      // Token → message parity with the native `_on_history_row_click`
+      // (panel.py) — each guard in `open_version_core` gets its own copy
+      // instead of one generic fallback for every error.
+      switch (response.error) {
+        case "already_active":
+          toast({ message: `Already viewing ${filename}.`, variant: "info" });
+          break;
+        case "file_not_found":
+          toast({ message: `File not found: ${filename}`, variant: "warn" });
+          break;
+        case "load_failed":
+        case "load_error":
+          toast({ message: `Cinema 4D could not open ${filename}.`, variant: "warn" });
+          break;
+        case "bad_path":
+          toast({ message: "No file path for that version.", variant: "warn" });
+          break;
+        default:
+          toast({ message: response.detail || "Couldn't open that version.", variant: "warn" });
+      }
       return { ok: false, error: response.error };
     }
     if (response.stamp) stampRef.current = response.stamp;
