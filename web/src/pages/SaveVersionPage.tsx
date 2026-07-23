@@ -1,6 +1,7 @@
 import { CheckCircle2 } from "lucide-react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useState } from "react";
+import { Button } from "../components/form/Button";
 import { FieldRow } from "../components/form/FieldRow";
 import { FormPageShell } from "../components/form/FormPageShell";
 import { SegmentedControl } from "../components/form/SegmentedControl";
@@ -23,8 +24,18 @@ const CUSTOM = "__custom__";
  * web_ops.py `_op_form_save_version_state/_submit`'s docstrings): required
  * comment, WIP/TR/CR/FINAL/Custom status, a non-blocking inline "final in
  * comment" hint, and a last-version + QC score header strip replacing the
- * native panel's "Last version" pillbox. */
-export function SaveVersionPage() {
+ * native panel's "Last version" pillbox.
+ *
+ * `onBack`/`onDone` are optional — absent when hosted one-per-window by
+ * `FormDialog` (unchanged behavior), present when absorbed as an in-panel
+ * sub-view by the Deliver section (Fase 6.3 Task 5): `onBack` renders a
+ * "← Deliver" control, `onDone` fires after a successful save so the panel
+ * can navigate back without the artist ever seeing this page's own
+ * "Version Saved" success screen. */
+export function SaveVersionPage({
+  onBack,
+  onDone,
+}: { onBack?: () => void; onDone?: () => void } = {}) {
   const { toast } = useToast();
   const [state, setState] = useState<PageState>({ kind: "loading" });
   const [comment, setComment] = useState("");
@@ -121,6 +132,7 @@ export function SaveVersionPage() {
     if (response.warning) {
       toast({ message: response.warning, variant: "warn" });
     }
+    onDone?.();
   }
 
   return (
@@ -158,6 +170,11 @@ export function SaveVersionPage() {
         />
       }
     >
+      {onBack && (
+        <Button variant="secondary" className="mb-3" onClick={onBack}>
+          ← Deliver
+        </Button>
+      )}
       <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
         <FieldRow label="Comment" htmlFor="save-version-comment" error={commentError}>
           <TextArea
