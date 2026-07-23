@@ -2,7 +2,7 @@
 """Panel SPA Render-section ops — ``panel/render`` (per-block isolated read)
 plus the mutation/action ops. Task 1: preset/frame mutations (``set_preset``,
 ``reset_all``, ``force_vertical``, ``add_frame_tag``, ``select_frame_tag``).
-Task 2: AOVs + snapshots (``aov_tier``, ``toggle_multipart``, ``aov_list``,
+Task 2: AOVs + snapshots (``aov_tier``, ``set_multipart``, ``aov_list``,
 ``toggle_watchfolder``, ``save_still``, ``open_folder``). Sibling of
 ``ui/panel_ops.py`` (same ``MainThreadQueue`` dispatch-target contract, same
 doc-guard-first / per-block-isolation conventions — see that module's
@@ -57,8 +57,10 @@ from sentinel.aovs import (
     AOV_TIER_ESSENTIALS,
     AOV_TIER_PRODUCTION,
     REDSHIFT_AVAILABLE,
+    _build_aov_type_name_map,
     _is_lg_active_on_beauty,
     _scan_light_groups,
+    aov_type_name,
     check_rs_aovs,
     force_aov_tier,
     get_aov_multipart,
@@ -422,18 +424,22 @@ def _op_panel_render_aov_tier(payload):
     return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
 
 
-def _op_panel_render_toggle_multipart(payload):
-    """``panel/render/toggle_multipart`` — flips the Multi-Part EXR flag to
-    the opposite of its current live value (``aovs.get_aov_multipart`` /
-    ``aovs.set_scene_multipart``, the same reversible scene-scoped writer
-    the Render tab's own checkbox uses). No confirm gate — reversible,
-    matches the native checkbox's own lack of a confirmation step."""
+def _op_panel_render_set_multipart(payload):
+    """``panel/render/set_multipart`` — sets the Multi-Part EXR / Direct
+    Output mode to an EXPLICIT ``enabled`` value (``aovs.set_scene_multipart``,
+    the same reversible scene-scoped writer the Render tab's own switch
+    uses). Idempotent (setting the mode it's already in is a no-op write,
+    not an error) — the SPA's segmented switch always sends the value of
+    the option clicked, never a flip of the current state, so there's no
+    read-then-flip race between two quick clicks. No confirm gate —
+    reversible, matches the native control's own lack of a confirmation
+    step."""
     doc = documents.GetActiveDocument()
     if not doc:
         return {"ok": False, "error": "no_document"}
 
-    current = get_aov_multipart(doc)
-    ok, error = set_scene_multipart(doc, not current)
+    enabled = bool((payload or {}).get("enabled"))
+    ok, error = set_scene_multipart(doc, enabled)
     if not ok:
         return {"ok": False, "error": error}
 
@@ -447,7 +453,16 @@ def _op_panel_render_aov_list(payload):
     of a ``MessageDialog`` string: ``{aovs: [{name, type}], target,
     light_groups, tier_coverage: {essentials_missing, production_missing}}``.
     ``{"error": "redshift_unavailable"}`` when the Redshift Python module
-    itself isn't importable — never a crash."""
+    itself isn't importable — never a crash.
+
+    ``aov["name"]`` is ``REDSHIFT_AOV_NAME`` — empty for every standard AOV
+    the artist never manually renamed, which used to leave the SPA showing
+    just the raw ``REDSHIFT_AOV_TYPE`` int (e.g. "(41)"). Each entry's
+    ``name`` here is resolved to a display label instead: the artist's own
+    name if set, else the friendly Sentinel name for that type
+    (``aovs.aov_type_name``), else ``"AOV #<type>"`` for a type outside
+    ``_AOV_DEFS`` (a custom AOV). ``type`` is still returned as the raw int
+    for callers that want it."""
     doc = documents.GetActiveDocument()
     if not doc:
         return {"error": "no_document"}
@@ -461,9 +476,15 @@ def _op_panel_render_aov_list(payload):
     lg_active = bool(_is_lg_active_on_beauty(doc))
     prod_only_missing = [n for n in prod.get("missing") or [] if n not in (ess.get("missing") or [])]
 
+    type_map = _build_aov_type_name_map()
+    aov_entries = []
+    for aov in (prod.get("aovs") or []):
+        aov_type = aov.get("type")
+        display = aov.get("name") or aov_type_name(aov_type, type_map) or f"AOV #{aov_type}"
+        aov_entries.append({"name": display, "type": aov_type})
+
     return {
-        "aovs": [{"name": aov.get("name"), "type": aov.get("type")}
-                 for aov in (prod.get("aovs") or [])],
+        "aovs": aov_entries,
         "target": target_name,
         "light_groups": lg_active,
         "tier_coverage": {
@@ -538,7 +559,7 @@ PANEL_RENDER_OPS = {
     "panel/render/add_frame_tag": _op_panel_render_add_frame_tag,
     "panel/render/select_frame_tag": _op_panel_render_select_frame_tag,
     "panel/render/aov_tier": _op_panel_render_aov_tier,
-    "panel/render/toggle_multipart": _op_panel_render_toggle_multipart,
+    "panel/render/set_multipart": _op_panel_render_set_multipart,
     "panel/render/aov_list": _op_panel_render_aov_list,
     "panel/render/toggle_watchfolder": _op_panel_render_toggle_watchfolder,
     "panel/render/save_still": _op_panel_render_save_still,

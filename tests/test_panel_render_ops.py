@@ -535,7 +535,7 @@ class TestPanelFrameBlockFormatCount:
 class TestPanelRenderOpsTableTask2:
     def test_task2_ops_registered(self, sentinel_module):
         from sentinel.ui import panel_render_ops
-        for op in ("panel/render/aov_tier", "panel/render/toggle_multipart",
+        for op in ("panel/render/aov_tier", "panel/render/set_multipart",
                    "panel/render/aov_list", "panel/render/toggle_watchfolder",
                    "panel/render/save_still", "panel/render/open_folder"):
             assert op in panel_render_ops.PANEL_RENDER_OPS
@@ -548,9 +548,9 @@ class TestAovTierNoDocument:
             {"tier": "essentials", "confirm": True})
         assert response == {"ok": False, "error": "no_document"}
 
-    def test_toggle_multipart_without_document(self, sentinel_module):
+    def test_set_multipart_without_document(self, sentinel_module):
         from sentinel.ui import panel_render_ops
-        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/toggle_multipart"]({})
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/set_multipart"]({"enabled": True})
         assert response == {"ok": False, "error": "no_document"}
 
     def test_aov_list_without_document(self, sentinel_module):
@@ -576,7 +576,7 @@ class TestAovTierNoDocument:
 
 class _FakeDocBase:
     """Minimal fake doc — enough for ops that don't reach real GetActiveRenderData
-    walks in this test class (aov_tier/toggle_multipart/toggle_watchfolder gate
+    walks in this test class (aov_tier/set_multipart/toggle_watchfolder gate
     tests only need a doc object that is truthy)."""
 
 
@@ -690,15 +690,14 @@ class TestAovTierConfirmGateAndValidation:
         assert response == {"ok": False, "error": "no_beauty_aov"}
 
 
-class TestToggleMultipart:
-    def test_toggles_to_opposite_of_current_state(self, sentinel_module, monkeypatch):
+class TestSetMultipart:
+    def test_sets_explicit_true(self, sentinel_module, monkeypatch):
         from sentinel.ui import panel_render_ops
 
         doc = _FakeDocBase()
         monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
         monkeypatch.setattr(panel_render_ops, "build_panel_render", lambda d: {})
         monkeypatch.setattr(panel_render_ops, "_stamp_for", lambda d: "s")
-        monkeypatch.setattr(panel_render_ops, "get_aov_multipart", lambda d: True)
 
         calls = []
 
@@ -708,7 +707,43 @@ class TestToggleMultipart:
 
         monkeypatch.setattr(panel_render_ops, "set_scene_multipart", _fake_set)
 
-        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/toggle_multipart"]({})
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/set_multipart"]({"enabled": True})
+        assert response["ok"] is True
+        assert calls == [True]
+
+    def test_sets_explicit_false(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(panel_render_ops, "build_panel_render", lambda d: {})
+        monkeypatch.setattr(panel_render_ops, "_stamp_for", lambda d: "s")
+
+        calls = []
+
+        def _fake_set(d, enabled):
+            calls.append(enabled)
+            return True, None
+
+        monkeypatch.setattr(panel_render_ops, "set_scene_multipart", _fake_set)
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/set_multipart"]({"enabled": False})
+        assert response["ok"] is True
+        assert calls == [False]
+
+    def test_missing_enabled_defaults_to_false(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(panel_render_ops, "build_panel_render", lambda d: {})
+        monkeypatch.setattr(panel_render_ops, "_stamp_for", lambda d: "s")
+
+        calls = []
+        monkeypatch.setattr(panel_render_ops, "set_scene_multipart",
+                             lambda d, enabled: (calls.append(enabled), (True, None))[1])
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/set_multipart"]({})
         assert response["ok"] is True
         assert calls == [False]
 
@@ -717,11 +752,10 @@ class TestToggleMultipart:
 
         doc = _FakeDocBase()
         monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
-        monkeypatch.setattr(panel_render_ops, "get_aov_multipart", lambda d: False)
         monkeypatch.setattr(panel_render_ops, "set_scene_multipart",
                              lambda d, enabled: (False, "Redshift VideoPost not found"))
 
-        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/toggle_multipart"]({})
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/set_multipart"]({"enabled": True})
         assert response == {"ok": False, "error": "Redshift VideoPost not found"}
 
 
@@ -765,6 +799,53 @@ class TestAovListRedshiftUnavailable:
         assert response["light_groups"] is True
         assert response["tier_coverage"]["essentials_missing"] == ["GI"]
         assert response["tier_coverage"]["production_missing"] == ["Normals"]
+
+    def test_unnamed_aov_resolves_friendly_display_name(self, sentinel_module, monkeypatch):
+        """A standard AOV the artist never manually renamed has an empty
+        REDSHIFT_AOV_NAME — the fix under test resolves that back to the
+        friendly Sentinel name via aov_type_name instead of surfacing the
+        raw type int as the primary label."""
+        from sentinel.ui import panel_render_ops
+        from sentinel.aovs import _resolve_aov_type
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(panel_render_ops, "REDSHIFT_AVAILABLE", True)
+
+        beauty_type = _resolve_aov_type("Beauty")
+
+        def _fake_check(d, tier):
+            aovs = [{"name": "", "type": beauty_type, "enabled": True}]
+            return {"available": True, "aovs": aovs, "missing": [], "tier": tier}
+
+        monkeypatch.setattr(panel_render_ops, "check_rs_aovs", _fake_check)
+        monkeypatch.setattr(panel_render_ops, "_is_lg_active_on_beauty", lambda d: False)
+        monkeypatch.setattr(panel_render_ops, "_scan_light_groups", lambda d: ({}, []))
+        monkeypatch.setattr(panel_render_ops.GlobalSettings, "get", lambda key, default=0: 0)
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_list"]({})
+        assert response["aovs"] == [{"name": "Beauty", "type": beauty_type}]
+
+    def test_unresolvable_type_falls_back_to_aov_hash_number(self, sentinel_module, monkeypatch):
+        """A type int outside _AOV_DEFS entirely (a custom AOV) with no
+        name still gets a usable, non-crashing label."""
+        from sentinel.ui import panel_render_ops
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(panel_render_ops, "REDSHIFT_AVAILABLE", True)
+
+        def _fake_check(d, tier):
+            aovs = [{"name": "", "type": 999999, "enabled": True}]
+            return {"available": True, "aovs": aovs, "missing": [], "tier": tier}
+
+        monkeypatch.setattr(panel_render_ops, "check_rs_aovs", _fake_check)
+        monkeypatch.setattr(panel_render_ops, "_is_lg_active_on_beauty", lambda d: False)
+        monkeypatch.setattr(panel_render_ops, "_scan_light_groups", lambda d: ({}, []))
+        monkeypatch.setattr(panel_render_ops.GlobalSettings, "get", lambda key, default=0: 0)
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_list"]({})
+        assert response["aovs"] == [{"name": "AOV #999999", "type": 999999}]
 
 
 class TestToggleWatchfolder:

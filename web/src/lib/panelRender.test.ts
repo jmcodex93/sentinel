@@ -162,7 +162,7 @@ describe("isDestructiveRenderOp", () => {
     expect(isDestructiveRenderOp("set_preset")).toBe(false);
     expect(isDestructiveRenderOp("add_frame_tag")).toBe(false);
     expect(isDestructiveRenderOp("select_frame_tag")).toBe(false);
-    expect(isDestructiveRenderOp("toggle_multipart")).toBe(false);
+    expect(isDestructiveRenderOp("set_multipart")).toBe(false);
     expect(isDestructiveRenderOp("toggle_watchfolder")).toBe(false);
     expect(isDestructiveRenderOp("save_still")).toBe(false);
     expect(isDestructiveRenderOp("open_folder")).toBe(false);

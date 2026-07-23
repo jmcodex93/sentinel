@@ -1029,8 +1029,14 @@ export interface PanelRenderMutationResponse {
  * `{error: "redshift_unavailable"}` when the RS Python module isn't
  * importable — never a crash. */
 export interface PanelRenderAovListEntry {
+  /** Display name — the artist's own `REDSHIFT_AOV_NAME` if set, else the
+   * friendly Sentinel name resolved from the AOV's type
+   * (`aovs.aov_type_name`), else `"AOV #<type>"` for a type outside
+   * `_AOV_DEFS`. Never the raw type int on its own. */
   name: string;
-  type: string;
+  /** Raw `REDSHIFT_AOV_TYPE` int, kept for reference — not the primary
+   * label (see `name`). */
+  type: number;
 }
 
 export interface PanelRenderAovListOk {

@@ -1,16 +1,16 @@
 {
   "aovs": [
-    { "name": "Beauty", "type": "Beauty" },
-    { "name": "Diffuse Lighting", "type": "DiffuseLighting" },
-    { "name": "Diffuse Filter", "type": "DiffuseFilter" },
-    { "name": "Reflections", "type": "Reflections" },
-    { "name": "Refractions", "type": "Refractions" },
-    { "name": "GI", "type": "GI" },
-    { "name": "Specular Lighting", "type": "Specular" },
-    { "name": "Shadows", "type": "Shadows" },
-    { "name": "Depth", "type": "Z" },
-    { "name": "Cryptomatte", "type": "Cryptomatte" },
-    { "name": "Puzzle Matte", "type": "PuzzleMatte" }
+    { "name": "Beauty", "type": 41 },
+    { "name": "Diffuse Lighting", "type": 5 },
+    { "name": "Diffuse Filter", "type": 18 },
+    { "name": "Reflections", "type": 6 },
+    { "name": "Refractions", "type": 8 },
+    { "name": "GI", "type": 4 },
+    { "name": "Specular Lighting", "type": 7 },
+    { "name": "Shadows", "type": 20 },
+    { "name": "Depth", "type": 1 },
+    { "name": "Cryptomatte", "type": 24 },
+    { "name": "AOV #999", "type": 999 }
   ],
   "target": "Nuke",
   "light_groups": true,

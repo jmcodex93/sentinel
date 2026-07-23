@@ -24,8 +24,8 @@ import {
   postPanelRenderResetAll,
   postPanelRenderSaveStill,
   postPanelRenderSelectFrameTag,
+  postPanelRenderSetMultipart,
   postPanelRenderSetPreset,
-  postPanelRenderToggleMultipart,
   postPanelRenderToggleWatchfolder,
   runPaletteAction,
 } from "../lib/api";
@@ -413,9 +413,9 @@ export function PanelPage() {
     applyRenderMutation(response, "Tag selected.");
   }
 
-  async function handleToggleMultipart() {
-    setBusyRenderId("toggle_multipart");
-    const response = await postPanelRenderToggleMultipart();
+  async function handleSetMultipart(enabled: boolean) {
+    setBusyRenderId("set_multipart");
+    const response = await postPanelRenderSetMultipart(enabled);
     setBusyRenderId(null);
     applyRenderMutation(response);
   }
@@ -553,7 +553,7 @@ export function PanelPage() {
                   onDestructive={(op, tier) => runRenderDestructive(op, tier)}
                   onAddFrameTag={handleAddFrameTag}
                   onSelectFrameTag={handleSelectFrameTag}
-                  onToggleMultipart={handleToggleMultipart}
+                  onSetMultipart={handleSetMultipart}
                   onToggleWatch={handleToggleWatch}
                   onSaveStill={handleSaveStill}
                   onOpenFolder={handleOpenFolder}

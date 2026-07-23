@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Button } from "../form/Button";
 import { Checkbox } from "../form/Checkbox";
+import { SegmentedControl } from "../form/SegmentedControl";
 import { Select } from "../form/Select";
 import { fetchPanelRenderAovList } from "../../lib/api";
 import {
@@ -63,7 +64,7 @@ export function RenderSection({
   onDestructive,
   onAddFrameTag,
   onSelectFrameTag,
-  onToggleMultipart,
+  onSetMultipart,
   onToggleWatch,
   onSaveStill,
   onOpenFolder,
@@ -85,7 +86,10 @@ export function RenderSection({
   ) => void;
   onAddFrameTag: () => void;
   onSelectFrameTag: () => void;
-  onToggleMultipart: () => void;
+  /** Sends the EXPLICIT value of the option clicked (Multi-Part → true,
+   * Direct output → false) — never a flip of the current state, so two
+   * quick clicks can't race a read-then-flip. */
+  onSetMultipart: (enabled: boolean) => void;
   onToggleWatch: () => void;
   onSaveStill: () => void;
   onOpenFolder: () => void;
@@ -200,11 +204,14 @@ export function RenderSection({
                 <Button variant="secondary" disabled={isBusy} onClick={() => onDestructive("aov_tier", "light_groups")}>
                   Light Groups⚠
                 </Button>
-                <Checkbox
-                  checked={aovs.multipart}
+                <SegmentedControl
+                  options={[
+                    { value: "multipart", label: "Multi-Part EXR" },
+                    { value: "direct", label: "Direct output" },
+                  ]}
+                  value={aovs.multipart ? "multipart" : "direct"}
                   disabled={isBusy}
-                  onChange={onToggleMultipart}
-                  label="Multi-Part EXR"
+                  onChange={(value) => onSetMultipart(value === "multipart")}
                 />
               </>
             )}
@@ -231,8 +238,8 @@ export function RenderSection({
           </p>
           <ul className="mt-1 list-inside list-disc">
             {aovListState.data.aovs.map((entry) => (
-              <li key={entry.name} className="text-caption" style={{ color: "var(--color-ink)" }}>
-                {entry.name} <span style={{ color: "var(--color-ink-secondary)" }}>({entry.type})</span>
+              <li key={`${entry.name}-${entry.type}`} className="text-caption" style={{ color: "var(--color-ink)" }}>
+                {entry.name}
               </li>
             ))}
           </ul>

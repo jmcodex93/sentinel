@@ -1013,13 +1013,18 @@ export async function postPanelRenderAovTier(
   );
 }
 
-/** `POST /api/panel/render/toggle_multipart` — see
- * `_op_panel_render_toggle_multipart`. Reversible, no confirm gate. */
-export async function postPanelRenderToggleMultipart(): Promise<PanelRenderMutationResponse> {
+/** `POST /api/panel/render/set_multipart` — see
+ * `_op_panel_render_set_multipart`. Sets the Multi-Part EXR / Direct output
+ * mode to an EXPLICIT value (the segmented switch always sends the option
+ * clicked, never a flip of the current state). Reversible, no confirm
+ * gate. `?mock=1` has no stateful scene to actually flip the mode on, so it
+ * returns an informative failure like the other stateless mutations
+ * (`startHubShrink`/`postHubCopyIntoProject`) rather than faking success. */
+export async function postPanelRenderSetMultipart(enabled: boolean): Promise<PanelRenderMutationResponse> {
   if (isMock()) {
-    return mockPanelRenderMutation("toggle_multipart");
+    return { ok: false, error: "mock" };
   }
-  return postForm<PanelRenderMutationResponse>("/api/panel/render/toggle_multipart", {});
+  return postForm<PanelRenderMutationResponse>("/api/panel/render/set_multipart", { enabled });
 }
 
 /** `GET /api/panel/render/aov_list` — see `_op_panel_render_aov_list`.
