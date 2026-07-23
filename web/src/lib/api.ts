@@ -48,7 +48,9 @@ import type {
   NotesStateResult,
   NotesSubmitPayload,
   NotesSubmitResponse,
+  PanelDeliverState,
   PanelOpenFormResponse,
+  PanelOpenVersionResponse,
   PanelOverview,
   PanelOverviewResult,
   PanelQcAcceptResponse,
@@ -1078,4 +1080,92 @@ export async function postPanelRenderOpenFolder(): Promise<PanelRenderMutationRe
     return mockPanelRenderMutation("open_folder");
   }
   return postForm<PanelRenderMutationResponse>("/api/panel/render/open_folder", {});
+}
+
+// ---------------------------------------------------------------------------
+// Panel Deliver section (Fase 6.3 Task 3) — see `PANEL_DELIVER_OPS` in
+// plugin/sentinel/ui/panel_deliver_ops.py. `panel/deliver` itself never
+// returns an `{error}` envelope (a missing document degrades every block to
+// `null` instead), so it does not go through `fetchReport`'s Result wrapper
+// or `postForm`'s `{ok, error?}` bound — it's a plain typed fetch that
+// degrades to the same all-null shape on a network/JSON failure.
+// ---------------------------------------------------------------------------
+
+/** Client-only mock for `panel/deliver` (only in `?mock=1`). Shape MUST
+ * match the real payload (nested blocks) — a flat mock would pass tests
+ * and crash on real data (the React #31 lesson). */
+function mockPanelDeliver(): PanelDeliverState {
+  return {
+    version: {
+      last: { version: 7, status: "TR", age: "2h ago", qc_label: "9/12" },
+      unsaved: false,
+      recent: [
+        {
+          version: 7, status: "TR", age: "2h ago", qc_label: "9/12",
+          path: "/mock/shot_v007_TR.c4d", filename: "shot_v007_TR.c4d",
+        },
+        {
+          version: 6, status: "", age: "5h ago", qc_label: "8/12",
+          path: "/mock/shot_v006.c4d", filename: "shot_v006.c4d",
+        },
+      ],
+    },
+    notes: {
+      summary: "Notes: review lighting + 3 TODOs (2 pending)",
+      todos_pending: 2, notes_present: true, unsaved: false,
+    },
+    deliver: { has_manifest: true },
+    stamp: "mock-stamp",
+  };
+}
+
+const EMPTY_PANEL_DELIVER: PanelDeliverState = {
+  version: null, notes: null, deliver: null, stamp: null,
+};
+
+/** `POST /api/panel/deliver` — see `_op_panel_deliver` in
+ * panel_deliver_ops.py. */
+export async function fetchPanelDeliver(): Promise<PanelDeliverState> {
+  if (isMock()) return mockPanelDeliver();
+  let response: Response;
+  try {
+    response = await fetch("/api/panel/deliver", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+  } catch {
+    return EMPTY_PANEL_DELIVER;
+  }
+  try {
+    return (await response.json()) as PanelDeliverState;
+  } catch {
+    return EMPTY_PANEL_DELIVER;
+  }
+}
+
+/** `POST /api/panel/deliver/open_version` — open a version .c4d via the
+ * dialog-free core (`flows.open_version_core`). A first call without
+ * `force` can surface `error: "unsaved_changes"` for the SPA to confirm
+ * inline before re-posting with `force: true`. */
+export async function postPanelOpenVersion(
+  path: string,
+  force?: boolean,
+): Promise<PanelOpenVersionResponse> {
+  if (isMock()) {
+    return { ok: true, opened: true, stamp: "mock-stamp" };
+  }
+  return postForm<PanelOpenVersionResponse>(
+    "/api/panel/deliver/open_version",
+    force ? { path, force: true } : { path },
+  );
+}
+
+/** `POST /api/panel/deliver/open_collect` — open the Asset Hub focused on
+ * delivery (mirrors the native Collect button). */
+export async function postPanelOpenCollect(): Promise<PaletteRunResponse> {
+  if (isMock()) {
+    return { ok: true, message: "Asset Hub opened" };
+  }
+  return postForm<PaletteRunResponse>("/api/panel/deliver/open_collect", {});
 }
