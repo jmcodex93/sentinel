@@ -24,6 +24,7 @@ import {
   postPanelRenderResetAll,
   postPanelRenderSaveStill,
   postPanelRenderSelectFrameTag,
+  postPanelRenderSetLightGroups,
   postPanelRenderSetMultipart,
   postPanelRenderSetPreset,
   postPanelRenderToggleWatchfolder,
@@ -45,11 +46,12 @@ type QcPageState = { kind: "loading" } | PanelQcResult;
 type RenderPageState = { kind: "loading" } | PanelRenderResult;
 
 /** What the Render section's inline confirm bar is about to run — set once
- * a destructive op (`reset_all`/`force_vertical`/`aov_tier`) comes back
+ * a destructive op (`reset_all`/`force_vertical`) comes back
  * `confirm_required`, so Confirm can re-issue the exact same op with
- * `confirm: true` (the server, not the SPA, owns the copy in `label`). */
-type AovTier = "essentials" | "production" | "light_groups";
-type RenderConfirm = { op: "reset_all" | "force_vertical" | "aov_tier"; tier?: AovTier; label: string };
+ * `confirm: true` (the server, not the SPA, owns the copy in `label`).
+ * `aov_tier` (Essentials/Production) is additive and never confirm-gates
+ * any more — it's not part of this union. */
+type RenderConfirm = { op: "reset_all" | "force_vertical"; label: string };
 
 /** What the inline confirm bar is about to run, for the QC section's Fix
  * (per-card, via the shared palette action) and Fix-all (via
@@ -376,26 +378,44 @@ export function PanelPage() {
     applyRenderMutation(response, `Preset set to ${preset}.`);
   }
 
-  /** Destructive ops (Reset All, Force 9:16, an AOV tier) never confirm
-   * client-side — the first call omits `confirm`, and a `confirm_required`
-   * response is what opens the inline bar, with the server's own
-   * `confirm_label` as the copy (never SPA-authored text). */
-  async function runRenderDestructive(op: "reset_all" | "force_vertical" | "aov_tier", tier?: AovTier, confirm?: boolean) {
-    const busyId = tier ? `${op}:${tier}` : op;
-    setBusyRenderId(busyId);
-    const response =
-      op === "reset_all"
-        ? await postPanelRenderResetAll(confirm)
-        : op === "force_vertical"
-          ? await postPanelRenderForceVertical(confirm)
-          : await postPanelRenderAovTier(tier ?? "essentials", confirm);
+  /** Destructive ops (Reset All, Force 9:16) never confirm client-side — the
+   * first call omits `confirm`, and a `confirm_required` response is what
+   * opens the inline bar, with the server's own `confirm_label` as the copy
+   * (never SPA-authored text). */
+  async function runRenderDestructive(op: "reset_all" | "force_vertical", confirm?: boolean) {
+    setBusyRenderId(op);
+    const response = op === "reset_all" ? await postPanelRenderResetAll(confirm) : await postPanelRenderForceVertical(confirm);
     setBusyRenderId(null);
 
     if (!response.ok && response.error === "confirm_required") {
-      setRenderConfirm({ op, tier, label: response.confirm_label || "Are you sure?" });
+      setRenderConfirm({ op, label: response.confirm_label || "Are you sure?" });
       return;
     }
     setRenderConfirm(null);
+    applyRenderMutation(response);
+  }
+
+  /** Coverage action (Essentials/Production) — additive, Cmd+Z-able, no
+   * confirm bar (see `_op_panel_render_aov_tier`). */
+  async function handleAovTier(tier: "essentials" | "production") {
+    setBusyRenderId(`aov_tier:${tier}`);
+    const response = await postPanelRenderAovTier(tier);
+    setBusyRenderId(null);
+    applyRenderMutation(response, `${tier === "essentials" ? "Essentials" : "Production"} AOVs applied.`);
+  }
+
+  /** Light Groups on Beauty — an independent on/off toggle, not a tier.
+   * `no_groups_assigned` toasts the reason instead of silently not
+   * flipping the UI (`applyRenderMutation` already handles that: it only
+   * updates `render` on `ok: true`). */
+  async function handleSetLightGroups(enabled: boolean) {
+    setBusyRenderId("set_light_groups");
+    const response = await postPanelRenderSetLightGroups(enabled);
+    setBusyRenderId(null);
+    if (!response.ok && response.error === "no_groups_assigned") {
+      toast({ message: "No light groups assigned in the scene.", variant: "warn" });
+      return;
+    }
     applyRenderMutation(response);
   }
 
@@ -550,15 +570,17 @@ export function PanelPage() {
                   busy={busyRenderId}
                   confirmLabel={renderConfirm?.label ?? null}
                   onSetPreset={handleSetPreset}
-                  onDestructive={(op, tier) => runRenderDestructive(op, tier)}
+                  onDestructive={(op) => runRenderDestructive(op)}
                   onAddFrameTag={handleAddFrameTag}
                   onSelectFrameTag={handleSelectFrameTag}
+                  onAovTier={handleAovTier}
+                  onSetLightGroups={handleSetLightGroups}
                   onSetMultipart={handleSetMultipart}
                   onToggleWatch={handleToggleWatch}
                   onSaveStill={handleSaveStill}
                   onOpenFolder={handleOpenFolder}
                   onValidate={() => handleDeepLink("open_reports_render_validation")}
-                  onConfirm={() => renderConfirm && runRenderDestructive(renderConfirm.op, renderConfirm.tier, true)}
+                  onConfirm={() => renderConfirm && runRenderDestructive(renderConfirm.op, true)}
                   onCancelConfirm={() => setRenderConfirm(null)}
                 />
               )}

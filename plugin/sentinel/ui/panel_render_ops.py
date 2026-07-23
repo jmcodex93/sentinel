@@ -371,57 +371,79 @@ def _op_panel_render_select_frame_tag(payload):
     return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
 
 
-_AOV_TIER_CONFIRM_LABELS = {
-    "essentials": "Add missing Essentials AOVs?",
-    "production": "Add missing Production AOVs?",
-    "light_groups": "Toggle Light Groups on the Beauty AOV?",
+_AOV_TIERS = {
+    "essentials": AOV_TIER_ESSENTIALS,
+    "production": AOV_TIER_PRODUCTION,
 }
 
 
 def _op_panel_render_aov_tier(payload):
-    """``panel/render/aov_tier`` — destructive-adjacent (rewrites RS AOV
-    render settings), confirm-gated. ``tier`` must be one of
-    ``essentials``/``production``/``light_groups``; anything else is
-    ``invalid_tier`` regardless of ``confirm`` (a bad tier is a client bug,
-    not something a confirm click fixes).
+    """``panel/render/aov_tier`` — additive (adds any AOVs missing up to the
+    named tier; never removes existing ones), NOT confirm-gated: Essentials/
+    Production are nested coverage LEVELS applied as one-shot actions, fully
+    Cmd+Z-able, not a destructive rewrite. ``tier`` must be one of
+    ``essentials``/``production``; anything else is ``invalid_tier``
+    (a bad tier is a client bug — there is no confirm step to gate it
+    behind any more).
 
-    ``essentials``/``production`` build the tier list
-    (``AOV_TIER_ESSENTIALS``/``AOV_TIER_PRODUCTION``) and run
-    ``aovs.force_aov_tier`` — already dialog-free, no core extraction
-    needed. ``light_groups`` is NOT an AOV list at all (there's no tier of
-    AOV names to add) — it's the native "Light Groups" button's toggle-on-
-    Beauty behavior, so it runs
-    ``scene_tools._toggle_light_groups_core`` (the dialog-free core
-    extracted from ``_toggle_light_groups`` for this task), reporting any
-    non-``activated``/``deactivated`` status as an error.
+    ``light_groups`` is no longer a valid value here — it was never an AOV
+    tier (no list of AOV names to add), it's the independent Light Groups
+    on/off toggle, now its own op: ``panel/render/set_light_groups``.
     """
     doc = documents.GetActiveDocument()
     if not doc:
         return {"ok": False, "error": "no_document"}
 
     tier = (payload or {}).get("tier")
-    if tier not in _AOV_TIER_CONFIRM_LABELS:
+    tier_list = _AOV_TIERS.get(tier)
+    if tier_list is None:
         return {"ok": False, "error": "invalid_tier"}
 
-    if _needs_confirm(payload):
-        return {"ok": False, "error": "confirm_required",
-                "confirm_label": _AOV_TIER_CONFIRM_LABELS[tier]}
-
-    if tier == "light_groups":
-        from sentinel.ui import scene_tools
-
-        result = scene_tools._toggle_light_groups_core(doc)
-        status = result.get("status")
-        if status in ("activated", "deactivated"):
-            return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
-        return {"ok": False, "error": result.get("error") or status or "unknown"}
-
-    tier_list = AOV_TIER_ESSENTIALS if tier == "essentials" else AOV_TIER_PRODUCTION
     added, error = force_aov_tier(doc, tier_list)
     if error:
         return {"ok": False, "error": error}
 
     return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
+
+
+def _op_panel_render_set_light_groups(payload):
+    """``panel/render/set_light_groups`` — Light Groups on Beauty is an
+    independent on/off TOGGLE (state), not an AOV tier — sets it to the
+    EXPLICIT ``enabled`` value the SPA's segmented toggle sends (never a
+    blind flip, so two quick clicks can't race a read-then-flip — same
+    convention as ``set_multipart``). Idempotent: if the scene is already in
+    the requested state, this is a no-op success and
+    ``scene_tools._toggle_light_groups_core`` (which only knows how to flip)
+    is never called.
+
+    ``no_groups_assigned`` (there ARE lights, but none carry a light-group
+    assignment) is reported as an explicit failure —
+    ``{"ok": False, "error": "no_groups_assigned"}`` — never silently
+    swallowed into a false success, so the SPA can toast "No light groups
+    assigned in the scene" instead of the toggle silently not flipping.
+    """
+    doc = documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+
+    if not REDSHIFT_AVAILABLE:
+        return {"ok": False, "error": "redshift_unavailable"}
+
+    enabled = bool((payload or {}).get("enabled"))
+
+    current = bool(_is_lg_active_on_beauty(doc))
+    if current == enabled:
+        return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
+
+    from sentinel.ui import scene_tools
+
+    result = scene_tools._toggle_light_groups_core(doc)
+    status = result.get("status")
+    if status in ("activated", "deactivated"):
+        return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
+    if status == "no_groups_assigned":
+        return {"ok": False, "error": "no_groups_assigned"}
+    return {"ok": False, "error": result.get("error") or status or "unknown"}
 
 
 def _op_panel_render_set_multipart(payload):
@@ -559,6 +581,7 @@ PANEL_RENDER_OPS = {
     "panel/render/add_frame_tag": _op_panel_render_add_frame_tag,
     "panel/render/select_frame_tag": _op_panel_render_select_frame_tag,
     "panel/render/aov_tier": _op_panel_render_aov_tier,
+    "panel/render/set_light_groups": _op_panel_render_set_light_groups,
     "panel/render/set_multipart": _op_panel_render_set_multipart,
     "panel/render/aov_list": _op_panel_render_aov_list,
     "panel/render/toggle_watchfolder": _op_panel_render_toggle_watchfolder,

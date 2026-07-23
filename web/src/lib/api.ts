@@ -906,13 +906,16 @@ export async function postPanelQcFixAll(): Promise<PanelQcFixAllResponse> {
 }
 
 // ---------------------------------------------------------------------------
-// Panel Render section (Fase 6.2 Task 3) — see `PANEL_RENDER_OPS` in
-// plugin/sentinel/ui/panel_render_ops.py. Each of the 5 blocks may
-// independently be `null` (`_guarded_block` isolation, same convention as
-// `fetchPanelOverview`/`fetchPanelQc`). Mutation posters follow the shared
-// `{ok, error?, stamp?, render?, confirm_label?}` contract; the three
-// destructive ops (`reset_all`, `force_vertical`, `aov_tier`) take an
-// optional `confirm` flag mirroring `runPaletteAction`'s own confirm param.
+// Panel Render section (Fase 6.2 Task 3, AOVs block reorganized in a later
+// pass) — see `PANEL_RENDER_OPS` in plugin/sentinel/ui/panel_render_ops.py.
+// Each of the 5 blocks may independently be `null` (`_guarded_block`
+// isolation, same convention as `fetchPanelOverview`/`fetchPanelQc`).
+// Mutation posters follow the shared `{ok, error?, stamp?, render?,
+// confirm_label?}` contract; only `reset_all`/`force_vertical` stay
+// destructive and take an optional `confirm` flag mirroring
+// `runPaletteAction`'s own confirm param — `aov_tier` (Essentials/
+// Production) is additive/Cmd+Z-able and never confirm-gates, and Light
+// Groups is an independent toggle (`set_light_groups`), not a tier.
 // ---------------------------------------------------------------------------
 
 /** `GET /api/panel/render` — see `_op_panel_render`/`build_panel_render` in
@@ -935,7 +938,6 @@ export async function fetchPanelRender(): Promise<PanelRenderResult> {
 const MOCK_RENDER_CONFIRM_LABELS: Record<string, string> = {
   reset_all: "Reset ALL render presets from template? This replaces existing presets with standard settings.",
   force_vertical: "Force the active render preset's aspect ratio (9:16 / 16:9)?",
-  aov_tier: "Add missing AOVs / toggle Light Groups?",
 };
 
 function mockPanelRenderMutation(op: string, confirm?: boolean): PanelRenderMutationResponse {
@@ -997,20 +999,32 @@ export async function postPanelRenderSelectFrameTag(): Promise<PanelRenderMutati
   return postForm<PanelRenderMutationResponse>("/api/panel/render/select_frame_tag", {});
 }
 
-/** `POST /api/panel/render/aov_tier` — destructive, confirm-gated (see
- * `_op_panel_render_aov_tier`). `tier` must be one of
- * `"essentials"`/`"production"`/`"light_groups"`. */
+/** `POST /api/panel/render/aov_tier` — additive coverage-level action (see
+ * `_op_panel_render_aov_tier`), NOT confirm-gated: Essentials/Production add
+ * the AOVs missing up to that tier and are fully Cmd+Z-able. `tier` must be
+ * one of `"essentials"`/`"production"` — `"light_groups"` was never a tier,
+ * see `postPanelRenderSetLightGroups`. */
 export async function postPanelRenderAovTier(
-  tier: "essentials" | "production" | "light_groups",
-  confirm?: boolean,
+  tier: "essentials" | "production",
 ): Promise<PanelRenderMutationResponse> {
   if (isMock()) {
-    return mockPanelRenderMutation("aov_tier", confirm);
+    return mockPanelRenderMutation("aov_tier");
   }
-  return postForm<PanelRenderMutationResponse>(
-    "/api/panel/render/aov_tier",
-    confirm ? { tier, confirm: true } : { tier },
-  );
+  return postForm<PanelRenderMutationResponse>("/api/panel/render/aov_tier", { tier });
+}
+
+/** `POST /api/panel/render/set_light_groups` — see
+ * `_op_panel_render_set_light_groups`. Light Groups on Beauty is an
+ * independent on/off TOGGLE (state), not an AOV tier — sends the EXPLICIT
+ * value of the option clicked (never a flip of the current state), same
+ * convention as `postPanelRenderSetMultipart`. `{ok: false, error:
+ * "no_groups_assigned"}` means there are lights but none carry a
+ * light-group assignment — the SPA should toast that, not flip the UI. */
+export async function postPanelRenderSetLightGroups(enabled: boolean): Promise<PanelRenderMutationResponse> {
+  if (isMock()) {
+    return { ok: false, error: "mock" };
+  }
+  return postForm<PanelRenderMutationResponse>("/api/panel/render/set_light_groups", { enabled });
 }
 
 /** `POST /api/panel/render/set_multipart` — see

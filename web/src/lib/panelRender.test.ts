@@ -63,7 +63,7 @@ describe("frameStatusLine", () => {
 });
 
 describe("aovStatusLine", () => {
-  it("formats the AOV count and multipart state (ON)", () => {
+  it("formats the AOV count only — the Output switch owns the mode", () => {
     const aovs: PanelRenderAovs = {
       count: 11,
       multipart: true,
@@ -71,10 +71,10 @@ describe("aovStatusLine", () => {
       light_groups: true,
       light_group_names: ["fg", "bg"],
     };
-    expect(aovStatusLine(aovs)).toBe("11 AOVs · Multi-Part ON");
+    expect(aovStatusLine(aovs)).toBe("11 AOVs");
   });
 
-  it("formats the multipart state (OFF)", () => {
+  it("formats the count regardless of multipart state", () => {
     const aovs: PanelRenderAovs = {
       count: 3,
       multipart: false,
@@ -82,7 +82,7 @@ describe("aovStatusLine", () => {
       light_groups: false,
       light_group_names: [],
     };
-    expect(aovStatusLine(aovs)).toBe("3 AOVs · Multi-Part OFF");
+    expect(aovStatusLine(aovs)).toBe("3 AOVs");
   });
 
   it("reports Redshift unavailable", () => {
@@ -152,13 +152,14 @@ describe("postrenderStatusLine", () => {
 });
 
 describe("isDestructiveRenderOp", () => {
-  it("flags reset_all, force_vertical and aov_tier as destructive", () => {
+  it("flags reset_all and force_vertical as destructive", () => {
     expect(isDestructiveRenderOp("reset_all")).toBe(true);
     expect(isDestructiveRenderOp("force_vertical")).toBe(true);
-    expect(isDestructiveRenderOp("aov_tier")).toBe(true);
   });
 
-  it("does not flag the additive/reversible ops", () => {
+  it("does not flag the additive/reversible ops, including aov_tier and set_light_groups", () => {
+    expect(isDestructiveRenderOp("aov_tier")).toBe(false);
+    expect(isDestructiveRenderOp("set_light_groups")).toBe(false);
     expect(isDestructiveRenderOp("set_preset")).toBe(false);
     expect(isDestructiveRenderOp("add_frame_tag")).toBe(false);
     expect(isDestructiveRenderOp("select_frame_tag")).toBe(false);

@@ -535,7 +535,8 @@ class TestPanelFrameBlockFormatCount:
 class TestPanelRenderOpsTableTask2:
     def test_task2_ops_registered(self, sentinel_module):
         from sentinel.ui import panel_render_ops
-        for op in ("panel/render/aov_tier", "panel/render/set_multipart",
+        for op in ("panel/render/aov_tier", "panel/render/set_light_groups",
+                   "panel/render/set_multipart",
                    "panel/render/aov_list", "panel/render/toggle_watchfolder",
                    "panel/render/save_still", "panel/render/open_folder"):
             assert op in panel_render_ops.PANEL_RENDER_OPS
@@ -545,7 +546,13 @@ class TestAovTierNoDocument:
     def test_aov_tier_without_document(self, sentinel_module):
         from sentinel.ui import panel_render_ops
         response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"](
-            {"tier": "essentials", "confirm": True})
+            {"tier": "essentials"})
+        assert response == {"ok": False, "error": "no_document"}
+
+    def test_set_light_groups_without_document(self, sentinel_module):
+        from sentinel.ui import panel_render_ops
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/set_light_groups"](
+            {"enabled": True})
         assert response == {"ok": False, "error": "no_document"}
 
     def test_set_multipart_without_document(self, sentinel_module):
@@ -581,31 +588,28 @@ class _FakeDocBase:
 
 
 class TestAovTierConfirmGateAndValidation:
-    def test_missing_confirm_returns_confirm_required(self, sentinel_module, monkeypatch):
-        from sentinel.ui import panel_render_ops
-        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: _FakeDocBase())
+    """Essentials/Production are additive coverage-level actions (each ADDS
+    the missing AOVs up to that tier) — Fase 6.2 Task reorganization drops
+    the confirm gate entirely for ``aov_tier``; only an invalid tier name is
+    still rejected."""
 
-        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"]({"tier": "essentials"})
-        assert response["ok"] is False
-        assert response["error"] == "confirm_required"
-        assert "confirm_label" in response
-
-    def test_invalid_tier_rejected_even_with_confirm(self, sentinel_module, monkeypatch):
-        from sentinel.ui import panel_render_ops
-        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: _FakeDocBase())
-
-        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"](
-            {"tier": "bogus", "confirm": True})
-        assert response == {"ok": False, "error": "invalid_tier"}
-
-    def test_invalid_tier_rejected_without_confirm_too(self, sentinel_module, monkeypatch):
+    def test_invalid_tier_rejected(self, sentinel_module, monkeypatch):
         from sentinel.ui import panel_render_ops
         monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: _FakeDocBase())
 
         response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"]({"tier": "bogus"})
         assert response == {"ok": False, "error": "invalid_tier"}
 
-    def test_essentials_tier_confirmed_runs_force_aov_tier(self, sentinel_module, monkeypatch):
+    def test_light_groups_no_longer_a_valid_tier(self, sentinel_module, monkeypatch):
+        """``light_groups`` was never an AOV tier — it's the independent
+        toggle op now (``panel/render/set_light_groups``)."""
+        from sentinel.ui import panel_render_ops
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: _FakeDocBase())
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"]({"tier": "light_groups"})
+        assert response == {"ok": False, "error": "invalid_tier"}
+
+    def test_essentials_tier_runs_force_aov_tier_no_confirm_needed(self, sentinel_module, monkeypatch):
         from sentinel.ui import panel_render_ops
 
         doc = _FakeDocBase()
@@ -621,8 +625,7 @@ class TestAovTierConfirmGateAndValidation:
 
         monkeypatch.setattr(panel_render_ops, "force_aov_tier", _fake_force)
 
-        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"](
-            {"tier": "essentials", "confirm": True})
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"]({"tier": "essentials"})
 
         assert response == {"ok": True, "stamp": "stamp-1", "render": {"probe": True}}
         assert calls[0][0] == "force"
@@ -630,7 +633,7 @@ class TestAovTierConfirmGateAndValidation:
         from sentinel.aovs import AOV_TIER_ESSENTIALS
         assert calls[0][2] == tuple(AOV_TIER_ESSENTIALS)
 
-    def test_production_tier_confirmed_runs_force_aov_tier(self, sentinel_module, monkeypatch):
+    def test_production_tier_runs_force_aov_tier_no_confirm_needed(self, sentinel_module, monkeypatch):
         from sentinel.ui import panel_render_ops
 
         doc = _FakeDocBase()
@@ -642,8 +645,7 @@ class TestAovTierConfirmGateAndValidation:
         monkeypatch.setattr(panel_render_ops, "force_aov_tier",
                              lambda d, tier_list: (calls.append(tuple(tier_list)), (5, None))[1])
 
-        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"](
-            {"tier": "production", "confirm": True})
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"]({"tier": "production"})
 
         assert response["ok"] is True
         from sentinel.aovs import AOV_TIER_PRODUCTION
@@ -657,36 +659,86 @@ class TestAovTierConfirmGateAndValidation:
         monkeypatch.setattr(panel_render_ops, "force_aov_tier",
                              lambda d, tier_list: (0, "Redshift module not available"))
 
-        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"](
-            {"tier": "essentials", "confirm": True})
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"]({"tier": "essentials"})
         assert response == {"ok": False, "error": "Redshift module not available"}
 
-    def test_light_groups_tier_confirmed_runs_dialog_free_core(self, sentinel_module, monkeypatch):
+
+class TestSetLightGroups:
+    """``panel/render/set_light_groups`` — the independent on/off toggle
+    (state), separated from the additive ``aov_tier`` coverage actions.
+    Sets to the EXPLICIT ``enabled`` value, never a blind flip."""
+
+    def test_redshift_unavailable(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(panel_render_ops, "REDSHIFT_AVAILABLE", False)
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/set_light_groups"]({"enabled": True})
+        assert response == {"ok": False, "error": "redshift_unavailable"}
+
+    def test_already_in_requested_state_is_a_noop_success(self, sentinel_module, monkeypatch):
         from sentinel.ui import panel_render_ops
         from sentinel.ui import scene_tools
 
         doc = _FakeDocBase()
         monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(panel_render_ops, "REDSHIFT_AVAILABLE", True)
+        monkeypatch.setattr(panel_render_ops, "_is_lg_active_on_beauty", lambda d: True)
+        monkeypatch.setattr(panel_render_ops, "build_panel_render", lambda d: {})
+        monkeypatch.setattr(panel_render_ops, "_stamp_for", lambda d: "s")
+
+        def _fail_if_called(d):
+            raise AssertionError("core toggle must not run when already in the requested state")
+
+        monkeypatch.setattr(scene_tools, "_toggle_light_groups_core", _fail_if_called)
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/set_light_groups"]({"enabled": True})
+        assert response["ok"] is True
+
+    def test_flips_when_state_differs(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        from sentinel.ui import scene_tools
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(panel_render_ops, "REDSHIFT_AVAILABLE", True)
+        monkeypatch.setattr(panel_render_ops, "_is_lg_active_on_beauty", lambda d: False)
         monkeypatch.setattr(panel_render_ops, "build_panel_render", lambda d: {})
         monkeypatch.setattr(panel_render_ops, "_stamp_for", lambda d: "s")
         monkeypatch.setattr(scene_tools, "_toggle_light_groups_core",
                              lambda d: {"status": "activated", "groups": ["Key"]})
 
-        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"](
-            {"tier": "light_groups", "confirm": True})
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/set_light_groups"]({"enabled": True})
         assert response["ok"] is True
 
-    def test_light_groups_tier_failure_status_reported(self, sentinel_module, monkeypatch):
+    def test_no_groups_assigned_reported_as_explicit_failure(self, sentinel_module, monkeypatch):
         from sentinel.ui import panel_render_ops
         from sentinel.ui import scene_tools
 
         doc = _FakeDocBase()
         monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(panel_render_ops, "REDSHIFT_AVAILABLE", True)
+        monkeypatch.setattr(panel_render_ops, "_is_lg_active_on_beauty", lambda d: False)
+        monkeypatch.setattr(scene_tools, "_toggle_light_groups_core",
+                             lambda d: {"status": "no_groups_assigned", "ungrouped": ["Light1"]})
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/set_light_groups"]({"enabled": True})
+        assert response == {"ok": False, "error": "no_groups_assigned"}
+
+    def test_other_failure_status_reported(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        from sentinel.ui import scene_tools
+
+        doc = _FakeDocBase()
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(panel_render_ops, "REDSHIFT_AVAILABLE", True)
+        monkeypatch.setattr(panel_render_ops, "_is_lg_active_on_beauty", lambda d: False)
         monkeypatch.setattr(scene_tools, "_toggle_light_groups_core",
                              lambda d: {"status": "no_beauty_aov"})
 
-        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/aov_tier"](
-            {"tier": "light_groups", "confirm": True})
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/set_light_groups"]({"enabled": True})
         assert response == {"ok": False, "error": "no_beauty_aov"}
 
 

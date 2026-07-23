@@ -21,10 +21,15 @@ import type { PanelRenderAovListOk, PanelRenderSection as PanelRenderSectionData
 function RenderBlock({
   eyebrow,
   status,
+  headerRight,
   children,
 }: {
   eyebrow: string;
   status: string;
+  /** Right-aligned header content, next to the eyebrow label — e.g. the
+   * AOVs block's "Show AOVs" link, kept separate from the action rows
+   * below it rather than mixed in as a peer button. */
+  headerRight?: React.ReactNode;
   children?: React.ReactNode;
 }) {
   return (
@@ -32,13 +37,31 @@ function RenderBlock({
       className="flex flex-col gap-2 rounded-lg border p-3"
       style={{ borderColor: "var(--color-hairline)", backgroundColor: "var(--color-surface-1)" }}
     >
-      <p className="text-label" style={{ color: "var(--color-ink-secondary)" }}>
-        {eyebrow.toUpperCase()}
-      </p>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-label" style={{ color: "var(--color-ink-secondary)" }}>
+          {eyebrow.toUpperCase()}
+        </p>
+        {headerRight}
+      </div>
       <p className="text-body" style={{ color: "var(--color-ink)" }}>
         {status}
       </p>
       {children && <div className="flex flex-wrap items-center gap-2">{children}</div>}
+    </div>
+  );
+}
+
+/** A single labeled action row inside a block — short inline label + its
+ * control(s), tokens only, coherent with the rest of the panel. Used for
+ * the AOVs block's Coverage / Light Groups / Output rows so each reads as
+ * its own concept rather than a flat row of peer buttons. */
+function ActionRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex w-full flex-wrap items-center gap-2">
+      <span className="text-caption w-28 shrink-0" style={{ color: "var(--color-ink-secondary)" }}>
+        {label}
+      </span>
+      {children}
     </div>
   );
 }
@@ -64,6 +87,8 @@ export function RenderSection({
   onDestructive,
   onAddFrameTag,
   onSelectFrameTag,
+  onAovTier,
+  onSetLightGroups,
   onSetMultipart,
   onToggleWatch,
   onSaveStill,
@@ -80,12 +105,17 @@ export function RenderSection({
    * inline confirm bar's copy, verbatim from the server. */
   confirmLabel: string | null;
   onSetPreset: (preset: string) => void;
-  onDestructive: (
-    op: "reset_all" | "force_vertical" | "aov_tier",
-    tier?: "essentials" | "production" | "light_groups",
-  ) => void;
+  /** Reset All / Force 9:16 — the only two render ops that are still
+   * genuinely destructive and confirm-gated. */
+  onDestructive: (op: "reset_all" | "force_vertical") => void;
   onAddFrameTag: () => void;
   onSelectFrameTag: () => void;
+  /** Coverage action — Essentials/Production ADD any missing AOVs up to
+   * that tier. Additive/Cmd+Z-able, no confirm bar. */
+  onAovTier: (tier: "essentials" | "production") => void;
+  /** Light Groups on Beauty — an independent on/off toggle (state), not a
+   * tier. Sends the EXPLICIT value of the option clicked. */
+  onSetLightGroups: (enabled: boolean) => void;
   /** Sends the EXPLICIT value of the option clicked (Multi-Part → true,
    * Direct output → false) — never a flip of the current state, so two
    * quick clicks can't race a read-then-flip. */
@@ -181,10 +211,15 @@ export function RenderSection({
         )}
       </RenderBlock>
 
-      {/* AOVs */}
-      <RenderBlock eyebrow="AOVs" status={aovStatusLine(aovs)}>
-        {aovs === null ? null : (
-          <>
+      {/* AOVs — three distinct concepts, not three peer buttons: Coverage
+          (additive tier actions), Light Groups (an independent toggle),
+          Output (the existing persistent-mode switch). */}
+      <RenderBlock
+        eyebrow="AOVs"
+        status={aovStatusLine(aovs)}
+        headerRight={
+          aovs !== null &&
+          !("error" in aovs) && (
             <button
               type="button"
               onClick={toggleAovList}
@@ -193,29 +228,42 @@ export function RenderSection({
             >
               {aovListState.kind === "ok" || aovListState.kind === "unavailable" ? "▾" : "▸"} Show AOVs
             </button>
-            {!("error" in aovs) && (
-              <>
-                <Button variant="secondary" disabled={isBusy} onClick={() => onDestructive("aov_tier", "essentials")}>
-                  Essentials⚠
-                </Button>
-                <Button variant="secondary" disabled={isBusy} onClick={() => onDestructive("aov_tier", "production")}>
-                  Production⚠
-                </Button>
-                <Button variant="secondary" disabled={isBusy} onClick={() => onDestructive("aov_tier", "light_groups")}>
-                  Light Groups⚠
-                </Button>
-                <SegmentedControl
-                  options={[
-                    { value: "multipart", label: "Multi-Part EXR" },
-                    { value: "direct", label: "Direct output" },
-                  ]}
-                  value={aovs.multipart ? "multipart" : "direct"}
-                  disabled={isBusy}
-                  onChange={(value) => onSetMultipart(value === "multipart")}
-                />
-              </>
-            )}
-          </>
+          )
+        }
+      >
+        {aovs === null || "error" in aovs ? null : (
+          <div className="flex w-full flex-col gap-2">
+            <ActionRow label="Coverage">
+              <Button variant="secondary" disabled={isBusy} onClick={() => onAovTier("essentials")}>
+                Essentials
+              </Button>
+              <Button variant="secondary" disabled={isBusy} onClick={() => onAovTier("production")}>
+                Production
+              </Button>
+            </ActionRow>
+            <ActionRow label="Light Groups">
+              <SegmentedControl
+                options={[
+                  { value: "off", label: "off" },
+                  { value: "on", label: "on" },
+                ]}
+                value={aovs.light_groups ? "on" : "off"}
+                disabled={isBusy}
+                onChange={(value) => onSetLightGroups(value === "on")}
+              />
+            </ActionRow>
+            <ActionRow label="Output">
+              <SegmentedControl
+                options={[
+                  { value: "multipart", label: "Multi-Part EXR" },
+                  { value: "direct", label: "Direct output" },
+                ]}
+                value={aovs.multipart ? "multipart" : "direct"}
+                disabled={isBusy}
+                onChange={(value) => onSetMultipart(value === "multipart")}
+              />
+            </ActionRow>
+          </div>
         )}
       </RenderBlock>
       {aovListState.kind === "loading" && (
