@@ -1209,6 +1209,72 @@ def snapshot_auto_convert(doc, artist_name, snap_path):
         return False, "conversion error"
 
 
+def _doc_full_path(doc):
+    """Absolute path of an open document (``<dir>/<name>``), normalized for
+    case-insensitive comparison. ``""`` if the doc has never been saved."""
+    try:
+        full = os.path.join(doc.GetDocumentPath() or "",
+                            doc.GetDocumentName() or "")
+    except Exception:
+        return ""
+    return os.path.normcase(os.path.normpath(full)) if full else ""
+
+
+def open_version_core(path):
+    """Dialog-free core for opening a version .c4d from Recent Versions.
+
+    Returns a status dict; NEVER shows a dialog (a MessageDialog inside the
+    panel's Timer drain freezes C4D — v1.21.0 pattern).
+
+    Opening a version is NON-DESTRUCTIVE: switching to a version that's
+    already open just re-activates that document (nothing reloaded, nothing
+    lost), and opening one that isn't open uses ``LoadFile`` (= File > Open),
+    which adds a new document and leaves the current one untouched in the
+    background. So there is no "discard unsaved changes" step — that guard
+    (and the native panel's warning copy) described a risk that doesn't
+    exist for this operation.
+
+    Outcomes: ``{"ok": True, "switched": True}`` (re-activated an already-open
+    doc), ``{"ok": True, "opened": True}`` (loaded from disk), or ``{"ok":
+    False, "error": "bad_path"|"file_not_found"|"already_active"|
+    "load_failed"|"load_error"}``."""
+    path = (path or "").strip()
+    if not path:
+        return {"ok": False, "error": "bad_path"}
+    if not os.path.exists(path):
+        return {"ok": False, "error": "file_not_found"}
+
+    target = os.path.normcase(os.path.normpath(path))
+
+    current = c4d.documents.GetActiveDocument()
+    if current and _doc_full_path(current) == target:
+        return {"ok": False, "error": "already_active"}
+
+    # Already open in another tab? Re-activate it — no disk reload, no data
+    # loss, and it sidesteps the case where LoadFile on an open doc would
+    # throw away that doc's unsaved work.
+    try:
+        doc = c4d.documents.GetFirstDocument()
+        while doc:
+            if _doc_full_path(doc) == target:
+                c4d.documents.SetActiveDocument(doc)
+                c4d.EventAdd()
+                return {"ok": True, "switched": True}
+            doc = doc.GetNext()
+    except Exception:
+        pass
+
+    # Not open — load from disk as a new active document (current doc stays
+    # open in the background).
+    try:
+        ok = c4d.documents.LoadFile(path)
+    except Exception as exc:
+        return {"ok": False, "error": "load_error", "detail": str(exc)}
+    if ok:
+        return {"ok": True, "opened": True}
+    return {"ok": False, "error": "load_failed"}
+
+
 def snapshot_open_folder_core(doc, artist_name):
     """Dialog-free core of ``snapshot_open_folder`` (Fase 6.2 Task 2) — the
     cross-platform ``open_in_explorer`` call itself is a plain OS-level

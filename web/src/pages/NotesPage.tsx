@@ -34,8 +34,16 @@ function toEditable(todos: NotesTodo[]): EditableTodo[] {
  * web_ops.py `_op_form_notes_state/_submit`'s docstrings): free-form notes
  * shared across every version of this scene base, plus a TODO checklist
  * (add/toggle/delete — the native dialog never supported editing existing
- * TODO text either, see `merge_notes_submission`'s docstring). */
-export function NotesPage() {
+ * TODO text either, see `merge_notes_submission`'s docstring).
+ *
+ * `onBack`/`onDone` are optional — absent when hosted one-per-window by
+ * `FormDialog` (unchanged behavior), present when absorbed as an in-panel
+ * sub-view by the Deliver section (Fase 6.3 Task 5): `onBack` renders a
+ * "← Deliver" control, `onDone` fires after a successful save. */
+export function NotesPage({
+  onBack,
+  onDone,
+}: { onBack?: () => void; onDone?: () => void } = {}) {
   const { toast } = useToast();
   const [state, setState] = useState<PageState>({ kind: "loading" });
   const [notesText, setNotesText] = useState("");
@@ -100,10 +108,12 @@ export function NotesPage() {
     }
     toast({ message: "Notes saved.", variant: "success" });
     load(); // re-sync ids the server assigned to newly added TODOs
+    onDone?.();
   }
 
   return (
     <FormPageShell
+      embedded={Boolean(onBack)}
       title="Scene Notes"
       meta={
         <p className="text-caption mt-1.5" style={{ color: "var(--color-ink-secondary)" }}>
@@ -112,6 +122,11 @@ export function NotesPage() {
       }
       footer={<SubmitBar submitLabel="Save Notes" pending={pending} onSubmit={handleSubmit} error={submitError} />}
     >
+      {onBack && (
+        <Button variant="secondary" className="mb-3" onClick={onBack}>
+          ← Deliver
+        </Button>
+      )}
       <div className="flex flex-col gap-4">
         <FieldRow label="Notes" htmlFor="notes-text">
           <TextArea

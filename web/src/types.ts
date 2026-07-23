@@ -1053,3 +1053,67 @@ export type PanelRenderAovListResult =
   | { kind: "ok"; data: PanelRenderAovListOk }
   | { kind: "empty"; reason: string }
   | { kind: "error"; message: string };
+
+// ---------------------------------------------------------------------------
+// Panel Deliver section (Fase 6.3 Task 3) — see `PANEL_DELIVER_OPS` in
+// plugin/sentinel/ui/panel_deliver_ops.py. Unlike the render/qc sections,
+// `panel/deliver` never returns an `{error}` envelope — a missing document
+// degrades every block to `null` (and `stamp` to `null`) rather than
+// failing the whole read, so the client fetch mirrors that directly instead
+// of routing through the `fetchReport` Result-wrapper convention.
+// ---------------------------------------------------------------------------
+
+export interface PanelVersionEntry {
+  version: number;
+  status: string;
+  age: string | null;
+  qc_label: string | null;
+  path: string;
+  filename: string;
+}
+
+export interface PanelVersionLast {
+  version: number;
+  status: string;
+  age: string | null;
+  qc_label: string | null;
+}
+
+export interface PanelVersionBlock {
+  last: PanelVersionLast | null;
+  unsaved: boolean;
+  recent: PanelVersionEntry[];
+}
+
+export interface PanelNotesBlock {
+  summary: string;
+  todos_pending: number;
+  notes_present: boolean;
+  unsaved: boolean;
+}
+
+export interface PanelDeliverAccessBlock {
+  has_manifest: boolean;
+}
+
+export interface PanelDeliverState {
+  version: PanelVersionBlock | null;
+  notes: PanelNotesBlock | null;
+  deliver: PanelDeliverAccessBlock | null;
+  stamp: string | null;
+}
+
+/** `POST /api/panel/deliver/open_version` — see
+ * `_op_panel_deliver_open_version` in panel_deliver_ops.py. A first call
+ * without `force` can surface `error: "unsaved_changes"` for the SPA to
+ * confirm inline before re-posting with `force: true`. */
+export interface PanelOpenVersionResponse {
+  ok: boolean;
+  error?: string;
+  /** Loaded from disk as a new document. */
+  opened?: boolean;
+  /** Re-activated a version that was already open (no disk reload). */
+  switched?: boolean;
+  stamp?: string | null;
+  detail?: string;
+}
