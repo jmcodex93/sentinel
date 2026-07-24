@@ -1125,6 +1125,35 @@ export interface PanelOpenVersionResponse {
 // `toolToast` for the per-tool mapping).
 // ---------------------------------------------------------------------------
 
+/**
+ * Panel Frame sub-view contract (Fase 6.6) — mirrors `build_panel_frame` in
+ * `plugin/sentinel/ui/panel_frame_ops.py`. Each block is independently
+ * nullable, same convention as `PanelOverview`/`PanelDeliverState` — a
+ * failure isolated to one subsystem degrades only that block, never the
+ * whole payload.
+ */
+export interface PanelFrameBlock {
+  has_tag: boolean;
+  camera_name: string | null;
+  format_count: number | null;
+  stale: boolean;
+}
+
+export interface PanelFrameSubjects {
+  marked_count: number;
+}
+
+export interface PanelFrameQc12 {
+  pass: boolean;
+  violations: number;
+}
+
+export interface PanelFrameState {
+  frame: PanelFrameBlock | null;
+  subjects: PanelFrameSubjects | null;
+  qc12: PanelFrameQc12 | null;
+}
+
 export interface PanelToolResult {
   ok: boolean;
   error?: string;
