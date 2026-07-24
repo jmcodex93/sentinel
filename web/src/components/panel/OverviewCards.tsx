@@ -109,7 +109,7 @@ function QcCard({
             />
           );
         })}
-        <CardAction label="Ver todo →" onClick={onOpenQc} />
+        <CardAction label="View all →" onClick={onOpenQc} />
       </CardActions>
     </Card>
   );
@@ -139,7 +139,7 @@ function RenderCard({ render, onValidate }: { render: PanelRender | null; onVali
         {parts.join(" · ") || "No active render data."}
       </p>
       <CardActions>
-        <CardAction label="Validar último render" onClick={onValidate} />
+        <CardAction label="Validate render →" onClick={onValidate} />
       </CardActions>
     </Card>
   );

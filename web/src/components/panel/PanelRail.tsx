@@ -152,7 +152,7 @@ export function PanelRail({
           title="Command Palette — Help menu or its own shortcut"
         >
           <Command size={14} strokeWidth={2.25} />
-          {isSidebar && <span className="text-caption">acciones</span>}
+          {isSidebar && <span className="text-caption">commands</span>}
         </div>
       </div>
     </nav>
