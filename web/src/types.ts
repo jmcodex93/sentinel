@@ -1117,3 +1117,29 @@ export interface PanelOpenVersionResponse {
   stamp?: string | null;
   detail?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Panel Tools section (Fase 6.4) — see `panel/tools/<id>` in
+// plugin/sentinel/ui/panel_tools_ops.py. Every tool op returns this one
+// shape; which fields are populated depends on the tool (see panelTools.ts's
+// `toolToast` for the per-tool mapping).
+// ---------------------------------------------------------------------------
+
+export interface PanelToolResult {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  camera_name?: string;
+  dropped?: number;
+  soloed?: number;
+  unsolo?: boolean;
+  created?: number;
+  updated?: number;
+  nulls?: number;
+  applied?: number;
+  skipped?: number;
+  failed?: number;
+  marked?: number;
+  unmarked?: number;
+  verb?: string;
+}

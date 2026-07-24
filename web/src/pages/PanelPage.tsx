@@ -5,6 +5,7 @@ import { PanelHeader } from "../components/panel/PanelHeader";
 import { PanelRail } from "../components/panel/PanelRail";
 import { QcSection } from "../components/panel/QcSection";
 import { RenderSection } from "../components/panel/RenderSection";
+import { ToolsSection } from "../components/panel/ToolsSection";
 import { EmptyState, ErrorState, LoadingState } from "../components/PageStates";
 import { Button } from "../components/form/Button";
 import {
@@ -16,7 +17,9 @@ import {
   fetchPanelStamp,
   isMock,
   postPanelOpenCollect,
+  postPanelOpenExternal,
   postPanelOpenForm,
+  postPanelOpenSettings,
   postPanelOpenVersion,
   postPanelQcAccept,
   postPanelQcFixAll,
@@ -32,9 +35,11 @@ import {
   postPanelRenderSetMultipart,
   postPanelRenderSetPreset,
   postPanelRenderToggleWatchfolder,
+  postPanelTool,
   runPaletteAction,
 } from "../lib/api";
 import { railBadges, railMode, type PanelSection } from "../lib/panel";
+import { toolToast } from "../lib/panelTools";
 import { useToast } from "../lib/toast";
 import type {
   PaletteAction,
@@ -75,12 +80,10 @@ const POLL_INTERVAL_MS = 2000;
 /** Deep-link palette action id + label for each not-yet-built section's
  * "próximamente" placeholder — the closest native equivalent already
  * reachable via `palette/run`'s navigate/run actions (see webbridge.py
- * `PALETTE_ACTIONS`). Tools has no report page of its own; Asset Hub is
- * where the native panel's Tools tab sends "Asset Management" today, so
- * it's the closest stand-in until 6.4. */
+ * `PALETTE_ACTIONS`). Tools is built out as of Fase 6.4 (see `ToolsSection`
+ * below), so it no longer needs a placeholder entry here. */
 const PLACEHOLDER_DEEP_LINKS: Partial<Record<PanelSection["id"], { id: string; label: string }>> = {
   render: { id: "open_reports_render_validation", label: "Open Render Validation" },
-  tools: { id: "open_hub", label: "Open Asset Hub" },
 };
 
 function SectionPlaceholder({ section, onDeepLink }: { section: PanelSection["id"]; onDeepLink: (id: string) => void }) {
@@ -137,6 +140,7 @@ export function PanelPage() {
   const [renderConfirm, setRenderConfirm] = useState<RenderConfirm | null>(null);
   const [deliverState, setDeliverState] = useState<DeliverPageState>({ kind: "loading" });
   const [busyDeliverId, setBusyDeliverId] = useState<string | null>(null);
+  const [busyTool, setBusyTool] = useState<string | null>(null);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const stampRef = useRef<string | null>(null);
@@ -535,11 +539,40 @@ export function PanelPage() {
     if (!response.ok) toast({ message: response.error || "Couldn't open the Asset Hub.", variant: "warn" });
   }
 
+  /** Tools section (Fase 6.4) — action-only, no confirm gate (nothing
+   * destructive). Every button runs its op and toasts via `toolToast`. */
+  async function handleRunTool(id: string) {
+    setBusyTool(id);
+    const r = await postPanelTool(id);
+    setBusyTool(null);
+    const t = toolToast(id, r);
+    toast({ message: t.message, variant: t.variant });
+  }
+
+  async function handleOpenSettings() {
+    const response = await postPanelOpenSettings();
+    if (!response.ok) toast({ message: response.error || "Couldn't open Settings.", variant: "warn" });
+  }
+
+  async function handleOpenExternal(target: "github" | "bug") {
+    const response = await postPanelOpenExternal(target);
+    if (!response.ok) toast({ message: response.error || "Couldn't open that link.", variant: "warn" });
+  }
+
   const badges = state.kind === "ok" ? railBadges(state.data) : { qc: null, assets: null };
 
   return (
     <div ref={rootRef} className="flex h-screen" style={{ backgroundColor: "var(--color-canvas)" }}>
-      <PanelRail mode={mode} active={section} onSelect={setSection} badges={badges} />
+      <PanelRail
+        mode={mode}
+        active={section}
+        onSelect={setSection}
+        badges={badges}
+        onSettings={handleOpenSettings}
+        onDoctor={() => handleDeepLink("open_reports_doctor")}
+        onGithub={() => handleOpenExternal("github")}
+        onBug={() => handleOpenExternal("bug")}
+      />
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <PanelHeader scene={state.kind === "ok" ? state.data.scene : null} qc={state.kind === "ok" ? state.data.qc : null} />
 
@@ -678,11 +711,20 @@ export function PanelPage() {
             </>
           )}
 
+          {state.kind === "ok" && section === "tools" && (
+            <ToolsSection
+              busy={busyTool}
+              onRunTool={handleRunTool}
+              onOpenHub={() => handleDeepLink("open_hub")}
+            />
+          )}
+
           {state.kind === "ok" &&
             section !== "overview" &&
             section !== "qc" &&
             section !== "render" &&
-            section !== "deliver" && <SectionPlaceholder section={section} onDeepLink={handleDeepLink} />}
+            section !== "deliver" &&
+            section !== "tools" && <SectionPlaceholder section={section} onDeepLink={handleDeepLink} />}
         </div>
       </div>
     </div>

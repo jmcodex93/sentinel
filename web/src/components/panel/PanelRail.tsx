@@ -1,4 +1,5 @@
-import { Command } from "lucide-react";
+import { Bug, Command, ExternalLink, Settings, Stethoscope } from "lucide-react";
+import type { ReactNode } from "react";
 import type { PanelRailBadges, PanelSection, RailMode } from "../../lib/panel";
 import { PANEL_SECTIONS } from "../../lib/panel";
 
@@ -36,16 +37,55 @@ function badgeForSection(id: PanelSection["id"], badges: PanelRailBadges): { cou
  * wired up section-by-section in 6.1-6.4. The `⌘K` hint at the bottom is
  * static (the Command Palette is its own native window opened via the C4D
  * Help menu/shortcut, not something this embedded page can open itself). */
+/** One footer action button — icon-only (with a tooltip) below the 560px
+ * breakpoint, icon+label at/above it, same adaptive rule as the section
+ * buttons above. */
+function FooterButton({
+  isSidebar,
+  label,
+  icon,
+  onClick,
+}: {
+  isSidebar: boolean;
+  label: string;
+  icon: ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      title={label}
+      onClick={onClick}
+      className="text-label flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-100 ease-out"
+      style={{
+        justifyContent: isSidebar ? "flex-start" : "center",
+        color: "var(--color-ink-secondary)",
+      }}
+    >
+      <span className="inline-flex shrink-0 items-center justify-center">{icon}</span>
+      {isSidebar && <span className="truncate">{label}</span>}
+    </button>
+  );
+}
+
 export function PanelRail({
   mode,
   active,
   onSelect,
   badges,
+  onSettings,
+  onDoctor,
+  onGithub,
+  onBug,
 }: {
   mode: RailMode;
   active: PanelSection["id"];
   onSelect: (id: PanelSection["id"]) => void;
   badges: PanelRailBadges;
+  onSettings: () => void;
+  onDoctor: () => void;
+  onGithub: () => void;
+  onBug: () => void;
 }) {
   const isSidebar = mode === "sidebar";
 
@@ -99,12 +139,21 @@ export function PanelRail({
         })}
       </div>
       <div
-        className="flex items-center gap-1.5 px-2.5 pt-1.5"
-        style={{ color: "var(--color-ink-secondary)", justifyContent: isSidebar ? "flex-start" : "center" }}
-        title="Command Palette — Help menu or its own shortcut"
+        className="flex flex-col gap-1 border-t px-1.5 pt-1.5"
+        style={{ borderColor: "var(--color-hairline)" }}
       >
-        <Command size={14} strokeWidth={2.25} />
-        {isSidebar && <span className="text-caption">acciones</span>}
+        <FooterButton isSidebar={isSidebar} label="Settings" icon={<Settings size={16} strokeWidth={2.25} />} onClick={onSettings} />
+        <FooterButton isSidebar={isSidebar} label="Doctor" icon={<Stethoscope size={16} strokeWidth={2.25} />} onClick={onDoctor} />
+        <FooterButton isSidebar={isSidebar} label="GitHub" icon={<ExternalLink size={16} strokeWidth={2.25} />} onClick={onGithub} />
+        <FooterButton isSidebar={isSidebar} label="Report Bug" icon={<Bug size={16} strokeWidth={2.25} />} onClick={onBug} />
+        <div
+          className="flex items-center gap-1.5 px-2.5 pt-1"
+          style={{ color: "var(--color-ink-secondary)", justifyContent: isSidebar ? "flex-start" : "center" }}
+          title="Command Palette — Help menu or its own shortcut"
+        >
+          <Command size={14} strokeWidth={2.25} />
+          {isSidebar && <span className="text-caption">acciones</span>}
+        </div>
       </div>
     </nav>
   );

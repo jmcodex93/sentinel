@@ -272,31 +272,29 @@ def _create_vibrate_null(doc):
     _merge_c4d_file(doc, "VibrateNull.c4d")
 
 
-def _toggle_safe_area_mark(doc, refresh=None):
+def _toggle_safe_area_mark_core(doc):
     """Mark / unmark the current selection as Safe Area Subjects.
+
+    Dialog-free core (Fase 6.4 Task 3) — returns a status dict instead of
+    showing a ``MessageDialog`` (a modal inside the panel's Timer drain
+    freezes all of C4D). ``_toggle_safe_area_mark`` below is the thin native
+    wrapper that re-shows the original dialog text on the tokened errors and
+    (only there) calls an optional ``refresh()`` on success.
 
     Drives the QC #12 Cross-Aspect Safe-Area check. Smart toggle:
       - All selected objects ALREADY marked  → unmark them all
       - Any selected object NOT marked       → mark them all
                                                (aligns toward "marked")
-      - Empty selection                      → friendly hint dialog
 
     Marks persist as UserData boolean on each object — they survive
     save/reload and Cmd+Z reverts the operation as a single undo step.
     """
     if not doc:
-        c4d.gui.MessageDialog("No active document.")
-        return
+        return {"ok": False, "error": "no_document"}
 
     sel = doc.GetActiveObjects(c4d.GETACTIVEOBJECTFLAGS_CHILDREN) or []
     if not sel:
-        c4d.gui.MessageDialog(
-            "Select one or more objects first, then click again.\n\n"
-            "Tip: mark important compositional elements (logo, title, "
-            "character) so QC #12 can verify they stay inside the safe "
-            "area of every multi-format delivery Take."
-        )
-        return
+        return {"ok": False, "error": "no_selection"}
 
     # Detect current state
     all_marked = all(is_object_marked_safe_area(o) for o in sel)
@@ -329,21 +327,51 @@ def _toggle_safe_area_mark(doc, refresh=None):
         doc.EndUndo()
         c4d.EventAdd()
 
-    # Refresh the QC row immediately so the user sees the count update
-    try:
-        check_cache.clear()
-        if refresh is not None:
-            refresh()
-    except Exception:
-        pass
+    # Invalidate the QC cache immediately so the next read reflects the
+    # updated marks (the SPA polls; the native panel also calls refresh()).
+    check_cache.clear()
 
-    # Brief feedback
-    verb = "Marked" if target_state else "Unmarked"
-    count = marked_count if target_state else unmarked_count
-    msg = f"{verb} {count} object(s) as Safe Area Subject(s)"
+    # Brief feedback (original native console message — preserved here on
+    # the success path so it still fires exactly once, from the core).
+    feedback_verb = "Marked" if target_state else "Unmarked"
+    feedback_count = marked_count if target_state else unmarked_count
+    msg = f"{feedback_verb} {feedback_count} object(s) as Safe Area Subject(s)"
     if failed_count:
         msg += f"\n({failed_count} failed — see Console for details)"
     safe_print(msg)
+
+    return {
+        "ok": True,
+        "verb": "mark" if target_state else "unmark",
+        "marked": marked_count,
+        "unmarked": unmarked_count,
+        "failed": failed_count,
+    }
+
+
+def _toggle_safe_area_mark(doc, refresh=None):
+    """Mark / unmark the current selection as Safe Area Subjects.
+
+    Native wrapper around ``_toggle_safe_area_mark_core`` — re-shows the
+    original dialogs on the tokened errors, and calls ``refresh()`` (if
+    provided) on success.
+    """
+    result = _toggle_safe_area_mark_core(doc)
+    if result.get("error") == "no_document":
+        c4d.gui.MessageDialog("No active document.")
+    elif result.get("error") == "no_selection":
+        c4d.gui.MessageDialog(
+            "Select one or more objects first, then click again.\n\n"
+            "Tip: mark important compositional elements (logo, title, "
+            "character) so QC #12 can verify they stay inside the safe "
+            "area of every multi-format delivery Take."
+        )
+    elif result.get("ok") and refresh is not None:
+        try:
+            refresh()
+        except Exception:
+            pass
+    return result
 
 
 def _create_hierarchy(doc):
@@ -354,35 +382,41 @@ def _merge_camera_file(doc, filename):
     _merge_c4d_file(doc, filename)
 
 
-def _merge_c4d_file(doc, filename):
-    """Merge camera setup from C4D file"""
+def _merge_c4d_file_core(doc, filename):
+    """Dialog-free core of ``_merge_c4d_file`` (Fase 6.4) — merges a bundled
+    template .c4d (nulls / vibrate null / camera rigs) into the doc. Returns
+    a status dict; NEVER shows a dialog (a MessageDialog inside the panel's
+    Timer drain freezes C4D — v1.21.0 pattern)."""
     if not doc:
-        return
-
+        return {"ok": False, "error": "no_document"}
+    c4d_file = os.path.join(_ROOT, "c4d", filename)
+    if not os.path.exists(c4d_file):
+        safe_print(f"{filename} not found at: {c4d_file}")
+        return {"ok": False, "error": "file_not_found", "filename": filename}
     try:
-        # Get path to the C4D file (in the same plugin directory)
-        plugin_dir = _ROOT
-        c4d_file = os.path.join(plugin_dir, "c4d", filename)
-
-        # Check if file exists
-        if not os.path.exists(c4d_file):
-            safe_print(f"{filename} not found at: {c4d_file}")
-            c4d.gui.MessageDialog(f"{filename} file not found in c4d folder")
-            return
-
-        # Merge the C4D file into the current document
-        merge_doc = c4d.documents.MergeDocument(doc, c4d_file, c4d.SCENEFILTER_OBJECTS | c4d.SCENEFILTER_MATERIALS)
-
-        if merge_doc:
-            c4d.EventAdd()
-            camera_name = filename.replace(".c4d", "").replace("cam_", "").replace("_", " ").title()
-            safe_print(f"Merged {camera_name} camera setup from {filename}")
-        else:
-            safe_print(f"Failed to merge {filename}")
-
+        merged = c4d.documents.MergeDocument(
+            doc, c4d_file, c4d.SCENEFILTER_OBJECTS | c4d.SCENEFILTER_MATERIALS)
     except Exception as e:
         safe_print(f"Error merging camera file {filename}: {e}")
-        c4d.gui.MessageDialog(f"Error loading camera setup: {e}")
+        return {"ok": False, "error": "merge_error", "detail": str(e)}
+    if not merged:
+        safe_print(f"Failed to merge {filename}")
+        return {"ok": False, "error": "merge_failed"}
+    c4d.EventAdd()
+    camera_name = filename.replace(".c4d", "").replace("cam_", "").replace("_", " ").title()
+    safe_print(f"Merged {camera_name} setup from {filename}")
+    return {"ok": True, "camera_name": camera_name}
+
+
+def _merge_c4d_file(doc, filename):
+    """Merge a bundled template .c4d. Thin dialog wrapper over
+    ``_merge_c4d_file_core`` — keeps the native MessageDialog UX."""
+    result = _merge_c4d_file_core(doc, filename)
+    if result.get("error") == "file_not_found":
+        c4d.gui.MessageDialog(f"{filename} file not found in c4d folder")
+    elif result.get("error") == "merge_error":
+        c4d.gui.MessageDialog(f"Error loading camera setup: {result.get('detail')}")
+    return result
 
 
 def _get_template_path():
@@ -696,10 +730,16 @@ def _add_sentinel_frame_tag(doc):
     # status == "ok" — safe_print already logged inside the core.
 
 
-def _hierarchy_to_layers(doc):
-    """Link main project nulls and their children to layers with matching names"""
+def _hierarchy_to_layers_core(doc):
+    """Link main project nulls and their children to layers with matching names.
+
+    Dialog-free core (Fase 6.4 Task 2) — returns a status dict instead of
+    showing a ``MessageDialog`` (a modal inside the panel's Timer drain
+    freezes all of C4D). ``_hierarchy_to_layers`` below is the thin native
+    wrapper that re-shows the original dialog text on the tokened errors.
+    """
     if not doc:
-        return
+        return {"ok": False, "error": "no_document"}
 
     safe_print("Starting Hierarchy to Layers sync...")
 
@@ -720,22 +760,20 @@ def _hierarchy_to_layers(doc):
                     orphan_objects.append(obj)
         obj = obj.GetNext()
 
-    # If there are orphan objects, show error
+    # If there are orphan objects, report the error
     if orphan_objects:
-        orphan_names = [obj.GetName() for obj in orphan_objects[:5]]  # Show first 5
-        more = f" and {len(orphan_objects)-5} more" if len(orphan_objects) > 5 else ""
-
-        msg = f"Found {len(orphan_objects)} object(s) outside of null groups:\n"
-        msg += "\n".join(orphan_names) + more
-        msg += "\n\nPlease organize all objects into null groups first."
-        c4d.gui.MessageDialog(msg)
+        orphan_names = [obj.GetName() for obj in orphan_objects[:5]]  # First 5
         safe_print(f"Aborted: {len(orphan_objects)} objects found outside null groups")
-        return
+        return {
+            "ok": False,
+            "error": "orphans",
+            "count": len(orphan_objects),
+            "names": orphan_names,
+        }
 
     # No orphans, proceed with layer sync
     if not root_objects:
-        c4d.gui.MessageDialog("No null groups found in the scene.")
-        return
+        return {"ok": False, "error": "no_groups"}
 
     # Start undo
     doc.StartUndo()
@@ -745,7 +783,7 @@ def _hierarchy_to_layers(doc):
     if not layer_root:
         safe_print("Error: Could not get layer root")
         doc.EndUndo()
-        return
+        return {"ok": False, "error": "no_layer_root"}
 
     created_layers = 0
     updated_layers = 0
@@ -770,8 +808,35 @@ def _hierarchy_to_layers(doc):
     doc.EndUndo()
     c4d.EventAdd()
 
-    # Just report to console, no popup
     safe_print(f"Hierarchy→Layers complete: {created_layers} new, {updated_layers} updated layers, {len(root_objects)} nulls synced")
+    return {
+        "ok": True,
+        "created": created_layers,
+        "updated": updated_layers,
+        "synced": len(root_objects),
+    }
+
+
+def _hierarchy_to_layers(doc):
+    """Link main project nulls and their children to layers with matching names.
+
+    Thin dialog wrapper over ``_hierarchy_to_layers_core`` (Fase 6.4 Task 2) —
+    same dialog text/order as before the extraction.
+    """
+    result = _hierarchy_to_layers_core(doc)
+    error = result.get("error")
+
+    if error == "orphans":
+        orphan_names = result["names"]
+        more = f" and {result['count']-5} more" if result["count"] > 5 else ""
+        msg = f"Found {result['count']} object(s) outside of null groups:\n"
+        msg += "\n".join(orphan_names) + more
+        msg += "\n\nPlease organize all objects into null groups first."
+        c4d.gui.MessageDialog(msg)
+    elif error == "no_groups":
+        c4d.gui.MessageDialog("No null groups found in the scene.")
+    # "no_document"/"no_layer_root" had no dialog originally — silent.
+    return result
 
 
 def _find_or_create_layer(doc, layer_root, name):
@@ -834,17 +899,22 @@ def _find_or_create_layer(doc, layer_root, name):
     return new_layer, True  # Return new layer and flag
 
 
-def _solo_layers(doc):
-    """Solo selected layers - disable all other layers and their objects"""
+def _solo_layers_core(doc):
+    """Solo selected layers - disable all other layers and their objects.
+
+    Dialog-free core (Fase 6.4 Task 2) — returns a status dict instead of
+    showing a ``MessageDialog``. ``_solo_layers`` below is the thin native
+    wrapper that re-shows the original dialog text on the tokened errors.
+    """
     if not doc:
-        return
+        return {"ok": False, "error": "no_document"}
 
     # Check if any layers are currently disabled (solo is active)
     # If so, restore all layers
     layer_root = doc.GetLayerObjectRoot()
     if not layer_root:
         safe_print("Error: Could not get layer root")
-        return
+        return {"ok": False, "error": "no_layer_root"}
 
     # Check if we're in solo mode
     def check_solo_mode(layer):
@@ -862,7 +932,7 @@ def _solo_layers(doc):
     if first_layer and check_solo_mode(first_layer):
         # We're in solo mode, restore all
         _unsolo_layers(doc)
-        return
+        return {"ok": True, "unsolo": True}
 
     # Get all selected layers
     selected_layers = []
@@ -881,14 +951,12 @@ def _solo_layers(doc):
     # Start from first layer
     first_layer = layer_root.GetDown()
     if not first_layer:
-        c4d.gui.MessageDialog("No layers found in the scene.\nCreate layers first using Hierarchy→Layers.")
-        return
+        return {"ok": False, "error": "no_layers"}
 
     collect_selected_layers(first_layer)
 
     if not selected_layers:
-        c4d.gui.MessageDialog("Please select one or more layers to solo.")
-        return
+        return {"ok": False, "error": "no_selection"}
 
     safe_print(f"Solo mode: Isolating {len(selected_layers)} layer(s)")
 
@@ -991,6 +1059,30 @@ def _solo_layers(doc):
 
     # Report to console
     safe_print(f"Solo Layers complete: {layers_soloed} soloed, {layers_disabled} disabled, {objects_affected} unassigned objects hidden")
+    return {
+        "ok": True,
+        "soloed": layers_soloed,
+        "disabled": layers_disabled,
+        "objects_hidden": objects_affected,
+    }
+
+
+def _solo_layers(doc):
+    """Solo selected layers - disable all other layers and their objects.
+
+    Thin dialog wrapper over ``_solo_layers_core`` (Fase 6.4 Task 2) — same
+    dialog text/order as before the extraction.
+    """
+    result = _solo_layers_core(doc)
+    error = result.get("error")
+
+    if error == "no_layers":
+        c4d.gui.MessageDialog(
+            "No layers found in the scene.\nCreate layers first using Hierarchy→Layers.")
+    elif error == "no_selection":
+        c4d.gui.MessageDialog("Please select one or more layers to solo.")
+    # "no_document"/"no_layer_root" had no dialog originally — silent.
+    return result
 
 
 def _unsolo_layers(doc):
@@ -1088,16 +1180,22 @@ def _assign_to_layer_recursive(doc, obj, layer):
         child = child.GetNext()
 
 
-def _drop_to_floor(doc):
-    """Drop selected objects to floor (Y=0 plane) - handles rotation and hierarchy correctly"""
+def _drop_to_floor_core(doc):
+    """Drop selected objects to floor (Y=0 plane) - handles rotation and
+    hierarchy correctly.
+
+    Dialog-free core (Fase 6.4 Task 2) — returns a status dict. The original
+    function had no dialog on the no-selection branch (``safe_print`` only),
+    so the wrapper below does nothing extra for it.
+    """
     if not doc:
-        return
+        return {"ok": False, "error": "no_document"}
 
     # Get selected objects
     selected = doc.GetActiveObjects(c4d.GETACTIVEOBJECTFLAGS_SELECTIONORDER)
     if not selected:
         safe_print("Please select one or more objects to drop to floor")
-        return
+        return {"ok": False, "error": "no_selection"}
 
     # Start undo
     doc.StartUndo()
@@ -1235,6 +1333,19 @@ def _drop_to_floor(doc):
     else:
         safe_print("No objects needed dropping - already on floor")
 
+    return {"ok": True, "dropped": dropped_count}
+
+
+def _drop_to_floor(doc):
+    """Drop selected objects to floor (Y=0 plane) - handles rotation and
+    hierarchy correctly.
+
+    Thin wrapper over ``_drop_to_floor_core`` (Fase 6.4 Task 2) — the
+    original had no dialog on any branch, so this simply forwards the
+    result.
+    """
+    return _drop_to_floor_core(doc)
+
 
 def _take_renderview_snapshot(artist_name):
     """Take a snapshot from RenderView"""
@@ -1250,17 +1361,21 @@ def _take_renderview_snapshot(artist_name):
     snapshot_save_still(doc, artist_name)
 
 
-def _apply_abc_retime_tag():
-    """Apply ABC Retime tag to selected object(s)"""
-    doc = documents.GetActiveDocument()
+def _apply_abc_retime_tag_core(doc):
+    """Apply ABC Retime tag to selected object(s).
+
+    Dialog-free core (Fase 6.4 Task 3) — returns a status dict instead of
+    showing a ``MessageDialog`` (a modal inside the panel's Timer drain
+    freezes all of C4D). ``_apply_abc_retime_tag`` below is the thin native
+    wrapper (no-arg signature preserved) that re-shows the original dialogs
+    on the tokened errors.
+    """
     if not doc:
-        c4d.gui.MessageDialog("No active document")
-        return
+        return {"ok": False, "error": "no_document"}
 
     selection = doc.GetActiveObjects(c4d.GETACTIVEOBJECTFLAGS_CHILDREN)
     if not selection:
-        c4d.gui.MessageDialog("Please select an object first\n\n(Works with Alembic, Point Cache, Mograph Cache, or X-Particles Cache objects)")
-        return
+        return {"ok": False, "error": "no_selection"}
 
     # ABC Retime plugin ID
     ABC_RETIME_TAG_ID = 1058910
@@ -1290,6 +1405,30 @@ def _apply_abc_retime_tag():
     if applied_count > 0:
         c4d.EventAdd()
 
-    # Show error message only if failed
     if applied_count == 0 and skipped_count == 0:
+        return {"ok": False, "error": "apply_failed"}
+
+    return {
+        "ok": True,
+        "applied": applied_count,
+        "skipped": skipped_count,
+        "failed": failed_count,
+    }
+
+
+def _apply_abc_retime_tag():
+    """Apply ABC Retime tag to selected object(s).
+
+    Native wrapper around ``_apply_abc_retime_tag_core`` — fetches the
+    active document itself (preserves the original no-arg signature) and
+    re-shows the original dialogs on the tokened errors.
+    """
+    doc = documents.GetActiveDocument()
+    result = _apply_abc_retime_tag_core(doc)
+    if result.get("error") == "no_document":
+        c4d.gui.MessageDialog("No active document")
+    elif result.get("error") == "no_selection":
+        c4d.gui.MessageDialog("Please select an object first\n\n(Works with Alembic, Point Cache, Mograph Cache, or X-Particles Cache objects)")
+    elif result.get("error") == "apply_failed":
         c4d.gui.MessageDialog("ABC Retime tag could not be applied\n\nPossible reasons:\n- ABC Retime plugin not installed\n- Invalid object type\n\nManual access: Right-click Tags → Extensions → Alembic Retime")
+    return result
