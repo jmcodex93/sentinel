@@ -259,3 +259,40 @@ class TestAbcMarkCores:
             "unmarked": 0,
             "failed": 0,
         }
+
+
+class TestParityOps:
+    def test_ops_registered(self, sentinel_module):
+        from sentinel.ui import panel_tools_ops
+        assert "panel/tools/open_settings" in panel_tools_ops.PANEL_TOOLS_OPS
+        assert "panel/open_external" in panel_tools_ops.PANEL_TOOLS_OPS
+
+    def test_open_external_github(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        opened = {}
+        monkeypatch.setattr(panel_tools_ops.webbrowser, "open",
+                            lambda url: opened.setdefault("url", url))
+        assert panel_tools_ops._op_open_external({"target": "github"}) == {"ok": True}
+        assert opened["url"] == "https://github.com/jmcodex93/sentinel"
+
+    def test_open_external_bug(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        opened = {}
+        monkeypatch.setattr(panel_tools_ops.webbrowser, "open",
+                            lambda url: opened.setdefault("url", url))
+        panel_tools_ops._op_open_external({"target": "bug"})
+        assert opened["url"] == "https://github.com/jmcodex93/sentinel/issues/new"
+
+    def test_open_external_bad_target(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        monkeypatch.setattr(panel_tools_ops.webbrowser, "open",
+                            lambda url: (_ for _ in ()).throw(AssertionError("must not open")))
+        assert panel_tools_ops._op_open_external({"target": "nope"}) == {
+            "ok": False, "error": "bad_target"}
+
+    def test_open_settings_no_document(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: None)
+        assert panel_tools_ops._op_open_settings({}) == {
+            "ok": False, "error": "no_document"}
