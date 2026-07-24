@@ -702,10 +702,16 @@ def _add_sentinel_frame_tag(doc):
     # status == "ok" — safe_print already logged inside the core.
 
 
-def _hierarchy_to_layers(doc):
-    """Link main project nulls and their children to layers with matching names"""
+def _hierarchy_to_layers_core(doc):
+    """Link main project nulls and their children to layers with matching names.
+
+    Dialog-free core (Fase 6.4 Task 2) — returns a status dict instead of
+    showing a ``MessageDialog`` (a modal inside the panel's Timer drain
+    freezes all of C4D). ``_hierarchy_to_layers`` below is the thin native
+    wrapper that re-shows the original dialog text on the tokened errors.
+    """
     if not doc:
-        return
+        return {"ok": False, "error": "no_document"}
 
     safe_print("Starting Hierarchy to Layers sync...")
 
@@ -726,22 +732,20 @@ def _hierarchy_to_layers(doc):
                     orphan_objects.append(obj)
         obj = obj.GetNext()
 
-    # If there are orphan objects, show error
+    # If there are orphan objects, report the error
     if orphan_objects:
-        orphan_names = [obj.GetName() for obj in orphan_objects[:5]]  # Show first 5
-        more = f" and {len(orphan_objects)-5} more" if len(orphan_objects) > 5 else ""
-
-        msg = f"Found {len(orphan_objects)} object(s) outside of null groups:\n"
-        msg += "\n".join(orphan_names) + more
-        msg += "\n\nPlease organize all objects into null groups first."
-        c4d.gui.MessageDialog(msg)
+        orphan_names = [obj.GetName() for obj in orphan_objects[:5]]  # First 5
         safe_print(f"Aborted: {len(orphan_objects)} objects found outside null groups")
-        return
+        return {
+            "ok": False,
+            "error": "orphans",
+            "count": len(orphan_objects),
+            "names": orphan_names,
+        }
 
     # No orphans, proceed with layer sync
     if not root_objects:
-        c4d.gui.MessageDialog("No null groups found in the scene.")
-        return
+        return {"ok": False, "error": "no_groups"}
 
     # Start undo
     doc.StartUndo()
@@ -751,7 +755,7 @@ def _hierarchy_to_layers(doc):
     if not layer_root:
         safe_print("Error: Could not get layer root")
         doc.EndUndo()
-        return
+        return {"ok": False, "error": "no_layer_root"}
 
     created_layers = 0
     updated_layers = 0
@@ -776,8 +780,35 @@ def _hierarchy_to_layers(doc):
     doc.EndUndo()
     c4d.EventAdd()
 
-    # Just report to console, no popup
     safe_print(f"Hierarchy→Layers complete: {created_layers} new, {updated_layers} updated layers, {len(root_objects)} nulls synced")
+    return {
+        "ok": True,
+        "created": created_layers,
+        "updated": updated_layers,
+        "synced": len(root_objects),
+    }
+
+
+def _hierarchy_to_layers(doc):
+    """Link main project nulls and their children to layers with matching names.
+
+    Thin dialog wrapper over ``_hierarchy_to_layers_core`` (Fase 6.4 Task 2) —
+    same dialog text/order as before the extraction.
+    """
+    result = _hierarchy_to_layers_core(doc)
+    error = result.get("error")
+
+    if error == "orphans":
+        orphan_names = result["names"]
+        more = f" and {result['count']-5} more" if result["count"] > 5 else ""
+        msg = f"Found {result['count']} object(s) outside of null groups:\n"
+        msg += "\n".join(orphan_names) + more
+        msg += "\n\nPlease organize all objects into null groups first."
+        c4d.gui.MessageDialog(msg)
+    elif error == "no_groups":
+        c4d.gui.MessageDialog("No null groups found in the scene.")
+    # "no_document"/"no_layer_root" had no dialog originally — silent.
+    return result
 
 
 def _find_or_create_layer(doc, layer_root, name):
@@ -840,17 +871,22 @@ def _find_or_create_layer(doc, layer_root, name):
     return new_layer, True  # Return new layer and flag
 
 
-def _solo_layers(doc):
-    """Solo selected layers - disable all other layers and their objects"""
+def _solo_layers_core(doc):
+    """Solo selected layers - disable all other layers and their objects.
+
+    Dialog-free core (Fase 6.4 Task 2) — returns a status dict instead of
+    showing a ``MessageDialog``. ``_solo_layers`` below is the thin native
+    wrapper that re-shows the original dialog text on the tokened errors.
+    """
     if not doc:
-        return
+        return {"ok": False, "error": "no_document"}
 
     # Check if any layers are currently disabled (solo is active)
     # If so, restore all layers
     layer_root = doc.GetLayerObjectRoot()
     if not layer_root:
         safe_print("Error: Could not get layer root")
-        return
+        return {"ok": False, "error": "no_layer_root"}
 
     # Check if we're in solo mode
     def check_solo_mode(layer):
@@ -868,7 +904,7 @@ def _solo_layers(doc):
     if first_layer and check_solo_mode(first_layer):
         # We're in solo mode, restore all
         _unsolo_layers(doc)
-        return
+        return {"ok": True, "unsolo": True}
 
     # Get all selected layers
     selected_layers = []
@@ -887,14 +923,12 @@ def _solo_layers(doc):
     # Start from first layer
     first_layer = layer_root.GetDown()
     if not first_layer:
-        c4d.gui.MessageDialog("No layers found in the scene.\nCreate layers first using Hierarchy→Layers.")
-        return
+        return {"ok": False, "error": "no_layers"}
 
     collect_selected_layers(first_layer)
 
     if not selected_layers:
-        c4d.gui.MessageDialog("Please select one or more layers to solo.")
-        return
+        return {"ok": False, "error": "no_selection"}
 
     safe_print(f"Solo mode: Isolating {len(selected_layers)} layer(s)")
 
@@ -997,6 +1031,30 @@ def _solo_layers(doc):
 
     # Report to console
     safe_print(f"Solo Layers complete: {layers_soloed} soloed, {layers_disabled} disabled, {objects_affected} unassigned objects hidden")
+    return {
+        "ok": True,
+        "soloed": layers_soloed,
+        "disabled": layers_disabled,
+        "objects_hidden": objects_affected,
+    }
+
+
+def _solo_layers(doc):
+    """Solo selected layers - disable all other layers and their objects.
+
+    Thin dialog wrapper over ``_solo_layers_core`` (Fase 6.4 Task 2) — same
+    dialog text/order as before the extraction.
+    """
+    result = _solo_layers_core(doc)
+    error = result.get("error")
+
+    if error == "no_layers":
+        c4d.gui.MessageDialog(
+            "No layers found in the scene.\nCreate layers first using Hierarchy→Layers.")
+    elif error == "no_selection":
+        c4d.gui.MessageDialog("Please select one or more layers to solo.")
+    # "no_document"/"no_layer_root" had no dialog originally — silent.
+    return result
 
 
 def _unsolo_layers(doc):
@@ -1094,16 +1152,22 @@ def _assign_to_layer_recursive(doc, obj, layer):
         child = child.GetNext()
 
 
-def _drop_to_floor(doc):
-    """Drop selected objects to floor (Y=0 plane) - handles rotation and hierarchy correctly"""
+def _drop_to_floor_core(doc):
+    """Drop selected objects to floor (Y=0 plane) - handles rotation and
+    hierarchy correctly.
+
+    Dialog-free core (Fase 6.4 Task 2) — returns a status dict. The original
+    function had no dialog on the no-selection branch (``safe_print`` only),
+    so the wrapper below does nothing extra for it.
+    """
     if not doc:
-        return
+        return {"ok": False, "error": "no_document"}
 
     # Get selected objects
     selected = doc.GetActiveObjects(c4d.GETACTIVEOBJECTFLAGS_SELECTIONORDER)
     if not selected:
         safe_print("Please select one or more objects to drop to floor")
-        return
+        return {"ok": False, "error": "no_selection"}
 
     # Start undo
     doc.StartUndo()
@@ -1240,6 +1304,19 @@ def _drop_to_floor(doc):
         safe_print(f"Dropped {dropped_count} objects to floor")
     else:
         safe_print("No objects needed dropping - already on floor")
+
+    return {"ok": True, "dropped": dropped_count}
+
+
+def _drop_to_floor(doc):
+    """Drop selected objects to floor (Y=0 plane) - handles rotation and
+    hierarchy correctly.
+
+    Thin wrapper over ``_drop_to_floor_core`` (Fase 6.4 Task 2) — the
+    original had no dialog on any branch, so this simply forwards the
+    result.
+    """
+    return _drop_to_floor_core(doc)
 
 
 def _take_renderview_snapshot(artist_name):

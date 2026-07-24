@@ -88,3 +88,66 @@ class TestMergeOps:
                             lambda doc, fn: captured.setdefault("fn", fn) or {"ok": True, "camera_name": "Simple"})
         panel_tools_ops._op_tool_cam_simple({})
         assert captured["fn"] == "cam_simple.c4d"
+
+
+class TestLayerFloorCores:
+    def _forbid_dialog(self, monkeypatch):
+        from sentinel.ui import scene_tools
+
+        def _boom(*a, **k):
+            raise AssertionError("no dialog in a *_core")
+
+        monkeypatch.setattr(scene_tools.c4d.gui, "MessageDialog", _boom)
+
+    def test_h_to_layers_no_document(self, sentinel_module, monkeypatch):
+        from sentinel.ui import scene_tools
+        self._forbid_dialog(monkeypatch)
+        assert scene_tools._hierarchy_to_layers_core(None) == {
+            "ok": False, "error": "no_document"}
+
+    def test_solo_no_document(self, sentinel_module, monkeypatch):
+        from sentinel.ui import scene_tools
+        self._forbid_dialog(monkeypatch)
+        assert scene_tools._solo_layers_core(None) == {
+            "ok": False, "error": "no_document"}
+
+    def test_drop_no_document(self, sentinel_module, monkeypatch):
+        from sentinel.ui import scene_tools
+        self._forbid_dialog(monkeypatch)
+        assert scene_tools._drop_to_floor_core(None) == {
+            "ok": False, "error": "no_document"}
+
+    def test_drop_no_selection(self, sentinel_module, monkeypatch):
+        from sentinel.ui import scene_tools
+        self._forbid_dialog(monkeypatch)
+
+        class _Doc:
+            def GetActiveObjects(self, flags):
+                return []
+
+        assert scene_tools._drop_to_floor_core(_Doc()) == {
+            "ok": False, "error": "no_selection"}
+
+    def test_ops_registered(self, sentinel_module):
+        from sentinel.ui import panel_tools_ops
+        for key in ("panel/tools/h_to_layers", "panel/tools/solo",
+                    "panel/tools/drop_to_floor"):
+            assert key in panel_tools_ops.PANEL_TOOLS_OPS
+
+    def test_drop_op_maps_no_selection(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        from sentinel.ui import scene_tools
+
+        def _boom(*a, **k):
+            raise AssertionError("no dialog in op path")
+
+        monkeypatch.setattr(scene_tools.c4d.gui, "MessageDialog", _boom)
+
+        class _Doc:
+            def GetActiveObjects(self, flags):
+                return []
+
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: _Doc())
+        assert panel_tools_ops._op_tool_drop_to_floor({}) == {
+            "ok": False, "error": "no_selection"}

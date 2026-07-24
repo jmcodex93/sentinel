@@ -35,9 +35,24 @@ def _op_tool_cam_shakel(payload):
     return _tool(lambda doc: scene_tools._merge_c4d_file_core(doc, "cam_w_shakel.c4d"))
 
 
+def _op_tool_h_to_layers(payload):
+    return _tool(scene_tools._hierarchy_to_layers_core)
+
+
+def _op_tool_solo(payload):
+    return _tool(scene_tools._solo_layers_core)
+
+
+def _op_tool_drop_to_floor(payload):
+    return _tool(scene_tools._drop_to_floor_core)
+
+
 PANEL_TOOLS_OPS = {
     "panel/tools/hierarchy": _op_tool_hierarchy,
     "panel/tools/vibrate_null": _op_tool_vibrate_null,
     "panel/tools/cam_simple": _op_tool_cam_simple,
     "panel/tools/cam_shakel": _op_tool_cam_shakel,
+    "panel/tools/h_to_layers": _op_tool_h_to_layers,
+    "panel/tools/solo": _op_tool_solo,
+    "panel/tools/drop_to_floor": _op_tool_drop_to_floor,
 }
