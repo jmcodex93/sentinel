@@ -331,6 +331,15 @@ def _toggle_safe_area_mark_core(doc):
     # updated marks (the SPA polls; the native panel also calls refresh()).
     check_cache.clear()
 
+    # Brief feedback (original native console message — preserved here on
+    # the success path so it still fires exactly once, from the core).
+    feedback_verb = "Marked" if target_state else "Unmarked"
+    feedback_count = marked_count if target_state else unmarked_count
+    msg = f"{feedback_verb} {feedback_count} object(s) as Safe Area Subject(s)"
+    if failed_count:
+        msg += f"\n({failed_count} failed — see Console for details)"
+    safe_print(msg)
+
     return {
         "ok": True,
         "verb": "mark" if target_state else "unmark",
@@ -363,14 +372,6 @@ def _toggle_safe_area_mark(doc, refresh=None):
         except Exception:
             pass
     return result
-
-    # Brief feedback
-    verb = "Marked" if target_state else "Unmarked"
-    count = marked_count if target_state else unmarked_count
-    msg = f"{verb} {count} object(s) as Safe Area Subject(s)"
-    if failed_count:
-        msg += f"\n({failed_count} failed — see Console for details)"
-    safe_print(msg)
 
 
 def _create_hierarchy(doc):

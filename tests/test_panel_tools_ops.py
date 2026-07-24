@@ -217,3 +217,45 @@ class TestAbcMarkCores:
         monkeypatch.setattr(panel_tools_ops.c4d.documents,
                             "GetActiveDocument", lambda: _Doc())
         assert panel_tools_ops._op_tool_mark_safe_area({})["error"] == "no_selection"
+
+    def test_mark_core_success_marks_unmarked_object(self, sentinel_module, monkeypatch):
+        # Regression test: _toggle_safe_area_mark_core used to have its
+        # console-feedback line stranded as dead code after `return result`
+        # in the wrapper (unreachable + referencing wrapper-local names that
+        # don't exist there). Locks the success-path dict shape so a future
+        # refactor can't silently drop it again.
+        from sentinel.ui import scene_tools
+        self._forbid_dialog(monkeypatch)
+
+        class _Obj:
+            pass
+
+        obj = _Obj()
+
+        class _Doc:
+            def GetActiveObjects(self, flags):
+                return [obj]
+
+            def StartUndo(self):
+                pass
+
+            def EndUndo(self):
+                pass
+
+        monkeypatch.setattr(scene_tools, "is_object_marked_safe_area",
+                            lambda o: False)
+        monkeypatch.setattr(scene_tools, "mark_object_safe_area",
+                            lambda o, state, doc: True)
+        monkeypatch.setattr(scene_tools, "unmark_object_safe_area",
+                            lambda o, doc: True)
+        monkeypatch.setattr(scene_tools.check_cache, "clear", lambda: None)
+        monkeypatch.setattr(scene_tools.c4d, "EventAdd", lambda *a, **k: None)
+
+        result = scene_tools._toggle_safe_area_mark_core(_Doc())
+        assert result == {
+            "ok": True,
+            "verb": "mark",
+            "marked": 1,
+            "unmarked": 0,
+            "failed": 0,
+        }
