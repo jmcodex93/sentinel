@@ -272,31 +272,29 @@ def _create_vibrate_null(doc):
     _merge_c4d_file(doc, "VibrateNull.c4d")
 
 
-def _toggle_safe_area_mark(doc, refresh=None):
+def _toggle_safe_area_mark_core(doc):
     """Mark / unmark the current selection as Safe Area Subjects.
+
+    Dialog-free core (Fase 6.4 Task 3) — returns a status dict instead of
+    showing a ``MessageDialog`` (a modal inside the panel's Timer drain
+    freezes all of C4D). ``_toggle_safe_area_mark`` below is the thin native
+    wrapper that re-shows the original dialog text on the tokened errors and
+    (only there) calls an optional ``refresh()`` on success.
 
     Drives the QC #12 Cross-Aspect Safe-Area check. Smart toggle:
       - All selected objects ALREADY marked  → unmark them all
       - Any selected object NOT marked       → mark them all
                                                (aligns toward "marked")
-      - Empty selection                      → friendly hint dialog
 
     Marks persist as UserData boolean on each object — they survive
     save/reload and Cmd+Z reverts the operation as a single undo step.
     """
     if not doc:
-        c4d.gui.MessageDialog("No active document.")
-        return
+        return {"ok": False, "error": "no_document"}
 
     sel = doc.GetActiveObjects(c4d.GETACTIVEOBJECTFLAGS_CHILDREN) or []
     if not sel:
-        c4d.gui.MessageDialog(
-            "Select one or more objects first, then click again.\n\n"
-            "Tip: mark important compositional elements (logo, title, "
-            "character) so QC #12 can verify they stay inside the safe "
-            "area of every multi-format delivery Take."
-        )
-        return
+        return {"ok": False, "error": "no_selection"}
 
     # Detect current state
     all_marked = all(is_object_marked_safe_area(o) for o in sel)
@@ -329,13 +327,42 @@ def _toggle_safe_area_mark(doc, refresh=None):
         doc.EndUndo()
         c4d.EventAdd()
 
-    # Refresh the QC row immediately so the user sees the count update
-    try:
-        check_cache.clear()
-        if refresh is not None:
+    # Invalidate the QC cache immediately so the next read reflects the
+    # updated marks (the SPA polls; the native panel also calls refresh()).
+    check_cache.clear()
+
+    return {
+        "ok": True,
+        "verb": "mark" if target_state else "unmark",
+        "marked": marked_count,
+        "unmarked": unmarked_count,
+        "failed": failed_count,
+    }
+
+
+def _toggle_safe_area_mark(doc, refresh=None):
+    """Mark / unmark the current selection as Safe Area Subjects.
+
+    Native wrapper around ``_toggle_safe_area_mark_core`` — re-shows the
+    original dialogs on the tokened errors, and calls ``refresh()`` (if
+    provided) on success.
+    """
+    result = _toggle_safe_area_mark_core(doc)
+    if result.get("error") == "no_document":
+        c4d.gui.MessageDialog("No active document.")
+    elif result.get("error") == "no_selection":
+        c4d.gui.MessageDialog(
+            "Select one or more objects first, then click again.\n\n"
+            "Tip: mark important compositional elements (logo, title, "
+            "character) so QC #12 can verify they stay inside the safe "
+            "area of every multi-format delivery Take."
+        )
+    elif result.get("ok") and refresh is not None:
+        try:
             refresh()
-    except Exception:
-        pass
+        except Exception:
+            pass
+    return result
 
     # Brief feedback
     verb = "Marked" if target_state else "Unmarked"
@@ -1333,17 +1360,21 @@ def _take_renderview_snapshot(artist_name):
     snapshot_save_still(doc, artist_name)
 
 
-def _apply_abc_retime_tag():
-    """Apply ABC Retime tag to selected object(s)"""
-    doc = documents.GetActiveDocument()
+def _apply_abc_retime_tag_core(doc):
+    """Apply ABC Retime tag to selected object(s).
+
+    Dialog-free core (Fase 6.4 Task 3) — returns a status dict instead of
+    showing a ``MessageDialog`` (a modal inside the panel's Timer drain
+    freezes all of C4D). ``_apply_abc_retime_tag`` below is the thin native
+    wrapper (no-arg signature preserved) that re-shows the original dialogs
+    on the tokened errors.
+    """
     if not doc:
-        c4d.gui.MessageDialog("No active document")
-        return
+        return {"ok": False, "error": "no_document"}
 
     selection = doc.GetActiveObjects(c4d.GETACTIVEOBJECTFLAGS_CHILDREN)
     if not selection:
-        c4d.gui.MessageDialog("Please select an object first\n\n(Works with Alembic, Point Cache, Mograph Cache, or X-Particles Cache objects)")
-        return
+        return {"ok": False, "error": "no_selection"}
 
     # ABC Retime plugin ID
     ABC_RETIME_TAG_ID = 1058910
@@ -1373,6 +1404,30 @@ def _apply_abc_retime_tag():
     if applied_count > 0:
         c4d.EventAdd()
 
-    # Show error message only if failed
     if applied_count == 0 and skipped_count == 0:
+        return {"ok": False, "error": "apply_failed"}
+
+    return {
+        "ok": True,
+        "applied": applied_count,
+        "skipped": skipped_count,
+        "failed": failed_count,
+    }
+
+
+def _apply_abc_retime_tag():
+    """Apply ABC Retime tag to selected object(s).
+
+    Native wrapper around ``_apply_abc_retime_tag_core`` — fetches the
+    active document itself (preserves the original no-arg signature) and
+    re-shows the original dialogs on the tokened errors.
+    """
+    doc = documents.GetActiveDocument()
+    result = _apply_abc_retime_tag_core(doc)
+    if result.get("error") == "no_document":
+        c4d.gui.MessageDialog("No active document")
+    elif result.get("error") == "no_selection":
+        c4d.gui.MessageDialog("Please select an object first\n\n(Works with Alembic, Point Cache, Mograph Cache, or X-Particles Cache objects)")
+    elif result.get("error") == "apply_failed":
         c4d.gui.MessageDialog("ABC Retime tag could not be applied\n\nPossible reasons:\n- ABC Retime plugin not installed\n- Invalid object type\n\nManual access: Right-click Tags → Extensions → Alembic Retime")
+    return result

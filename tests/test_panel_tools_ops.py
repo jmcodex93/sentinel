@@ -151,3 +151,69 @@ class TestLayerFloorCores:
                             "GetActiveDocument", lambda: _Doc())
         assert panel_tools_ops._op_tool_drop_to_floor({}) == {
             "ok": False, "error": "no_selection"}
+
+
+class TestAbcMarkCores:
+    def _forbid_dialog(self, monkeypatch):
+        from sentinel.ui import scene_tools
+
+        def _boom(*a, **k):
+            raise AssertionError("no dialog in a *_core")
+
+        monkeypatch.setattr(scene_tools.c4d.gui, "MessageDialog", _boom)
+
+    def test_abc_no_document(self, sentinel_module, monkeypatch):
+        from sentinel.ui import scene_tools
+        self._forbid_dialog(monkeypatch)
+        assert scene_tools._apply_abc_retime_tag_core(None) == {
+            "ok": False, "error": "no_document"}
+
+    def test_abc_no_selection(self, sentinel_module, monkeypatch):
+        from sentinel.ui import scene_tools
+        self._forbid_dialog(monkeypatch)
+
+        class _Doc:
+            def GetActiveObjects(self, flags):
+                return []
+
+        assert scene_tools._apply_abc_retime_tag_core(_Doc()) == {
+            "ok": False, "error": "no_selection"}
+
+    def test_mark_no_document(self, sentinel_module, monkeypatch):
+        from sentinel.ui import scene_tools
+        self._forbid_dialog(monkeypatch)
+        assert scene_tools._toggle_safe_area_mark_core(None) == {
+            "ok": False, "error": "no_document"}
+
+    def test_mark_no_selection(self, sentinel_module, monkeypatch):
+        from sentinel.ui import scene_tools
+        self._forbid_dialog(monkeypatch)
+
+        class _Doc:
+            def GetActiveObjects(self, flags):
+                return []
+
+        assert scene_tools._toggle_safe_area_mark_core(_Doc()) == {
+            "ok": False, "error": "no_selection"}
+
+    def test_ops_registered(self, sentinel_module):
+        from sentinel.ui import panel_tools_ops
+        for key in ("panel/tools/abc_retime", "panel/tools/mark_safe_area"):
+            assert key in panel_tools_ops.PANEL_TOOLS_OPS
+
+    def test_mark_op_no_selection(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        from sentinel.ui import scene_tools
+
+        def _boom(*a, **k):
+            raise AssertionError("no dialog in op path")
+
+        monkeypatch.setattr(scene_tools.c4d.gui, "MessageDialog", _boom)
+
+        class _Doc:
+            def GetActiveObjects(self, flags):
+                return []
+
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: _Doc())
+        assert panel_tools_ops._op_tool_mark_safe_area({})["error"] == "no_selection"

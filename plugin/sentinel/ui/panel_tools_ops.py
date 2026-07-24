@@ -47,6 +47,14 @@ def _op_tool_drop_to_floor(payload):
     return _tool(scene_tools._drop_to_floor_core)
 
 
+def _op_tool_abc_retime(payload):
+    return _tool(scene_tools._apply_abc_retime_tag_core)
+
+
+def _op_tool_mark_safe_area(payload):
+    return _tool(scene_tools._toggle_safe_area_mark_core)
+
+
 PANEL_TOOLS_OPS = {
     "panel/tools/hierarchy": _op_tool_hierarchy,
     "panel/tools/vibrate_null": _op_tool_vibrate_null,
@@ -55,4 +63,6 @@ PANEL_TOOLS_OPS = {
     "panel/tools/h_to_layers": _op_tool_h_to_layers,
     "panel/tools/solo": _op_tool_solo,
     "panel/tools/drop_to_floor": _op_tool_drop_to_floor,
+    "panel/tools/abc_retime": _op_tool_abc_retime,
+    "panel/tools/mark_safe_area": _op_tool_mark_safe_area,
 }
