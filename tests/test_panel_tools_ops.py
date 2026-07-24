@@ -265,7 +265,15 @@ class TestParityOps:
     def test_ops_registered(self, sentinel_module):
         from sentinel.ui import panel_tools_ops
         assert "panel/tools/open_settings" in panel_tools_ops.PANEL_TOOLS_OPS
+        assert "panel/tools/open_palette" in panel_tools_ops.PANEL_TOOLS_OPS
         assert "panel/open_external" in panel_tools_ops.PANEL_TOOLS_OPS
+
+    def test_open_palette_no_document(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: None)
+        assert panel_tools_ops._op_open_palette({}) == {
+            "ok": False, "error": "no_document"}
 
     def test_open_external_github(self, sentinel_module, monkeypatch):
         from sentinel.ui import panel_tools_ops

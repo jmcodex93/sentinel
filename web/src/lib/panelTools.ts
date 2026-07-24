@@ -5,9 +5,9 @@ export interface ToolDef {
   label: string;
 }
 
-/** The Tools section mirrors the native panel's four groups. "Asset" opens
- * the Hub window (via the existing `open_hub` palette action, not a
- * `panel/tools/*` op) — flagged by the `open_hub` sentinel id. */
+/** The Tools section's scene-authoring groups. The Asset Hub deliberately
+ * lives elsewhere (Overview / QC #6 / Deliver→Collect) — a fourth door here
+ * was redundant, so Tools stays scoped to real authoring utilities. */
 export const TOOL_GROUPS: { title: string; tools: ToolDef[] }[] = [
   {
     title: "Layout & Hierarchy",
@@ -30,10 +30,6 @@ export const TOOL_GROUPS: { title: string; tools: ToolDef[] }[] = [
   {
     title: "QC Marking",
     tools: [{ id: "panel/tools/mark_safe_area", label: "Mark / Unmark Safe Area Subject" }],
-  },
-  {
-    title: "Asset",
-    tools: [{ id: "open_hub", label: "Asset Hub" }],
   },
 ];
 
