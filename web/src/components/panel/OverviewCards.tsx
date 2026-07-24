@@ -93,6 +93,14 @@ function QcCard({
         {topLine || "No violations."}
       </p>
       <CardActions>
+        {qc.fixable.length > 0 && (
+          // Frame the auto-fix buttons as a distinct group so they don't read
+          // as more failing checks — they act on the fixable subset, which the
+          // 5-wide summary line above now also names.
+          <span className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
+            Quick fix:
+          </span>
+        )}
         {qc.fixable.map((id) => {
           // qc.fixable (panel/overview) and `actions` (palette/actions) are
           // independently-timed snapshots — bind each button's disabled/title
@@ -102,7 +110,7 @@ function QcCard({
           return (
             <CardAction
               key={id}
-              label={FIX_LABELS[id] || id}
+              label={(FIX_LABELS[id] || id).replace(/^Fix /, "")}
               onClick={() => onFix(id)}
               disabled={busyFix !== null || (action ? !action.enabled : false)}
               title={action && !action.enabled ? action.reason || undefined : undefined}

@@ -157,7 +157,11 @@ def _panel_qc_block(doc):
         "passed": qc_report["score"]["passed"],
         "total": qc_report["score"]["total"],
         "disabled": qc_report["score"]["disabled_count"],
-        "top": webbridge.top_qc_checks(qc_report["checks"]),
+        # Show up to 5 worst failing checks (a failing shot is typically ≤5
+        # of 12): the Overview card then carries the full failing set at a
+        # glance AND includes any auto-fixable check, so the quick-fix
+        # buttons line up with checks named in the summary.
+        "top": webbridge.top_qc_checks(qc_report["checks"], limit=5),
         "fixable": fixable,
     }
 
