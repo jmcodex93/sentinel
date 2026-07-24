@@ -87,6 +87,20 @@ def _op_open_settings(payload):
     return {"ok": True}
 
 
+def _op_open_palette(payload):
+    """Open the Command Palette in its own window (the rail's 'commands'
+    entry). Same async FormDialog host as Settings/Hub — non-blocking."""
+    doc = c4d.documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+    try:
+        from sentinel.ui.reports_dialog import open_form
+        open_form(doc, "palette")
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True}
+
+
 PANEL_TOOLS_OPS = {
     "panel/tools/hierarchy": _op_tool_hierarchy,
     "panel/tools/vibrate_null": _op_tool_vibrate_null,
@@ -98,5 +112,6 @@ PANEL_TOOLS_OPS = {
     "panel/tools/abc_retime": _op_tool_abc_retime,
     "panel/tools/mark_safe_area": _op_tool_mark_safe_area,
     "panel/tools/open_settings": _op_open_settings,
+    "panel/tools/open_palette": _op_open_palette,
     "panel/open_external": _op_open_external,
 }

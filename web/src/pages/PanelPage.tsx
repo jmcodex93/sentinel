@@ -19,6 +19,7 @@ import {
   postPanelOpenCollect,
   postPanelOpenExternal,
   postPanelOpenForm,
+  postPanelOpenPalette,
   postPanelOpenSettings,
   postPanelOpenVersion,
   postPanelQcAccept,
@@ -554,6 +555,11 @@ export function PanelPage() {
     if (!response.ok) toast({ message: response.error || "Couldn't open Settings.", variant: "warn" });
   }
 
+  async function handleOpenPalette() {
+    const response = await postPanelOpenPalette();
+    if (!response.ok) toast({ message: response.error || "Couldn't open the Command Palette.", variant: "warn" });
+  }
+
   async function handleOpenExternal(target: "github" | "bug") {
     const response = await postPanelOpenExternal(target);
     if (!response.ok) toast({ message: response.error || "Couldn't open that link.", variant: "warn" });
@@ -568,6 +574,7 @@ export function PanelPage() {
         active={section}
         onSelect={setSection}
         badges={badges}
+        onPalette={handleOpenPalette}
         onSettings={handleOpenSettings}
         onDoctor={() => handleDeepLink("open_reports_doctor")}
         onGithub={() => handleOpenExternal("github")}

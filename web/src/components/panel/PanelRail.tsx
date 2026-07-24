@@ -1,5 +1,5 @@
-import { Bug, Command, ExternalLink, Settings, Stethoscope } from "lucide-react";
-import type { ReactNode } from "react";
+import { Bug, Command, ExternalLink, HelpCircle, Settings, Stethoscope } from "lucide-react";
+import { useState, type ReactNode } from "react";
 import type { PanelRailBadges, PanelSection, RailMode } from "../../lib/panel";
 import { PANEL_SECTIONS } from "../../lib/panel";
 
@@ -73,6 +73,7 @@ export function PanelRail({
   active,
   onSelect,
   badges,
+  onPalette,
   onSettings,
   onDoctor,
   onGithub,
@@ -82,12 +83,14 @@ export function PanelRail({
   active: PanelSection["id"];
   onSelect: (id: PanelSection["id"]) => void;
   badges: PanelRailBadges;
+  onPalette: () => void;
   onSettings: () => void;
   onDoctor: () => void;
   onGithub: () => void;
   onBug: () => void;
 }) {
   const isSidebar = mode === "sidebar";
+  const [helpOpen, setHelpOpen] = useState(false);
 
   return (
     <nav
@@ -142,17 +145,62 @@ export function PanelRail({
         className="flex flex-col gap-1 border-t px-1.5 pt-1.5"
         style={{ borderColor: "var(--color-hairline)" }}
       >
+        {/* Command Palette — the rail's power tool, lifted to the top of the
+            footer and given ink (not ink-secondary) emphasis so it reads as
+            the primary utility, not a low-priority link. */}
+        <button
+          type="button"
+          title="Command Palette — search & run any action"
+          onClick={onPalette}
+          className="text-label flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-100 ease-out"
+          style={{
+            justifyContent: isSidebar ? "flex-start" : "center",
+            color: "var(--color-ink)",
+            backgroundColor: "var(--color-surface-2)",
+          }}
+        >
+          <Command size={16} strokeWidth={2.25} className="shrink-0" />
+          {isSidebar && <span className="truncate">Commands</span>}
+        </button>
         <FooterButton isSidebar={isSidebar} label="Settings" icon={<Settings size={16} strokeWidth={2.25} />} onClick={onSettings} />
         <FooterButton isSidebar={isSidebar} label="Doctor" icon={<Stethoscope size={16} strokeWidth={2.25} />} onClick={onDoctor} />
-        <FooterButton isSidebar={isSidebar} label="GitHub" icon={<ExternalLink size={16} strokeWidth={2.25} />} onClick={onGithub} />
-        <FooterButton isSidebar={isSidebar} label="Report Bug" icon={<Bug size={16} strokeWidth={2.25} />} onClick={onBug} />
-        <div
-          className="flex items-center gap-1.5 px-2.5 pt-1"
-          style={{ color: "var(--color-ink-secondary)", justifyContent: isSidebar ? "flex-start" : "center" }}
-          title="Command Palette — Help menu or its own shortcut"
-        >
-          <Command size={14} strokeWidth={2.25} />
-          {isSidebar && <span className="text-caption">commands</span>}
+        {/* Help — folds the two "once in a lifetime" links (GitHub, Report
+            Bug) into one entry with a small popover, reclaiming a footer row. */}
+        <div className="relative">
+          <FooterButton
+            isSidebar={isSidebar}
+            label="Help"
+            icon={<HelpCircle size={16} strokeWidth={2.25} />}
+            onClick={() => setHelpOpen((v) => !v)}
+          />
+          {helpOpen && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setHelpOpen(false)} />
+              <div
+                className="absolute bottom-full left-0 z-20 mb-1 flex min-w-[140px] flex-col rounded-md border py-1 shadow-lg"
+                style={{ borderColor: "var(--color-hairline-strong)", backgroundColor: "var(--color-surface-2)" }}
+              >
+                <button
+                  type="button"
+                  onClick={() => { setHelpOpen(false); onGithub(); }}
+                  className="text-label flex items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 ease-out hover:bg-[var(--color-surface-1)]"
+                  style={{ color: "var(--color-ink)" }}
+                >
+                  <ExternalLink size={14} strokeWidth={2.25} className="shrink-0" />
+                  GitHub
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setHelpOpen(false); onBug(); }}
+                  className="text-label flex items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 ease-out hover:bg-[var(--color-surface-1)]"
+                  style={{ color: "var(--color-ink)" }}
+                >
+                  <Bug size={14} strokeWidth={2.25} className="shrink-0" />
+                  Report Bug
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </nav>

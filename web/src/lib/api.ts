@@ -1208,3 +1208,9 @@ export async function postPanelOpenSettings(): Promise<{ ok: boolean; error?: st
   if (isMock()) return { ok: true };
   return postForm<{ ok: boolean; error?: string }>("/api/panel/tools/open_settings", {});
 }
+
+/** `POST /api/panel/tools/open_palette` — open the Command Palette window. */
+export async function postPanelOpenPalette(): Promise<{ ok: boolean; error?: string }> {
+  if (isMock()) return { ok: true };
+  return postForm<{ ok: boolean; error?: string }>("/api/panel/tools/open_palette", {});
+}
