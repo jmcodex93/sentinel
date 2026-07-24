@@ -59,6 +59,7 @@ from sentinel.ui.panel_ops import PANEL_OPS
 from sentinel.ui.panel_render_ops import PANEL_RENDER_OPS
 from sentinel.ui.panel_deliver_ops import PANEL_DELIVER_OPS
 from sentinel.ui.panel_tools_ops import PANEL_TOOLS_OPS
+from sentinel.ui.panel_frame_ops import PANEL_FRAME_OPS
 from sentinel.ui.web_ops import FORM_OPS
 from sentinel import webbridge
 from sentinel.webbridge import (
@@ -310,7 +311,8 @@ def _op_report_render_validation(payload):
 # form/* and palette/* ops are defined in the sibling ui/web_ops.py (FORM_OPS),
 # hub/* in ui/hub_ops.py (HUB_OPS), panel/* in ui/panel_ops.py (PANEL_OPS), and
 # panel/render/* in ui/panel_render_ops.py (PANEL_RENDER_OPS), and
-# panel/deliver/* in ui/panel_deliver_ops.py (PANEL_DELIVER_OPS) — all
+# panel/deliver/* in ui/panel_deliver_ops.py (PANEL_DELIVER_OPS), and
+# panel/frame in ui/panel_frame_ops.py (PANEL_FRAME_OPS) — all
 # merged in here so the server still has a single op table.
 _OPS = {
     "report/delivery": _op_report_delivery,
@@ -324,6 +326,7 @@ _OPS = {
     **PANEL_RENDER_OPS,
     **PANEL_DELIVER_OPS,
     **PANEL_TOOLS_OPS,
+    **PANEL_FRAME_OPS,
 }
 
 
