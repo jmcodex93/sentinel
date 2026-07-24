@@ -4,6 +4,7 @@ import { Checkbox } from "../form/Checkbox";
 import { SegmentedControl } from "../form/SegmentedControl";
 import { Select } from "../form/Select";
 import { fetchPanelRenderAovList } from "../../lib/api";
+import { frameHint } from "../../lib/panelFrame";
 import {
   aovStatusLine,
   frameStatusLine,
@@ -11,7 +12,12 @@ import {
   presetStatusLine,
   snapshotStatusLine,
 } from "../../lib/panelRender";
-import type { PanelRenderAovListOk, PanelRenderSection as PanelRenderSectionData } from "../../types";
+import type {
+  PanelFrameState,
+  PanelRenderAovListOk,
+  PanelRenderSection as PanelRenderSectionData,
+} from "../../types";
+import { FrameSubview } from "./FrameSubview";
 
 /** A single stacked block — eyebrow label + status line + actions row, per
  * the approved "A + status header per block" layout (mockup
@@ -81,6 +87,7 @@ type AovListState =
  * null-safety convention. */
 export function RenderSection({
   render,
+  frameData,
   busy,
   confirmLabel,
   onSetPreset,
@@ -96,8 +103,15 @@ export function RenderSection({
   onValidate,
   onConfirm,
   onCancelConfirm,
+  onMarkSubjects,
+  onSelectViolations,
+  onOpenQc,
 }: {
   render: PanelRenderSectionData;
+  /** `panel/frame` state for the Frame sub-view (Fase 6.6) — a separate read
+   * from `render` (its own op, its own fetch/poll in PanelPage), passed down
+   * so the Frame block's hint and the sub-view itself share one source. */
+  frameData: PanelFrameState;
   /** Non-null while any render mutation is in flight — single lock across
    * every block's buttons, same idiom as the QC section's `busy`. */
   busy: string | null;
@@ -126,9 +140,31 @@ export function RenderSection({
   onValidate: () => void;
   onConfirm: () => void;
   onCancelConfirm: () => void;
+  /** Frame sub-view actions (Fase 6.6) — all reuse existing ops
+   * (`panel/tools/mark_safe_area`, `panel/qc/select`); the sub-view adds no
+   * new mutation. */
+  onMarkSubjects: () => void;
+  onSelectViolations: () => void;
+  onOpenQc: () => void;
 }) {
   const [aovListState, setAovListState] = useState<AovListState>({ kind: "idle" });
+  const [renderView, setRenderView] = useState<"main" | "frame">("main");
   const isBusy = busy !== null;
+
+  if (renderView === "frame") {
+    return (
+      <FrameSubview
+        frame={frameData}
+        busy={busy}
+        onBack={() => setRenderView("main")}
+        onAddTag={onAddFrameTag}
+        onSelectTag={onSelectFrameTag}
+        onMarkSubjects={onMarkSubjects}
+        onSelectViolations={onSelectViolations}
+        onOpenQc={onOpenQc}
+      />
+    );
+  }
 
   async function toggleAovList() {
     if (aovListState.kind !== "idle" && aovListState.kind !== "unavailable") {
@@ -152,6 +188,8 @@ export function RenderSection({
 
   const preset = render.preset;
   const frame = render.frame;
+  const frameHintText = frameHint(frameData);
+  const frameHintWarn = frameHintText.startsWith("⚠") || frameHintText.toLowerCase().includes("out of date");
   const aovs = render.aovs;
   const snapshots = render.snapshots;
   const postrender = render.postrender;
@@ -197,7 +235,9 @@ export function RenderSection({
         )}
       </RenderBlock>
 
-      {/* Frame */}
+      {/* Frame — the Sentinel Frame status line stays render-scoped
+          (`frame`, from `panel/render`); the next-step hint + "Manage
+          frame →" read the consolidated `panel/frame` state (Fase 6.6). */}
       <RenderBlock eyebrow="Sentinel Frame" status={frameStatusLine(frame)}>
         {frame === null ? null : (
           <>
@@ -207,9 +247,25 @@ export function RenderSection({
             <Button variant="secondary" disabled={isBusy || !frame.has_tag} onClick={onSelectFrameTag}>
               Select tag
             </Button>
+            <button
+              type="button"
+              onClick={() => setRenderView("frame")}
+              className="text-caption ml-auto"
+              style={{ color: "var(--color-primary)" }}
+            >
+              Manage frame →
+            </button>
           </>
         )}
       </RenderBlock>
+      {frame !== null && (
+        <p
+          className="text-caption -mt-2"
+          style={{ color: frameHintWarn ? "var(--color-status-warn)" : "var(--color-ink-secondary)" }}
+        >
+          {frameHintText}
+        </p>
+      )}
 
       {/* AOVs — three distinct concepts, not three peer buttons: Coverage
           (additive tier actions), Light Groups (an independent toggle),

@@ -11,6 +11,7 @@ import { Button } from "../components/form/Button";
 import {
   fetchPaletteActions,
   fetchPanelDeliver,
+  fetchPanelFrame,
   fetchPanelOverview,
   fetchPanelQc,
   fetchPanelRender,
@@ -45,6 +46,7 @@ import { useToast } from "../lib/toast";
 import type {
   PaletteAction,
   PanelDeliverState,
+  PanelFrameState,
   PanelOverviewResult,
   PanelQcCheck,
   PanelQcResult,
@@ -77,6 +79,12 @@ type RenderConfirm = { op: "reset_all" | "force_vertical"; label: string };
 type QcConfirm = { kind: "card_fix"; action: PaletteAction } | { kind: "fix_all"; action: PaletteAction };
 
 const POLL_INTERVAL_MS = 2000;
+
+/** `fetchPanelFrame` never rejects (it resolves to this all-null shape on a
+ * network/JSON/error-envelope failure), so it's a safe initial value before
+ * the first fetch lands — same convention as `EMPTY_PANEL_DELIVER` in
+ * api.ts, just not exported from there. */
+const EMPTY_FRAME_STATE: PanelFrameState = { frame: null, subjects: null, qc12: null };
 
 /** Deep-link palette action id + label for each not-yet-built section's
  * "próximamente" placeholder — the closest native equivalent already
@@ -142,6 +150,7 @@ export function PanelPage() {
   const [deliverState, setDeliverState] = useState<DeliverPageState>({ kind: "loading" });
   const [busyDeliverId, setBusyDeliverId] = useState<string | null>(null);
   const [busyTool, setBusyTool] = useState<string | null>(null);
+  const [frameState, setFrameState] = useState<PanelFrameState>(EMPTY_FRAME_STATE);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const stampRef = useRef<string | null>(null);
@@ -180,6 +189,21 @@ export function PanelPage() {
     });
   }, []);
 
+  // `panel/frame` (Fase 6.6) — the Frame sub-view's consolidated read.
+  // Lives under Render (opened via the Frame block's "Manage frame →"), so
+  // it fetches/polls alongside `panel/render` rather than its own section.
+  // `fetchPanelFrame` never rejects (it resolves to `EMPTY_FRAME_STATE`-shaped
+  // data on failure, see its docstring), so there's no `result.kind === "ok"`
+  // branch to gate the stamp re-anchor on — it always re-anchors, same as
+  // `loadDeliver`.
+  const loadFrame = useCallback((silent: boolean) => {
+    if (!silent) setFrameState(EMPTY_FRAME_STATE);
+    fetchPanelFrame().then(async (data) => {
+      setFrameState(data);
+      stampRef.current = await fetchPanelStamp();
+    });
+  }, []);
+
   // `panel/deliver` (Fase 6.3 Task 5) — same "own fetch on entering the
   // section, own stamp-driven refetch" idiom as `panel/qc`/`panel/render`
   // above. `fetchPanelDeliver` never rejects (it resolves to an all-null
@@ -202,8 +226,11 @@ export function PanelPage() {
   }, [section, loadQc]);
 
   useEffect(() => {
-    if (section === "render") loadRender(false);
-  }, [section, loadRender]);
+    if (section === "render") {
+      loadRender(false);
+      loadFrame(false);
+    }
+  }, [section, loadRender, loadFrame]);
 
   useEffect(() => {
     if (section === "deliver") loadDeliver(false);
@@ -234,11 +261,14 @@ export function PanelPage() {
       if (newStamp === null || stampRef.current === null || newStamp === stampRef.current) return;
       load(true);
       if (section === "qc") loadQc(true);
-      if (section === "render") loadRender(true);
+      if (section === "render") {
+        loadRender(true);
+        loadFrame(true);
+      }
       if (section === "deliver") loadDeliver(true);
     }, POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
-  }, [load, loadQc, loadRender, loadDeliver, section]);
+  }, [load, loadQc, loadRender, loadFrame, loadDeliver, section]);
 
   async function runFix(action: PaletteAction, confirm?: boolean) {
     // qc.fixable (panel/overview) and this actions list (palette/actions) are
@@ -458,6 +488,7 @@ export function PanelPage() {
     const response = await postPanelRenderAddFrameTag();
     setBusyRenderId(null);
     applyRenderMutation(response, "Sentinel Frame added.");
+    if (response.ok) loadFrame(true); // the Frame sub-view reads its own consolidated state
   }
 
   async function handleSelectFrameTag() {
@@ -465,6 +496,27 @@ export function PanelPage() {
     const response = await postPanelRenderSelectFrameTag();
     setBusyRenderId(null);
     applyRenderMutation(response, "Tag selected.");
+    if (response.ok) loadFrame(true);
+  }
+
+  /** Frame sub-view (Fase 6.6) — Mark/Unmark selected reuses the exact same
+   * op + toast idiom as the Tools section's `handleRunTool`
+   * (`panel/tools/mark_safe_area` + `toolToast`), just scoped to the
+   * render-mutation busy lock since it lives under Render now. */
+  async function handleMarkSubjects() {
+    setBusyRenderId("mark_safe_area");
+    const r = await postPanelTool("panel/tools/mark_safe_area");
+    setBusyRenderId(null);
+    const t = toolToast("panel/tools/mark_safe_area", r);
+    toast({ message: t.message, variant: t.variant });
+    if (r.ok) loadFrame(true);
+  }
+
+  /** Frame sub-view — "Select violating" is exactly `panel/qc/select` for
+   * the `cross_aspect` (QC #12) check, the same client the QC section's
+   * per-card Select button uses. */
+  function handleSelectFrameViolations() {
+    handleQcSelect("cross_aspect");
   }
 
   async function handleSetMultipart(enabled: boolean) {
@@ -681,6 +733,7 @@ export function PanelPage() {
               {renderState.kind === "ok" && (
                 <RenderSection
                   render={renderState.data}
+                  frameData={frameState}
                   busy={busyRenderId}
                   confirmLabel={renderConfirm?.label ?? null}
                   onSetPreset={handleSetPreset}
@@ -696,6 +749,9 @@ export function PanelPage() {
                   onValidate={() => handleDeepLink("open_reports_render_validation")}
                   onConfirm={() => renderConfirm && runRenderDestructive(renderConfirm.op, true)}
                   onCancelConfirm={() => setRenderConfirm(null)}
+                  onMarkSubjects={handleMarkSubjects}
+                  onSelectViolations={handleSelectFrameViolations}
+                  onOpenQc={() => setSection("qc")}
                 />
               )}
             </>

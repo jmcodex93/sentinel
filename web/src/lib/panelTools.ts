@@ -7,7 +7,9 @@ export interface ToolDef {
 
 /** The Tools section's scene-authoring groups. The Asset Hub deliberately
  * lives elsewhere (Overview / QC #6 / Deliver→Collect) — a fourth door here
- * was redundant, so Tools stays scoped to real authoring utilities. */
+ * was redundant, so Tools stays scoped to real authoring utilities. Mark /
+ * Unmark Safe Area Subject moved to the Render → Frame sub-view (Fase 6.6) —
+ * the `panel/tools/mark_safe_area` op stays, it's just called from there now. */
 export const TOOL_GROUPS: { title: string; tools: ToolDef[] }[] = [
   {
     title: "Layout & Hierarchy",
@@ -26,10 +28,6 @@ export const TOOL_GROUPS: { title: string; tools: ToolDef[] }[] = [
       { id: "panel/tools/cam_simple", label: "Cam Simple" },
       { id: "panel/tools/cam_shakel", label: "Cam Shakel" },
     ],
-  },
-  {
-    title: "QC Marking",
-    tools: [{ id: "panel/tools/mark_safe_area", label: "Mark / Unmark Safe Area Subject" }],
   },
 ];
 
