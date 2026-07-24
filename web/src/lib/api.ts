@@ -53,6 +53,7 @@ import type {
   PanelOpenVersionResponse,
   PanelOverview,
   PanelOverviewResult,
+  PanelToolResult,
   PanelQcAcceptResponse,
   PanelQcFixAllResponse,
   PanelQcResult,
@@ -1175,4 +1176,35 @@ export async function postPanelOpenCollect(): Promise<PaletteRunResponse> {
     return { ok: true, message: "Asset Hub opened" };
   }
   return postForm<PaletteRunResponse>("/api/panel/deliver/open_collect", {});
+}
+
+// ---------------------------------------------------------------------------
+// Panel Tools section (Fase 6.4) — see `panel/tools/<id>` in
+// panel_tools_ops.py. Action-only: no read/state op, no confirm (nothing
+// destructive) — every op is a single POST that returns a `PanelToolResult`
+// the SPA turns into a toast (see `toolToast` in panelTools.ts).
+// ---------------------------------------------------------------------------
+
+/** `POST /api/<op>` — run a Tools action; returns a status dict the SPA
+ * turns into a toast (see `toolToast`). `?mock=1` has no stateful scene to
+ * mutate, so it resolves a bare success (same no-stateful convention as
+ * `postPanelQcSelect`/`startHubShrink`). */
+export async function postPanelTool(op: string): Promise<PanelToolResult> {
+  if (isMock()) return { ok: true };
+  return postForm<PanelToolResult>(`/api/${op}`, {});
+}
+
+/** `POST /api/panel/open_external` — GitHub / Report Bug (opens the URL in
+ * the system browser from the C4D side). */
+export async function postPanelOpenExternal(
+  target: "github" | "bug",
+): Promise<{ ok: boolean; error?: string }> {
+  if (isMock()) return { ok: true };
+  return postForm<{ ok: boolean; error?: string }>("/api/panel/open_external", { target });
+}
+
+/** `POST /api/panel/tools/open_settings` — open the Settings window. */
+export async function postPanelOpenSettings(): Promise<{ ok: boolean; error?: string }> {
+  if (isMock()) return { ok: true };
+  return postForm<{ ok: boolean; error?: string }>("/api/panel/tools/open_settings", {});
 }
