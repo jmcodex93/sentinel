@@ -31,8 +31,12 @@ describe("toolToast", () => {
     const t = toolToast("panel/tools/cam_simple", { ok: false, error: "file_not_found" });
     expect(t.variant).toBe("warn");
   });
-  it("mark toggle reports marked vs unmarked", () => {
-    expect(toolToast("panel/tools/mark_safe_area", { ok: true, verb: "Marked", marked: 2 }).message)
-      .toContain("2");
+  it("mark toggle reports marked count (real payload: lowercase verb)", () => {
+    const t = toolToast("panel/tools/mark_safe_area", { ok: true, verb: "mark", marked: 2, unmarked: 0, failed: 0 });
+    expect(t.message).toContain("Marked 2");
+  });
+  it("mark toggle reports unmarked count (real payload: lowercase verb)", () => {
+    const t = toolToast("panel/tools/mark_safe_area", { ok: true, verb: "unmark", marked: 0, unmarked: 3, failed: 0 });
+    expect(t.message).toContain("Unmarked 3");
   });
 });

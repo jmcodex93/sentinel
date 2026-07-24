@@ -63,8 +63,9 @@ export function toolToast(id: string, r: PanelToolResult): { message: string; va
     return { message: r.unsolo ? "Restored all layers." : `Soloed ${r.soloed ?? 0} layer(s).`, variant: "success" };
   }
   if (id === "panel/tools/mark_safe_area") {
-    const n = r.verb === "Unmarked" ? r.unmarked : r.marked;
-    return { message: `${r.verb ?? "Marked"} ${n ?? 0} object(s) as Safe Area Subject(s).`, variant: "success" };
+    const unmarking = r.verb === "unmark";
+    const n = unmarking ? r.unmarked : r.marked;
+    return { message: `${unmarking ? "Unmarked" : "Marked"} ${n ?? 0} object(s) as Safe Area Subject(s).`, variant: "success" };
   }
   if (id === "panel/tools/h_to_layers") {
     return { message: `Synced layers: ${r.created ?? 0} new, ${r.updated ?? 0} updated.`, variant: "success" };
