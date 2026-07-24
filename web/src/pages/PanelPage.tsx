@@ -715,7 +715,6 @@ export function PanelPage() {
             <ToolsSection
               busy={busyTool}
               onRunTool={handleRunTool}
-              onOpenHub={() => handleDeepLink("open_hub")}
             />
           )}
 

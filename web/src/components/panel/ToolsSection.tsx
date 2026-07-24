@@ -1,18 +1,16 @@
 import { Button } from "../form/Button";
 import { TOOL_GROUPS } from "../../lib/panelTools";
 
-/** Tools section (Fase 6.4) — grouped action buttons mirroring the native
- * Tools tab. Action-only: each button runs its op and toasts the result;
- * no read state, no confirm (nothing destructive). "Asset Hub" opens the
- * Hub window via the `open_hub` palette action instead of a tools op. */
+/** Tools section (Fase 6.4) — grouped action buttons for scene-authoring
+ * utilities. Action-only: each button runs its op and toasts the result;
+ * no read state, no confirm (nothing destructive). The Asset Hub is reached
+ * from Overview / QC #6 / Deliver, not from here. */
 export function ToolsSection({
   busy,
   onRunTool,
-  onOpenHub,
 }: {
   busy: string | null;
   onRunTool: (id: string) => void;
-  onOpenHub: () => void;
 }) {
   const isBusy = busy !== null;
   return (
@@ -32,7 +30,7 @@ export function ToolsSection({
                 key={tool.id}
                 variant="secondary"
                 disabled={isBusy}
-                onClick={() => (tool.id === "open_hub" ? onOpenHub() : onRunTool(tool.id))}
+                onClick={() => onRunTool(tool.id)}
               >
                 {tool.label}
               </Button>

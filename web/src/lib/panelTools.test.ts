@@ -2,10 +2,14 @@ import { describe, expect, it } from "vitest";
 import { TOOL_GROUPS, toolToast } from "./panelTools";
 
 describe("TOOL_GROUPS", () => {
-  it("has the four native groups", () => {
+  it("has the scene-authoring groups (Asset Hub lives elsewhere)", () => {
     expect(TOOL_GROUPS.map((g) => g.title)).toEqual([
-      "Layout & Hierarchy", "Animation", "QC Marking", "Asset",
+      "Layout & Hierarchy", "Animation", "QC Marking",
     ]);
+  });
+  it("carries no Asset Hub entry (removed — reachable from Overview/QC/Deliver)", () => {
+    const allIds = TOOL_GROUPS.flatMap((g) => g.tools.map((t) => t.id));
+    expect(allIds).not.toContain("open_hub");
   });
   it("Layout group has the four hierarchy tools", () => {
     const ids = TOOL_GROUPS[0].tools.map((t) => t.id);
