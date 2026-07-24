@@ -58,6 +58,7 @@ from sentinel.ui.hub_ops import HUB_OPS, pump_jobs
 from sentinel.ui.panel_ops import PANEL_OPS
 from sentinel.ui.panel_render_ops import PANEL_RENDER_OPS
 from sentinel.ui.panel_deliver_ops import PANEL_DELIVER_OPS
+from sentinel.ui.panel_tools_ops import PANEL_TOOLS_OPS
 from sentinel.ui.web_ops import FORM_OPS
 from sentinel import webbridge
 from sentinel.webbridge import (
@@ -322,6 +323,7 @@ _OPS = {
     **PANEL_OPS,
     **PANEL_RENDER_OPS,
     **PANEL_DELIVER_OPS,
+    **PANEL_TOOLS_OPS,
 }
 
 

@@ -354,35 +354,41 @@ def _merge_camera_file(doc, filename):
     _merge_c4d_file(doc, filename)
 
 
-def _merge_c4d_file(doc, filename):
-    """Merge camera setup from C4D file"""
+def _merge_c4d_file_core(doc, filename):
+    """Dialog-free core of ``_merge_c4d_file`` (Fase 6.4) — merges a bundled
+    template .c4d (nulls / vibrate null / camera rigs) into the doc. Returns
+    a status dict; NEVER shows a dialog (a MessageDialog inside the panel's
+    Timer drain freezes C4D — v1.21.0 pattern)."""
     if not doc:
-        return
-
+        return {"ok": False, "error": "no_document"}
+    c4d_file = os.path.join(_ROOT, "c4d", filename)
+    if not os.path.exists(c4d_file):
+        safe_print(f"{filename} not found at: {c4d_file}")
+        return {"ok": False, "error": "file_not_found", "filename": filename}
     try:
-        # Get path to the C4D file (in the same plugin directory)
-        plugin_dir = _ROOT
-        c4d_file = os.path.join(plugin_dir, "c4d", filename)
-
-        # Check if file exists
-        if not os.path.exists(c4d_file):
-            safe_print(f"{filename} not found at: {c4d_file}")
-            c4d.gui.MessageDialog(f"{filename} file not found in c4d folder")
-            return
-
-        # Merge the C4D file into the current document
-        merge_doc = c4d.documents.MergeDocument(doc, c4d_file, c4d.SCENEFILTER_OBJECTS | c4d.SCENEFILTER_MATERIALS)
-
-        if merge_doc:
-            c4d.EventAdd()
-            camera_name = filename.replace(".c4d", "").replace("cam_", "").replace("_", " ").title()
-            safe_print(f"Merged {camera_name} camera setup from {filename}")
-        else:
-            safe_print(f"Failed to merge {filename}")
-
+        merged = c4d.documents.MergeDocument(
+            doc, c4d_file, c4d.SCENEFILTER_OBJECTS | c4d.SCENEFILTER_MATERIALS)
     except Exception as e:
         safe_print(f"Error merging camera file {filename}: {e}")
-        c4d.gui.MessageDialog(f"Error loading camera setup: {e}")
+        return {"ok": False, "error": "merge_error", "detail": str(e)}
+    if not merged:
+        safe_print(f"Failed to merge {filename}")
+        return {"ok": False, "error": "merge_failed"}
+    c4d.EventAdd()
+    camera_name = filename.replace(".c4d", "").replace("cam_", "").replace("_", " ").title()
+    safe_print(f"Merged {camera_name} setup from {filename}")
+    return {"ok": True, "camera_name": camera_name}
+
+
+def _merge_c4d_file(doc, filename):
+    """Merge a bundled template .c4d. Thin dialog wrapper over
+    ``_merge_c4d_file_core`` — keeps the native MessageDialog UX."""
+    result = _merge_c4d_file_core(doc, filename)
+    if result.get("error") == "file_not_found":
+        c4d.gui.MessageDialog(f"{filename} file not found in c4d folder")
+    elif result.get("error") == "merge_error":
+        c4d.gui.MessageDialog(f"Error loading camera setup: {result.get('detail')}")
+    return result
 
 
 def _get_template_path():
