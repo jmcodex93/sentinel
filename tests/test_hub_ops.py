@@ -527,3 +527,72 @@ class TestOpenHubPalette:
         response = web_ops._op_palette_run({"id": "open_hub"})
 
         assert response == {"ok": False, "error": "No active document"}
+
+
+class TestStampTakeAwareness:
+    """`_stamp_for` must change when multi-format delivery Takes are
+    generated/removed — otherwise the panel's stamp-poll auto-refresh is
+    blind to Take generation (Frame sub-view QC #12 wouldn't update until a
+    manual navigation). Takes live in the TakeData, invisible to the
+    dirty/material components, so `_take_count` is the signal."""
+
+    class _Take:
+        def __init__(self, down=None, nxt=None):
+            self._down = down
+            self._next = nxt
+
+        def GetDown(self):
+            return self._down
+
+        def GetNext(self):
+            return self._next
+
+    class _TakeData:
+        def __init__(self, main):
+            self._main = main
+
+        def GetMainTake(self):
+            return self._main
+
+    class _Doc:
+        def __init__(self, main_take):
+            self._td = TestStampTakeAwareness._TakeData(main_take)
+
+        def GetDocumentPath(self):
+            return "/scene.c4d"
+
+        def GetDocumentName(self):
+            return "scene.c4d"
+
+        def GetChanged(self):
+            return False
+
+        def GetMaterials(self):
+            return []
+
+        def GetTakeData(self):
+            return self._td
+
+    def test_take_count_walks_the_take_tree(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        # Main + 3 format child takes
+        children = self._Take(nxt=self._Take(nxt=self._Take()))
+        main = self._Take(down=children)
+        assert hub_ops._take_count(self._Doc(main)) == 4
+
+    def test_take_count_defensive_without_takedata(self, sentinel_module):
+        from sentinel.ui import hub_ops
+
+        class _NoTakes:
+            def GetTakeData(self):
+                raise AttributeError("no take data")
+
+        assert hub_ops._take_count(_NoTakes()) == 0
+
+    def test_stamp_changes_when_takes_generated(self, sentinel_module):
+        from sentinel.ui import hub_ops
+        main_only = self._Take()
+        with_children = self._Take(down=self._Take(nxt=self._Take()))
+        stamp_before = hub_ops._stamp_for(self._Doc(main_only))
+        stamp_after = hub_ops._stamp_for(self._Doc(with_children))
+        assert stamp_before != stamp_after

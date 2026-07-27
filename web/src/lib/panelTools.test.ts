@@ -2,14 +2,18 @@ import { describe, expect, it } from "vitest";
 import { TOOL_GROUPS, toolToast } from "./panelTools";
 
 describe("TOOL_GROUPS", () => {
-  it("has the scene-authoring groups (Asset Hub lives elsewhere)", () => {
+  it("has the scene-authoring groups (Mark subjects moved to the Frame sub-view)", () => {
     expect(TOOL_GROUPS.map((g) => g.title)).toEqual([
-      "Layout & Hierarchy", "Animation", "QC Marking",
+      "Layout & Hierarchy", "Animation",
     ]);
   });
   it("carries no Asset Hub entry (removed — reachable from Overview/QC/Deliver)", () => {
     const allIds = TOOL_GROUPS.flatMap((g) => g.tools.map((t) => t.id));
     expect(allIds).not.toContain("open_hub");
+  });
+  it("carries no mark_safe_area entry (moved to Frame sub-view)", () => {
+    const allIds = TOOL_GROUPS.flatMap((g) => g.tools.map((t) => t.id));
+    expect(allIds).not.toContain("panel/tools/mark_safe_area");
   });
   it("Layout group has the four hierarchy tools", () => {
     const ids = TOOL_GROUPS[0].tools.map((t) => t.id);

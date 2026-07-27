@@ -49,6 +49,7 @@ import type {
   NotesSubmitPayload,
   NotesSubmitResponse,
   PanelDeliverState,
+  PanelFrameState,
   PanelOpenFormResponse,
   PanelOpenVersionResponse,
   PanelOverview,
@@ -1154,6 +1155,47 @@ export async function fetchPanelDeliver(): Promise<PanelDeliverState> {
     return EMPTY_PANEL_DELIVER;
   }
   return data as PanelDeliverState;
+}
+
+/** Client-only mock for `panel/frame` (`?mock=1`). Nested shape, matching
+ * the real payload (React #31 lesson). */
+function mockPanelFrame(): PanelFrameState {
+  return {
+    frame: { has_tag: true, camera_name: "heroCam", format_count: 5, stale: false },
+    subjects: { marked_count: 2 },
+    qc12: { pass: false, violations: 3, has_takes: true },
+  };
+}
+
+const EMPTY_PANEL_FRAME: PanelFrameState = { frame: null, subjects: null, qc12: null };
+
+/** `POST /api/panel/frame` — Frame sub-view read model (Fase 6.6). */
+export async function fetchPanelFrame(): Promise<PanelFrameState> {
+  if (isMock()) return mockPanelFrame();
+  let response: Response;
+  try {
+    response = await fetch("/api/panel/frame", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+  } catch {
+    return EMPTY_PANEL_FRAME;
+  }
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch {
+    return EMPTY_PANEL_FRAME;
+  }
+  // Mirrors fetchPanelDeliver's error-envelope guard exactly — the op never
+  // emits an `{error}` envelope on the happy path, but the dispatch layer
+  // can on a raise/timeout, and null blocks must render "unavailable"
+  // rather than crash (React #31).
+  if (!response.ok || (data && typeof data === "object" && "error" in data && (data as { error?: unknown }).error)) {
+    return EMPTY_PANEL_FRAME;
+  }
+  return data as PanelFrameState;
 }
 
 /** `POST /api/panel/deliver/open_version` — open (or re-activate) a version
