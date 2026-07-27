@@ -180,13 +180,42 @@ def _stamp_for(doc):
         dirty = int(bool(doc.GetChanged()))
         mat_dirty = 0
 
-    return "%s|%s|%s|%s|%s" % (
+    return "%s|%s|%s|%s|%s|%s" % (
         doc.GetDocumentPath() or "",
         doc.GetDocumentName() or "",
         dirty,
         len(doc.GetMaterials()),
         mat_dirty,
+        _take_count(doc),
     )
+
+
+def _take_count(doc):
+    """Number of Takes in the document. Generating/removing multi-format
+    delivery Takes bumps this — and NO other stamp component captures it,
+    since Takes live in the TakeData tree, not the object hierarchy or the
+    material list. Without this, the panel's stamp-poll auto-refresh is
+    blind to Take generation (the Frame sub-view's QC #12 / has_takes state
+    would not update until the artist navigated away and back). Defensive:
+    returns 0 when TakeData is unavailable (e.g. fake-c4d test docs)."""
+    try:
+        td = doc.GetTakeData()
+        if td is None:
+            return 0
+        count = 0
+        node = td.GetMainTake()
+        stack = [node] if node is not None else []
+        while stack:
+            n = stack.pop()
+            while n is not None:
+                count += 1
+                child = n.GetDown()
+                if child is not None:
+                    stack.append(child)
+                n = n.GetNext()
+        return count
+    except Exception:
+        return 0
 
 
 def _op_hub_state_stamp(payload):
