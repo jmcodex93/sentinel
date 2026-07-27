@@ -1146,6 +1146,9 @@ export interface PanelFrameSubjects {
 export interface PanelFrameQc12 {
   pass: boolean;
   violations: number;
+  /** Whether any multi-format delivery Takes exist. QC #12 only evaluates
+   * when they do — `false` means "not evaluated yet", not a real pass. */
+  has_takes: boolean;
 }
 
 export interface PanelFrameState {

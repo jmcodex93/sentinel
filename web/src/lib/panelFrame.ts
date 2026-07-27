@@ -1,9 +1,16 @@
 import type { PanelFrameBlock, PanelFrameQc12, PanelFrameState } from "../types";
 
 /** The single next-step hint for the Frame sub-view — derived from state,
- * NOT a forced wizard. Priority: stale takes-out-of-date first (blocks a
- * correct QC read), then QC #12 violations, then "no subjects yet", then
- * the all-clear, then "no tag yet". */
+ * NOT a forced wizard. Priority:
+ *   1. no tag → add one (base precondition)
+ *   2. stale → takes out of date (a wrong QC read until refreshed)
+ *   3. NO delivery Takes → QC #12 can't run; generate them. This ranks above
+ *      violations/subjects/pass because without Takes the check early-returns
+ *      a trivial pass — so a "✓ all inside" here would be a false all-clear
+ *      for subjects that were never actually checked.
+ *   4. violations → warn
+ *   5. no subjects → mark them
+ *   6. all-clear */
 export function frameHint(state: PanelFrameState): string {
   const { frame, subjects, qc12 } = state;
   if (!frame || !frame.has_tag) {
@@ -11,6 +18,9 @@ export function frameHint(state: PanelFrameState): string {
   }
   if (frame.stale) {
     return "Takes out of date — update them from the tag.";
+  }
+  if (qc12 && !qc12.has_takes) {
+    return "Generate the delivery Takes from the tag so QC #12 can verify your subjects.";
   }
   if (qc12 && !qc12.pass && qc12.violations > 0) {
     return `⚠ ${qc12.violations} subject/format violation${qc12.violations === 1 ? "" : "s"} — subjects leave the safe area.`;
@@ -30,9 +40,12 @@ export function frameStatusLine(frame: PanelFrameBlock | null): string {
   return `On ${frame.camera_name}${formats}.`;
 }
 
-/** QC #12 block status. */
+/** QC #12 block status. Distinguishes "not evaluated (no Takes)" from a real
+ * pass — QC #12 only runs when delivery Takes exist, so an all-clear without
+ * them would be misleading. */
 export function qc12StatusLine(qc12: PanelFrameQc12 | null): string {
   if (qc12 === null) return "QC #12 status unavailable.";
+  if (!qc12.has_takes) return "Not evaluated — no delivery Takes yet.";
   if (qc12.pass || qc12.violations === 0) return "No violations.";
   return `${qc12.violations} subject/format violation${qc12.violations === 1 ? "" : "s"}.`;
 }

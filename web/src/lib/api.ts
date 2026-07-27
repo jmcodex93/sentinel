@@ -1163,7 +1163,7 @@ function mockPanelFrame(): PanelFrameState {
   return {
     frame: { has_tag: true, camera_name: "heroCam", format_count: 5, stale: false },
     subjects: { marked_count: 2 },
-    qc12: { pass: false, violations: 3 },
+    qc12: { pass: false, violations: 3, has_takes: true },
   };
 }
 

@@ -59,9 +59,17 @@ def _qc12_from_report(qc_report):
 
 
 def _qc12_block(doc):
-    """QC #12 status via the SHARED scoring pass (never re-derived)."""
+    """QC #12 status via the SHARED scoring pass (never re-derived), plus
+    ``has_takes``: whether any multi-format delivery Takes exist. QC #12
+    only evaluates when they do (the check early-returns a trivial pass
+    otherwise) — so ``has_takes=False`` lets the SPA distinguish "not
+    evaluated (no Takes yet)" from a real pass, instead of showing a
+    misleading all-clear for subjects that were never checked."""
+    has_takes = bool(safe_areas.find_active_multiformat_takes(doc))
     _rules, _results, qc_report = _run_qc_scoring(doc)
-    return _qc12_from_report(qc_report)
+    result = _qc12_from_report(qc_report)
+    result["has_takes"] = has_takes
+    return result
 
 
 def build_panel_frame(doc):

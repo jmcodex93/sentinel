@@ -64,6 +64,24 @@ class TestPanelFrameRead:
         out = panel_frame_ops._frame_block(object())
         assert out == {"has_tag": False, "camera_name": None, "format_count": None, "stale": False}
 
+    def test_qc12_block_reports_has_takes(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_frame_ops
+        from sentinel import safe_areas
+        # No delivery Takes → QC #12 is trivially a pass, but has_takes=False
+        # lets the SPA say "not evaluated" instead of a misleading all-clear.
+        monkeypatch.setattr(safe_areas, "find_active_multiformat_takes", lambda doc: [])
+        monkeypatch.setattr(panel_frame_ops, "_run_qc_scoring",
+                            lambda doc: (None, None, {"checks": []}))
+        assert panel_frame_ops._qc12_block(object()) == {"pass": True, "violations": 0, "has_takes": False}
+
+    def test_qc12_block_has_takes_true(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_frame_ops
+        from sentinel import safe_areas
+        monkeypatch.setattr(safe_areas, "find_active_multiformat_takes", lambda doc: [("9x16", object())])
+        monkeypatch.setattr(panel_frame_ops, "_run_qc_scoring",
+                            lambda doc: (None, None, {"checks": [{"id": "cross_aspect", "status": "fail", "count": 2, "new": None}]}))
+        assert panel_frame_ops._qc12_block(object()) == {"pass": False, "violations": 2, "has_takes": True}
+
 
 class TestRegistration:
     def test_ops_registered_and_merged(self, sentinel_module):
