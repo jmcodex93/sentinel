@@ -18,42 +18,39 @@ import type {
   PanelRenderSection as PanelRenderSectionData,
 } from "../../types";
 import { FrameSubview } from "./FrameSubview";
+import { SectionGroup } from "./SectionGroup";
 
-/** A single stacked block — eyebrow label + status line + actions row, per
- * the approved "A + status header per block" layout (mockup
+/** A single stacked block — title + status line + actions row, per the
+ * approved "A + status header per block" layout (mockup
  * .superpowers/brainstorm/51945-1784736330/content/render-layout.html
- * option A). Shared shell so every block (Preset/Frame/AOVs/Snapshots/
- * Post-Render) reads as one system rather than five different card designs. */
+ * option A). Shared shell (a `SectionGroup`) so every block (Preset/Frame/
+ * AOVs/Snapshots/Post-Render) reads as one system rather than five different
+ * card designs — refactored here once, all 5 call sites benefit. */
 function RenderBlock({
-  eyebrow,
+  title,
+  first,
   status,
   headerRight,
   children,
 }: {
-  eyebrow: string;
+  title: string;
+  first?: boolean;
   status: string;
-  /** Right-aligned header content, next to the eyebrow label — e.g. the
-   * AOVs block's "Show AOVs" link, kept separate from the action rows
-   * below it rather than mixed in as a peer button. */
+  /** Right-aligned header content, next to the title — e.g. the AOVs
+   * block's "Show AOVs" link, kept separate from the action rows below it
+   * rather than mixed in as a peer button. */
   headerRight?: React.ReactNode;
   children?: React.ReactNode;
 }) {
   return (
-    <div
-      className="flex flex-col gap-2 rounded-lg border p-3"
-      style={{ borderColor: "var(--color-hairline)", backgroundColor: "var(--color-surface-1)" }}
-    >
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-label" style={{ color: "var(--color-ink-secondary)" }}>
-          {eyebrow.toUpperCase()}
+    <SectionGroup title={title} first={first} action={headerRight}>
+      <div className="flex flex-col gap-2">
+        <p className="text-body" style={{ color: "var(--color-ink)" }}>
+          {status}
         </p>
-        {headerRight}
+        {children && <div className="flex flex-wrap items-center gap-2">{children}</div>}
       </div>
-      <p className="text-body" style={{ color: "var(--color-ink)" }}>
-        {status}
-      </p>
-      {children && <div className="flex flex-wrap items-center gap-2">{children}</div>}
-    </div>
+    </SectionGroup>
   );
 }
 
@@ -195,10 +192,10 @@ export function RenderSection({
   const postrender = render.postrender;
 
   return (
-    <div className="flex flex-col gap-3 p-3">
+    <div className="flex flex-col p-3">
       {confirmLabel && (
         <div
-          className="flex flex-wrap items-center gap-2 rounded-lg border p-3"
+          className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border p-3"
           style={{ backgroundColor: "var(--color-surface-1)", borderColor: "var(--color-hairline)" }}
         >
           <span className="text-body" style={{ color: "var(--color-ink)" }}>
@@ -216,7 +213,7 @@ export function RenderSection({
       )}
 
       {/* Preset */}
-      <RenderBlock eyebrow="Preset" status={presetStatusLine(preset)}>
+      <RenderBlock title="Preset" first status={presetStatusLine(preset)}>
         {preset === null ? null : (
           <>
             <Select
@@ -238,40 +235,40 @@ export function RenderSection({
       {/* Frame — the Sentinel Frame status line stays render-scoped
           (`frame`, from `panel/render`); the next-step hint + "Manage
           frame →" read the consolidated `panel/frame` state (Fase 6.6). */}
-      <RenderBlock eyebrow="Sentinel Frame" status={frameStatusLine(frame)}>
+      <RenderBlock title="Sentinel Frame" status={frameStatusLine(frame)}>
         {frame === null ? null : (
-          <>
-            <Button variant="secondary" disabled={isBusy} onClick={onAddFrameTag}>
-              Add to camera
-            </Button>
-            <Button variant="secondary" disabled={isBusy || !frame.has_tag} onClick={onSelectFrameTag}>
-              Select tag
-            </Button>
-            <button
-              type="button"
-              onClick={() => setRenderView("frame")}
-              className="text-caption ml-auto"
-              style={{ color: "var(--color-primary)" }}
+          <div className="flex w-full flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="secondary" disabled={isBusy} onClick={onAddFrameTag}>
+                Add to camera
+              </Button>
+              <Button variant="secondary" disabled={isBusy || !frame.has_tag} onClick={onSelectFrameTag}>
+                Select tag
+              </Button>
+              <button
+                type="button"
+                onClick={() => setRenderView("frame")}
+                className="text-caption ml-auto"
+                style={{ color: "var(--color-primary)" }}
+              >
+                Manage frame →
+              </button>
+            </div>
+            <p
+              className="text-caption"
+              style={{ color: frameHintWarn ? "var(--color-status-warn)" : "var(--color-ink-secondary)" }}
             >
-              Manage frame →
-            </button>
-          </>
+              {frameHintText}
+            </p>
+          </div>
         )}
       </RenderBlock>
-      {frame !== null && (
-        <p
-          className="text-caption -mt-2"
-          style={{ color: frameHintWarn ? "var(--color-status-warn)" : "var(--color-ink-secondary)" }}
-        >
-          {frameHintText}
-        </p>
-      )}
 
       {/* AOVs — three distinct concepts, not three peer buttons: Coverage
           (additive tier actions), Light Groups (an independent toggle),
           Output (the existing persistent-mode switch). */}
       <RenderBlock
-        eyebrow="AOVs"
+        title="AOVs"
         status={aovStatusLine(aovs)}
         headerRight={
           aovs !== null &&
@@ -319,44 +316,44 @@ export function RenderSection({
                 onChange={(value) => onSetMultipart(value === "multipart")}
               />
             </ActionRow>
+            {aovListState.kind === "loading" && (
+              <p className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
+                Loading AOVs…
+              </p>
+            )}
+            {aovListState.kind === "unavailable" && (
+              <p className="text-caption" style={{ color: "var(--color-status-warn)" }}>
+                {aovListState.message}
+              </p>
+            )}
+            {aovListState.kind === "ok" && (
+              <div
+                className="flex max-h-56 flex-col gap-1 overflow-y-auto rounded-lg border p-3"
+                style={{ borderColor: "var(--color-hairline)", backgroundColor: "var(--color-surface-2)" }}
+              >
+                <p className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
+                  Target: {aovListState.data.target} · Light Groups: {aovListState.data.light_groups ? "on" : "off"}
+                </p>
+                <ul className="mt-1 list-inside list-disc">
+                  {aovListState.data.aovs.map((entry) => (
+                    <li key={`${entry.name}-${entry.type}`} className="text-caption" style={{ color: "var(--color-ink)" }}>
+                      {entry.name}
+                    </li>
+                  ))}
+                </ul>
+                {aovListState.data.tier_coverage.production_missing.length > 0 && (
+                  <p className="text-caption mt-1" style={{ color: "var(--color-status-warn)" }}>
+                    Missing from Production: {aovListState.data.tier_coverage.production_missing.join(", ")}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         )}
       </RenderBlock>
-      {aovListState.kind === "loading" && (
-        <p className="text-caption -mt-2" style={{ color: "var(--color-ink-secondary)" }}>
-          Loading AOVs…
-        </p>
-      )}
-      {aovListState.kind === "unavailable" && (
-        <p className="text-caption -mt-2" style={{ color: "var(--color-status-warn)" }}>
-          {aovListState.message}
-        </p>
-      )}
-      {aovListState.kind === "ok" && (
-        <div
-          className="-mt-2 flex max-h-56 flex-col gap-1 overflow-y-auto rounded-lg border p-3"
-          style={{ borderColor: "var(--color-hairline)", backgroundColor: "var(--color-surface-2)" }}
-        >
-          <p className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
-            Target: {aovListState.data.target} · Light Groups: {aovListState.data.light_groups ? "on" : "off"}
-          </p>
-          <ul className="mt-1 list-inside list-disc">
-            {aovListState.data.aovs.map((entry) => (
-              <li key={`${entry.name}-${entry.type}`} className="text-caption" style={{ color: "var(--color-ink)" }}>
-                {entry.name}
-              </li>
-            ))}
-          </ul>
-          {aovListState.data.tier_coverage.production_missing.length > 0 && (
-            <p className="text-caption mt-1" style={{ color: "var(--color-status-warn)" }}>
-              Missing from Production: {aovListState.data.tier_coverage.production_missing.join(", ")}
-            </p>
-          )}
-        </div>
-      )}
 
       {/* Snapshots */}
-      <RenderBlock eyebrow="Snapshots" status={snapshotStatusLine(snapshots)}>
+      <RenderBlock title="Snapshots" status={snapshotStatusLine(snapshots)}>
         {snapshots === null ? null : (
           <>
             <Button variant="secondary" disabled={isBusy} onClick={onSaveStill}>
@@ -371,7 +368,7 @@ export function RenderSection({
       </RenderBlock>
 
       {/* Post-Render */}
-      <RenderBlock eyebrow="Post-Render" status={postrenderStatusLine(postrender)}>
+      <RenderBlock title="Post-Render" status={postrenderStatusLine(postrender)}>
         <Button variant="secondary" disabled={isBusy} onClick={onValidate}>
           Validate →
         </Button>
