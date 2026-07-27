@@ -2,7 +2,7 @@
 """Declarative QC check registry."""
 
 from collections import OrderedDict
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from importlib import import_module
 
@@ -319,44 +319,6 @@ def display_tuple(entry, rules_context=None):
 def build_check_display(entries=None, rules_context=None):
     entries = CHECK_REGISTRY if entries is None else entries
     return OrderedDict((entry.check_id, display_tuple(entry, rules_context)) for entry in entries)
-
-
-def build_row_keys(entries=None, rules_context=None, include_disabled=True):
-    entries = CHECK_REGISTRY if entries is None else entries
-    return [
-        entry.check_id
-        for entry in entries
-        if include_disabled or is_check_enabled(entry, rules_context)
-    ]
-
-
-class CheckDisplayView(Mapping):
-    """Mapping view derived from CHECK_REGISTRY for legacy callers."""
-
-    def __iter__(self):
-        return iter(build_row_keys())
-
-    def __len__(self):
-        return len(CHECK_REGISTRY)
-
-    def __getitem__(self, key):
-        for entry in CHECK_REGISTRY:
-            if entry.check_id == key:
-                return display_tuple(entry)
-        raise KeyError(key)
-
-
-class RowKeysView(Sequence):
-    """Sequence view derived from CHECK_REGISTRY for legacy callers."""
-
-    def __iter__(self):
-        return iter(build_row_keys())
-
-    def __len__(self):
-        return len(CHECK_REGISTRY)
-
-    def __getitem__(self, index):
-        return build_row_keys()[index]
 
 
 validate_registry(CHECK_REGISTRY)
