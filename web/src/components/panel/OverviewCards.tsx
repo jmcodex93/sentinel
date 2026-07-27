@@ -51,7 +51,7 @@ function CardAction({
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className="text-caption disabled:cursor-not-allowed disabled:opacity-50"
+      className="text-caption rounded-sm px-1 transition-colors duration-[var(--motion-fast)] ease-[var(--ease-glide)] hover:bg-[var(--color-surface-2)] disabled:cursor-not-allowed disabled:opacity-50"
       style={{ color: "var(--color-primary)" }}
     >
       {label}

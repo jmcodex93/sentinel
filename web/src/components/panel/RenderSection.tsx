@@ -17,6 +17,7 @@ import type {
   PanelRenderAovListOk,
   PanelRenderSection as PanelRenderSectionData,
 } from "../../types";
+import { ConfirmBar } from "./ConfirmBar";
 import { FrameSubview } from "./FrameSubview";
 import { SectionGroup } from "./SectionGroup";
 
@@ -194,22 +195,7 @@ export function RenderSection({
   return (
     <div className="flex flex-col p-3">
       {confirmLabel && (
-        <div
-          className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border p-3"
-          style={{ backgroundColor: "var(--color-surface-1)", borderColor: "var(--color-hairline)" }}
-        >
-          <span className="text-body" style={{ color: "var(--color-ink)" }}>
-            {confirmLabel}
-          </span>
-          <div className="ml-auto flex gap-2">
-            <Button variant="secondary" disabled={isBusy} onClick={onCancelConfirm}>
-              Cancel
-            </Button>
-            <Button variant="primary" disabled={isBusy} onClick={onConfirm}>
-              Confirm
-            </Button>
-          </div>
-        </div>
+        <ConfirmBar label={confirmLabel} busy={isBusy} onConfirm={onConfirm} onCancel={onCancelConfirm} className="mb-4" />
       )}
 
       {/* Preset */}
