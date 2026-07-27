@@ -24,6 +24,8 @@ import {
   type SortCol,
   type SortSpec,
 } from "../../lib/hubTable";
+import { StatusMark } from "../StatusMark";
+import { hubAssetStatusTone } from "../../lib/status";
 
 const ROW_H = 44; // --space-table-row (2-line rows: name+chip+badge / path+dims+owner)
 
@@ -99,26 +101,13 @@ function TypeIcon({ assetType }: { assetType: string }) {
   return <Icon size={14} strokeWidth={2} aria-hidden="true" style={{ color: "var(--color-ink-secondary)" }} />;
 }
 
-/** missing→fail, absolute/empty→warn, asset_uri→neutral, ok→pass — semantic
- * chroma only (Rule 2 in DESIGN.md: the accent never marks state). */
-const STATUS_META: Record<HubAssetStatus, { label: string; color: string; background: string }> = {
-  missing: { label: "missing", color: "var(--color-status-fail)", background: "var(--color-status-fail-tint-10)" },
-  absolute: { label: "absolute", color: "var(--color-status-warn)", background: "var(--color-status-warn-tint-10)" },
-  empty: { label: "empty", color: "var(--color-status-warn)", background: "var(--color-status-warn-tint-10)" },
-  asset_uri: { label: "asset uri", color: "var(--color-status-neutral)", background: "var(--color-status-neutral-tint-10)" },
-  ok: { label: "ok", color: "var(--color-status-pass)", background: "var(--color-status-pass-tint-10)" },
+const STATUS_LABEL: Record<HubAssetStatus, string> = {
+  missing: "missing", absolute: "absolute", empty: "empty",
+  asset_uri: "asset uri", ok: "ok",
 };
 
 function HubStatusBadge({ status }: { status: HubAssetStatus }) {
-  const meta = STATUS_META[status];
-  return (
-    <span
-      className="text-label inline-block rounded-sm px-1.5 py-0.5"
-      style={{ color: meta.color, backgroundColor: meta.background }}
-    >
-      {meta.label}
-    </span>
-  );
+  return <StatusMark tone={hubAssetStatusTone(status)} label={STATUS_LABEL[status]} />;
 }
 
 function ThumbCell({ asset }: { asset: HubAsset }) {
