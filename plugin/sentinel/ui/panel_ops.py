@@ -65,7 +65,7 @@ from c4d import documents
 from sentinel import assets as assets_engine
 from sentinel import webbridge
 from sentinel.checks.render import normalize_preset_name
-from sentinel.common.helpers import safe_print
+from sentinel.common.helpers import _iter_objs, safe_print
 from sentinel.common.settings import GlobalSettings
 from sentinel.notes import get_notes_path, load_notes
 from sentinel.qc.registry import CHECK_REGISTRY
@@ -528,6 +528,26 @@ def _qc_flagged_items(check_id, legacy_result):
     return list(legacy_result or [])
 
 
+def _select_objects(doc, objs):
+    """Select objects in the scene"""
+    if not doc or not objs:
+        return
+
+    first = doc.GetFirstObject()
+    if first:
+        for o in _iter_objs(first):
+            o.DelBit(c4d.BIT_ACTIVE)
+
+    for o in objs:
+        try:
+            if o:
+                o.SetBit(c4d.BIT_ACTIVE)
+        except Exception:
+            pass
+
+    c4d.EventAdd()
+
+
 def _select_single_qc_item(doc, check_id, item):
     """Select exactly ONE flagged item in the scene — the cycle-one-per-click
     counterpart to the old select-all. ``unused_mats`` cycles MATERIALS
@@ -546,7 +566,6 @@ def _select_single_qc_item(doc, check_id, item):
                 pass
         c4d.EventAdd()
     else:
-        from sentinel.ui.panel import _select_objects
         _select_objects(doc, [item] if item is not None else [])
 
 
