@@ -38,7 +38,7 @@ export function ConfirmBar({
         backgroundColor: "var(--color-surface-1)",
         borderColor: "var(--color-hairline)",
         boxShadow: "var(--shadow-float)",
-        transitionDuration: "var(--motion-base)",
+        transitionDuration: "var(--motion-glide)",
         opacity: entered ? 1 : 0,
         transform: entered ? "translateY(0)" : "translateY(-4px)",
       }}
