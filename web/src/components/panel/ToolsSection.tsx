@@ -1,5 +1,6 @@
 import { Button } from "../form/Button";
 import { TOOL_GROUPS } from "../../lib/panelTools";
+import { SectionGroup } from "./SectionGroup";
 
 /** Tools section (Fase 6.4) — grouped action buttons for scene-authoring
  * utilities. Action-only: each button runs its op and toasts the result;
@@ -14,16 +15,9 @@ export function ToolsSection({
 }) {
   const isBusy = busy !== null;
   return (
-    <div className="flex flex-col gap-3 p-3">
-      {TOOL_GROUPS.map((group) => (
-        <div
-          key={group.title}
-          className="flex flex-col gap-2 rounded-lg border p-3"
-          style={{ borderColor: "var(--color-hairline)", backgroundColor: "var(--color-surface-1)" }}
-        >
-          <p className="text-label" style={{ color: "var(--color-ink-secondary)" }}>
-            {group.title.toUpperCase()}
-          </p>
+    <div className="flex flex-col p-3">
+      {TOOL_GROUPS.map((group, index) => (
+        <SectionGroup key={group.title} title={group.title} first={index === 0}>
           <div className="flex flex-wrap gap-2">
             {group.tools.map((tool) => (
               <Button
@@ -36,7 +30,7 @@ export function ToolsSection({
               </Button>
             ))}
           </div>
-        </div>
+        </SectionGroup>
       ))}
     </div>
   );

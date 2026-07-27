@@ -77,9 +77,16 @@ spacing:
   table-row: 32px
 
 motion:
-  fast: 100ms
-  base: 150ms
+  fast: 120ms
+  base: 180ms
+  press: 80ms
+  glide: 300ms
   easing: ease
+  ease-glide: cubic-bezier(0.16, 1, 0.3, 1)
+  ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1)
+
+elevation:
+  shadow-float: 0 8px 24px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.4)
 
 components:
   report-page:
@@ -366,13 +373,57 @@ share color/spacing/radius tokens but never font rendering.
 
 ### Motion
 
-- **Fast** (`{motion.fast}`, 100ms): Row hover, button hover — anything that
+Two purpose-built easings replace the flat `ease` curve for new work
+(`{motion.easing}` stays defined for legacy call sites not yet migrated —
+migration happens per-component in later panel-polish tasks, not here):
+
+- **Glide** (`{motion.ease-glide}`, `cubic-bezier(0.16, 1, 0.3, 1)`) — for
+  enter/exit transitions and size changes: panels sliding in, dialogs
+  appearing, a block expanding/collapsing. Decelerates smoothly into place,
+  no overshoot — reads as controlled, not entertaining.
+- **Spring** (`{motion.ease-spring}`, `cubic-bezier(0.34, 1.56, 0.64, 1)`) —
+  reserved for press/pop feedback only: a button's own press-down/release,
+  a toggle's thumb settling. The slight overshoot confirms a direct
+  manipulation just landed; it is deliberately NOT used for anything that
+  moves on its own (enter/exit, async state changes) — a spring on something
+  the user didn't just touch reads as decoration, not feedback.
+
+Duration scale:
+
+- **Press** (`{motion.press}`, 80ms): the shortest tier — button
+  press-down, toggle thumb, anything driven by a held pointer that must
+  feel instantaneous.
+- **Fast** (`{motion.fast}`, 120ms): Row hover, button hover — anything that
   tracks the cursor directly.
-  <br>
-- **Base** (`{motion.base}`, 150ms): Segmented-control active-state
+- **Base** (`{motion.base}`, 180ms): Segmented-control active-state
   transition, toast enter/exit.
-- **Easing**: `ease` throughout — no spring/bounce curves. Sentinel is a
-  production tool; motion should confirm state changed, not entertain.
+- **Glide** (`{motion.glide}`, 300ms): larger enter/exit and size-change
+  transitions (panel slide, block expand/collapse) — long enough for the
+  glide easing's deceleration to read, short enough to stay a production
+  tool rather than a showcase.
+- **Easing**: `{motion.easing}` (`ease`) remains the fallback for
+  unmigrated transitions; new work picks glide or spring per the rules
+  above. No bounce/elastic curves beyond `ease-spring`'s modest overshoot —
+  Sentinel is a production tool; motion should confirm state changed, not
+  entertain.
+
+**Elevation** — `{elevation.shadow-float}` is reserved for floating
+surfaces only: toast, popover, confirm/dialog surfaces that sit above the
+page on their own layer. Cards, rows, and other in-flow surfaces never use
+it — elevation shadow signals "this floats above the layout," not general
+depth decoration, and reusing it on flat surfaces would blur that signal.
+
+**Reduced motion**: a global `prefers-reduced-motion: reduce` kill-switch
+(`web/src/index.css`) collapses every `animation-duration` and
+`transition-duration` to `0.01ms` (and disables `scroll-behavior: smooth`)
+for users with that OS/browser preference — no per-component opt-out
+needed, so no future animation can accidentally skip the accessibility
+gate.
+
+As elsewhere in this document: **the accent (`{colors.primary}`) never
+marks state** — motion timing and easing are chosen for what changed
+(size vs. press vs. enter/exit), never to imply pass/fail/warn, which stays
+exclusively the job of the status colors.
 
 ## Shapes
 

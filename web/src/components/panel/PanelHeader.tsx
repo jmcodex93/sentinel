@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import type { PanelQc, PanelScene } from "../../types";
 
 /** QC score bar — same tone rule as `QcReportPage` (`scoreTone`): full pass
@@ -6,16 +7,35 @@ import type { PanelQc, PanelScene } from "../../types";
  * enter `counts`), so the denominator is `total` directly, no further
  * subtraction. Width is the passed/total fraction; `total === 0` (every
  * check turned off) draws an empty, neutral bar rather than dividing by
- * zero. */
+ * zero.
+ *
+ * Score pop (Task 5, panel polish): `.animate-pop` fires on the score text
+ * only when `passed`/`total`/`disabled` actually change value between
+ * renders — tracked via a ref, not on every 2s poll (which hands down a
+ * fresh `qc` object with the *same* numbers most ticks). No pop on first
+ * mount — the ref starts `null` and the first render just seeds it. */
 function QcBar({ qc }: { qc: PanelQc }) {
   const denominator = qc.total;
   const fraction = denominator > 0 ? qc.passed / denominator : 0;
   const tone = denominator > 0 && qc.passed === denominator ? "pass" : "fail";
   const color = denominator > 0 ? (tone === "pass" ? "var(--color-status-pass)" : "var(--color-status-fail)") : "var(--color-status-neutral)";
 
+  const scoreKey = `${qc.passed}/${denominator}/${qc.disabled}`;
+  const prevKeyRef = useRef<string | null>(null);
+  const [pop, setPop] = useState(false);
+
+  useEffect(() => {
+    const changed = prevKeyRef.current !== null && prevKeyRef.current !== scoreKey;
+    prevKeyRef.current = scoreKey;
+    if (!changed) return;
+    setPop(true);
+    const timer = setTimeout(() => setPop(false), 300);
+    return () => clearTimeout(timer);
+  }, [scoreKey]);
+
   return (
     <div className="flex items-center gap-2">
-      <span className="text-caption shrink-0" style={{ color }}>
+      <span className={`text-caption shrink-0 ${pop ? "animate-pop" : ""}`} style={{ color }}>
         QC {qc.passed}/{denominator}
         {qc.disabled > 0 ? ` · ${qc.disabled} disabled` : ""}
       </span>

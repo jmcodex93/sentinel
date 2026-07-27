@@ -7,62 +7,11 @@ import {
   RECENT_FILTERS,
   filterRecent,
   notesStatusLine,
-  statusBadgeTone,
+  statusMarker,
   versionStatusLine,
 } from "../../lib/panelDeliver";
 import type { PanelDeliverState } from "../../types";
-
-/** Reuses the same 4-block "eyebrow + status + actions" shell as
- * RenderSection's `RenderBlock` — Deliver is a sibling section, so it must
- * read as the same system, not a bespoke card design. */
-function DeliverBlock({
-  eyebrow,
-  status,
-  children,
-}: {
-  eyebrow: string;
-  status: string;
-  children?: React.ReactNode;
-}) {
-  return (
-    <div
-      className="flex flex-col gap-2 rounded-lg border p-3"
-      style={{ borderColor: "var(--color-hairline)", backgroundColor: "var(--color-surface-1)" }}
-    >
-      <p className="text-label" style={{ color: "var(--color-ink-secondary)" }}>
-        {eyebrow.toUpperCase()}
-      </p>
-      <p className="text-body" style={{ color: "var(--color-ink)" }}>
-        {status}
-      </p>
-      {children && <div className="flex flex-wrap items-center gap-2">{children}</div>}
-    </div>
-  );
-}
-
-/** Status tone → CSS var pair, matching the native panel's badge palette so
- * the artist's mental model carries over: WIP = neutral grey (in progress),
- * TR = amber (team review), CR = blue (client review), FINAL = green (done).
- * Each review stage gets its own hue. Never the accent — accent marks
- * "selected", not status; the CR blue is deliberately distinct from it. */
-const BADGE_TONE_VARS: Record<ReturnType<typeof statusBadgeTone>, { color: string; background: string }> = {
-  wip: { color: "var(--color-status-neutral)", background: "var(--color-status-neutral-tint-10)" },
-  tr: { color: "var(--color-status-warn)", background: "var(--color-status-warn-tint-10)" },
-  cr: { color: "var(--color-status-info)", background: "var(--color-status-info-tint-10)" },
-  final: { color: "var(--color-status-pass)", background: "var(--color-status-pass-tint-10)" },
-};
-
-function VersionBadge({ status }: { status: string }) {
-  const tone = BADGE_TONE_VARS[statusBadgeTone(status)];
-  return (
-    <span
-      className="text-label shrink-0 rounded-sm px-1.5 py-0.5"
-      style={{ color: tone.color, backgroundColor: tone.background }}
-    >
-      {status || "WIP"}
-    </span>
-  );
-}
+import { SectionGroup } from "./SectionGroup";
 
 type DeliverView = "main" | "save_version" | "notes";
 
@@ -119,94 +68,117 @@ export function DeliverSection({
   const recent = version && !version.unsaved ? filterRecent(version.recent, filter) : [];
 
   return (
-    <div className="flex flex-col gap-3 p-3">
+    <div className="flex flex-col p-3">
       {/* Version */}
-      <DeliverBlock eyebrow="Version" status={versionStatusLine(version)}>
-        <Button variant="primary" disabled={isBusy} onClick={() => setView("save_version")}>
-          Save Version
-        </Button>
-      </DeliverBlock>
+      <SectionGroup title="Version" first>
+        <div className="flex flex-col gap-2">
+          <p className="text-body" style={{ color: "var(--color-ink)" }}>
+            {versionStatusLine(version)}
+          </p>
+          <Button variant="primary" disabled={isBusy} onClick={() => setView("save_version")}>
+            Save Version
+          </Button>
+        </div>
+      </SectionGroup>
 
       {version && !version.unsaved && (
-        <div
-          className="flex flex-col gap-2 rounded-lg border p-3"
-          style={{ borderColor: "var(--color-hairline)", backgroundColor: "var(--color-surface-1)" }}
-        >
-          <p className="text-label" style={{ color: "var(--color-ink-secondary)" }}>
-            RECENT VERSIONS
-          </p>
-          <div className="flex flex-wrap gap-1">
-            {RECENT_FILTERS.map((f) => (
-              <button
-                key={f.value}
-                type="button"
-                onClick={() => setFilter(f.value)}
-                className="text-caption rounded-sm px-2 py-1 transition-colors duration-100 ease-out"
-                style={{
-                  backgroundColor: f.value === filter ? "var(--color-surface-2)" : "transparent",
-                  color: f.value === filter ? "var(--color-ink)" : "var(--color-ink-secondary)",
-                }}
-              >
-                {f.label}
-              </button>
-            ))}
+        <SectionGroup title="Recent versions">
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-wrap gap-1">
+              {RECENT_FILTERS.map((f) => (
+                <button
+                  key={f.value}
+                  type="button"
+                  onClick={() => setFilter(f.value)}
+                  className="text-caption rounded-sm px-2 py-1 transition-colors duration-100 ease-out"
+                  style={{
+                    backgroundColor: f.value === filter ? "var(--color-surface-2)" : "transparent",
+                    color: f.value === filter ? "var(--color-ink)" : "var(--color-ink-secondary)",
+                  }}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-col gap-1">
+              {recent.length === 0 && (
+                <p className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
+                  No versions match this filter.
+                </p>
+              )}
+              {recent.map((entry) => {
+                const m = statusMarker(entry.status);
+                return (
+                  <button
+                    key={entry.path}
+                    type="button"
+                    disabled={isBusy}
+                    onClick={() => onOpenVersion(entry.path, entry.filename)}
+                    title={`Open ${entry.filename}`}
+                    className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-100 ease-out hover:bg-[var(--color-surface-2)] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="h-[7px] w-[7px] shrink-0 rounded-full" style={{ backgroundColor: m.color }} />
+                      <span className="text-caption font-semibold" style={{ color: m.color }}>
+                        {m.label}
+                      </span>
+                    </span>
+                    <span className="text-body" style={{ color: "var(--color-ink)" }}>
+                      v{String(entry.version).padStart(3, "0")}
+                    </span>
+                    {entry.age && (
+                      <span className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
+                        {entry.age}
+                      </span>
+                    )}
+                    {entry.qc_label && (
+                      <span className="text-caption ml-auto" style={{ color: "var(--color-ink-secondary)" }}>
+                        QC {entry.qc_label}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
           </div>
-          <div className="flex flex-col gap-1">
-            {recent.length === 0 && (
-              <p className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
-                No versions match this filter.
-              </p>
-            )}
-            {recent.map((entry) => (
-              <button
-                key={entry.path}
-                type="button"
-                disabled={isBusy}
-                onClick={() => onOpenVersion(entry.path, entry.filename)}
-                title={`Open ${entry.filename}`}
-                className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-100 ease-out hover:bg-[var(--color-surface-2)] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <VersionBadge status={entry.status} />
-                <span className="text-body" style={{ color: "var(--color-ink)" }}>
-                  v{String(entry.version).padStart(3, "0")}
-                </span>
-                {entry.age && (
-                  <span className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
-                    {entry.age}
-                  </span>
-                )}
-                {entry.qc_label && (
-                  <span className="text-caption ml-auto" style={{ color: "var(--color-ink-secondary)" }}>
-                    QC {entry.qc_label}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-        </div>
+        </SectionGroup>
       )}
 
       {/* Notes */}
-      <DeliverBlock eyebrow="Notes" status={notesStatusLine(notes)}>
-        <Button variant="secondary" disabled={isBusy} onClick={() => setView("notes")}>
-          Edit Notes
-        </Button>
-      </DeliverBlock>
+      <SectionGroup
+        title="Notes"
+        action={
+          <Button variant="secondary" disabled={isBusy} onClick={() => setView("notes")}>
+            Edit Notes
+          </Button>
+        }
+      >
+        <p className="text-body" style={{ color: "var(--color-ink)" }}>
+          {notesStatusLine(notes)}
+        </p>
+      </SectionGroup>
 
       {/* Deliver access */}
-      <DeliverBlock eyebrow="Deliver" status="Collect, supervise, and review the delivery package.">
-        <Button variant="secondary" disabled={isBusy} onClick={onCollect}>
-          Collect Scene
-        </Button>
-        <Button variant="secondary" disabled={isBusy} onClick={onOpenSupervisor}>
-          Supervisor
-        </Button>
-        {deliverAccess?.has_manifest && (
-          <Button variant="secondary" disabled={isBusy} onClick={onOpenDeliverySummary}>
-            Delivery Summary
-          </Button>
-        )}
-      </DeliverBlock>
+      <SectionGroup title="Deliver">
+        <div className="flex flex-col gap-2">
+          <p className="text-body" style={{ color: "var(--color-ink)" }}>
+            Collect, supervise, and review the delivery package.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" disabled={isBusy} onClick={onCollect}>
+              Collect Scene
+            </Button>
+            <Button variant="secondary" disabled={isBusy} onClick={onOpenSupervisor}>
+              Supervisor
+            </Button>
+            {deliverAccess?.has_manifest && (
+              <Button variant="secondary" disabled={isBusy} onClick={onOpenDeliverySummary}>
+                Delivery Summary
+              </Button>
+            )}
+          </div>
+        </div>
+      </SectionGroup>
     </div>
   );
 }

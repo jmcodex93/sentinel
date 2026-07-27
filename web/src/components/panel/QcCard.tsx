@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "../form/Button";
 import { FieldRow } from "../form/FieldRow";
 import { TextArea } from "../form/TextArea";
@@ -36,11 +36,24 @@ export function QcCard({
   onAccept: (author: string, reason: string) => Promise<{ ok: boolean; error?: string }>;
 }) {
   const [infoOpen, setInfoOpen] = useState(false);
+  // Mount glide for the Info expand (Task 5): `detailsEntered` flips true
+  // one frame after `infoOpen` does, same `entered`-idiom as Toast.tsx, so
+  // the detail list/"No details." note fades+glides in instead of popping.
+  const [detailsEntered, setDetailsEntered] = useState(false);
   const [acceptOpen, setAcceptOpen] = useState(false);
   const [author, setAuthor] = useState(artistName);
   const [reason, setReason] = useState("");
   const [acceptError, setAcceptError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!infoOpen) {
+      setDetailsEntered(false);
+      return;
+    }
+    const raf = requestAnimationFrame(() => setDetailsEntered(true));
+    return () => cancelAnimationFrame(raf);
+  }, [infoOpen]);
 
   const actions = cardActions(check);
   const tintColor = check.severity === "FAIL" ? "var(--color-status-fail)" : "var(--color-status-warn)";
@@ -97,34 +110,43 @@ export function QcCard({
         <button
           type="button"
           onClick={() => setInfoOpen((v) => !v)}
-          className="text-caption shrink-0"
+          className="text-caption shrink-0 rounded-sm px-1 transition-colors duration-[var(--motion-fast)] ease-[var(--ease-glide)] hover:bg-[var(--color-surface-2)]"
           style={{ color: "var(--color-ink-secondary)" }}
         >
           {infoOpen ? "▾" : "▸"} Info
         </button>
       </div>
 
-      {check.detail.length > 0 ? (
+      {check.detail.length > 0 && (
         <p className="text-caption mt-1" style={{ color: "var(--color-ink-secondary)" }}>
           {detailPreview(check.detail)}
         </p>
-      ) : (
-        infoOpen && (
-          <p className="text-caption mt-1" style={{ color: "var(--color-ink-secondary)" }}>
-            No details.
-          </p>
-        )
       )}
-      {infoOpen && check.detail.length > 0 && (
-        <ul className="mt-1 max-h-48 list-inside list-disc overflow-y-auto">
-          {check.detail.map((detail, index) => (
-            <li key={`${detail.label}:${index}`} className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
-              {detail.label && <span style={{ color: "var(--color-ink)" }}>{detail.label}</span>}
-              {detail.label && detail.message && " — "}
-              <span style={{ color: "var(--color-ink-secondary)" }}>{detail.message}</span>
-            </li>
-          ))}
-        </ul>
+      {infoOpen && (
+        <div
+          className="transition-[opacity,transform] ease-[var(--ease-glide)]"
+          style={{
+            transitionDuration: "var(--motion-base)",
+            opacity: detailsEntered ? 1 : 0,
+            transform: detailsEntered ? "translateY(0)" : "translateY(-4px)",
+          }}
+        >
+          {check.detail.length === 0 ? (
+            <p className="text-caption mt-1" style={{ color: "var(--color-ink-secondary)" }}>
+              No details.
+            </p>
+          ) : (
+            <ul className="mt-1 max-h-48 list-inside list-disc overflow-y-auto">
+              {check.detail.map((detail, index) => (
+                <li key={`${detail.label}:${index}`} className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
+                  {detail.label && <span style={{ color: "var(--color-ink)" }}>{detail.label}</span>}
+                  {detail.label && detail.message && " — "}
+                  <span style={{ color: "var(--color-ink-secondary)" }}>{detail.message}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
 
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -133,7 +155,7 @@ export function QcCard({
             type="button"
             onClick={onSelect}
             disabled={busy}
-            className="text-caption disabled:cursor-not-allowed disabled:opacity-50"
+            className="text-caption rounded-sm px-1 transition-colors duration-[var(--motion-fast)] ease-[var(--ease-glide)] hover:bg-[var(--color-surface-2)] disabled:cursor-not-allowed disabled:opacity-50"
             style={{ color: "var(--color-primary)" }}
           >
             Select
@@ -145,7 +167,7 @@ export function QcCard({
             onClick={onFix}
             disabled={busy || !fixAction || !fixAction.enabled}
             title={fixAction && !fixAction.enabled ? fixAction.reason || undefined : undefined}
-            className="text-caption disabled:cursor-not-allowed disabled:opacity-50"
+            className="text-caption rounded-sm px-1 transition-colors duration-[var(--motion-fast)] ease-[var(--ease-glide)] hover:bg-[var(--color-surface-2)] disabled:cursor-not-allowed disabled:opacity-50"
             style={{ color: "var(--color-primary)" }}
           >
             Fix
@@ -155,7 +177,7 @@ export function QcCard({
           type="button"
           onClick={acceptOpen ? () => setAcceptOpen(false) : openAccept}
           disabled={busy}
-          className="text-caption disabled:cursor-not-allowed disabled:opacity-50"
+          className="text-caption rounded-sm px-1 transition-colors duration-[var(--motion-fast)] ease-[var(--ease-glide)] hover:bg-[var(--color-surface-2)] disabled:cursor-not-allowed disabled:opacity-50"
           style={{ color: "var(--color-primary)" }}
         >
           Accept…

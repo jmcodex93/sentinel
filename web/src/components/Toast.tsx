@@ -33,11 +33,12 @@ function ToastRow({ item, onDismiss }: { item: ToastItem; onDismiss: (id: number
   return (
     <div
       role="status"
-      className="flex w-80 items-start gap-2 rounded-lg border px-4 py-3 transition-[opacity,transform] ease-[var(--motion-easing)]"
+      className="flex w-80 items-start gap-2 rounded-lg border px-4 py-3 transition-[opacity,transform] ease-[var(--ease-glide)]"
       style={{
         backgroundColor: "var(--color-surface-2)",
         borderColor: "var(--color-hairline-strong)",
         transitionDuration: "var(--motion-base)",
+        boxShadow: "var(--shadow-float)",
         opacity: visible ? 1 : 0,
         transform: visible ? "translateY(0)" : "translateY(8px)",
       }}

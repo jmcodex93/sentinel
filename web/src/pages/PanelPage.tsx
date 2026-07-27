@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ConfirmBar } from "../components/panel/ConfirmBar";
 import { DeliverSection } from "../components/panel/DeliverSection";
 import { OverviewCards } from "../components/panel/OverviewCards";
 import { PanelHeader } from "../components/panel/PanelHeader";
@@ -645,22 +646,13 @@ export function PanelPage() {
           {state.kind === "ok" && section === "overview" && (
             <>
               {confirmAction && (
-                <div
-                  className="mx-3 mt-3 flex flex-wrap items-center gap-2 rounded-lg border p-3"
-                  style={{ backgroundColor: "var(--color-surface-1)", borderColor: "var(--color-hairline)" }}
-                >
-                  <span className="text-body" style={{ color: "var(--color-ink)" }}>
-                    {confirmAction.confirm_label}
-                  </span>
-                  <div className="ml-auto flex gap-2">
-                    <Button variant="secondary" disabled={busyFixId !== null} onClick={() => setConfirmAction(null)}>
-                      Cancel
-                    </Button>
-                    <Button variant="primary" disabled={busyFixId !== null} onClick={() => runFix(confirmAction, true)}>
-                      Confirm
-                    </Button>
-                  </div>
-                </div>
+                <ConfirmBar
+                  label={confirmAction.confirm_label ?? ""}
+                  busy={busyFixId !== null}
+                  onCancel={() => setConfirmAction(null)}
+                  onConfirm={() => runFix(confirmAction, true)}
+                  className="mx-3 mt-3"
+                />
               )}
               <OverviewCards
                 overview={state.data}
@@ -680,28 +672,15 @@ export function PanelPage() {
           {state.kind === "ok" && section === "qc" && (
             <>
               {qcConfirm && (
-                <div
-                  className="mx-3 mt-3 flex flex-wrap items-center gap-2 rounded-lg border p-3"
-                  style={{ backgroundColor: "var(--color-surface-1)", borderColor: "var(--color-hairline)" }}
-                >
-                  <span className="text-body" style={{ color: "var(--color-ink)" }}>
-                    {qcConfirm.action.confirm_label}
-                  </span>
-                  <div className="ml-auto flex gap-2">
-                    <Button variant="secondary" disabled={busyQcId !== null} onClick={() => setQcConfirm(null)}>
-                      Cancel
-                    </Button>
-                    <Button
-                      variant="primary"
-                      disabled={busyQcId !== null}
-                      onClick={() =>
-                        qcConfirm.kind === "card_fix" ? runQcCardFix(qcConfirm.action, true) : runQcFixAll(true)
-                      }
-                    >
-                      Confirm
-                    </Button>
-                  </div>
-                </div>
+                <ConfirmBar
+                  label={qcConfirm.action.confirm_label ?? ""}
+                  busy={busyQcId !== null}
+                  onCancel={() => setQcConfirm(null)}
+                  onConfirm={() =>
+                    qcConfirm.kind === "card_fix" ? runQcCardFix(qcConfirm.action, true) : runQcFixAll(true)
+                  }
+                  className="mx-3 mt-3"
+                />
               )}
               {qcState.kind === "loading" && <LoadingState />}
               {qcState.kind === "error" && (

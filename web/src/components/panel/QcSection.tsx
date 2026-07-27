@@ -98,7 +98,7 @@ export function QcSection({
       <button
         type="button"
         onClick={() => setOkOpen((v) => !v)}
-        className="text-caption self-start"
+        className="text-caption self-start rounded-sm px-1 transition-colors duration-[var(--motion-fast)] ease-[var(--ease-glide)] hover:bg-[var(--color-surface-2)]"
         style={{ color: "var(--color-ink-secondary)" }}
       >
         {okOpen ? "▾" : "▸"} {okCount} OK · {disabledCount} disabled

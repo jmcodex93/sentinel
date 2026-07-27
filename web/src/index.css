@@ -40,6 +40,17 @@
   --radius-xl: var(--radius-xl);
 }
 
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 html,
 body,
 #root {
@@ -94,4 +105,19 @@ body {
   font-size: var(--text-caption-size);
   font-weight: var(--text-caption-weight);
   line-height: var(--text-caption-line);
+}
+
+/*
+ * Panel polish (Task 5) — a single "pop" cue reused wherever a value
+ * changes underneath the user (e.g. the QC score in PanelHeader). The
+ * global prefers-reduced-motion rule above already neutralizes this
+ * (animation-duration: 0.01ms), so no separate reduced-motion branch here.
+ */
+@keyframes sentinel-pop {
+  0% { transform: scale(1); }
+  45% { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+.animate-pop {
+  animation: sentinel-pop var(--motion-base) var(--ease-spring);
 }
