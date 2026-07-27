@@ -522,7 +522,12 @@ export function HubPage() {
 
   async function handleSwitchResConfirm(target: number | "highest") {
     setSwitchResBusy(true);
-    const res = await postHubSwitchRes(Array.from(selectedKeys), target);
+    // Non-repathable keys are excluded here too, not just from the dialog's
+    // preview counts -- the server has no writable texture record for them
+    // and would error instead of skip (resolve_repath_targets assumes every
+    // key it's given is repathable).
+    const keys = Array.from(selectedKeys).filter((key) => repathableKeys.has(key));
+    const res = await postHubSwitchRes(keys, target);
     setSwitchResBusy(false);
 
     if (!res.ok) {
@@ -601,7 +606,13 @@ export function HubPage() {
     (asset) => asset.status === "ok" && (asset.asset_type === "texture" || asset.asset_type === "hdri"),
   );
   const copyEnabled = selectedAssets.some((asset) => asset.status === "absolute");
-  const switchResEnabled = selectedAssets.some((asset) => (variants[asset.key]?.length ?? 0) > 0);
+  // A non-repathable asset has no writable texture record to relink, so it
+  // can never be a switch-res target even when variants exist on disk for
+  // its basename (see hubTable.switchTargets's repathableKeys gate).
+  const repathableKeys = new Set(data.assets.filter((asset) => asset.repathable).map((asset) => asset.key));
+  const switchResEnabled = selectedAssets.some(
+    (asset) => asset.repathable && (variants[asset.key]?.length ?? 0) > 0,
+  );
   const jobRunning = shrinkJob !== null || shrinkStarting;
 
   return (
@@ -770,6 +781,7 @@ export function HubPage() {
       {switchResDialogOpen && (
         <HubSwitchResDialog
           selectedKeys={selectedKeys}
+          repathableKeys={repathableKeys}
           variants={variants}
           busy={switchResBusy}
           onConfirm={handleSwitchResConfirm}

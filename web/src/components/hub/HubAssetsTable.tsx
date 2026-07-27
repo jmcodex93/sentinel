@@ -497,7 +497,7 @@ export function HubAssetsTable({
 
                 <div className="flex items-center gap-1 px-2">
                   {meta ? <HubResChip meta={meta} /> : <span style={{ color: "var(--color-muted)" }}>—</span>}
-                  {variantGroup && (
+                  {a.repathable && variantGroup && (
                     <span
                       className="text-label"
                       style={{ color: "var(--color-ink-secondary)" }}
