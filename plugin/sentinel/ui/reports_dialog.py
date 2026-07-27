@@ -586,7 +586,13 @@ def open_form(doc, page, defaultw=None, defaulth=None, query=None):
     if existing is not None:
         try:
             if existing.IsOpen():
-                existing.Close()
+                # Already open: REUSE it, never Close()+reopen. Tearing down a
+                # live CUSTOMGUI_HTMLVIEWER webview and recreating it in the same
+                # tick crashes C4D — pressing Collect again while the Asset Hub
+                # was already open was a confirmed hard crash. Bringing the
+                # existing window forward is both crash-safe and better UX than
+                # spawning a fresh one.
+                return existing
         except Exception:
             pass
 
