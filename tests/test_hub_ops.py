@@ -517,11 +517,11 @@ class TestValidateSwitchTarget:
 
 class TestOpenHubPalette:
     def test_palette_open_hub_still_registered(self, sentinel_module):
-        """_palette_open_hub now tries the SPA hub (open_form) before
-        falling back to the native AssetHubDialog (Task 12), but the
-        no-document contract it shares with every other palette action
-        must be unchanged: no active document is still the very first
-        check, before either code path runs."""
+        """_palette_open_hub opens the SPA hub via open_form (the native
+        AssetHubDialog fallback was removed once the SPA became the sole
+        Hub UI). The no-document contract it shares with every other
+        palette action must be unchanged: no active document is still the
+        very first check, before open_form runs."""
         from sentinel.ui import web_ops
 
         response = web_ops._op_palette_run({"id": "open_hub"})
