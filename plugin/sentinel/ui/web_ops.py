@@ -519,15 +519,8 @@ def _palette_open_hub(doc):
     try:
         from sentinel.ui.reports_dialog import open_form
         open_form(doc, "hub")
-    except Exception:
-        from sentinel.ui.dialogs import AssetHubDialog
-
-        try:
-            dlg = AssetHubDialog(doc, focus="assets")
-            dlg._artist_name = GlobalSettings.load_artist_name()
-            dlg.Open(c4d.DLG_TYPE_ASYNC, defaultw=980, defaulth=560)
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
     return {"ok": True, "message": "Asset Hub opened"}
 
 

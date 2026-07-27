@@ -260,16 +260,29 @@ export interface SwitchTargetsResult {
  * still counts toward `highestAvailable` — the family exists, and picking
  * "Highest" resolves server-side by real pixel size, never by this label —
  * but it never contributes an exact-px target, since there is no concrete
- * value a null entry could ever match. */
+ * value a null entry could ever match.
+ *
+ * `repathableKeys`, when provided, gates which selected keys may become a
+ * target at all — a non-repathable asset (`HubAsset.repathable === false`)
+ * has no writable texture record to relink, so `hub/switch_res` errors on
+ * it instead of skipping it (the server only handles the "no variant
+ * group" case gracefully). A non-repathable key still contributes to
+ * `total` (it was selected) but never to `highestAvailable` or any px
+ * bucket, same treatment as a key with no detected variant group. Omitting
+ * the parameter (undefined) treats every selected key as repathable —
+ * callers that don't have repathability info (or don't need the gate)
+ * behave exactly as before. */
 export function switchTargets(
   selectedKeys: Set<string>,
   variants: Record<string, HubVariant[]>,
+  repathableKeys?: Set<string>,
 ): SwitchTargetsResult {
   const total = selectedKeys.size;
   let highestAvailable = 0;
   const pxCounts = new Map<number, number>();
 
   for (const key of selectedKeys) {
+    if (repathableKeys && !repathableKeys.has(key)) continue;
     const group = variants[key];
     if (!group || group.length === 0) continue;
     highestAvailable += 1;

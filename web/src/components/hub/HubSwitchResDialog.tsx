@@ -15,18 +15,20 @@ import type { HubVariant } from "../../types";
  * further server-side confirm step. Escape closes without side effects. */
 export function HubSwitchResDialog({
   selectedKeys,
+  repathableKeys,
   variants,
   busy,
   onConfirm,
   onClose,
 }: {
   selectedKeys: Set<string>;
+  repathableKeys: Set<string>;
   variants: Record<string, HubVariant[]>;
   busy: boolean;
   onConfirm: (target: number | "highest") => void;
   onClose: () => void;
 }) {
-  const { targets, total } = switchTargets(selectedKeys, variants);
+  const { targets, total } = switchTargets(selectedKeys, variants, repathableKeys);
   const [target, setTarget] = useState<number | "highest">(targets[0]?.px ?? "highest");
 
   useEffect(() => {

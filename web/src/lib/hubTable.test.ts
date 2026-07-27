@@ -463,4 +463,26 @@ describe("switchTargets", () => {
     // ... but "null" never shows up as its own selectable exact-px target.
     expect(result.targets.some((t) => t.px === null)).toBe(false);
   });
+
+  it("excludes non-repathable keys from Highest/px buckets but still counts them in total", () => {
+    const variants: Record<string, HubVariant[]> = {
+      a: variantGroup(8192, 4096),
+      b: variantGroup(8192, 4096), // has variants on disk, but not repathable
+    };
+    const repathableKeys = new Set(["a"]); // b excluded -- non-repathable
+    const result = switchTargets(new Set(["a", "b"]), variants, repathableKeys);
+    expect(result.total).toBe(2);
+    const highest = result.targets.find((t) => t.px === "highest");
+    expect(highest?.available).toBe(1);
+    const byPx = Object.fromEntries(result.targets.map((t) => [String(t.px), t.available]));
+    expect(byPx["8192"]).toBe(1);
+    expect(byPx["4096"]).toBe(1);
+  });
+
+  it("a selection made up entirely of non-repathable keys yields no targets", () => {
+    const variants: Record<string, HubVariant[]> = { a: variantGroup(8192, 4096) };
+    const result = switchTargets(new Set(["a"]), variants, new Set());
+    expect(result.total).toBe(1);
+    expect(result.targets).toEqual([]);
+  });
 });
