@@ -11,6 +11,7 @@ Script Manager, set FREEZE_EXPECTED = True below before running.
 from __future__ import annotations
 
 import difflib
+import importlib
 import importlib.machinery
 import importlib.util
 import json
@@ -25,27 +26,21 @@ from c4d import documents
 
 FREEZE_EXPECTED = False
 FIXTURE_NAMES = ("violating", "clean")
-CHECKS = (
-    ("lights", "check_lights"),
-    ("visibility_traps", "check_visibility_traps"),
-    ("keys", "check_keys"),
-    ("camera_shift", "check_camera_shift"),
-    ("render_conflicts", "check_render_conflicts"),
-    ("textures", "check_textures_unified"),
-    ("unused_materials", "check_unused_materials"),
-    ("default_names", "check_default_names"),
-    ("output_paths", "check_output_paths"),
-    ("takes", "check_takes"),
-    ("fps_range", "check_fps_range"),
-    ("cross_aspect_safe_area", "check_cross_aspect_safe_area"),
-)
+
+# Fase 6.5: panel.py (the legacy check_* adapter surface) was deleted, so
+# these tables now resolve straight to the structured functions in the real
+# check modules (sentinel.checks.scene/render/assets/safe_areas) instead of
+# the retired panel wrappers. Every registry entry has legacy_from_structured
+# defaulted True (see qc/registry.py) — i.e. the legacy shape is always
+# `structured.to_legacy()`, never a separately-called legacy_fn — so a single
+# (check_id, module_attr, func_name, kwargs) table drives both oracles.
 STRUCTURED_CHECKS = (
     ("lights", "scene_checks", "check_lights", {}),
     ("visibility_traps", "scene_checks", "check_visibility_traps", {}),
     ("keys", "scene_checks", "check_keys", {}),
     ("camera_shift", "scene_checks", "check_camera_shift", {}),
     ("render_conflicts", "render_checks", "check_render_conflicts", {}),
-    ("textures", None, "check_textures_unified_structured", {}),
+    ("textures", "assets_checks", "check_textures_unified_structured", {}),
     ("unused_materials", "scene_checks", "check_unused_materials", {}),
     ("default_names", "scene_checks", "check_default_names", {}),
     ("output_paths", "render_checks", "check_output_paths", {}),
@@ -53,11 +48,12 @@ STRUCTURED_CHECKS = (
     ("fps_range", "render_checks", "check_fps_range", {}),
     (
         "cross_aspect_safe_area",
-        None,
+        "safe_area_checks",
         "check_cross_aspect_safe_area_structured",
         {"sample_strategy": "current_frame"},
     ),
 )
+CHECKS = tuple((check_id, func_name) for check_id, _owner, func_name, _kwargs in STRUCTURED_CHECKS)
 
 
 def _script_path() -> Path:
@@ -88,6 +84,22 @@ def _load_sentinel():
 
     # Pin machine-dependent settings for deterministic fixture output.
     module.GlobalSettings.get_standard_fps = staticmethod(lambda: 25)
+
+    # Fase 6.5: panel.py (and its legacy check_* adapter surface) is gone, so
+    # the check functions are resolved straight from the real check modules.
+    # Must go through sys.modules (not a plain top-of-file import) so we get
+    # the SAME fresh package instances the .pyp just imported above — a
+    # module-scope import would bind to whatever `sentinel.*` happened to be
+    # in sys.modules before this purge, missing the GlobalSettings pin above.
+    module.scene_checks = importlib.import_module("sentinel.checks.scene")
+    module.render_checks = importlib.import_module("sentinel.checks.render")
+    module.assets_checks = importlib.import_module("sentinel.checks.assets")
+    module.safe_area_checks = importlib.import_module("sentinel.checks.safe_areas")
+    module.get_active_rules = importlib.import_module("sentinel.rules").get_active_rules
+    module.active_rules_for_doc = importlib.import_module(
+        "sentinel.rules_context"
+    ).active_rules_for_doc
+
     # Rules resolution reads GlobalSettings lazily, so this pin still feeds
     # the default rules context when no sentinel_rules.json fixture is present.
     module.get_active_rules("", {"standard_fps": 25})
@@ -145,31 +157,39 @@ def _placeholder_guid_values(value):
     return value
 
 
+def _resolve_structured_callable(module, owner_attr, func_name):
+    owner = getattr(module, owner_attr)
+    return getattr(owner, func_name)
+
+
+def _call_structured(module, check_id, owner_attr, func_name, kwargs, doc):
+    func = _resolve_structured_callable(module, owner_attr, func_name)
+    call_kwargs = dict(kwargs)
+    if check_id == "cross_aspect_safe_area":
+        # Fase 6.5: the retired panel.py wrapper auto-injected the active
+        # rules context when the caller didn't pass one — replicate that
+        # here so the frozen oracle JSON stays byte-identical (a bare
+        # rules_context=None falls back to different hardcoded insets
+        # inside sentinel/safe_areas.py).
+        call_kwargs["rules_context"] = module.active_rules_for_doc(doc)
+    return func(doc, **call_kwargs)
+
+
 def _run_checks(module, doc):
     module.check_cache.clear()
     results = {}
-    for check_id, func_name in CHECKS:
-        func = getattr(module, func_name)
-        if func_name == "check_cross_aspect_safe_area":
-            raw = func(doc, sample_strategy="current_frame")
-        else:
-            raw = func(doc)
-        results[check_id] = _normalize(raw)
+    for check_id, owner_attr, func_name, kwargs in STRUCTURED_CHECKS:
+        structured = _call_structured(module, check_id, owner_attr, func_name, kwargs, doc)
+        results[check_id] = _normalize(structured.to_legacy())
     return results
-
-
-def _resolve_structured_callable(module, owner_attr, func_name):
-    owner = getattr(module, owner_attr) if owner_attr else module
-    return getattr(owner, func_name)
 
 
 def _run_structured_checks(module, doc):
     module.check_cache.clear()
     results = {}
     for check_id, owner_attr, func_name, kwargs in STRUCTURED_CHECKS:
-        func = _resolve_structured_callable(module, owner_attr, func_name)
-        raw = func(doc, **kwargs)
-        results[check_id] = _placeholder_guid_values(_normalize(raw))
+        structured = _call_structured(module, check_id, owner_attr, func_name, kwargs, doc)
+        results[check_id] = _placeholder_guid_values(_normalize(structured))
     return results
 
 

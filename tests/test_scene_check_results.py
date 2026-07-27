@@ -246,12 +246,13 @@ def test_migrated_scene_check_wrappers_return_structured_legacy_shape(
     sentinel_module, builder, structured_name, legacy_name
 ):
     from sentinel.checks import scene
+    from sentinel.common.cache import check_cache
 
     doc, expected_names = builder()
-    sentinel_module.check_cache.clear()
+    check_cache.clear()
 
     structured = getattr(scene, structured_name)(doc)
-    legacy = getattr(sentinel_module, legacy_name)(doc)
+    legacy = getattr(scene, legacy_name)(doc).to_legacy()
 
     assert legacy == structured.to_legacy()
     assert [item.GetName() for item in legacy] == expected_names
@@ -260,6 +261,7 @@ def test_migrated_scene_check_wrappers_return_structured_legacy_shape(
 
 def test_render_conflicts_structured_identity_reduces_to_legacy_int(sentinel_module):
     from sentinel.checks import render
+    from sentinel.common.cache import check_cache
 
     doc = FakeDoc(render_data=[
         FakeRenderData("render"),
@@ -268,16 +270,16 @@ def test_render_conflicts_structured_identity_reduces_to_legacy_int(sentinel_mod
         FakeRenderData("pre-render"),
         FakeRenderData("rogue preset"),
     ])
-    sentinel_module.check_cache.clear()
+    check_cache.clear()
 
     structured = render.check_render_conflicts(doc)
-    legacy = sentinel_module.check_render_conflicts(doc)
+    legacy = render.check_render_conflicts(doc).to_legacy()
 
     assert legacy == 3
     assert structured.to_legacy() == legacy
     assert len(structured.violations) == legacy
-    assert sentinel_module.check_cache.get(doc, "rdc") == legacy
-    assert sentinel_module.check_cache.get(doc, "rdc_structured") == structured
+    assert check_cache.get(doc, "rdc") == legacy
+    assert check_cache.get(doc, "rdc_structured") == structured
 
     identities = [violation["identity"] for violation in structured.violations]
     assert identities == [

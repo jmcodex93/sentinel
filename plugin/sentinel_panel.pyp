@@ -14,11 +14,9 @@ from sentinel import PLUGIN_NAME
 from sentinel.common.constants import PLUGIN_ID
 from sentinel.common.helpers import safe_print
 from sentinel.common.settings import GlobalSettings
-from sentinel.ui import panel as _panel
 from sentinel.ui import dialogs as _dialogs
 from sentinel.ui import ids as _ids
 from sentinel.ui import user_areas as _user_areas
-from sentinel.ui.panel import YSPanelCmd
 from sentinel.common.constants import SENTINEL_PANEL_SPA_PLUGIN_ID
 from sentinel.ui.panel_spa import SentinelPanelSPACmd, SentinelPaletteCmd
 
@@ -44,12 +42,49 @@ except Exception as _exc:
 
 # Compatibility surface for tests, fixture runner, and C4D scripts that import
 # sentinel_panel.pyp directly. Keep private helpers too.
-for _module in (_panel, _dialogs, _ids, _user_areas):
+for _module in (_dialogs, _ids, _user_areas):
     globals().update({
         _name: _value
         for _name, _value in vars(_module).items()
         if not _name.startswith("__")
     })
+
+# Fase 6.5: panel.py (deleted) used to re-export these pure engine helpers at
+# module scope as a side effect of its own imports; several tests reach them
+# via `sentinel_module.<name>` (load this .pyp, get the whole surface) with
+# no dependency on the retired native dialog. Re-export directly so that
+# surface survives the retirement of panel.py.
+from sentinel.textures import (
+    _classify_texture_path,
+    _is_absolute_path,
+    _looks_like_texture_path,
+    _resolve_relative_texture,
+    compute_relative_texture_path,
+)
+from sentinel import versioning
+from sentinel.versioning import (
+    build_versioned_filename,
+    compute_next_version,
+    format_history_qc_label,
+    format_version_row,
+    get_history_path,
+    parse_version_filename,
+)
+from sentinel import multiformat
+from sentinel.multiformat import (
+    compute_format_output_path,
+    compute_target_aperture,
+    compute_target_horizontal_fov,
+    format_aspect,
+    get_multiformat_def,
+    take_name_for_format,
+)
+from sentinel.safe_areas import (
+    corners_violation_sides,
+    format_safe_area_in_master_ndc,
+    project_world_to_ndc,
+    safe_area_ndc_box,
+)
 
 
 def Register():
@@ -84,24 +119,11 @@ def Register():
         safe_print(f"Warning: No icon found in {icons_dir}")
         icon = None
 
-    ok = plugins.RegisterCommandPlugin(
-        id=PLUGIN_ID,
-        str=PLUGIN_NAME,
-        info=0,
-        icon=icon,
-        help="Open Sentinel Panel",
-        dat=YSPanelCmd()
-    )
-    if ok:
-        safe_print(f"{PLUGIN_NAME} registered successfully")
-    else:
-        safe_print("Failed to register Guardian panel")
-
-    # Sentinel Panel (SPA) (Fase 6.0 Task 2) — new dockable command living
-    # alongside the native panel above (parallel-panel strategy, native panel
-    # untouched). Same icon-loader idiom, own plugin id
-    # (SENTINEL_PANEL_SPA_PLUGIN_ID, see common/constants.py for the 2099xxx
-    # range note).
+    # Sentinel Panel (SPA) (Fase 6.0 Task 2) — the dockable panel command.
+    # The native YSPanel/YSPanelCmd was retired in Fase 6.5 (panel.py
+    # deleted); this SPA panel is now the sole panel command. Same
+    # icon-loader idiom, own plugin id (SENTINEL_PANEL_SPA_PLUGIN_ID, see
+    # common/constants.py for the 2099xxx range note).
     ok_panel_spa = plugins.RegisterCommandPlugin(
         id=SENTINEL_PANEL_SPA_PLUGIN_ID,
         str="Sentinel Panel (SPA)",
@@ -169,7 +191,7 @@ def Register():
         reason = f" ({_FRAME_TAG_IMPORT_ERROR})" if _FRAME_TAG_IMPORT_ERROR else ""
         safe_print(f"TagData API unavailable{reason} — Sentinel Frame tag disabled")
 
-    return ok
+    return ok_panel_spa
 
 
 if __name__ == "__main__":

@@ -12,7 +12,6 @@ def test_every_entry_has_valid_actions_report_key_and_fix(sentinel_module):
         resolve_function,
     )
 
-    panel = sentinel_module._panel
     seen_report_keys = set()
     for entry in CHECK_REGISTRY:
         # actions non-empty, subset of allowed
@@ -32,7 +31,10 @@ def test_every_entry_has_valid_actions_report_key_and_fix(sentinel_module):
             f"{entry.check_id}: has_fix/fix_fn mismatch"
         )
         if entry.has_fix:
-            fn = resolve_function(entry.fix_fn, panel)
+            # No registry entry sources a fix_fn from "panel." (the retired
+            # native dialog) — every fix_fn resolves through a real engine
+            # module, so no panel_module argument is needed here.
+            fn = resolve_function(entry.fix_fn)
             assert callable(fn), f"{entry.check_id}: fix_fn does not resolve to callable"
 
         # row_click_action, when set, must be one of the entry's actions
@@ -57,15 +59,14 @@ def test_row_click_and_fix_scope_overrides(sentinel_module):
             assert entry.fix_scope == "objects"
 
 
-def test_panel_has_handler_method_for_every_action(sentinel_module):
-    from sentinel.qc.registry import CHECK_REGISTRY
-
-    YSPanel = sentinel_module._panel.YSPanel
-    for entry in CHECK_REGISTRY:
-        for action in entry.actions:
-            name = f"_qc_{action}_{entry.check_id}"
-            method = getattr(YSPanel, name, None)
-            assert callable(method), f"missing handler {name}"
+# test_panel_has_handler_method_for_every_action was retired in Fase 6.5
+# alongside panel.py/YSPanel (the native dialog this test asserted handler
+# methods against no longer exists). The equivalent invariant — every
+# registry action is actually wired up — now lives on the SPA panel_ops
+# surface: see test_panel_ops.py's action-gating tests (selectable check
+# ids, info-only rejection, unknown-check rejection), which exercise
+# `panel/qc/select`, `panel/qc/accept`, and `panel/qc/fix_all` against
+# CHECK_REGISTRY directly.
 
 
 def test_qc_action_id_round_trip_for_all_entries(sentinel_module):
