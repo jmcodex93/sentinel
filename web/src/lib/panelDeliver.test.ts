@@ -3,6 +3,7 @@ import {
   filterRecent,
   notesStatusLine,
   statusBadgeTone,
+  statusMarker,
   versionStatusLine,
 } from "./panelDeliver";
 import type { PanelVersionEntry } from "../types";
@@ -88,5 +89,17 @@ describe("statusBadgeTone", () => {
   });
   it("unknown/custom status falls back to wip tone", () => {
     expect(statusBadgeTone("REV02")).toBe("wip");
+  });
+});
+
+describe("statusMarker", () => {
+  it("maps each review status to its color var + label", () => {
+    expect(statusMarker("")).toEqual({ label: "WIP", color: "var(--color-status-neutral)" });
+    expect(statusMarker("TR")).toEqual({ label: "TR", color: "var(--color-status-warn)" });
+    expect(statusMarker("CR")).toEqual({ label: "CR", color: "var(--color-status-info)" });
+    expect(statusMarker("FINAL")).toEqual({ label: "FINAL", color: "var(--color-status-pass)" });
+  });
+  it("custom status keeps its label at the neutral (wip) tone", () => {
+    expect(statusMarker("REV02")).toEqual({ label: "REV02", color: "var(--color-status-neutral)" });
   });
 });

@@ -66,3 +66,19 @@ export function statusBadgeTone(status: string): "wip" | "tr" | "cr" | "final" {
       return "wip";
   }
 }
+
+const TONE_VAR: Record<ReturnType<typeof statusBadgeTone>, string> = {
+  wip: "var(--color-status-neutral)",
+  tr: "var(--color-status-warn)",
+  cr: "var(--color-status-info)",
+  final: "var(--color-status-pass)",
+};
+
+/** Version status → a dot+text marker: the status color var + the display
+ * label (blank status = WIP). One source of truth for how a version's
+ * review state renders across the panel (Recent list, etc.) — dot+text, not
+ * a filled pill (lighter in a dense list, and color-blind-safe because the
+ * text carries the meaning). */
+export function statusMarker(status: string): { label: string; color: string } {
+  return { label: status || "WIP", color: TONE_VAR[statusBadgeTone(status)] };
+}
