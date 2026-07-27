@@ -353,7 +353,10 @@ export function HubDeliverSection({
             )}
 
             {acceptOpen && (
-              <div className="flex flex-col gap-3">
+              <div
+                className="mt-2 flex flex-col gap-2 rounded-md border p-2"
+                style={{ borderColor: "var(--color-hairline)", backgroundColor: "var(--color-surface-2)" }}
+              >
                 <p className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
                   {selected.size > 0 ? `${selected.size} check(s) selected above` : "Select checks above to accept"}
                 </p>
