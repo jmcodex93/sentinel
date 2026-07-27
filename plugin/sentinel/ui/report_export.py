@@ -2,7 +2,6 @@
 """QC report export (JSON + client HTML) — extracted from the retired
 ``ui/panel.py`` (Fase 6.5). Test-covered; not currently wired to an SPA op.
 """
-import base64
 import json
 import os
 
