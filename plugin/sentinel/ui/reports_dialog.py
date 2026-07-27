@@ -642,7 +642,20 @@ def open_reports(doc, page=None):
     if existing is not None:
         try:
             if existing.IsOpen():
-                existing.Close()
+                # Already open: NAVIGATE the live webview to the requested page
+                # in-place instead of Close()+reopen. Tearing down a live
+                # CUSTOMGUI_HTMLVIEWER and recreating it in the same tick crashes
+                # C4D (same fragility fixed in open_form). Unlike the Asset Hub
+                # (one page), Reports deep-links to different pages, so we can't
+                # just reuse the window untouched — but SetUrl reloads the SPA at
+                # the new ?page= without destroying the gadget (the browser
+                # fallback, _html is None, re-opens a tab). Bring it forward.
+                existing._page = page
+                if getattr(existing, "_html", None) is not None:
+                    existing._html.SetUrl(existing._url(), c4d.URL_ENCODING_UTF16)
+                else:
+                    webbrowser.open(existing._url())
+                return existing
         except Exception:
             pass
 
