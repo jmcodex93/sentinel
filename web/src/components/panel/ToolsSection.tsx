@@ -1,6 +1,6 @@
 import { Button } from "../form/Button";
 import { TOOL_GROUPS } from "../../lib/panelTools";
-import { SectionGroup } from "./SectionGroup";
+import { SectionGroup } from "../SectionGroup";
 
 /** Tools section (Fase 6.4) — grouped action buttons for scene-authoring
  * utilities. Action-only: each button runs its op and toasts the result;

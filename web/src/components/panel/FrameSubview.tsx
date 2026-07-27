@@ -1,7 +1,7 @@
 import { Button } from "../form/Button";
 import { frameHint, frameStatusLine as frameSubviewStatusLine, qc12StatusLine } from "../../lib/panelFrame";
 import type { PanelFrameState } from "../../types";
-import { SectionGroup } from "./SectionGroup";
+import { SectionGroup } from "../SectionGroup";
 
 /** Frame sub-view (Fase 6.6) — consolidates the cross-aspect workflow that
  * used to be scattered across Render (Sentinel Frame), Tools (Mark

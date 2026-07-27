@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ConfirmBar } from "../components/panel/ConfirmBar";
+import { ConfirmBar } from "../components/ConfirmBar";
 import { DeliverSection } from "../components/panel/DeliverSection";
 import { OverviewCards } from "../components/panel/OverviewCards";
 import { PanelHeader } from "../components/panel/PanelHeader";

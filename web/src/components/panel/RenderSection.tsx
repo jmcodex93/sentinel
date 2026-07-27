@@ -17,9 +17,9 @@ import type {
   PanelRenderAovListOk,
   PanelRenderSection as PanelRenderSectionData,
 } from "../../types";
-import { ConfirmBar } from "./ConfirmBar";
+import { ConfirmBar } from "../ConfirmBar";
 import { FrameSubview } from "./FrameSubview";
-import { SectionGroup } from "./SectionGroup";
+import { SectionGroup } from "../SectionGroup";
 
 /** A single stacked block — title + status line + actions row, per the
  * approved "A + status header per block" layout (mockup

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button } from "../form/Button";
+import { Button } from "./form/Button";
 
 /** Inline confirm bar — the shared shell behind the panel's three confirm
  * gates (Overview's `confirmAction`, QC's `qcConfirm`, Render's

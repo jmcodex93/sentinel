@@ -11,7 +11,7 @@ import {
   versionStatusLine,
 } from "../../lib/panelDeliver";
 import type { PanelDeliverState } from "../../types";
-import { SectionGroup } from "./SectionGroup";
+import { SectionGroup } from "../SectionGroup";
 
 type DeliverView = "main" | "save_version" | "notes";
 
