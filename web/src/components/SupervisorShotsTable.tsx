@@ -79,7 +79,7 @@ export function SupervisorShotsTable({ shots }: { shots: SupervisorShot[] }) {
           {shots.map((shot) => (
             <tr
               key={shot.base}
-              className="h-8 transition-colors duration-100 ease-out hover:bg-[var(--color-surface-2)]"
+              className="h-8 transition-colors duration-[var(--motion-fast)] ease-[var(--ease-glide)] hover:bg-[var(--color-surface-2)]"
             >
               <td className="text-body truncate px-4" style={{ ...rowCellStyle, color: "var(--color-ink)" }}>
                 {shot.base}

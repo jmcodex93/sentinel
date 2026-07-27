@@ -30,7 +30,7 @@ export function SegmentedControl({ options, value, onChange, disabled }: Segment
             aria-selected={active}
             disabled={disabled}
             onClick={() => onChange(option.value)}
-            className="text-label rounded-sm px-3 py-1 transition-colors duration-150 ease-out disabled:cursor-not-allowed disabled:opacity-50"
+            className="text-label rounded-sm px-3 py-1 transition-colors duration-[var(--motion-base)] ease-[var(--ease-glide)] disabled:cursor-not-allowed disabled:opacity-50"
             style={{
               backgroundColor: active ? "var(--color-surface-2)" : "transparent",
               color: active ? "var(--color-ink)" : "var(--color-ink-secondary)",

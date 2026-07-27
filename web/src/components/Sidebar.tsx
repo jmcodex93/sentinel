@@ -40,7 +40,7 @@ export function Sidebar({ active, onNavigate }: { active: ReportPage; onNavigate
               type="button"
               aria-current={isActive ? "page" : undefined}
               onClick={() => onNavigate(page)}
-              className="text-label flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-100 ease-out"
+              className="text-label flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-[var(--motion-fast)] ease-[var(--ease-glide)]"
               style={{
                 backgroundColor: isActive ? "var(--color-surface-2)" : "transparent",
                 color: isActive ? "var(--color-ink)" : "var(--color-ink-secondary)",

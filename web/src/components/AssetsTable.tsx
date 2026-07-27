@@ -52,7 +52,7 @@ export function AssetsTable({ assets }: { assets: DeliveryAsset[] }) {
             {assets.map((asset, index) => (
               <tr
                 key={`${asset.status}:${asset.path}:${index}`}
-                className="h-8 transition-colors duration-100 ease-out hover:bg-[var(--color-surface-2)]"
+                className="h-8 transition-colors duration-[var(--motion-fast)] ease-[var(--ease-glide)] hover:bg-[var(--color-surface-2)]"
               >
                 <td className="text-body px-4" style={rowCellStyle}>
                   <Tooltip.Root>

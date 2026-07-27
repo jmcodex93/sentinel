@@ -649,7 +649,7 @@ export function HubPage() {
           type="button"
           onClick={() => refreshInventory(false)}
           disabled={busy}
-          className="text-label inline-flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 transition-colors duration-100 ease-out disabled:cursor-not-allowed disabled:opacity-50"
+          className="text-label inline-flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 transition-colors duration-[var(--motion-fast)] ease-[var(--ease-glide)] disabled:cursor-not-allowed disabled:opacity-50"
           style={{ backgroundColor: "var(--color-surface-2)", color: "var(--color-ink)", border: "1px solid var(--color-hairline)" }}
         >
           <RefreshCw size={14} strokeWidth={2.25} aria-hidden="true" />
@@ -717,7 +717,7 @@ export function HubPage() {
           </p>
           <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ backgroundColor: "var(--color-surface-2)" }}>
             <div
-              className="h-full rounded-full transition-all duration-150 ease-out"
+              className="h-full rounded-full transition-all duration-[var(--motion-base)] ease-[var(--ease-glide)]"
               style={{
                 width: `${Math.min(100, Math.max(0, shrinkJob.status?.pct ?? 0))}%`,
                 backgroundColor: "var(--color-status-pass)",

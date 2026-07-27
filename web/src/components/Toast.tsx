@@ -57,7 +57,7 @@ function ToastRow({ item, onDismiss }: { item: ToastItem; onDismiss: (id: number
         type="button"
         onClick={() => onDismiss(item.id)}
         aria-label="Dismiss"
-        className="shrink-0 rounded-sm p-0.5 transition-colors duration-100 ease-out hover:bg-[var(--color-surface-1)]"
+        className="shrink-0 rounded-sm p-0.5 transition-colors duration-[var(--motion-fast)] ease-[var(--ease-glide)] hover:bg-[var(--color-surface-1)]"
       >
         <X size={14} strokeWidth={2.25} style={{ color: "var(--color-ink-secondary)" }} aria-hidden="true" />
       </button>

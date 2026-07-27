@@ -171,7 +171,7 @@ export function NotesPage({
                   type="button"
                   onClick={() => deleteTodo(todo.key)}
                   aria-label={`Delete "${todo.text}"`}
-                  className="shrink-0 rounded-sm p-1 transition-colors duration-100 ease-out hover:bg-[var(--color-surface-2)]"
+                  className="shrink-0 rounded-sm p-1 transition-colors duration-[var(--motion-fast)] ease-[var(--ease-glide)] hover:bg-[var(--color-surface-2)]"
                 >
                   <Trash2 size={14} strokeWidth={2.25} style={{ color: "var(--color-ink-secondary)" }} aria-hidden="true" />
                 </button>

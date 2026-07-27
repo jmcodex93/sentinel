@@ -10,7 +10,7 @@ export function TextArea({ invalid = false, className, style, rows = 4, ...rest 
     <textarea
       {...rest}
       rows={rows}
-      className={`text-body w-full resize-y rounded-md border px-3 py-1.5 outline-none transition-colors duration-100 ease-out focus:border-[var(--color-primary)] ${className ?? ""}`}
+      className={`text-body w-full resize-y rounded-md border px-3 py-1.5 outline-none transition-colors duration-[var(--motion-fast)] ease-[var(--ease-glide)] focus:border-[var(--color-primary)] ${className ?? ""}`}
       style={{
         backgroundColor: "var(--color-surface-1)",
         borderColor: invalid ? "var(--color-status-fail)" : "var(--color-hairline)",
