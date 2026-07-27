@@ -2762,24 +2762,11 @@ class YSPanel(gui.GeDialog):
         """Clean up when panel closes"""
         pass  # No cleanup needed anymore
 
-def _select_objects(doc, objs):
-    """Select objects in the scene"""
-    if not doc or not objs:
-        return
-
-    first = doc.GetFirstObject()
-    if first:
-        for o in _iter_objs(first):
-            o.DelBit(c4d.BIT_ACTIVE)
-
-    for o in objs:
-        try:
-            if o:
-                o.SetBit(c4d.BIT_ACTIVE)
-        except Exception:
-            pass
-
-    c4d.EventAdd()
+# _select_objects moved to ui/panel_ops.py (Fase 6.5 Task 2) — the panel
+# SPA's only consumer (``_op_panel_qc_select``) now owns it; re-imported
+# here so YSPanel's own ``_qc_select_*`` methods above keep working
+# unchanged.
+from sentinel.ui.panel_ops import _select_objects
 
 # -------------- registration --------------
 class YSPanelCmd(plugins.CommandData):
@@ -2799,42 +2786,4 @@ class YSPanelCmd(plugins.CommandData):
             self.dlg = YSPanel()
         # Restore the dialog with the plugin ID
         return self.dlg.Restore(pluginid=PLUGIN_ID, secret=sec_ref)
-
-
-class SentinelPaletteCmd(plugins.CommandData):
-    """Registers "Sentinel: Command Palette" (Phase 4 Task 4,
-    sentinel_panel.pyp ``SENTINEL_PALETTE_PLUGIN_ID``) as its own C4D
-    command so the artist can assign a keyboard shortcut to it via
-    Preferences > Customize Commands — Sentinel does not ship a default
-    binding itself (see the panel's Help menu entry, which carries the same
-    hint). Opens ``FormDialog`` on the ``palette`` SPA page — a small,
-    reusable async dialog, not the main docked panel, so this needs no
-    ``RestoreLayout``/layout persistence like ``YSPanelCmd`` above.
-
-    No native/legacy equivalent exists for this command (the palette is a
-    new Phase 4 feature, not a migration of an old modal) — a failure to
-    open just surfaces as a plain ``MessageDialog``.
-
-    REGRESSION NOTE: ``Execute`` below discards ``open_form``'s return
-    value on purpose (this is a fire-and-open command, nothing here needs
-    to hold the dialog) — that used to blank the window shortcut-opened
-    from a bound key: with no Python-side reference anywhere, the
-    ``FormDialog`` instance was garbage-collected while C4D kept the empty
-    native window shell alive, so it never navigated or drained the queue.
-    Fixed in ``open_form`` itself (module-level ``_open_form_dialogs``
-    registry in ``reports_dialog.py``), not here — this method stays
-    exactly this simple.
-    """
-
-    def Execute(self, doc):
-        try:
-            from sentinel.ui.reports_dialog import open_form
-            open_form(doc, "palette")
-        except Exception as e:
-            safe_print(f"Command Palette failed to open: {e}")
-            c4d.gui.MessageDialog(
-                "Sentinel Command Palette could not open.\n\n"
-                "The web UI (plugin/web/) may be missing from this "
-                "install, or every local port it tries is busy."
-            )
         return True

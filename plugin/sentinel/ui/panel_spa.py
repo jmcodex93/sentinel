@@ -161,6 +161,44 @@ class SentinelPanelSPACmd(plugins.CommandData):
         return self.dlg.Restore(pluginid=SENTINEL_PANEL_SPA_PLUGIN_ID, secret=sec_ref)
 
 
+class SentinelPaletteCmd(plugins.CommandData):
+    """Registers "Sentinel: Command Palette" (Phase 4 Task 4,
+    sentinel_panel.pyp ``SENTINEL_PALETTE_PLUGIN_ID``) as its own C4D
+    command so the artist can assign a keyboard shortcut to it via
+    Preferences > Customize Commands — Sentinel does not ship a default
+    binding itself (see the panel's Help menu entry, which carries the same
+    hint). Opens ``FormDialog`` on the ``palette`` SPA page — a small,
+    reusable async dialog, not the main docked panel, so this needs no
+    ``RestoreLayout``/layout persistence like ``YSPanelCmd`` above.
+
+    No native/legacy equivalent exists for this command (the palette is a
+    new Phase 4 feature, not a migration of an old modal) — a failure to
+    open just surfaces as a plain ``MessageDialog``.
+
+    REGRESSION NOTE: ``Execute`` below discards ``open_form``'s return
+    value on purpose (this is a fire-and-open command, nothing here needs
+    to hold the dialog) — that used to blank the window shortcut-opened
+    from a bound key: with no Python-side reference anywhere, the
+    ``FormDialog`` instance was garbage-collected while C4D kept the empty
+    native window shell alive, so it never navigated or drained the queue.
+    Fixed in ``open_form`` itself (module-level ``_open_form_dialogs``
+    registry in ``reports_dialog.py``), not here — this method stays
+    exactly this simple.
+    """
+
+    def Execute(self, doc):
+        try:
+            from sentinel.ui.reports_dialog import open_form
+            open_form(doc, "palette")
+        except Exception as e:
+            safe_print(f"Command Palette failed to open: {e}")
+            c4d.gui.MessageDialog(
+                "Sentinel Command Palette could not open.\n\n"
+                "The web UI (plugin/web/) may be missing from this "
+                "install, or every local port it tries is busy."
+            )
+
+
 def open_panel_spa():
     """Convenience opener mirroring ``ui/reports_dialog.open_form``'s shape
     for any future non-menu call site (e.g. a palette navigate action) —

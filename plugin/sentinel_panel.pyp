@@ -18,9 +18,9 @@ from sentinel.ui import panel as _panel
 from sentinel.ui import dialogs as _dialogs
 from sentinel.ui import ids as _ids
 from sentinel.ui import user_areas as _user_areas
-from sentinel.ui.panel import YSPanelCmd, SentinelPaletteCmd
+from sentinel.ui.panel import YSPanelCmd
 from sentinel.common.constants import SENTINEL_PANEL_SPA_PLUGIN_ID
-from sentinel.ui.panel_spa import SentinelPanelSPACmd
+from sentinel.ui.panel_spa import SentinelPanelSPACmd, SentinelPaletteCmd
 
 # Phase 4 Task 4 — Command Palette. Own CommandData (distinct from
 # PLUGIN_ID/the main panel) so the artist can bind it a shortcut
