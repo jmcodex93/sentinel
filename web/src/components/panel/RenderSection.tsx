@@ -193,7 +193,14 @@ export function RenderSection({
   const postrender = render.postrender;
 
   return (
-    <div className="flex flex-col p-3">
+    // During a mutation we lock interaction at the container (`pointerEvents`)
+    // instead of setting `disabled` on every control. `disabled` dims via
+    // `opacity-50`, and with ~15 controls all gated on the single `isBusy`,
+    // every press dimmed the whole section to 50% and back — a full-section
+    // flicker on each click, worst here because Render has the most controls.
+    // The lock blocks re-entry without any opacity change; real per-control
+    // guards (no preset / no tag / no dir) stay.
+    <div className="flex flex-col p-3" style={{ pointerEvents: isBusy ? "none" : undefined }}>
       {confirmLabel && (
         <ConfirmBar label={confirmLabel} busy={isBusy} onConfirm={onConfirm} onCancel={onCancelConfirm} className="mb-4" />
       )}
@@ -205,13 +212,13 @@ export function RenderSection({
             <Select
               value={preset.preset_name ?? ""}
               options={preset.preset_names.map((name) => ({ value: name, label: name }))}
-              disabled={isBusy || preset.preset_names.length === 0}
+              disabled={preset.preset_names.length === 0}
               onChange={onSetPreset}
             />
-            <Button variant="secondary" disabled={isBusy} onClick={() => onDestructive("reset_all")}>
+            <Button variant="secondary" disabled={false} onClick={() => onDestructive("reset_all")}>
               Reset All⚠
             </Button>
-            <Button variant="secondary" disabled={isBusy} onClick={() => onDestructive("force_vertical")}>
+            <Button variant="secondary" disabled={false} onClick={() => onDestructive("force_vertical")}>
               Force 9:16⚠
             </Button>
           </>
@@ -225,10 +232,10 @@ export function RenderSection({
         {frame === null ? null : (
           <div className="flex w-full flex-col gap-2">
             <div className="flex flex-wrap items-center gap-2">
-              <Button variant="secondary" disabled={isBusy} onClick={onAddFrameTag}>
+              <Button variant="secondary" disabled={false} onClick={onAddFrameTag}>
                 Add to camera
               </Button>
-              <Button variant="secondary" disabled={isBusy || !frame.has_tag} onClick={onSelectFrameTag}>
+              <Button variant="secondary" disabled={!frame.has_tag} onClick={onSelectFrameTag}>
                 Select tag
               </Button>
               <button
@@ -273,10 +280,10 @@ export function RenderSection({
         {aovs === null || "error" in aovs ? null : (
           <div className="flex w-full flex-col gap-2">
             <ActionRow label="Coverage">
-              <Button variant="secondary" disabled={isBusy} onClick={() => onAovTier("essentials")}>
+              <Button variant="secondary" disabled={false} onClick={() => onAovTier("essentials")}>
                 Essentials
               </Button>
-              <Button variant="secondary" disabled={isBusy} onClick={() => onAovTier("production")}>
+              <Button variant="secondary" disabled={false} onClick={() => onAovTier("production")}>
                 Production
               </Button>
             </ActionRow>
@@ -287,7 +294,7 @@ export function RenderSection({
                   { value: "on", label: "on" },
                 ]}
                 value={aovs.light_groups ? "on" : "off"}
-                disabled={isBusy}
+                disabled={false}
                 onChange={(value) => onSetLightGroups(value === "on")}
               />
             </ActionRow>
@@ -298,7 +305,7 @@ export function RenderSection({
                   { value: "direct", label: "Direct output" },
                 ]}
                 value={aovs.multipart ? "multipart" : "direct"}
-                disabled={isBusy}
+                disabled={false}
                 onChange={(value) => onSetMultipart(value === "multipart")}
               />
             </ActionRow>
@@ -342,20 +349,20 @@ export function RenderSection({
       <RenderBlock title="Snapshots" status={snapshotStatusLine(snapshots)}>
         {snapshots === null ? null : (
           <>
-            <Button variant="secondary" disabled={isBusy} onClick={onSaveStill}>
+            <Button variant="secondary" disabled={false} onClick={onSaveStill}>
               Save Still
             </Button>
-            <Button variant="secondary" disabled={isBusy || !snapshots.dir} onClick={onOpenFolder}>
+            <Button variant="secondary" disabled={!snapshots.dir} onClick={onOpenFolder}>
               Open Folder
             </Button>
-            <Checkbox checked={snapshots.watch_enabled} disabled={isBusy} onChange={onToggleWatch} label="Watch folder" />
+            <Checkbox checked={snapshots.watch_enabled} disabled={false} onChange={onToggleWatch} label="Watch folder" />
           </>
         )}
       </RenderBlock>
 
       {/* Post-Render */}
       <RenderBlock title="Post-Render" status={postrenderStatusLine(postrender)}>
-        <Button variant="secondary" disabled={isBusy} onClick={onValidate}>
+        <Button variant="secondary" disabled={false} onClick={onValidate}>
           Validate →
         </Button>
       </RenderBlock>
