@@ -111,13 +111,13 @@ class _FakeDoc:
 
 
 def test_report_section_keys_match_registry_report_keys(sentinel_module, tmp_path, monkeypatch):
-    panel = sentinel_module._panel
     from sentinel.qc.registry import CHECK_REGISTRY
+    from sentinel.ui import report_export
 
     out = tmp_path / "qc_report.json"
-    monkeypatch.setattr(panel.c4d.storage, "SaveDialog", lambda *a, **k: str(out))
+    monkeypatch.setattr(report_export.c4d.storage, "SaveDialog", lambda *a, **k: str(out))
 
-    save_path = panel.export_qc_report(_FakeDoc(), {}, "Tester", None)
+    save_path = report_export.export_qc_report(_FakeDoc(), {}, "Tester", None)
     assert save_path == str(out)
 
     report = json.loads(out.read_text(encoding="utf-8"))

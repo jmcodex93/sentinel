@@ -48,7 +48,9 @@ def test_baseline_artifact_details_include_accepted_reasons(sentinel_module):
         },
     }
 
-    details = sentinel_module.build_baseline_artifact_details(qc_summary)
+    from sentinel.ui.reports import build_baseline_artifact_details
+
+    details = build_baseline_artifact_details(qc_summary)
 
     assert details["names"]["accepted_count"] == 1
     assert details["names"]["accepted"] == [
@@ -81,8 +83,10 @@ class _ReportDoc:
 
 
 def test_qc_report_marks_disabled_checks_and_uses_summary_denominator(sentinel_module, tmp_path):
+    from sentinel.ui import report_export
+
     save_path = tmp_path / "qc_report.json"
-    sentinel_module.c4d.storage.SaveDialog = lambda *args, **kwargs: str(save_path)
+    report_export.c4d.storage.SaveDialog = lambda *args, **kwargs: str(save_path)
     results = {
         "names_bad": ["Cube"],
         "scene_stats": {"polygons": 10, "materials": 1, "lights": 0},
@@ -97,7 +101,7 @@ def test_qc_report_marks_disabled_checks_and_uses_summary_denominator(sentinel_m
         "disabled_count": 1,
     }
 
-    written = sentinel_module.export_qc_report(_ReportDoc(), results, "Javier", qc_summary)
+    written = report_export.export_qc_report(_ReportDoc(), results, "Javier", qc_summary)
 
     payload = json.loads(save_path.read_text(encoding="utf-8"))
     assert written == str(save_path)
