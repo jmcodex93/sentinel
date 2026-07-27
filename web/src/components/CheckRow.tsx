@@ -1,8 +1,8 @@
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { useState } from "react";
 import type { ReactNode } from "react";
-import type { StatusTone } from "./StatusDot";
-import { StatusDot } from "./StatusDot";
+import type { StatusTone } from "./StatusMark";
+import { StatusMark } from "./StatusMark";
 
 interface CheckRowProps {
   tone: StatusTone;
@@ -32,9 +32,9 @@ export function CheckRow({ tone, label, meta, extra, muted = false, expandedCont
         type="button"
         disabled={!expandable}
         onClick={() => setExpanded((value) => !value)}
-        className="flex h-8 w-full items-center gap-2 px-4 text-left transition-colors duration-100 ease-out enabled:hover:bg-[var(--color-surface-2)] disabled:cursor-default"
+        className="flex h-8 w-full items-center gap-2 px-4 text-left transition-colors duration-[var(--motion-fast)] ease-[var(--ease-glide)] enabled:hover:bg-[var(--color-surface-2)] disabled:cursor-default"
       >
-        <StatusDot tone={tone} />
+        <StatusMark tone={tone} />
         <span
           className="text-body flex-1 truncate"
           style={{ color: muted ? "var(--color-muted)" : "var(--color-ink)" }}

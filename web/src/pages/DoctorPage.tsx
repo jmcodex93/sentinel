@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { ErrorState, LoadingState } from "../components/PageStates";
 import { KeyValueList } from "../components/KeyValueList";
 import { Section } from "../components/Section";
-import { StatusDot } from "../components/StatusDot";
-import type { StatusTone } from "../components/StatusDot";
+import { StatusMark } from "../components/StatusMark";
+import type { StatusTone } from "../components/StatusMark";
 import { fetchDoctorReport } from "../lib/api";
 import type { DoctorItem, DoctorItemStatus, DoctorReportResult } from "../types";
 
@@ -19,8 +19,8 @@ const TONE_FOR_STATUS: Record<DoctorItemStatus, StatusTone> = {
 function DoctorItemRow({ item }: { item: DoctorItem }) {
   return (
     <div className="flex items-start gap-3 px-4 py-2" style={{ borderBottom: "1px solid var(--color-hairline)" }}>
-      <span className="mt-1.5 shrink-0">
-        <StatusDot tone={TONE_FOR_STATUS[item.status]} />
+      <span className="mt-0.5 shrink-0">
+        <StatusMark tone={TONE_FOR_STATUS[item.status]} />
       </span>
       <div className="min-w-0 flex-1">
         <p className="text-body" style={{ color: "var(--color-ink)" }}>

@@ -21,7 +21,7 @@ const TONE_ICON: Record<StatusTone, LucideIcon> = {
 };
 
 /** A colored status icon (shape = color-blind-safe) plus an optional colored
- * label. Replaces StatusDot (bare dot) and StatusBadge/HubStatusBadge (filled
+ * label. Replaces the bare status dot and StatusBadge/HubStatusBadge (filled
  * tint pill). `label` present → icon + text (status IS the data: asset
  * collected/missing/external, hub ok/absolute/…); absent → icon only (the row
  * already names itself: QC checks, Doctor items). */

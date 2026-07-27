@@ -4,7 +4,7 @@ import { KeyValueList } from "../components/KeyValueList";
 import { KpiCard } from "../components/KpiCard";
 import { EmptyState, ErrorState, LoadingState } from "../components/PageStates";
 import { Section } from "../components/Section";
-import type { StatusTone } from "../components/StatusDot";
+import type { StatusTone } from "../components/StatusMark";
 import { fetchRenderValidationReport } from "../lib/api";
 import type { RenderCheckStatus, RenderValidationCheck, RenderValidationReportResult } from "../types";
 
