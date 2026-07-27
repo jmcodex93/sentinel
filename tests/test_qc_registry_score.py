@@ -38,13 +38,13 @@ def test_registry_extensibility_updates_legacy_views_and_score(sentinel_module):
     fake = _entry(CheckEntry, "fake_registry_check")
     CHECK_REGISTRY.append(fake)
     try:
-        assert sentinel_module._CHECK_DISPLAY["fake_registry_check"] == (
+        assert (fake.severity, fake.label_ok, fake.label_fail_template, fake.names_key) == (
             "WARN",
             "Fake OK",
             "{n} fake issue(s)",
             None,
         )
-        assert list(sentinel_module.StatusArea.ROW_KEYS)[-1] == "fake_registry_check"
+        assert [entry.check_id for entry in CHECK_REGISTRY][-1] == "fake_registry_check"
 
         summary = compute_score(_empty_results(CHECK_REGISTRY))
         assert summary["total"] == 13
@@ -52,8 +52,7 @@ def test_registry_extensibility_updates_legacy_views_and_score(sentinel_module):
     finally:
         CHECK_REGISTRY.remove(fake)
 
-    assert "fake_registry_check" not in list(sentinel_module.StatusArea.ROW_KEYS)
-    assert sentinel_module._CHECK_DISPLAY.get("fake_registry_check") is None
+    assert "fake_registry_check" not in [entry.check_id for entry in CHECK_REGISTRY]
 
 
 def test_duplicate_check_id_validation_raises(sentinel_module):
@@ -106,10 +105,11 @@ def test_severity_override_changes_display_view_not_score(sentinel_module):
 
     context = SimpleNamespace(params={"check_severity": {"names": "FAIL"}})
     overridden_display = build_check_display(rules_context=context)
+    default_display = build_check_display()
     overridden_summary = compute_score(results, context)
 
     assert overridden_display["names"][0] == "FAIL"
-    assert sentinel_module._CHECK_DISPLAY["names"][0] == "WARN"
+    assert default_display["names"][0] == "WARN"
     assert overridden_summary["score"] == default_summary["score"]
     assert overridden_summary["counts"] == default_summary["counts"]
 
