@@ -24,13 +24,39 @@ class FakeRenderData(dict):
         return self._name
 
 
+class _FakeDescLevel:
+    def __init__(self, pid):
+        self.id = pid
+
+
+class _FakeStoredDescID:
+    """Shape of the DescIDs GetAllOverrideDescID returns: indexable, with
+    `[0].id`. Production matches stored params by first-level id (the real
+    IsOverriddenParam rejects hand-built DescIDs — live-caught)."""
+
+    def __init__(self, pid):
+        self._level = _FakeDescLevel(pid)
+
+    def __getitem__(self, index):
+        return self._level
+
+
 class FakeOverride:
     def __init__(self):
         self.params = {}
         self.updated = []
 
+    def GetAllOverrideDescID(self):
+        return [_FakeStoredDescID(pid) for pid in self.params]
+
     def IsOverriddenParam(self, descid):
-        return descid[0].id in self.params
+        # Mirror of the REAL API's strictness (live-caught): a hand-built
+        # DescID never matches a stored one, so this must NOT be the fake
+        # loophole that lets reset code "work" in tests while silently
+        # skipping every param in C4D. Production now matches via
+        # GetAllOverrideDescID; anything still relying on IsOverriddenParam
+        # with a constructed DescID should fail here like it fails live.
+        return False
 
     def SetParameter(self, descid, value, flags):
         self.params[descid[0].id] = value
