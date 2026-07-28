@@ -207,6 +207,22 @@ def _format_ids(index):
 
 
 def _slices_for_index(node, index):
+    """Effective slice grid for a format row. Returns (1, 1) whenever the
+    tag's composition mode is not Crop: slices are a tiling of the CROP
+    window, and in "None" mode the camera is never cropped, so a slice
+    window is meaningless — the engine applies the exact same rule
+    (multiformat degrades slice grids to 1x1 outside Crop mode and creates
+    the whole-format take). Neutralizing here, at the single choke point,
+    keeps `_engine_format_defs`, `_expected_take_names`,
+    `_viewing_entry_pairs`, `_total_slice_count`,
+    `_params_payload_for_takes` and Draw coherent with what the engine
+    actually generates (otherwise `_prune_orphaned_takes` inside the same
+    `run_full_sync` would delete the freshly created whole-format take),
+    and stops the takes signature churning on Sx/Sy edits in None mode."""
+    if composition_mode_for_engine(
+        _get_node_value(node, ID_COMPOSITION, COMPOSITION_CROP)
+    ) != "crop":
+        return (1, 1)
     ids = _format_ids(index)
     sx = max(1, min(16, _as_int(_get_node_value(node, ids["slice_x"], 1), 1)))
     sy = max(1, min(16, _as_int(_get_node_value(node, ids["slice_y"], 1), 1)))
@@ -1033,7 +1049,7 @@ def _read_take_link(node, fmt_id, doc=None):
 
 
 def _slice_link_id(index, ordinal):
-    """Slice take-link slot: 2600 + row_index*256 + (ordinal-1), 1-based
+    """Slice take-link slot: 10000 + row_index*256 + (ordinal-1), 1-based
     ordinal. Disjoint from the per-format links (2400+) and the private
     signature/focus keys (2500-2502) because the base starts above them."""
     return ID_PRIVATE_SLICE_LINK_BASE + int(index) * MAX_SLICE_ORDINALS + (int(ordinal) - 1)

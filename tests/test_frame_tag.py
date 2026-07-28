@@ -329,6 +329,41 @@ def test_signature_changes_with_slices_and_custom_size(sentinel_module):
     assert frame_tag._params_signature_for_takes(dict(tag)) != base_sig
 
 
+def test_none_mode_neutralizes_slice_grids_at_the_choke_point(sentinel_module):
+    # Composition "None" + Sx/Sy>1: the engine degrades slice grids to 1x1
+    # outside Crop mode and creates the WHOLE-format take. The tag layer must
+    # apply the same rule at `_slices_for_index` — otherwise
+    # `_expected_take_names` still expects _sNN and `_prune_orphaned_takes`
+    # inside the same `run_full_sync` deletes the freshly created whole take.
+    import importlib
+    frame_tag = importlib.import_module("sentinel.ui.frame_tag")
+
+    class FakeCam:
+        def GetName(self):
+            return "Hero"
+
+    class FakeTagDict(dict):
+        def GetObject(self):
+            return FakeCam()
+
+    tag = FakeTagDict(_base_tag(frame_tag, enabled_indexes=(0,)))
+    tag[frame_tag.ID_COMPOSITION] = frame_tag.COMPOSITION_OFF
+    tag[frame_tag._format_ids(0)["slice_x"]] = 2
+
+    assert frame_tag._slices_for_index(tag, 0) == (1, 1)
+    assert frame_tag._expected_take_names(tag) == {"Hero_16x9": "16x9"}
+    assert frame_tag._total_slice_count(tag) == 0
+
+    # No signature churn on Sx edits in OFF mode: the grid is inert there.
+    sig_2 = frame_tag._params_signature_for_takes(dict(tag))
+    tag[frame_tag._format_ids(0)["slice_x"]] = 3
+    assert frame_tag._params_signature_for_takes(dict(tag)) == sig_2
+
+    # Same tag back in Crop mode: the grid is live again.
+    tag[frame_tag.ID_COMPOSITION] = frame_tag.COMPOSITION_CROP
+    assert frame_tag._slices_for_index(tag, 0) == (3, 1)
+
+
 def test_slices_default_to_1x1_for_v128_tags(sentinel_module):
     # A v1.28 scene has NO slice/custom params stored: defaults must resolve
     # to slices (1,1) and custom disabled, i.e. the same defs as before.
