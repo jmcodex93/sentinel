@@ -66,7 +66,8 @@ class TestPanelFrameRead:
         # kept one release for older bundles) and `viewing` mirrors the tag's
         # Viewing state ("master" with no tag).
         assert out == {"has_tag": False, "camera_name": None, "format_count": None,
-                       "stale": False, "viewing": "master"}
+                       "stale": False, "viewing": "master",
+                       "viewing_options": ["master"]}
 
     def test_qc12_block_reports_has_takes(self, sentinel_module, monkeypatch):
         from sentinel.ui import panel_frame_ops
