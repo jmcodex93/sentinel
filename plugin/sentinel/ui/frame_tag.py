@@ -74,6 +74,12 @@ ID_PRIVATE_TAKES_SIGNATURE = 2500
 # fresh tag / v1.8.0 scene seeds it silently on first touch (adoption)
 # instead of regenerating takes just because the AM was poked.
 ID_PRIVATE_LAST_SEEN_SIGNATURE = 2501
+# Focus format for the viewport dimming (Frame v2): format INDEX + 1 of the
+# last per-format row the artist touched in the AM (0 = no focus, all guides
+# full intensity). Touching any non-row param (display toggles, Enabled,
+# composition) clears it — the natural "back to all-equal" gesture. Private
+# container data so Draw can read it on the cloned draw thread.
+ID_PRIVATE_FOCUS_FORMAT = 2502
 
 # Actions: 3000s. Declared only in U2; command logic is U5.
 ID_GROUP_ACTIONS = 3000
@@ -1236,6 +1242,38 @@ def _current_take_is_own_format(tag, doc):
     return any(d.get("id") == suffix for d in _format_defs())
 
 
+def _current_own_format_id(tag, doc):
+    """Format id of the active take when it is one of THIS tag's generated
+    format takes, else None. Same read-only name resolution as
+    ``_current_take_is_own_format`` (safe on the draw thread)."""
+    getter = getattr(doc, "GetTakeData", None)
+    if not callable(getter):
+        return None
+    try:
+        td = getter()
+        current = td.GetCurrentTake()
+        main = td.GetMainTake()
+    except Exception:
+        return None
+    if current is None or main is None or current == main:
+        return None
+    prefix = _safe_node_name(_tag_host(tag), "")
+    if not prefix:
+        return None
+    try:
+        name = current.GetName() or ""
+    except Exception:
+        return None
+    marker = prefix + "_"
+    if not name.startswith(marker):
+        return None
+    suffix = name[len(marker):]
+    for d in _format_defs():
+        if d.get("id") == suffix:
+            return suffix
+    return None
+
+
 try:
     _TagDataBase = plugins.TagData
     if not isinstance(_TagDataBase, type):
@@ -1331,7 +1369,7 @@ class SentinelFrameTag(_TagDataBase):
         self._init_attr(node, float, ID_MASK_OPACITY)
         for param_id in (ID_LINE_WIDTH, ID_LINE_OPACITY, ID_DIM_NONVIEWED):
             self._init_attr(node, float, param_id)
-        _set_node_value(node, ID_LINE_WIDTH, 1.0)
+        _set_node_value(node, ID_LINE_WIDTH, 2.0)  # matches the pre-v2 hardcoded width
         _set_node_value(node, ID_LINE_OPACITY, 1.0)
         _set_node_value(node, ID_DIM_NONVIEWED, 0.7)
 
@@ -1729,8 +1767,26 @@ class SentinelFrameTag(_TagDataBase):
         # Don't draw guides when viewing one of our own format takes: the camera
         # is already cropped to that format, so the guides would draw a
         # crop-of-a-crop. Guides live in the master (Main) view; format takes
-        # show the clean final crop.
-        if _current_take_is_own_format(tag, doc):
+        # show the clean final crop — plus a minimal HUD saying WHAT you are
+        # viewing (Frame v2), since without guides there is no other cue.
+        own_fmt = _current_own_format_id(tag, doc)
+        if own_fmt is not None:
+            if _as_bool(_get_node_value(tag, ID_SHOW_HUD, True), True):
+                sf = _safe_frame_rect(bd)
+                if sf is not None:
+                    fmt = get_multiformat_def(own_fmt) or {}
+                    try:
+                        bd.SetMatrix_Screen()
+                    except Exception:
+                        return True
+                    _draw_hud_text(
+                        bd, sf[0] + 8, sf[1] + 8,
+                        "Viewing: %s  %dx%d  %s" % (
+                            own_fmt,
+                            int(fmt.get("width", 0)), int(fmt.get("height", 0)),
+                            _sync_status_text(tag),
+                        ),
+                    )
             return True
 
         if not _as_bool(_get_node_value(tag, ID_ENABLED, True), True):
@@ -1771,8 +1827,31 @@ class SentinelFrameTag(_TagDataBase):
                 _draw_mask(bd, safe_frame, mask_px, c4d.Vector(0.0, 0.0, 0.0), mask_transparency)
 
         if show_guides:
+            # Frame v2 focus dimming: the last-touched format row draws at full
+            # intensity, the rest multiplied by Dim (1.0 = effect off, 0.0 =
+            # hidden). Line opacity approximates alpha by scaling the color
+            # toward the dark viewport (BaseDraw lines have no true alpha).
+            focus = 0
+            try:
+                focus = int(_bc_get_data(_node_data_container(tag), ID_PRIVATE_FOCUS_FORMAT) or 0)
+            except Exception:
+                focus = 0
+            focus_fmt = None
+            defs = _format_defs()
+            if 0 < focus <= len(defs):
+                focus_fmt = defs[focus - 1].get("id")
+            dim = max(0.0, min(1.0, _as_float(_get_node_value(tag, ID_DIM_NONVIEWED, 0.7), 0.7)))
+            line_opacity = max(0.0, min(1.0, _as_float(_get_node_value(tag, ID_LINE_OPACITY, 1.0), 1.0)))
+            line_width = max(1, int(round(_as_float(_get_node_value(tag, ID_LINE_WIDTH, 2.0), 2.0))))
             for entry, guide_px in pixel_guides:
-                _draw_rect(bd, guide_px, entry["color"], width=2)
+                color = entry["color"]
+                if focus_fmt is not None and entry["id"] != focus_fmt:
+                    if dim <= 0.0:
+                        continue
+                    color = _dim_color(color, dim)
+                if line_opacity < 1.0:
+                    color = _dim_color(color, line_opacity)
+                _draw_rect(bd, guide_px, color, width=line_width)
 
         if show_platform and pixel_guides:
             for entry, _guide_px in pixel_guides:
@@ -1793,8 +1872,20 @@ class SentinelFrameTag(_TagDataBase):
             for entry, guide_px in pixel_guides:
                 text = f"{entry['id']}  {entry['width']}x{entry['height']}"
                 _draw_hud_text(bd, guide_px[0] + 5, guide_px[1] + 5, text)
-            if _is_stale_from_signature(tag):
-                _draw_hud_text(bd, safe_frame[0] + 8, safe_frame[1] + 26, "Takes out of date")
+            # Frame v2 HUD: what you're viewing + sync state (auto-sync makes
+            # "Takes out of date" a transient, so the old stale banner is gone),
+            # plus an honest warning in None mode (guides suggest a crop that
+            # None will NOT apply — render extends vertically instead).
+            _draw_hud_text(
+                bd, safe_frame[0] + 8, safe_frame[1] + 8,
+                "Viewing: Master  %s" % _sync_status_text(tag),
+            )
+            comp = _get_node_value(tag, ID_COMPOSITION, COMPOSITION_CROP)
+            if comp == COMPOSITION_OFF:
+                _draw_hud_text(
+                    bd, safe_frame[0] + 8, safe_frame[1] + 26,
+                    "None: guides are reference only - no crop",
+                )
 
         _DRAW_CALLS += 1
         return True
@@ -1823,6 +1914,31 @@ class SentinelFrameTag(_TagDataBase):
                     if last_seen:  # seeded before → a real change: sync
                         from sentinel.ui import frame_sync
                         frame_sync.request_sync(node)
+            except Exception:
+                pass
+            # Viewport focus (dimming): touching a per-format row focuses that
+            # format; touching a global param returns to all-equal.
+            try:
+                changed = None
+                try:
+                    changed = _desc_level_id(data["descid"])
+                except Exception:
+                    changed = None
+                if changed is not None:
+                    span = len(_format_defs()) * ID_FORMAT_STRIDE
+                    if ID_FORMAT_BASE <= changed < ID_FORMAT_BASE + span:
+                        index = (changed - ID_FORMAT_BASE) // ID_FORMAT_STRIDE
+                        _bc_set_data(
+                            _node_data_container(node),
+                            ID_PRIVATE_FOCUS_FORMAT, int(index) + 1)
+                    elif changed in (
+                        ID_ENABLED, ID_COMPOSITION, ID_SHOW_GUIDES,
+                        ID_SHOW_MASK, ID_SHOW_PLATFORM, ID_SHOW_HUD,
+                        ID_MASK_OPACITY, ID_VIEWING,
+                    ):
+                        _bc_set_data(
+                            _node_data_container(node),
+                            ID_PRIVATE_FOCUS_FORMAT, 0)
             except Exception:
                 pass
 
