@@ -365,9 +365,17 @@ def test_slice_link_ids_disjoint_per_format(sentinel_module):
            for o in range(1, 257)}
     assert len(ids) == frame_tag.FORMAT_ROW_COUNT * 256
     assert min(ids) == frame_tag.ID_PRIVATE_SLICE_LINK_BASE
-    # Never collides with the existing private id neighborhoods.
-    assert all(i not in (2400, 2401, 2402, 2403, 2404, 2405, 2500, 2501, 2502)
-               for i in ids)
+    # Never collides with any declared description id or the existing
+    # private id neighborhoods: groups (incl. custom), format rows (incl.
+    # custom), insets, take-link/signature/focus, actions.
+    reserved = set(range(900, 905))
+    reserved |= set(range(1000, 1014))
+    reserved |= set(range(1100, 1220))
+    reserved |= set(range(2000, 2060))
+    reserved |= set(range(2400, 2406))
+    reserved |= set(range(2500, 2503))
+    reserved |= set(range(3000, 3005))
+    assert ids.isdisjoint(reserved)
 
 
 def test_link_for_key_roundtrip(sentinel_module):

@@ -65,8 +65,13 @@ FORMAT_ROW_COUNT = 6
 CUSTOM_FORMAT_INDEX = 5
 CUSTOM_FORMAT_ID = "custom"
 ID_GROUP_CUSTOM = 904            # 8-column sub-grid under the formats grid
-ID_PRIVATE_SLICE_LINK_BASE = 2600  # slice take BaseLinks:
-MAX_SLICE_ORDINALS = 256           # id = 2600 + row_index*256 + (ordinal-1)
+# Slice take BaseLinks. Base sits above ALL declared description ids (the
+# highest is ID_MARK_SUBJECT = 3004) so that 6 rows x 256 ordinals — ids
+# 10000..11535 (10000 + 5*256 + 255) — can never collide with a real
+# description field, however many rows/ordinals grow. id = 10000 +
+# row_index*256 + (ordinal-1).
+ID_PRIVATE_SLICE_LINK_BASE = 10000
+MAX_SLICE_ORDINALS = 256
 VIEWING_SLICE_STRIDE = 1000        # ID_VIEWING encoding for slices (Task 5)
 
 # Private per-format platform insets: stored on the tag container so Draw can
