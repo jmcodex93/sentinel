@@ -157,7 +157,7 @@ def compute_target_aperture(source_aperture, source_width, target_width):
     return float(source_aperture) * (float(target_width) / float(source_width))
 
 
-def compute_format_output_path(source_path, fmt_id, mode="subfolder"):
+def compute_format_output_path(source_path, fmt_id, mode="subfolder", slice_suffix=None):
     """Generate output path for a format variant.
 
     Args:
@@ -166,6 +166,9 @@ def compute_format_output_path(source_path, fmt_id, mode="subfolder"):
         fmt_id: format identifier (e.g., "16x9", "9x16").
         mode: "subfolder" (insert /<fmt>/ before filename) or
               "suffix" (append _<fmt> to filename).
+        slice_suffix: optional "s01"-style render-slice suffix (v1.29).
+            Subfolder mode nests .../<fmt>/<sNN>/...; suffix mode appends
+            _<fmt>_<sNN>. Idempotent like the fmt guards.
 
     Returns:
         Modified output path. Forward-slash style on all platforms (C4D's
@@ -177,6 +180,52 @@ def compute_format_output_path(source_path, fmt_id, mode="subfolder"):
         ("$prj_$frame", "9x16", "subfolder")        -> "9x16/$prj_$frame"
         ("", "1x1", "subfolder")                    -> "1x1/$prj_$frame"
     """
+    if not slice_suffix or not fmt_id:
+        return _compute_format_output_path_no_slice(source_path, fmt_id, mode)
+
+    # Idempotency guard against a path already fully composed with this
+    # fmt+slice (checked on the RAW source_path — re-running the no-slice
+    # transform on an already-nested .../<fmt>/<slice>/... path would not
+    # recognize the immediate parent as fmt_id and double-nest it).
+    raw_norm = (source_path or "").replace("\\", "/")
+    if "/" in raw_norm:
+        raw_head, raw_tail = raw_norm.rsplit("/", 1)
+    else:
+        raw_head, raw_tail = "", raw_norm
+    if mode == "suffix":
+        if raw_tail.endswith(f"_{fmt_id}_{slice_suffix}"):
+            return raw_norm
+    else:
+        raw_head_parts = raw_head.split("/") if raw_head else []
+        if (len(raw_head_parts) >= 2
+                and raw_head_parts[-2] == fmt_id
+                and raw_head_parts[-1] == slice_suffix):
+            return raw_norm
+
+    base = _compute_format_output_path_no_slice(source_path, fmt_id, mode)
+    norm = base.replace("\\", "/")
+    if "/" in norm:
+        head, tail = norm.rsplit("/", 1)
+    else:
+        head, tail = "", norm
+    if mode == "suffix":
+        if tail.endswith(f"_{slice_suffix}"):
+            return norm
+        new_tail = f"{tail}_{slice_suffix}" if tail else f"_{slice_suffix}"
+        return f"{head}/{new_tail}" if head else new_tail
+    head_parts = head.split("/") if head else []
+    if head_parts and head_parts[-1] == slice_suffix:
+        return norm
+    if head and tail:
+        return f"{head}/{slice_suffix}/{tail}"
+    if head:
+        return f"{head}/{slice_suffix}"
+    if tail:
+        return f"{slice_suffix}/{tail}"
+    return slice_suffix
+
+
+def _compute_format_output_path_no_slice(source_path, fmt_id, mode="subfolder"):
     if not fmt_id:
         return source_path or ""
     if not source_path:
@@ -233,14 +282,19 @@ def take_name_for_format(fmt_def, source_take_name=""):
     return fid
 
 
-def _take_name_for_options(fmt_def, source_take_name="", name_prefix=None):
-    """Compose the Take name, optionally scoped to a camera/tag prefix."""
+def _take_name_for_options(fmt_def, source_take_name="", name_prefix=None, slice_suffix=None):
+    """Compose the Take name, optionally scoped to a camera/tag prefix and a
+    render-slice suffix (v1.29: '<prefix>_<fmt>_s01')."""
     if not fmt_def:
         return ""
     prefix = (name_prefix or "").strip()
     if prefix:
-        return f"{prefix}_{fmt_def.get('id', '')}"
-    return take_name_for_format(fmt_def, source_take_name)
+        base = f"{prefix}_{fmt_def.get('id', '')}"
+    else:
+        base = take_name_for_format(fmt_def, source_take_name)
+    if slice_suffix:
+        return f"{base}_{slice_suffix}"
+    return base
 
 
 def _find_take_by_name(takeData, name):
@@ -293,21 +347,27 @@ def _walk_child_takes(takeData):
         yield take
 
 
-def _existing_prefixed_format_ids(takeData, name_prefix):
-    """Return fmt ids for existing takes named '<prefix>_<fmt_id>'."""
+def _existing_prefixed_format_ids(takeData, name_prefix, defs=None):
+    """Return fmt ids for existing takes named '<prefix>_<fmt_id>' or a
+    slice thereof ('<prefix>_<fmt_id>_sNN', v1.29)."""
     prefix = (name_prefix or "").strip()
     if not prefix:
         return set()
+    source_defs = defs if defs is not None else MULTIFORMAT_DEFS
     name_to_id = {
-        f"{prefix}_{fmt_def['id']}": fmt_def["id"]
-        for fmt_def in MULTIFORMAT_DEFS
+        f"{prefix}_{fmt_def['id']}": fmt_def["id"] for fmt_def in source_defs
     }
     found = set()
     for take in _walk_child_takes(takeData):
         try:
-            fmt_id = name_to_id.get(take.GetName())
+            name = take.GetName() or ""
         except Exception:
-            fmt_id = None
+            continue
+        fmt_id = name_to_id.get(name)
+        if fmt_id is None and "_s" in name:
+            stem, _sep, tail = name.rpartition("_s")
+            if tail.isdigit():
+                fmt_id = name_to_id.get(stem)
         if fmt_id:
             found.add(fmt_id)
     return found
