@@ -1972,40 +1972,55 @@ class SentinelFrameTag(_TagDataBase):
             )
 
         if show_hud:
-            # Frame v2 HUD (live-caught polish): the old per-rect floating
-            # labels collided whenever formats shared a top edge — replaced
-            # by a stacked LEGEND under the Viewing line, one row per active
-            # format with a chip in its guide color (the color ties label →
-            # rectangle, which is the hierarchy the overlapping rects lack).
-            # Chips honor the same focus dimming as their guides.
+            # Frame v2 HUD, iteration 2 (live design feedback): a corner
+            # legend DIVORCES each label from its rectangle (mental color→
+            # rect mapping). The viewfinder/gate-label convention instead:
+            # the label lives ON its own rect — short text (`9x16` + color
+            # chip, resolution lives in the AM/panel and in the format-take
+            # HUD) anchored at the rect's own top-left corner. Nested rects
+            # differ in X, so anchors separate naturally; a deterministic
+            # stagger drops a label one line when two would overlap in the
+            # same row (the v1 collision cause was long labels + a shared
+            # anchor corner).
             hud_x = safe_frame[0] + 8
             hud_y = safe_frame[1] + 8
             _draw_hud_text(bd, hud_x, hud_y, "Viewing: Master  %s" % _sync_status_text(tag))
-            hud_y += 20
-            legend_focus = 0
+
+            label_focus = 0
             try:
-                legend_focus = int(_bc_get_data(_node_data_container(tag), ID_PRIVATE_FOCUS_FORMAT) or 0)
+                label_focus = int(_bc_get_data(_node_data_container(tag), ID_PRIVATE_FOCUS_FORMAT) or 0)
             except Exception:
-                legend_focus = 0
-            legend_focus_fmt = None
-            legend_defs = _format_defs()
-            if 0 < legend_focus <= len(legend_defs):
-                legend_focus_fmt = legend_defs[legend_focus - 1].get("id")
-            legend_dim = max(0.0, min(1.0, _as_float(_get_node_value(tag, ID_DIM_NONVIEWED, 0.7), 0.7)))
-            for entry, _guide_px in pixel_guides:
+                label_focus = 0
+            label_focus_fmt = None
+            label_defs = _format_defs()
+            if 0 < label_focus <= len(label_defs):
+                label_focus_fmt = label_defs[label_focus - 1].get("id")
+            label_dim = max(0.0, min(1.0, _as_float(_get_node_value(tag, ID_DIM_NONVIEWED, 0.7), 0.7)))
+
+            # Anchor each label at its own rect's inner top-left; stagger a
+            # line lower while it would overlap an already-placed label.
+            placed = []  # (x_left, x_right, y_row)
+            row_h = 18.0
+            for entry, guide_px in sorted(pixel_guides, key=lambda p: (p[1][0], p[1][1])):
+                lx = guide_px[0] + 5
+                ly = guide_px[1] + 5
+                approx_w = 16 + 7.5 * len(str(entry["id"]))
+                while any(
+                    abs(ly - py) < row_h and lx < pr and (lx + approx_w) > pl
+                    for pl, pr, py in placed
+                ):
+                    ly += row_h
+                placed.append((lx, lx + approx_w, ly))
                 chip_color = entry["color"]
-                if legend_focus_fmt is not None and entry["id"] != legend_focus_fmt:
-                    chip_color = _dim_color(chip_color, max(0.25, legend_dim))
-                _draw_color_chip(bd, hud_x, hud_y + 3, 10, chip_color)
-                _draw_hud_text(
-                    bd, hud_x + 16, hud_y,
-                    f"{entry['id']}  {entry['width']}x{entry['height']}",
-                )
-                hud_y += 18
+                if label_focus_fmt is not None and entry["id"] != label_focus_fmt:
+                    chip_color = _dim_color(chip_color, max(0.25, label_dim))
+                _draw_color_chip(bd, lx, ly + 3, 9, chip_color)
+                _draw_hud_text(bd, lx + 14, ly, str(entry["id"]))
+
             comp = _get_node_value(tag, ID_COMPOSITION, COMPOSITION_CROP)
             if comp == COMPOSITION_OFF:
                 _draw_hud_text(
-                    bd, hud_x, hud_y + 4,
+                    bd, hud_x, hud_y + 22,
                     "None: guides are reference only - no crop",
                 )
 
