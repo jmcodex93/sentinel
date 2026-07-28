@@ -908,6 +908,30 @@ def _command_id_from_data(data):
     return _desc_level_id(cid)
 
 
+def _observe_signature_drift(node):
+    """Signature-drift detector for the auto-sync — shared by the
+    POSTSETPARAMETER hook AND ``Execute`` (belt-and-braces, live-caught bug:
+    the AM's right-click "reset to default" on a nudge arrow sets the value
+    WITHOUT sending MSG_DESCRIPTION_POSTSETPARAMETER, so the hook alone
+    missed it and the Take kept the old nudge; scripts/XPresso writes skip
+    the message too). Execute runs on every scene evaluation, so any change
+    path lands here. Cheap (small JSON + hash) and non-mutating beyond the
+    tag's own BC bookkeeping key; ``request_sync`` is Execute-safe (python
+    state + SpecialEventAdd, which is explicitly thread-safe)."""
+    try:
+        sig = _params_signature_for_takes(node)
+        bc = _node_data_container(node)
+        last_seen = _bc_get_data(bc, ID_PRIVATE_LAST_SEEN_SIGNATURE)
+        last_seen = str(last_seen) if last_seen else ""
+        if sig != last_seen:
+            _bc_set_data(bc, ID_PRIVATE_LAST_SEEN_SIGNATURE, sig)
+            if last_seen:  # seeded before → a real change: sync
+                from sentinel.ui import frame_sync
+                frame_sync.request_sync(node)
+    except Exception:
+        pass
+
+
 def _viewing_cycle_entries(node):
     """Cycle for ID_VIEWING: 0=Master plus every ENABLED format (value =
     format index + 1, stable against enable/disable churn)."""
@@ -1927,6 +1951,13 @@ class SentinelFrameTag(_TagDataBase):
         _DRAW_CALLS += 1
         return True
 
+    def Execute(self, tag, doc, op, bt, priority, flags):
+        # Catch-all drift detection (see _observe_signature_drift): the AM's
+        # right-click reset and programmatic writes never send
+        # POSTSETPARAMETER, but every change re-evaluates the scene.
+        _observe_signature_drift(tag)
+        return c4d.EXECUTIONRESULT_OK
+
     def Message(self, node, mid, data):
         description_command = getattr(c4d, "MSG_DESCRIPTION_COMMAND", None)
         if description_command is not None and mid == description_command:
@@ -1941,18 +1972,7 @@ class SentinelFrameTag(_TagDataBase):
         # NEVER here (parameter messages must not mutate document structure).
         post_set = getattr(c4d, "MSG_DESCRIPTION_POSTSETPARAMETER", None)
         if post_set is not None and mid == post_set:
-            try:
-                sig = _params_signature_for_takes(node)
-                bc = _node_data_container(node)
-                last_seen = _bc_get_data(bc, ID_PRIVATE_LAST_SEEN_SIGNATURE)
-                last_seen = str(last_seen) if last_seen else ""
-                if sig != last_seen:
-                    _bc_set_data(bc, ID_PRIVATE_LAST_SEEN_SIGNATURE, sig)
-                    if last_seen:  # seeded before → a real change: sync
-                        from sentinel.ui import frame_sync
-                        frame_sync.request_sync(node)
-            except Exception:
-                pass
+            _observe_signature_drift(node)
             # Viewport focus (dimming): touching a per-format row focuses that
             # format; touching a global param returns to all-equal.
             try:
