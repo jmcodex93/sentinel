@@ -128,14 +128,22 @@ def _panel_frame_block(doc):
     the count of enabled delivery formats."""
     found = _find_sentinel_frame_tag(doc)
     if found is None:
-        return {"has_tag": False, "camera_name": None, "format_count": None}
+        return {"has_tag": False, "camera_name": None, "format_count": None,
+                "slice_count": None}
     tag, host = found
     format_count = None
     try:
         format_count = len(_enabled_format_ids_from_params(tag))
     except Exception:
         pass
-    return {"has_tag": True, "camera_name": host.GetName() or "", "format_count": format_count}
+    slice_count = None
+    try:
+        from sentinel.ui.frame_tag import _total_slice_count
+        slice_count = int(_total_slice_count(tag))
+    except Exception:
+        pass
+    return {"has_tag": True, "camera_name": host.GetName() or "",
+            "format_count": format_count, "slice_count": slice_count}
 
 
 def _panel_aovs_block(doc):

@@ -30,13 +30,17 @@ export function frameHint(state: PanelFrameState): string {
   return "✓ All marked subjects stay inside every format's safe area.";
 }
 
-/** Frame block status: `"On <camera> · N formats"` / `"No Sentinel Frame tag."` */
+/** Frame block status: `"On <camera> · N formats (M slices)."` /
+ * `"No Sentinel Frame tag."` — the slice suffix only appears when at least
+ * one enabled format is sliced (v1.29). */
 export function frameStatusLine(frame: PanelFrameBlock | null): string {
   if (frame === null) return "Frame status unavailable.";
   if (!frame.has_tag || !frame.camera_name) return "No Sentinel Frame tag.";
   const n = frame.format_count;
   const formats = typeof n === "number" ? ` · ${n} format${n === 1 ? "" : "s"}` : "";
-  return `On ${frame.camera_name}${formats}.`;
+  const s = frame.slice_count;
+  const slices = typeof s === "number" && s > 0 ? ` (${s} slice${s === 1 ? "" : "s"})` : "";
+  return `On ${frame.camera_name}${formats}${slices}.`;
 }
 
 /** QC #12 block status. Distinguishes "not evaluated (no Takes)" from a real

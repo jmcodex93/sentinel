@@ -82,7 +82,7 @@ export function FrameSubview({
               <SegmentedControl
                 options={(frame.frame?.viewing_options ?? ["master"]).map((id) => ({
                   value: id,
-                  label: id === "master" ? "Master" : id,
+                  label: id === "master" ? "Master" : id.replace(":", " · "),
                 }))}
                 value={frame.frame?.viewing ?? "master"}
                 disabled={isBusy}

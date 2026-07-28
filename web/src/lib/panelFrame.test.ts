@@ -76,6 +76,18 @@ describe("frameStatusLine", () => {
     expect(s).toContain("heroCam");
     expect(s).toContain("5");
   });
+  it("frameStatusLine shows slice count", () => {
+    expect(
+      frameStatusLine({ has_tag: true, camera_name: "Hero", format_count: 2,
+                        slice_count: 3 } as PanelFrameBlock)
+    ).toBe("On Hero · 2 formats (3 slices).");
+  });
+  it("frameStatusLine omits zero slices", () => {
+    expect(
+      frameStatusLine({ has_tag: true, camera_name: "Hero", format_count: 1,
+                        slice_count: 0 } as PanelFrameBlock)
+    ).toBe("On Hero · 1 format.");
+  });
 });
 
 describe("qc12StatusLine", () => {

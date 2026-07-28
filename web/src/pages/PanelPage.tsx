@@ -529,7 +529,7 @@ export function PanelPage() {
     setBusyRenderId(null);
     if (!r.ok) {
       toast({
-        message: r.error === "take_not_found"
+        message: r.error === "take_not_found" || r.error === "unknown_format"
           ? "That format has no Take yet — enable it on the tag first."
           : "Couldn't switch the view.",
         variant: "warn",

@@ -29,7 +29,8 @@ def _frame_block(doc):
     Frame v2: ``stale`` is kept as a constant ``False`` for one release (the
     auto-sync engine makes staleness a sub-second transient, and an older SPA
     bundle may still read the key) — it is no longer an actionable signal.
-    ``viewing`` mirrors the tag's Viewing cycle: "master" or a format id."""
+    ``viewing`` mirrors the tag's Viewing cycle: "master", a format id, or a
+    slice id ("fmt:sNN") when a slice take is active (v1.29)."""
     base = panel_render_ops._panel_frame_block(doc)
     base["stale"] = False
     base["viewing"] = "master"
@@ -39,14 +40,14 @@ def _frame_block(doc):
         if found:
             try:
                 from sentinel.ui.frame_tag import (
-                    _current_own_format_id,
-                    _enabled_format_ids_from_params,
+                    _current_own_take_info,
+                    viewing_targets,
                 )
-                fmt = _current_own_format_id(found[0], doc)
-                if fmt:
-                    base["viewing"] = fmt
-                base["viewing_options"] = ["master"] + list(
-                    _enabled_format_ids_from_params(found[0]) or [])
+                info = _current_own_take_info(found[0], doc)
+                if info:
+                    fmt, sfx = info
+                    base["viewing"] = f"{fmt}:{sfx}" if sfx else fmt
+                base["viewing_options"] = viewing_targets(found[0])
             except Exception:
                 pass
     return base

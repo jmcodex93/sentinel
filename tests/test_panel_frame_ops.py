@@ -158,6 +158,67 @@ class TestSetViewing:
         assert seen["target"] == "master"
 
 
+def _slice_tag(frame_tag):
+    """Fake dict-tag (same idiom as tests/test_frame_tag.py's _base_tag):
+    16x9 enabled whole, custom 9000x500 enabled and sliced 3x1."""
+    tag = {frame_tag.ID_COMPOSITION: frame_tag.COMPOSITION_CROP}
+    for index in range(frame_tag.FORMAT_ROW_COUNT):
+        ids = frame_tag._format_ids(index)
+        tag[ids["enabled"]] = index in (0, frame_tag.CUSTOM_FORMAT_INDEX)
+        tag[ids["nudge_x"]] = 0.0
+        tag[ids["nudge_y"]] = 0.0
+        tag[ids["slice_x"]] = 1
+        tag[ids["slice_y"]] = 1
+    cids = frame_tag._format_ids(frame_tag.CUSTOM_FORMAT_INDEX)
+    tag[cids["width"]] = 9000
+    tag[cids["height"]] = 500
+    tag[cids["slice_x"]] = 3
+    return tag
+
+
+class TestFrameBlockSlices:
+    """v1.29 (Task 8): the frame block carries ``slice_count`` and its
+    ``viewing_options``/``viewing`` include slice ids (``fmt:sNN``)."""
+
+    def _wire(self, monkeypatch, tag, base=None):
+        from sentinel.ui import panel_frame_ops, panel_render_ops
+        monkeypatch.setattr(
+            panel_render_ops, "_panel_frame_block",
+            lambda doc: dict(base or {"has_tag": True, "camera_name": "Hero",
+                                      "format_count": 2, "slice_count": 3}))
+        monkeypatch.setattr(panel_render_ops, "_find_sentinel_frame_tag",
+                            lambda doc: (tag, object()))
+        return panel_frame_ops
+
+    def test_viewing_options_include_slices(self, sentinel_module, monkeypatch):
+        from sentinel.ui import frame_tag
+        tag = _slice_tag(frame_tag)
+        panel_frame_ops = self._wire(monkeypatch, tag)
+        out = panel_frame_ops._frame_block(object())
+        assert out["slice_count"] == 3
+        assert out["viewing_options"] == [
+            "master", "16x9", "custom:s01", "custom:s02", "custom:s03"]
+        assert out["viewing"] == "master"
+
+    def test_viewing_reports_slice_take(self, sentinel_module, monkeypatch):
+        from sentinel.ui import frame_tag
+        tag = _slice_tag(frame_tag)
+        panel_frame_ops = self._wire(monkeypatch, tag)
+        monkeypatch.setattr(frame_tag, "_current_own_take_info",
+                            lambda t, d: ("custom", "s02"))
+        out = panel_frame_ops._frame_block(object())
+        assert out["viewing"] == "custom:s02"
+
+    def test_viewing_reports_whole_format_take(self, sentinel_module, monkeypatch):
+        from sentinel.ui import frame_tag
+        tag = _slice_tag(frame_tag)
+        panel_frame_ops = self._wire(monkeypatch, tag)
+        monkeypatch.setattr(frame_tag, "_current_own_take_info",
+                            lambda t, d: ("16x9", None))
+        out = panel_frame_ops._frame_block(object())
+        assert out["viewing"] == "16x9"
+
+
 class TestSetViewingCore:
     """frame_tag.set_viewing — target resolution against the format defs."""
 
