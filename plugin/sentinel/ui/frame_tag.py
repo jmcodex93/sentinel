@@ -39,6 +39,19 @@ ID_SHOW_PLATFORM = 1005
 ID_SHOW_HUD = 1006
 ID_SCHEMA_VERSION = 1007
 ID_MASK_OPACITY = 1008
+# Frame v2 (control strip). 1009+ continue the stable-ID discipline: existing
+# ids above keep their meaning forever; new params get fresh ids.
+ID_VIEWING = 1009          # LONG cycle: 0=Master, i+1 = _format_defs()[i]
+ID_SYNC_STATUS = 1010      # STRING, read-only derived (never stored)
+ID_LINE_WIDTH = 1011       # REAL, guide line width (Task 5 wires into Draw)
+ID_LINE_OPACITY = 1012     # REAL 0..1
+ID_DIM_NONVIEWED = 1013    # REAL 0..1 — focus dimming for non-viewed formats
+
+# Frame v2 tab groups (top-level DTYPE_GROUPs render as AM tabs).
+ID_GROUP_MAIN = 900
+ID_GROUP_DISPLAY = 901
+ID_GROUP_ADVANCED = 902
+ID_GROUP_FORMATS = 903     # sub-group of Main holding the per-format rows
 
 # Per-format params: 1100s+, fixed stride per MULTIFORMAT_DEFS entry.
 ID_FORMAT_BASE = 1100
@@ -889,6 +902,88 @@ def _command_id_from_data(data):
     return _desc_level_id(cid)
 
 
+def _viewing_cycle_entries(node):
+    """Cycle for ID_VIEWING: 0=Master plus every ENABLED format (value =
+    format index + 1, stable against enable/disable churn)."""
+    entries = [(0, "Master")]
+    for index, fmt in enumerate(_format_defs()):
+        ids = _format_ids(index)
+        if _as_bool(_get_node_value(node, ids["enabled"], True), True):
+            label = fmt.get("label") or fmt.get("id", "Format")
+            entries.append((index + 1, label))
+    return entries
+
+
+def _viewing_value_from_takes(node, doc):
+    """Derive the SHOWN Viewing value from the document's current take —
+    two-way: switching takes in the Take Manager reflects back here."""
+    try:
+        td = doc.GetTakeData() if doc else None
+        current = td.GetCurrentTake() if td else None
+    except Exception:
+        current = None
+    if current is None:
+        return 0
+    try:
+        current_name = current.GetName()
+    except Exception:
+        return 0
+    for index, fmt in enumerate(_format_defs()):
+        linked = _read_take_link(node, fmt.get("id"), doc)
+        try:
+            if linked is not None and linked.GetName() == current_name:
+                return index + 1
+        except Exception:
+            continue
+    return 0
+
+
+def _activate_viewing(node, doc, value):
+    """Activate the take behind a Viewing selection (0 = Main). Document
+    state, not tag state — mirrors clicking the take in the Take Manager."""
+    try:
+        td = doc.GetTakeData() if doc else None
+    except Exception:
+        td = None
+    if td is None:
+        return False
+    target = None
+    if int(value) <= 0:
+        try:
+            target = td.GetMainTake()
+        except Exception:
+            target = None
+    else:
+        index = int(value) - 1
+        defs = _format_defs()
+        if 0 <= index < len(defs):
+            target = _read_take_link(node, defs[index].get("id"), doc)
+    if target is None:
+        return False
+    try:
+        td.SetCurrentTake(target)
+        _event_add()
+        return True
+    except Exception:
+        return False
+
+
+def _sync_status_text(node):
+    """Derived AM status line: pending window > failed > drift > synced."""
+    try:
+        from sentinel.ui import frame_sync
+        key = frame_sync._tag_key(node)
+        if key and frame_sync.scheduler.has_pending(key):
+            return "syncing..."
+        if key and frame_sync.last_sync_result.get(key) == "failed":
+            return "sync failed - see console"
+        if _is_stale_from_signature(node):
+            return "sync pending"
+    except Exception:
+        pass
+    return "synced"
+
+
 def _run_takes_generation(doc, node):
     """Dialog-free create/update core shared by the button handler and the
     Frame v2 auto-sync. The CALLER owns the undo block (this passes
@@ -1207,13 +1302,16 @@ class SentinelFrameTag(_TagDataBase):
         except Exception:
             return False
 
-    def _set_description_group(self, node, description, group_id, name, parent):
+    def _set_description_group(self, node, description, group_id, name, parent,
+                               columns=None, titlebar=True):
         desc_id = _description_parent(group_id, c4d.DTYPE_GROUP, node)
         bc = c4d.GetCustomDatatypeDefault(c4d.DTYPE_GROUP)
         _set_bc_value(bc, "SetString", c4d.DESC_NAME, name)
         _set_bc_value(bc, "SetString", c4d.DESC_SHORT_NAME, name)
-        _set_bc_value(bc, "SetBool", c4d.DESC_TITLEBAR, True)
+        _set_bc_value(bc, "SetBool", c4d.DESC_TITLEBAR, bool(titlebar))
         _set_bc_value(bc, "SetBool", c4d.DESC_DEFAULT, False)
+        if columns is not None:
+            _set_bc_value(bc, "SetInt32", c4d.DESC_COLUMNS, int(columns))
         try:
             return bool(description.SetParameter(desc_id, bc, parent))
         except Exception:
@@ -1231,6 +1329,11 @@ class SentinelFrameTag(_TagDataBase):
         for param_id in (ID_COMPOSITION, ID_SCHEMA_VERSION):
             self._init_attr(node, int, param_id)
         self._init_attr(node, float, ID_MASK_OPACITY)
+        for param_id in (ID_LINE_WIDTH, ID_LINE_OPACITY, ID_DIM_NONVIEWED):
+            self._init_attr(node, float, param_id)
+        _set_node_value(node, ID_LINE_WIDTH, 1.0)
+        _set_node_value(node, ID_LINE_OPACITY, 1.0)
+        _set_node_value(node, ID_DIM_NONVIEWED, 0.7)
 
         _set_node_value(node, ID_ENABLED, True)
         _set_node_value(node, ID_COMPOSITION, COMPOSITION_CROP)
@@ -1265,77 +1368,143 @@ class SentinelFrameTag(_TagDataBase):
         return True
 
     def GetDDescription(self, node, description, flags):
+        # Frame v2 control strip (spec §1): three top-level tab groups laid
+        # out by USE FREQUENCY — Main (daily, no scroll), Display (once, per
+        # artist taste), Advanced (almost never). The four workflow buttons
+        # are GONE (auto-sync replaces them; Mark Subject lives in the panel's
+        # Frame sub-view). Existing param ids keep their meaning — only the
+        # description layout changed, so v1.8.0 scenes load losslessly.
         try:
             description.LoadDescription(node.GetType())
         except Exception:
             pass
 
         root = c4d.DescID(c4d.DescLevel(c4d.ID_TAGPROPERTIES))
-        core_group = _description_parent(ID_GROUP_CORE, c4d.DTYPE_GROUP, node)
-        actions_group = _description_parent(ID_GROUP_ACTIONS, c4d.DTYPE_GROUP, node)
+        main_group = _description_parent(ID_GROUP_MAIN, c4d.DTYPE_GROUP, node)
+        display_group = _description_parent(ID_GROUP_DISPLAY, c4d.DTYPE_GROUP, node)
+        advanced_group = _description_parent(ID_GROUP_ADVANCED, c4d.DTYPE_GROUP, node)
+        formats_group = _description_parent(ID_GROUP_FORMATS, c4d.DTYPE_GROUP, node)
 
-        if not self._set_description_group(node, description, ID_GROUP_CORE, "Sentinel Frame", root):
+        # --- Main ---------------------------------------------------------
+        if not self._set_description_group(node, description, ID_GROUP_MAIN, "Main", root):
+            return False
+        if not self._set_description_parameter(
+            node, description, ID_ENABLED, c4d.DTYPE_BOOL, "Enabled", main_group
+        ):
+            return False
+        if not self._set_description_parameter(
+            node, description, ID_VIEWING, c4d.DTYPE_LONG, "Viewing", main_group,
+            cycle=_viewing_cycle_entries(node)
+        ):
+            return False
+        sync_bc_ok = self._set_description_parameter(
+            node, description, ID_SYNC_STATUS, c4d.DTYPE_STRING, "Takes", main_group
+        )
+        if not sync_bc_ok:
             return False
 
-        core_params = (
-            (ID_ENABLED, c4d.DTYPE_BOOL, "Enabled", None, None, None, None),
-            (ID_COMPOSITION, c4d.DTYPE_LONG, "Composition Mode", None, None, None, COMPOSITION_CYCLE),
-            (ID_SHOW_GUIDES, c4d.DTYPE_BOOL, "Show Guides", None, None, None, None),
-            (ID_SHOW_MASK, c4d.DTYPE_BOOL, "Show Mask", None, None, None, None),
-            (ID_MASK_OPACITY, c4d.DTYPE_REAL, "Mask Opacity", 0.0, 1.0, 0.01, None),
-            (ID_SHOW_PLATFORM, c4d.DTYPE_BOOL, "Show Platform Zones", None, None, None, None),
-            (ID_SHOW_HUD, c4d.DTYPE_BOOL, "Show HUD", None, None, None, None),
-            # ID_SCHEMA_VERSION is internal migration state — kept in the tag
-            # container (set in Init) but intentionally NOT exposed in the AM.
-        )
-        for parameter_id, dtype, name, minimum, maximum, step, cycle in core_params:
-            if not self._set_description_parameter(
-                node, description, parameter_id, dtype, name, core_group, minimum, maximum, step, cycle
-            ):
-                return False
-
+        # Per-format rows (Social Frame pattern, 4 columns): the enable
+        # checkbox CARRIES the format label; swatch identifies the guide;
+        # nudge X/Y inline (feedback = the format's rect moves in the master
+        # view while dragging). Row group = titlebar-less + columns.
+        if not self._set_description_group(
+            node, description, ID_GROUP_FORMATS, "Formats", main_group
+        ):
+            return False
         color_dtype = getattr(c4d, "DTYPE_COLOR", c4d.DTYPE_VECTOR)
         for index, fmt in enumerate(_format_defs()):
             ids = _format_ids(index)
             label = fmt.get("label") or fmt.get("id", "Format")
-            format_group = _description_parent(ids["group"], c4d.DTYPE_GROUP, node)
-            if not self._set_description_group(node, description, ids["group"], label, root):
-                return False
-            if not self._set_description_parameter(
-                node, description, ids["enabled"], c4d.DTYPE_BOOL, "Enabled", format_group
+            row_group = _description_parent(ids["group"], c4d.DTYPE_GROUP, node)
+            if not self._set_description_group(
+                node, description, ids["group"], "", formats_group,
+                columns=4, titlebar=False
             ):
                 return False
             if not self._set_description_parameter(
-                node, description, ids["color"], color_dtype, "Color", format_group
+                node, description, ids["enabled"], c4d.DTYPE_BOOL, label, row_group
+            ):
+                return False
+            if not self._set_description_parameter(
+                node, description, ids["color"], color_dtype, "", row_group
             ):
                 return False
             # Nudge is a film-offset FRACTION (percent unit: raw 1.0 == 100%),
             # so the clamp is -1.0..1.0 (=-100%..100%), step 0.01 (=1%). Using
             # -100..100 here would read as +/-10000% under the percent unit.
             if not self._set_description_parameter(
-                node, description, ids["nudge_x"], c4d.DTYPE_REAL, "Nudge X %", format_group, -1.0, 1.0, 0.01
+                node, description, ids["nudge_x"], c4d.DTYPE_REAL, "X", row_group, -1.0, 1.0, 0.01
             ):
                 return False
             if not self._set_description_parameter(
-                node, description, ids["nudge_y"], c4d.DTYPE_REAL, "Nudge Y %", format_group, -1.0, 1.0, 0.01
+                node, description, ids["nudge_y"], c4d.DTYPE_REAL, "Y", row_group, -1.0, 1.0, 0.01
             ):
                 return False
 
-        if not self._set_description_group(node, description, ID_GROUP_ACTIONS, "Actions", root):
-            return False
-        action_params = (
-            (ID_CREATE_UPDATE_TAKES, "Create/Update Takes"),
-            (ID_SET_OUTPUT, "Set Output"),
-            (ID_REMOVE_STALE, "Remove Stale Takes"),
-            (ID_MARK_SUBJECT, "Mark Subject"),
+        # Display toggles row (Main, bottom): quick visibility switches.
+        display_toggles = (
+            (ID_SHOW_GUIDES, "Guides"),
+            (ID_SHOW_MASK, "Mask"),
+            (ID_SHOW_PLATFORM, "Zones"),
+            (ID_SHOW_HUD, "HUD"),
         )
-        for parameter_id, name in action_params:
+        for parameter_id, name in display_toggles:
             if not self._set_description_parameter(
-                node, description, parameter_id, c4d.DTYPE_BUTTON, name, actions_group
+                node, description, parameter_id, c4d.DTYPE_BOOL, name, main_group
             ):
                 return False
+
+        # --- Display (once-per-taste appearance) --------------------------
+        if not self._set_description_group(node, description, ID_GROUP_DISPLAY, "Display", root):
+            return False
+        display_params = (
+            (ID_MASK_OPACITY, "Mask Opacity", 0.0, 1.0, 0.01),
+            (ID_LINE_WIDTH, "Line Width", 0.5, 4.0, 0.5),
+            (ID_LINE_OPACITY, "Line Opacity", 0.0, 1.0, 0.01),
+            (ID_DIM_NONVIEWED, "Dim Non-Viewed Formats", 0.0, 1.0, 0.01),
+        )
+        for parameter_id, name, minimum, maximum, step in display_params:
+            if not self._set_description_parameter(
+                node, description, parameter_id, c4d.DTYPE_REAL, name, display_group,
+                minimum, maximum, step
+            ):
+                return False
+
+        # --- Advanced -----------------------------------------------------
+        # Composition only: the per-format platform insets stay ruleset-owned
+        # (sentinel_rules.json → private container, refreshed each Message
+        # pass) — exposing them editable here would fight that resolution.
+        if not self._set_description_group(node, description, ID_GROUP_ADVANCED, "Advanced", root):
+            return False
+        if not self._set_description_parameter(
+            node, description, ID_COMPOSITION, c4d.DTYPE_LONG, "Composition Mode",
+            advanced_group, cycle=COMPOSITION_CYCLE
+        ):
+            return False
 
         return True, flags | c4d.DESCFLAGS_DESC_LOADED
+
+    def GetDParameter(self, node, id, flags):
+        parameter_id = _desc_level_id(id)
+        if parameter_id == ID_VIEWING:
+            doc = _doc_from_node(node)
+            value = _viewing_value_from_takes(node, doc)
+            return True, value, flags | c4d.DESCFLAGS_GET_PARAM_GET
+        if parameter_id == ID_SYNC_STATUS:
+            return True, _sync_status_text(node), flags | c4d.DESCFLAGS_GET_PARAM_GET
+        return False
+
+    def SetDParameter(self, node, id, data, flags):
+        parameter_id = _desc_level_id(id)
+        if parameter_id == ID_VIEWING:
+            if _is_main_thread():
+                doc = _doc_from_node(node)
+                _activate_viewing(node, doc, data)
+            return True, flags | c4d.DESCFLAGS_SET_PARAM_SET
+        if parameter_id == ID_SYNC_STATUS:
+            # Read-only derived string: swallow writes.
+            return True, flags | c4d.DESCFLAGS_SET_PARAM_SET
+        return False
 
     def GetDEnabling(self, node, cid, t_data, flags, itemdesc):
         parameter_id = _desc_level_id(cid)
