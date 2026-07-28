@@ -1,4 +1,5 @@
 import { Button } from "../form/Button";
+import { SegmentedControl } from "../form/SegmentedControl";
 import { frameHint, frameStatusLine as frameSubviewStatusLine, qc12StatusLine } from "../../lib/panelFrame";
 import type { PanelFrameState } from "../../types";
 import { SectionGroup } from "../SectionGroup";
@@ -20,6 +21,7 @@ export function FrameSubview({
   onMarkSubjects,
   onSelectViolations,
   onOpenQc,
+  onSetViewing,
 }: {
   frame: PanelFrameState;
   /** Non-null while any Frame/Render mutation is in flight — same single
@@ -31,6 +33,9 @@ export function FrameSubview({
   onMarkSubjects: () => void;
   onSelectViolations: () => void;
   onOpenQc: () => void;
+  /** Frame v2: activate the take behind a Viewing selection ("master" or a
+   * format id) — two-way mirror of the tag's AM cycle. */
+  onSetViewing: (target: string) => void;
 }) {
   const isBusy = busy !== null;
   const hint = frameHint(frame);
@@ -69,8 +74,24 @@ export function FrameSubview({
               Select tag
             </Button>
           </div>
+          {hasTag && (frame.frame?.viewing_options?.length ?? 0) > 1 && (
+            <div className="flex items-center gap-2">
+              <span className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
+                Viewing
+              </span>
+              <SegmentedControl
+                options={(frame.frame?.viewing_options ?? ["master"]).map((id) => ({
+                  value: id,
+                  label: id === "master" ? "Master" : id,
+                }))}
+                value={frame.frame?.viewing ?? "master"}
+                disabled={isBusy}
+                onChange={onSetViewing}
+              />
+            </div>
+          )}
           <p className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
-            Formats, output & Take generation live on the tag — Select to edit.
+            Formats & framing live on the tag — Select to edit. Takes stay in sync automatically.
           </p>
         </div>
       </SectionGroup>

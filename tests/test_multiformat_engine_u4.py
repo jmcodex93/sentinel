@@ -24,13 +24,39 @@ class FakeRenderData(dict):
         return self._name
 
 
+class _FakeDescLevel:
+    def __init__(self, pid):
+        self.id = pid
+
+
+class _FakeStoredDescID:
+    """Shape of the DescIDs GetAllOverrideDescID returns: indexable, with
+    `[0].id`. Production matches stored params by first-level id (the real
+    IsOverriddenParam rejects hand-built DescIDs — live-caught)."""
+
+    def __init__(self, pid):
+        self._level = _FakeDescLevel(pid)
+
+    def __getitem__(self, index):
+        return self._level
+
+
 class FakeOverride:
     def __init__(self):
         self.params = {}
         self.updated = []
 
+    def GetAllOverrideDescID(self):
+        return [_FakeStoredDescID(pid) for pid in self.params]
+
     def IsOverriddenParam(self, descid):
-        return descid[0].id in self.params
+        # Mirror of the REAL API's strictness (live-caught): a hand-built
+        # DescID never matches a stored one, so this must NOT be the fake
+        # loophole that lets reset code "work" in tests while silently
+        # skipping every param in C4D. Production now matches via
+        # GetAllOverrideDescID; anything still relying on IsOverriddenParam
+        # with a constructed DescID should fail here like it fails live.
+        return False
 
     def SetParameter(self, descid, value, flags):
         self.params[descid[0].id] = value
@@ -332,13 +358,13 @@ def test_existing_take_resolver_is_rename_safe_and_avoids_duplicates(sentinel_mo
     assert links["16x9"].GetName() == "CamB_16x9"
 
 
-def test_crop_mode_narrower_zooms_focal_and_pans_gate_relative(sentinel_module):
-    # The default "crop" mode zooms the FOCAL to the inscribed crop for a
-    # narrower target and pans with a gate-relative film offset — matching the
-    # viewport guide (WYSIWYG). Focal is used (not aperture) so it works on
-    # Redshift too; aperture is left alone.
+def test_crop_mode_narrower_zooms_aperture_and_pans_gate_relative(sentinel_module):
+    # Frame v2: the default "crop" mode scales APERTURE (not focal) to the
+    # inscribed crop for a narrower target and pans with a gate-relative film
+    # offset — matching the viewport guide (WYSIWYG) while leaving focal
+    # length (and therefore DOF/zoom keyframes) untouched.
     mf = sentinel_module.multiformat
-    doc = FakeDocument(sentinel_module.c4d)  # source 1920x1080, focal 36
+    doc = FakeDocument(sentinel_module.c4d)  # source 1920x1080, aperture 36
 
     mf.generate_multiformat_takes(
         doc,
@@ -352,15 +378,33 @@ def test_crop_mode_narrower_zooms_focal_and_pans_gate_relative(sentinel_module):
 
     take = _child_by_name(doc.take_data.main, "CamA_1x1")
     override = take.FindOverride(doc.take_data, doc.camera)
-    exp_focal, exp_fx, exp_fy = framing.format_crop_values(
-        36.0, 1920, 1080, 1080, 1080, (1.0, 0.0), 0.0, 0.0)
 
-    assert override.params[framing.CAMERA_FOCUS] == pytest.approx(exp_focal)
-    assert override.params[framing.CAMERA_FOCUS] == pytest.approx(36.0 * (1920.0 / 1080.0))
+    # Ground truth computed BY HAND (independent of framing.py, so a
+    # regression in inscribed_crop_factor/nudge_to_film can't hide behind a
+    # test that re-derives its own expectation from the same code):
+    #   source aspect = 1920/1080 = 16/9 ≈ 1.77778; target aspect = 1080/1080 = 1.0
+    #   factor = target_aspect / source_aspect = 1.0 / (16/9) = 9/16 = 0.5625 exactly
+    #   aperture = 36.0 * 0.5625 = 20.25
+    #   max_film_x = max(0, source_aspect/target_aspect - 1) * 0.5
+    #              = max(0, 16/9 - 1) * 0.5 = (7/9) * 0.5 = 0.388888...
+    #   film_x = 0.0 + max_film_x * 1.0 (full-right nudge) = 0.388888...
+    #   max_film_y = max(0, target_aspect/source_aspect - 1) * 0.5 = 0 (no room, narrower axis is X)
+    #   film_y = 0.0 + 0 * 0.0 = 0.0
+    assert override.params[framing.CAMERAOBJECT_APERTURE] == pytest.approx(20.25)
+    assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] == pytest.approx(7.0 / 18.0)
+    assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_Y] == pytest.approx(0.0)
+
+    # Derived check kept alongside the literal above (belt-and-suspenders —
+    # the literal is the actual regression guard).
+    factor = framing.inscribed_crop_factor(1920, 1080, 1080, 1080)
+    exp_fx, exp_fy = framing.nudge_to_film(
+        (1.0, 0.0), 0.0, 0.0, 1920, 1080, 1080, 1080)
+    assert override.params[framing.CAMERAOBJECT_APERTURE] == pytest.approx(36.0 * factor)
     assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] == pytest.approx(exp_fx)
     assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_Y] == pytest.approx(exp_fy)
-    # Aperture is NOT overridden (Redshift ignores it; focal is the lever).
-    assert framing.CAMERAOBJECT_APERTURE not in override.params
+    # Focal is NOT overridden — aperture is the crop lever, focal (and DOF/
+    # zoom keyframes riding on it) stays intact.
+    assert framing.CAMERA_FOCUS not in override.params
 
 
 def test_crop_mode_wider_target_needs_no_focal_override(sentinel_module):
@@ -377,10 +421,12 @@ def test_crop_mode_wider_target_needs_no_focal_override(sentinel_module):
     assert override is None or framing.CAMERA_FOCUS not in override.params
 
 
-def test_crop_mode_on_redshift_camera_zooms_focal_for_narrower_target(sentinel_module):
-    # A narrower-than-master crop uses a FOCAL zoom, which works on Redshift
-    # (Orscamera) — verified live. No aperture override (RS ignores it), and no
-    # extend fallback.
+def test_crop_mode_on_redshift_camera_uses_rs_sensor_namespace(sentinel_module):
+    # Frame v2: ORSCAMERA has its own parameter namespace — Ocamera's
+    # APERTURE/FILM_OFFSET ids are inert on it (the confirmed production
+    # nudge bug). A narrower-than-master crop scales RS_SENSOR_SIZE (7002)
+    # instead, verified live in
+    # docs/solutions/workflow-issues/2026-07-28-rs-camera-take-overrides.md.
     mf = sentinel_module.multiformat
     doc = FakeDocument(sentinel_module.c4d)
 
@@ -393,6 +439,8 @@ def test_crop_mode_on_redshift_camera_zooms_focal_for_narrower_target(sentinel_m
     rs[framing.CAMERAOBJECT_APERTURE] = 36.0
     rs[framing.CAMERAOBJECT_FILM_OFFSET_X] = 0.0
     rs[framing.CAMERAOBJECT_FILM_OFFSET_Y] = 0.0
+    rs[framing.RS_SENSOR_SIZE] = sentinel_module.c4d.Vector(36.0, 24.0, 0.0)
+    rs[framing.RS_SENSOR_SHIFT] = sentinel_module.c4d.Vector(0.0, 0.0, 0.0)
 
     report = mf.generate_multiformat_takes(
         doc,
@@ -406,9 +454,14 @@ def test_crop_mode_on_redshift_camera_zooms_focal_for_narrower_target(sentinel_m
 
     take = _child_by_name(doc.take_data.main, "CamA_9x16")
     override = take.FindOverride(doc.take_data, rs)
-    exp_focal, _fx, _fy = framing.format_crop_values(36.0, 1920, 1080, 1080, 1920, None, 0.0, 0.0)
-    assert override.params[framing.CAMERA_FOCUS] == pytest.approx(exp_focal)
+    factor = framing.inscribed_crop_factor(1920, 1080, 1080, 1920)
+    sensor = override.params[framing.RS_SENSOR_SIZE]
+    assert sensor.x == pytest.approx(36.0 * factor)
+    assert sensor.y == pytest.approx(24.0 * factor)
+    # Ocamera ids are untouched — they're inert on ORSCAMERA.
+    assert framing.CAMERA_FOCUS not in override.params
     assert framing.CAMERAOBJECT_APERTURE not in override.params
+    assert framing.CAMERAOBJECT_FILM_OFFSET_X not in override.params
     assert not report.get("notes")  # no extend-fallback note anymore
 
 
@@ -498,8 +551,24 @@ def test_reset_camera_dimensions_to_native_clears_film_offset_overrides(sentinel
 
     assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] == pytest.approx(0.0)
     assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_Y] == pytest.approx(0.0)
+    # NOT current take → the reset must NOT push into the scene state
+    # (UpdateSceneNode applies regardless of the active take — live-caught:
+    # multi-format syncs thrashed the camera through every format's values).
+    assert override.updated == []
+
+
+def test_reset_pushes_scene_state_only_for_the_current_take(sentinel_module):
+    mf = sentinel_module.multiformat
+    doc = FakeDocument(sentinel_module.c4d)
+    take = FakeTake("CamA_9x16", doc.take_data.main)
+    doc.take_data.current = take  # viewing this take
+    override = take.overrides.setdefault(doc.camera, FakeOverride())
+    override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] = 0.25
+
+    mf._reset_camera_dimensions_to_native(take, doc.take_data, doc.camera)
+
+    assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] == pytest.approx(0.0)
     assert framing.CAMERAOBJECT_FILM_OFFSET_X in override.updated
-    assert framing.CAMERAOBJECT_FILM_OFFSET_Y in override.updated
 
 
 def test_prefixed_existing_takes_report_orphaned_and_adopted_without_deleting(sentinel_module):

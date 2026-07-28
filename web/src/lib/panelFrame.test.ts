@@ -1,9 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { frameHint, frameStatusLine, qc12StatusLine } from "./panelFrame";
-import type { PanelFrameState } from "../types";
+import type { PanelFrameBlock, PanelFrameState } from "../types";
+
+// Frame v2: `stale` is a constant false (auto-sync made staleness a
+// transient) and blocks carry the Viewing mirror.
+const block = (over: Partial<PanelFrameBlock>): PanelFrameBlock => ({
+  has_tag: true,
+  camera_name: "cam",
+  format_count: 5,
+  stale: false,
+  viewing: "master",
+  viewing_options: ["master", "16x9", "9x16"],
+  ...over,
+});
 
 const state = (over: Partial<PanelFrameState>): PanelFrameState => ({
-  frame: { has_tag: true, camera_name: "cam", format_count: 5, stale: false },
+  frame: block({}),
   subjects: { marked_count: 2 },
   qc12: { pass: true, violations: 0, has_takes: true },
   ...over,
@@ -11,15 +23,20 @@ const state = (over: Partial<PanelFrameState>): PanelFrameState => ({
 
 describe("frameHint", () => {
   it("no tag → add-a-frame", () => {
-    expect(frameHint(state({ frame: { has_tag: false, camera_name: null, format_count: null, stale: false } })).toLowerCase())
-      .toContain("add a sentinel frame");
+    expect(
+      frameHint(
+        state({ frame: block({ has_tag: false, camera_name: null, format_count: null }) }),
+      ).toLowerCase(),
+    ).toContain("add a sentinel frame");
   });
-  it("tag but no delivery Takes → generate them (above the false all-clear)", () => {
+  it("tag but no delivery Takes → enable a format (above the false all-clear)", () => {
     // Even with subjects marked and QC #12 trivially passing (no Takes → the
     // check never ran), the hint must NOT read "all inside" — it must tell
-    // the artist to generate the Takes so QC #12 can actually evaluate.
+    // the artist to enable a format (auto-sync generates its Takes) so QC #12
+    // can actually evaluate.
     const h = frameHint(state({ subjects: { marked_count: 2 }, qc12: { pass: true, violations: 0, has_takes: false } }));
-    expect(h.toLowerCase()).toContain("generate the delivery takes");
+    expect(h.toLowerCase()).toContain("enable a delivery format");
+    expect(h.toLowerCase()).toContain("automatically");
     expect(h).not.toContain("stay inside");
   });
   it("tag but no subjects → mark-your-subjects", () => {
@@ -33,9 +50,15 @@ describe("frameHint", () => {
     expect(h).toContain("3");
     expect(h).toContain("safe area");
   });
-  it("stale takes priority over violations", () => {
-    const h = frameHint(state({ frame: { has_tag: true, camera_name: "cam", format_count: 5, stale: true }, qc12: { pass: false, violations: 3, has_takes: true } }));
-    expect(h.toLowerCase()).toContain("out of date");
+  it("no stale branch: violations win even with legacy stale=true payloads", () => {
+    // Frame v2 removed the "Takes out of date" hint (auto-sync makes
+    // staleness sub-second); a stray stale=true from an older server must
+    // not resurrect it.
+    const h = frameHint(
+      state({ frame: block({ stale: true }), qc12: { pass: false, violations: 3, has_takes: true } }),
+    );
+    expect(h.toLowerCase()).not.toContain("out of date");
+    expect(h).toContain("3");
   });
 });
 
@@ -44,10 +67,12 @@ describe("frameStatusLine", () => {
     expect(frameStatusLine(null)).toContain("unavailable");
   });
   it("no tag", () => {
-    expect(frameStatusLine({ has_tag: false, camera_name: null, format_count: null, stale: false })).toContain("No Sentinel Frame");
+    expect(frameStatusLine(block({ has_tag: false, camera_name: null, format_count: null }))).toContain(
+      "No Sentinel Frame",
+    );
   });
   it("tag with camera + formats", () => {
-    const s = frameStatusLine({ has_tag: true, camera_name: "heroCam", format_count: 5, stale: false });
+    const s = frameStatusLine(block({ camera_name: "heroCam" }));
     expect(s).toContain("heroCam");
     expect(s).toContain("5");
   });

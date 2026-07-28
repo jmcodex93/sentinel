@@ -62,7 +62,12 @@ class TestPanelFrameRead:
         monkeypatch.setattr(panel_render_ops, "_panel_frame_block",
                             lambda doc: {"has_tag": False, "camera_name": None, "format_count": None})
         out = panel_frame_ops._frame_block(object())
-        assert out == {"has_tag": False, "camera_name": None, "format_count": None, "stale": False}
+        # Frame v2: `stale` is a constant False (auto-sync made it transient;
+        # kept one release for older bundles) and `viewing` mirrors the tag's
+        # Viewing state ("master" with no tag).
+        assert out == {"has_tag": False, "camera_name": None, "format_count": None,
+                       "stale": False, "viewing": "master",
+                       "viewing_options": ["master"]}
 
     def test_qc12_block_reports_has_takes(self, sentinel_module, monkeypatch):
         from sentinel.ui import panel_frame_ops
@@ -89,3 +94,74 @@ class TestRegistration:
         from sentinel.ui import reports_dialog
         assert "panel/frame" in panel_frame_ops.PANEL_FRAME_OPS
         assert "panel/frame" in reports_dialog._OPS
+
+
+class TestSetViewing:
+    """panel/frame/set_viewing — thin adapter over frame_tag.set_viewing
+    (the same dialog-free core the AM Viewing cycle uses)."""
+
+    def _forbid_dialog(self, monkeypatch):
+        from sentinel.ui import panel_frame_ops
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("dialogs must never be called from the op path")
+
+        monkeypatch.setattr(panel_frame_ops.c4d.gui, "MessageDialog", _boom, raising=False)
+        monkeypatch.setattr(panel_frame_ops.c4d.gui, "QuestionDialog", _boom, raising=False)
+
+    def test_no_document(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_frame_ops
+        self._forbid_dialog(monkeypatch)
+        monkeypatch.setattr(panel_frame_ops.c4d.documents, "GetActiveDocument", lambda: None)
+        assert panel_frame_ops._op_panel_frame_set_viewing({"target": "9x16"}) == {
+            "ok": False, "viewing": None, "error": "no_document"}
+
+    def test_no_tag(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_frame_ops
+        self._forbid_dialog(monkeypatch)
+        monkeypatch.setattr(panel_frame_ops.c4d.documents, "GetActiveDocument", lambda: object())
+        monkeypatch.setattr(panel_frame_ops.panel_render_ops, "_find_sentinel_frame_tag", lambda doc: [])
+        assert panel_frame_ops._op_panel_frame_set_viewing({"target": "master"}) == {
+            "ok": False, "viewing": None, "error": "no_tag"}
+
+    def test_delegates_to_core_with_payload_target(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_frame_ops
+        from sentinel.ui import frame_tag
+        self._forbid_dialog(monkeypatch)
+        seen = {}
+
+        def _fake_core(doc, tag, target):
+            seen["target"] = target
+            return {"ok": True, "viewing": target, "error": None}
+
+        monkeypatch.setattr(panel_frame_ops.c4d.documents, "GetActiveDocument", lambda: object())
+        monkeypatch.setattr(panel_frame_ops.panel_render_ops, "_find_sentinel_frame_tag", lambda doc: ["tag"])
+        monkeypatch.setattr(frame_tag, "set_viewing", _fake_core)
+        result = panel_frame_ops._op_panel_frame_set_viewing({"target": "9x16"})
+        assert result == {"ok": True, "viewing": "9x16", "error": None}
+        assert seen["target"] == "9x16"
+
+    def test_missing_target_defaults_to_master(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_frame_ops
+        from sentinel.ui import frame_tag
+        self._forbid_dialog(monkeypatch)
+        seen = {}
+
+        def _fake_core(doc, tag, target):
+            seen["target"] = target
+            return {"ok": True, "viewing": target, "error": None}
+
+        monkeypatch.setattr(panel_frame_ops.c4d.documents, "GetActiveDocument", lambda: object())
+        monkeypatch.setattr(panel_frame_ops.panel_render_ops, "_find_sentinel_frame_tag", lambda doc: ["tag"])
+        monkeypatch.setattr(frame_tag, "set_viewing", _fake_core)
+        assert panel_frame_ops._op_panel_frame_set_viewing({})["ok"] is True
+        assert seen["target"] == "master"
+
+
+class TestSetViewingCore:
+    """frame_tag.set_viewing — target resolution against the format defs."""
+
+    def test_unknown_format_rejected(self, sentinel_module, monkeypatch):
+        from sentinel.ui import frame_tag
+        result = frame_tag.set_viewing(object(), object(), "5x4")
+        assert result == {"ok": False, "viewing": None, "error": "unknown_format"}

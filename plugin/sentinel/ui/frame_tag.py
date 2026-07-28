@@ -39,6 +39,19 @@ ID_SHOW_PLATFORM = 1005
 ID_SHOW_HUD = 1006
 ID_SCHEMA_VERSION = 1007
 ID_MASK_OPACITY = 1008
+# Frame v2 (control strip). 1009+ continue the stable-ID discipline: existing
+# ids above keep their meaning forever; new params get fresh ids.
+ID_VIEWING = 1009          # LONG cycle: 0=Master, i+1 = _format_defs()[i]
+ID_SYNC_STATUS = 1010      # STRING, read-only derived (never stored)
+ID_LINE_WIDTH = 1011       # REAL, guide line width (Task 5 wires into Draw)
+ID_LINE_OPACITY = 1012     # REAL 0..1
+ID_DIM_NONVIEWED = 1013    # REAL 0..1 — focus dimming for non-viewed formats
+
+# Frame v2 tab groups (top-level DTYPE_GROUPs render as AM tabs).
+ID_GROUP_MAIN = 900
+ID_GROUP_DISPLAY = 901
+ID_GROUP_ADVANCED = 902
+ID_GROUP_FORMATS = 903     # sub-group of Main holding the per-format rows
 
 # Per-format params: 1100s+, fixed stride per MULTIFORMAT_DEFS entry.
 ID_FORMAT_BASE = 1100
@@ -54,6 +67,19 @@ ID_PLATFORM_INSET_STRIDE = 10
 ID_PRIVATE_TAKE_LINK_BASE = 2400
 ID_PRIVATE_TAKE_LINK_STRIDE = 1
 ID_PRIVATE_TAKES_SIGNATURE = 2500
+# Last takes-signature OBSERVED by the POSTSETPARAMETER hook (Frame v2
+# auto-sync). Distinct from 2500 (signature of the last GENERATED takes):
+# 2501 exists so the hook only requests a sync when the takes-relevant
+# signature actually changed — display toggles leave it untouched, and a
+# fresh tag / v1.8.0 scene seeds it silently on first touch (adoption)
+# instead of regenerating takes just because the AM was poked.
+ID_PRIVATE_LAST_SEEN_SIGNATURE = 2501
+# Focus format for the viewport dimming (Frame v2): format INDEX + 1 of the
+# last per-format row the artist touched in the AM (0 = no focus, all guides
+# full intensity). Touching any non-row param (display toggles, Enabled,
+# composition) clears it — the natural "back to all-equal" gesture. Private
+# container data so Draw can read it on the cloned draw thread.
+ID_PRIVATE_FOCUS_FORMAT = 2502
 
 # Actions: 3000s. Declared only in U2; command logic is U5.
 ID_GROUP_ACTIONS = 3000
@@ -63,8 +89,14 @@ ID_REMOVE_STALE = 3003
 ID_MARK_SUBJECT = 3004
 
 # Crop is the default: a true inscribed crop that matches the viewport guides
-# exactly (WYSIWYG) by scaling the film gate (aperture) and panning with a
-# gate-relative film offset — focal length untouched, so DOF/zoom are intact.
+# exactly (WYSIWYG) on BOTH standard C4D cameras and native Redshift cameras
+# (ORSCAMERA) — each camera type has its own parameter namespace, so the
+# writer scales the type's own sensor lever (APERTURE for Ocamera, SENSOR_SIZE
+# for ORSCAMERA) and pans with that type's own gate-relative offset
+# (FILM_OFFSET for Ocamera, SENSOR_SHIFT for ORSCAMERA — Ocamera's ids are
+# inert on ORSCAMERA, a confirmed production bug). Focal length is untouched
+# by either lever, so DOF/zoom are intact. See
+# docs/solutions/workflow-issues/2026-07-28-rs-camera-take-overrides.md.
 # "None" leaves the camera alone (C4D keeps horizontal FOV; narrower formats
 # EXTEND vertically rather than crop, so guides are only a reference there).
 # The legacy focal/resize modes are kept as constants for back-compat mapping
@@ -706,6 +738,24 @@ def _draw_rect(bd, pixel_rect, color, width=1, dashed=False):
             _draw_line(bd, p1, p2, width)
 
 
+def _draw_color_chip(bd, x, y, size, color):
+    """Small solid color swatch for the HUD legend (stacked horizontal lines
+    — BaseDraw has no filled-rect primitive for this)."""
+    try:
+        bd.SetPen(color)
+        row = 0
+        while row < size:
+            _draw_line(
+                bd,
+                c4d.Vector(x, y + row, 0),
+                c4d.Vector(x + size, y + row, 0),
+                2,
+            )
+            row += 2
+    except Exception:
+        pass
+
+
 def _draw_dashed_line(bd, p1, p2, width=1, dash=8.0, gap=5.0):
     dx = p2.x - p1.x
     dy = p2.y - p1.y
@@ -876,6 +926,277 @@ def _command_id_from_data(data):
     return _desc_level_id(cid)
 
 
+def _force_viewport_refresh():
+    """Force a synchronous editor redraw. C4D's viewport is LAZY about
+    re-deriving the camera projection / render-aspect letterbox when the
+    active take (and with it the active RenderData + camera overrides)
+    changes — the stale view snaps into place only on a panel resize
+    (live-caught: the 'initial crop sometimes wrong until I resize the
+    viewport' report). EVENT_FORCEREDRAW + DrawViews recomputes it now."""
+    try:
+        c4d.EventAdd(c4d.EVENT_FORCEREDRAW)
+    except Exception:
+        try:
+            c4d.EventAdd()
+        except Exception:
+            pass
+    try:
+        c4d.DrawViews(
+            c4d.DRAWFLAGS_ONLY_ACTIVE_VIEW
+            | c4d.DRAWFLAGS_NO_THREAD
+            | c4d.DRAWFLAGS_STATICBREAK
+        )
+    except Exception:
+        pass
+
+
+def _observe_signature_drift(node):
+    """Signature-drift detector for the auto-sync — shared by the
+    POSTSETPARAMETER hook AND ``Execute`` (belt-and-braces, live-caught bug:
+    the AM's right-click "reset to default" on a nudge arrow sets the value
+    WITHOUT sending MSG_DESCRIPTION_POSTSETPARAMETER, so the hook alone
+    missed it and the Take kept the old nudge; scripts/XPresso writes skip
+    the message too). Execute runs on every scene evaluation, so any change
+    path lands here. Cheap (small JSON + hash) and non-mutating beyond the
+    tag's own BC bookkeeping key; ``request_sync`` is Execute-safe (python
+    state + SpecialEventAdd, which is explicitly thread-safe)."""
+    try:
+        sig = _params_signature_for_takes(node)
+        bc = _node_data_container(node)
+        last_seen = _bc_get_data(bc, ID_PRIVATE_LAST_SEEN_SIGNATURE)
+        last_seen = str(last_seen) if last_seen else ""
+        if sig != last_seen:
+            _bc_set_data(bc, ID_PRIVATE_LAST_SEEN_SIGNATURE, sig)
+            if last_seen:  # seeded before → a real change: sync
+                from sentinel.ui import frame_sync
+                frame_sync.request_sync(node)
+    except Exception:
+        pass
+
+
+def _viewing_cycle_entries(node):
+    """Cycle for ID_VIEWING: 0=Master plus every ENABLED format (value =
+    format index + 1, stable against enable/disable churn)."""
+    entries = [(0, "Master")]
+    for index, fmt in enumerate(_format_defs()):
+        ids = _format_ids(index)
+        if _as_bool(_get_node_value(node, ids["enabled"], True), True):
+            label = fmt.get("label") or fmt.get("id", "Format")
+            entries.append((index + 1, label))
+    return entries
+
+
+def _viewing_value_from_takes(node, doc):
+    """Derive the SHOWN Viewing value from the document's current take —
+    two-way: switching takes in the Take Manager reflects back here."""
+    try:
+        td = doc.GetTakeData() if doc else None
+        current = td.GetCurrentTake() if td else None
+    except Exception:
+        current = None
+    if current is None:
+        return 0
+    for index, fmt in enumerate(_format_defs()):
+        linked = _read_take_link(node, fmt.get("id"), doc)
+        try:
+            # Object identity, not name comparison: take names aren't unique
+            # in C4D, and the BaseLink already resolved the real node (review
+            # finding — same identity idiom as _current_take_is_own_format).
+            if linked is not None and linked == current:
+                return index + 1
+        except Exception:
+            continue
+    return 0
+
+
+def _activate_viewing(node, doc, value):
+    """Activate the take behind a Viewing selection (0 = Main). Document
+    state, not tag state — mirrors clicking the take in the Take Manager."""
+    try:
+        td = doc.GetTakeData() if doc else None
+    except Exception:
+        td = None
+    if td is None:
+        return False
+    target = None
+    if int(value) <= 0:
+        try:
+            target = td.GetMainTake()
+        except Exception:
+            target = None
+    else:
+        index = int(value) - 1
+        defs = _format_defs()
+        if 0 <= index < len(defs):
+            target = _read_take_link(node, defs[index].get("id"), doc)
+    if target is None:
+        return False
+    try:
+        td.SetCurrentTake(target)
+        _event_add()
+        _force_viewport_refresh()
+        return True
+    except Exception:
+        return False
+
+
+def set_viewing(doc, tag, target):
+    """Dialog-free core for the Viewing selector (AM cycle AND the panel's
+    ``panel/frame/set_viewing`` op share it). ``target`` = "master" or a
+    format id; activating a take is DOCUMENT state, legitimate from either
+    surface. Returns a status dict, never raises, never shows a dialog."""
+    if target in (None, "", "master"):
+        ok = _activate_viewing(tag, doc, 0)
+        return {"ok": bool(ok), "viewing": "master" if ok else None,
+                "error": None if ok else "no_take_data"}
+    for index, fmt in enumerate(_format_defs()):
+        if fmt.get("id") == target:
+            ok = _activate_viewing(tag, doc, index + 1)
+            return {"ok": bool(ok), "viewing": target if ok else None,
+                    "error": None if ok else "take_not_found"}
+    return {"ok": False, "viewing": None, "error": "unknown_format"}
+
+
+def _sync_status_text(node):
+    """Derived AM status line: pending window > failed > drift > synced."""
+    try:
+        from sentinel.ui import frame_sync
+        key = frame_sync._tag_key(node)
+        if key and frame_sync.scheduler.has_pending(key):
+            return "syncing..."
+        if key and frame_sync.last_sync_result.get(key) == "failed":
+            return "sync failed - see console"
+        if _is_stale_from_signature(node):
+            return "sync pending"
+    except Exception:
+        pass
+    return "synced"
+
+
+def _run_takes_generation(doc, node):
+    """Dialog-free create/update core shared by the button handler and the
+    Frame v2 auto-sync. The CALLER owns the undo block (this passes
+    ``external_undo`` to the engine and never opens its own). Returns the
+    engine report; raises nothing on its own beyond what the engine raises."""
+    host = _tag_host(node)
+    formats = _enabled_format_ids_from_params(node)
+    prefix = _safe_node_name(host, "Camera")
+    undo_added = [False]
+
+    def _tag_link_writer(fmt_id, take):
+        if not undo_added[0]:
+            try:
+                doc.AddUndo(_undo_type_change(), node)
+            except Exception:
+                pass
+            undo_added[0] = True
+        _write_take_link(node, fmt_id, take)
+
+    options = {
+        "formats": formats,
+        "update_existing": True,
+        "name_prefix": prefix,
+        "external_undo": True,
+        "source_cam": host,
+        "composition_mode": composition_mode_for_engine(
+            _get_node_value(node, ID_COMPOSITION, COMPOSITION_CROP)
+        ),
+        "film_offsets": _film_offsets_from_params(node),
+        "tag_link_writer": _tag_link_writer,
+        "existing_take_resolver": lambda fmt_id: _read_take_link(node, fmt_id, doc),
+    }
+    report = generate_multiformat_takes(doc, options)
+    if not undo_added[0]:
+        try:
+            doc.AddUndo(_undo_type_change(), node)
+        except Exception:
+            pass
+    return report
+
+
+def _prune_orphaned_takes(doc, node):
+    """Silently remove takes for formats no longer enabled (auto-sync's
+    implicit Remove Stale — no confirmation dialog). Caller owns the undo
+    block. Returns the number removed.
+
+    Viewing guard (final-review finding): with auto-sync + the Viewing
+    selector, "the user is currently looking at the take about to be
+    deleted" is routine (view 9:16 → disable 9:16 → debounce fires). Never
+    delete the ACTIVE take out from under the viewport — fall back to Main
+    first, same SetCurrentTake idiom as _activate_viewing."""
+    removed = 0
+    try:
+        td = doc.GetTakeData()
+        current = td.GetCurrentTake() if td else None
+    except Exception:
+        td, current = None, None
+    for fmt_id, take in _find_orphaned_takes_for_tag(node, doc):
+        if td is not None and current is not None and take == current:
+            try:
+                td.SetCurrentTake(td.GetMainTake())
+                current = td.GetCurrentTake()
+            except Exception:
+                pass
+        try:
+            doc.AddUndo(_undo_type_delete(), take)
+        except Exception:
+            pass
+        remover = getattr(take, "Remove", None)
+        if callable(remover):
+            try:
+                remover()
+            except Exception:
+                continue
+            removed += 1
+            _write_take_link(node, fmt_id, None)
+    return removed
+
+
+def run_full_sync(doc, tag):
+    """Frame v2 auto-sync unit: regenerate takes + outputs for the enabled
+    formats, prune takes of disabled formats, and stamp the signature — all
+    in ONE undo step. Strictly dialog-free (runs from a MessageData tick;
+    a MessageDialog here would freeze C4D). Returns a status dict, never
+    raises for the expected failure modes."""
+    host = _tag_host(tag)
+    if not is_valid_camera_host(_node_type(host)):
+        return {"ok": False, "error": "invalid_host"}
+    signature = _params_signature_for_takes(tag)
+    formats = _enabled_format_ids_from_params(tag)
+
+    doc.StartUndo()
+    try:
+        # Unconditional undo anchor for the TAG itself: the prune's
+        # take-link clears and the signature stamp below write to the tag's
+        # BaseContainer, and with zero enabled formats the generation core
+        # (whose _tag_link_writer would otherwise add this) never runs —
+        # without this anchor a Cmd+Z would restore the deleted Takes but
+        # leave the tag container in the post-sync state (review finding,
+        # mirrors _handle_remove_stale's explicit AddUndo).
+        try:
+            doc.AddUndo(_undo_type_change(), tag)
+        except Exception:
+            pass
+        report = None
+        if formats:
+            report = _run_takes_generation(doc, tag)
+        removed = _prune_orphaned_takes(doc, tag)
+        _write_takes_signature(tag, signature)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        doc.EndUndo()
+        _event_add()
+
+    errors = list(report.get("errors", [])) if report else []
+    return {
+        "ok": not errors,
+        "error": "; ".join(errors) if errors else None,
+        "report": report,
+        "removed": removed,
+    }
+
+
 def _walk_child_takes(take_data):
     if take_data is None:
         return
@@ -1021,6 +1342,38 @@ def _current_take_is_own_format(tag, doc):
     return any(d.get("id") == suffix for d in _format_defs())
 
 
+def _current_own_format_id(tag, doc):
+    """Format id of the active take when it is one of THIS tag's generated
+    format takes, else None. Same read-only name resolution as
+    ``_current_take_is_own_format`` (safe on the draw thread)."""
+    getter = getattr(doc, "GetTakeData", None)
+    if not callable(getter):
+        return None
+    try:
+        td = getter()
+        current = td.GetCurrentTake()
+        main = td.GetMainTake()
+    except Exception:
+        return None
+    if current is None or main is None or current == main:
+        return None
+    prefix = _safe_node_name(_tag_host(tag), "")
+    if not prefix:
+        return None
+    try:
+        name = current.GetName() or ""
+    except Exception:
+        return None
+    marker = prefix + "_"
+    if not name.startswith(marker):
+        return None
+    suffix = name[len(marker):]
+    for d in _format_defs():
+        if d.get("id") == suffix:
+            return suffix
+    return None
+
+
 try:
     _TagDataBase = plugins.TagData
     if not isinstance(_TagDataBase, type):
@@ -1068,7 +1421,11 @@ class SentinelFrameTag(_TagDataBase):
             _set_bc_value(bc, "SetFloat", c4d.DESC_MAXSLIDER, float(maximum))
         if step is not None:
             _set_bc_value(bc, "SetFloat", c4d.DESC_STEP, float(step))
-        if dtype == c4d.DTYPE_REAL:
+        if dtype == c4d.DTYPE_REAL and parameter_id != ID_LINE_WIDTH:
+            # Every other REAL here is a genuine 0-1 fraction (opacity, dim,
+            # nudge) — but Line Width is a literal pixel-ish thickness (0.5-4)
+            # that Draw consumes raw; the percent unit would render 2.0 as
+            # "200%" in the AM (review finding).
             _set_bc_value(bc, "SetInt32", c4d.DESC_UNIT, c4d.DESC_UNIT_PERCENT)
         if dtype == c4d.DTYPE_BUTTON:
             # A DTYPE_BUTTON only renders as a clickable button when its
@@ -1087,13 +1444,16 @@ class SentinelFrameTag(_TagDataBase):
         except Exception:
             return False
 
-    def _set_description_group(self, node, description, group_id, name, parent):
+    def _set_description_group(self, node, description, group_id, name, parent,
+                               columns=None, titlebar=True):
         desc_id = _description_parent(group_id, c4d.DTYPE_GROUP, node)
         bc = c4d.GetCustomDatatypeDefault(c4d.DTYPE_GROUP)
         _set_bc_value(bc, "SetString", c4d.DESC_NAME, name)
         _set_bc_value(bc, "SetString", c4d.DESC_SHORT_NAME, name)
-        _set_bc_value(bc, "SetBool", c4d.DESC_TITLEBAR, True)
+        _set_bc_value(bc, "SetBool", c4d.DESC_TITLEBAR, bool(titlebar))
         _set_bc_value(bc, "SetBool", c4d.DESC_DEFAULT, False)
+        if columns is not None:
+            _set_bc_value(bc, "SetInt32", c4d.DESC_COLUMNS, int(columns))
         try:
             return bool(description.SetParameter(desc_id, bc, parent))
         except Exception:
@@ -1111,6 +1471,11 @@ class SentinelFrameTag(_TagDataBase):
         for param_id in (ID_COMPOSITION, ID_SCHEMA_VERSION):
             self._init_attr(node, int, param_id)
         self._init_attr(node, float, ID_MASK_OPACITY)
+        for param_id in (ID_LINE_WIDTH, ID_LINE_OPACITY, ID_DIM_NONVIEWED):
+            self._init_attr(node, float, param_id)
+        _set_node_value(node, ID_LINE_WIDTH, 2.0)  # matches the pre-v2 hardcoded width
+        _set_node_value(node, ID_LINE_OPACITY, 1.0)
+        _set_node_value(node, ID_DIM_NONVIEWED, 0.7)
 
         _set_node_value(node, ID_ENABLED, True)
         _set_node_value(node, ID_COMPOSITION, COMPOSITION_CROP)
@@ -1145,77 +1510,142 @@ class SentinelFrameTag(_TagDataBase):
         return True
 
     def GetDDescription(self, node, description, flags):
+        # Frame v2 control strip (spec §1): three top-level tab groups laid
+        # out by USE FREQUENCY — Main (daily, no scroll), Display (once, per
+        # artist taste), Advanced (almost never). The four workflow buttons
+        # are GONE (auto-sync replaces them; Mark Subject lives in the panel's
+        # Frame sub-view). Existing param ids keep their meaning — only the
+        # description layout changed, so v1.8.0 scenes load losslessly.
         try:
             description.LoadDescription(node.GetType())
         except Exception:
             pass
 
         root = c4d.DescID(c4d.DescLevel(c4d.ID_TAGPROPERTIES))
-        core_group = _description_parent(ID_GROUP_CORE, c4d.DTYPE_GROUP, node)
-        actions_group = _description_parent(ID_GROUP_ACTIONS, c4d.DTYPE_GROUP, node)
+        main_group = _description_parent(ID_GROUP_MAIN, c4d.DTYPE_GROUP, node)
+        display_group = _description_parent(ID_GROUP_DISPLAY, c4d.DTYPE_GROUP, node)
+        advanced_group = _description_parent(ID_GROUP_ADVANCED, c4d.DTYPE_GROUP, node)
+        formats_group = _description_parent(ID_GROUP_FORMATS, c4d.DTYPE_GROUP, node)
 
-        if not self._set_description_group(node, description, ID_GROUP_CORE, "Sentinel Frame", root):
+        # --- Main ---------------------------------------------------------
+        if not self._set_description_group(node, description, ID_GROUP_MAIN, "Main", root):
+            return False
+        if not self._set_description_parameter(
+            node, description, ID_ENABLED, c4d.DTYPE_BOOL, "Enabled", main_group
+        ):
+            return False
+        if not self._set_description_parameter(
+            node, description, ID_VIEWING, c4d.DTYPE_LONG, "Viewing", main_group,
+            cycle=_viewing_cycle_entries(node)
+        ):
+            return False
+        sync_bc_ok = self._set_description_parameter(
+            node, description, ID_SYNC_STATUS, c4d.DTYPE_STRING, "Takes", main_group
+        )
+        if not sync_bc_ok:
             return False
 
-        core_params = (
-            (ID_ENABLED, c4d.DTYPE_BOOL, "Enabled", None, None, None, None),
-            (ID_COMPOSITION, c4d.DTYPE_LONG, "Composition Mode", None, None, None, COMPOSITION_CYCLE),
-            (ID_SHOW_GUIDES, c4d.DTYPE_BOOL, "Show Guides", None, None, None, None),
-            (ID_SHOW_MASK, c4d.DTYPE_BOOL, "Show Mask", None, None, None, None),
-            (ID_MASK_OPACITY, c4d.DTYPE_REAL, "Mask Opacity", 0.0, 1.0, 0.01, None),
-            (ID_SHOW_PLATFORM, c4d.DTYPE_BOOL, "Show Platform Zones", None, None, None, None),
-            (ID_SHOW_HUD, c4d.DTYPE_BOOL, "Show HUD", None, None, None, None),
-            # ID_SCHEMA_VERSION is internal migration state — kept in the tag
-            # container (set in Init) but intentionally NOT exposed in the AM.
-        )
-        for parameter_id, dtype, name, minimum, maximum, step, cycle in core_params:
-            if not self._set_description_parameter(
-                node, description, parameter_id, dtype, name, core_group, minimum, maximum, step, cycle
-            ):
-                return False
-
+        # Per-format rows (Social Frame pattern): ONE 4-column grid group
+        # holding every format's cells DIRECTLY (no per-row sub-groups —
+        # live-caught polish: per-row groups each sized their own columns
+        # from their own label width, so the columns didn't line up
+        # vertically across rows; a single grid shares column widths and
+        # aligns every row). The enable checkbox CARRIES the format label;
+        # swatch identifies the guide; nudge X/Y inline (feedback = the
+        # format's rect moves in the master view while dragging).
+        if not self._set_description_group(
+            node, description, ID_GROUP_FORMATS, "Formats", main_group,
+            columns=4, titlebar=False
+        ):
+            return False
         color_dtype = getattr(c4d, "DTYPE_COLOR", c4d.DTYPE_VECTOR)
         for index, fmt in enumerate(_format_defs()):
             ids = _format_ids(index)
             label = fmt.get("label") or fmt.get("id", "Format")
-            format_group = _description_parent(ids["group"], c4d.DTYPE_GROUP, node)
-            if not self._set_description_group(node, description, ids["group"], label, root):
-                return False
             if not self._set_description_parameter(
-                node, description, ids["enabled"], c4d.DTYPE_BOOL, "Enabled", format_group
+                node, description, ids["enabled"], c4d.DTYPE_BOOL, label, formats_group
             ):
                 return False
             if not self._set_description_parameter(
-                node, description, ids["color"], color_dtype, "Color", format_group
+                node, description, ids["color"], color_dtype, "", formats_group
             ):
                 return False
             # Nudge is a film-offset FRACTION (percent unit: raw 1.0 == 100%),
             # so the clamp is -1.0..1.0 (=-100%..100%), step 0.01 (=1%). Using
             # -100..100 here would read as +/-10000% under the percent unit.
             if not self._set_description_parameter(
-                node, description, ids["nudge_x"], c4d.DTYPE_REAL, "Nudge X %", format_group, -1.0, 1.0, 0.01
+                node, description, ids["nudge_x"], c4d.DTYPE_REAL, "X", formats_group, -1.0, 1.0, 0.01
             ):
                 return False
             if not self._set_description_parameter(
-                node, description, ids["nudge_y"], c4d.DTYPE_REAL, "Nudge Y %", format_group, -1.0, 1.0, 0.01
+                node, description, ids["nudge_y"], c4d.DTYPE_REAL, "Y", formats_group, -1.0, 1.0, 0.01
             ):
                 return False
 
-        if not self._set_description_group(node, description, ID_GROUP_ACTIONS, "Actions", root):
-            return False
-        action_params = (
-            (ID_CREATE_UPDATE_TAKES, "Create/Update Takes"),
-            (ID_SET_OUTPUT, "Set Output"),
-            (ID_REMOVE_STALE, "Remove Stale Takes"),
-            (ID_MARK_SUBJECT, "Mark Subject"),
+        # Display toggles row (Main, bottom): quick visibility switches.
+        display_toggles = (
+            (ID_SHOW_GUIDES, "Guides"),
+            (ID_SHOW_MASK, "Mask"),
+            (ID_SHOW_PLATFORM, "Zones"),
+            (ID_SHOW_HUD, "HUD"),
         )
-        for parameter_id, name in action_params:
+        for parameter_id, name in display_toggles:
             if not self._set_description_parameter(
-                node, description, parameter_id, c4d.DTYPE_BUTTON, name, actions_group
+                node, description, parameter_id, c4d.DTYPE_BOOL, name, main_group
             ):
                 return False
+
+        # --- Display (once-per-taste appearance) --------------------------
+        if not self._set_description_group(node, description, ID_GROUP_DISPLAY, "Display", root):
+            return False
+        display_params = (
+            (ID_MASK_OPACITY, "Mask Opacity", 0.0, 1.0, 0.01),
+            (ID_LINE_WIDTH, "Line Width", 0.5, 4.0, 0.5),
+            (ID_LINE_OPACITY, "Line Opacity", 0.0, 1.0, 0.01),
+            (ID_DIM_NONVIEWED, "Dim Non-Viewed Formats", 0.0, 1.0, 0.01),
+        )
+        for parameter_id, name, minimum, maximum, step in display_params:
+            if not self._set_description_parameter(
+                node, description, parameter_id, c4d.DTYPE_REAL, name, display_group,
+                minimum, maximum, step
+            ):
+                return False
+
+        # --- Advanced -----------------------------------------------------
+        # Composition only: the per-format platform insets stay ruleset-owned
+        # (sentinel_rules.json → private container, refreshed each Message
+        # pass) — exposing them editable here would fight that resolution.
+        if not self._set_description_group(node, description, ID_GROUP_ADVANCED, "Advanced", root):
+            return False
+        if not self._set_description_parameter(
+            node, description, ID_COMPOSITION, c4d.DTYPE_LONG, "Composition Mode",
+            advanced_group, cycle=COMPOSITION_CYCLE
+        ):
+            return False
 
         return True, flags | c4d.DESCFLAGS_DESC_LOADED
+
+    def GetDParameter(self, node, id, flags):
+        parameter_id = _desc_level_id(id)
+        if parameter_id == ID_VIEWING:
+            doc = _doc_from_node(node)
+            value = _viewing_value_from_takes(node, doc)
+            return True, value, flags | c4d.DESCFLAGS_GET_PARAM_GET
+        if parameter_id == ID_SYNC_STATUS:
+            return True, _sync_status_text(node), flags | c4d.DESCFLAGS_GET_PARAM_GET
+        return False
+
+    def SetDParameter(self, node, id, data, flags):
+        parameter_id = _desc_level_id(id)
+        if parameter_id == ID_VIEWING:
+            if _is_main_thread():
+                doc = _doc_from_node(node)
+                _activate_viewing(node, doc, data)
+            return True, flags | c4d.DESCFLAGS_SET_PARAM_SET
+        if parameter_id == ID_SYNC_STATUS:
+            # Read-only derived string: swallow writes.
+            return True, flags | c4d.DESCFLAGS_SET_PARAM_SET
+        return False
 
     def GetDEnabling(self, node, cid, t_data, flags, itemdesc):
         parameter_id = _desc_level_id(cid)
@@ -1237,48 +1667,15 @@ class SentinelFrameTag(_TagDataBase):
             _show_message("Enable at least one format before creating Takes.")
             return True
 
-        prefix = _safe_node_name(host, "Camera")
         signature = _params_signature_for_takes(node)
-        undo_added = [False]
 
-        def _tag_link_writer(fmt_id, take):
-            if not undo_added[0]:
-                try:
-                    doc.AddUndo(_undo_type_change(), node)
-                except Exception:
-                    pass
-                undo_added[0] = True
-            _write_take_link(node, fmt_id, take)
-
-        options = {
-            "formats": formats,
-            "update_existing": True,
-            "name_prefix": prefix,
-            # This handler owns the undo block (StartUndo/EndUndo below) so the
-            # take generation + BaseLink/signature writes revert as ONE Cmd+Z;
-            # the engine must not open its own nested block.
-            "external_undo": True,
-            # Bind the generated Takes to THIS tag's host camera, not whatever
-            # the viewport/Main take resolves to — the tag is per-camera.
-            "source_cam": host,
-            "composition_mode": composition_mode_for_engine(
-                _get_node_value(node, ID_COMPOSITION, COMPOSITION_CROP)
-            ),
-            "film_offsets": _film_offsets_from_params(node),
-            "tag_link_writer": _tag_link_writer,
-            # Rename-safe re-run: re-find our own Takes by stored BaseLink even
-            # if the take or the host camera was renamed (KTD4).
-            "existing_take_resolver": lambda fmt_id: _read_take_link(node, fmt_id, doc),
-        }
-
+        # This handler owns the undo block so the take generation +
+        # BaseLink/signature writes revert as ONE Cmd+Z; the shared core
+        # (`_run_takes_generation`, also used by the Frame v2 auto-sync)
+        # never opens its own.
         doc.StartUndo()
         try:
-            report = generate_multiformat_takes(doc, options)
-            if not undo_added[0]:
-                try:
-                    doc.AddUndo(_undo_type_change(), node)
-                except Exception:
-                    pass
+            report = _run_takes_generation(doc, node)
             _write_takes_signature(node, signature)
         finally:
             doc.EndUndo()
@@ -1473,8 +1870,26 @@ class SentinelFrameTag(_TagDataBase):
         # Don't draw guides when viewing one of our own format takes: the camera
         # is already cropped to that format, so the guides would draw a
         # crop-of-a-crop. Guides live in the master (Main) view; format takes
-        # show the clean final crop.
-        if _current_take_is_own_format(tag, doc):
+        # show the clean final crop — plus a minimal HUD saying WHAT you are
+        # viewing (Frame v2), since without guides there is no other cue.
+        own_fmt = _current_own_format_id(tag, doc)
+        if own_fmt is not None:
+            if _as_bool(_get_node_value(tag, ID_SHOW_HUD, True), True):
+                sf = _safe_frame_rect(bd)
+                if sf is not None:
+                    fmt = get_multiformat_def(own_fmt) or {}
+                    try:
+                        bd.SetMatrix_Screen()
+                    except Exception:
+                        return True
+                    _draw_hud_text(
+                        bd, sf[0] + 8, sf[1] + 8,
+                        "Viewing: %s  %dx%d  %s" % (
+                            own_fmt,
+                            int(fmt.get("width", 0)), int(fmt.get("height", 0)),
+                            _sync_status_text(tag),
+                        ),
+                    )
             return True
 
         if not _as_bool(_get_node_value(tag, ID_ENABLED, True), True):
@@ -1515,8 +1930,31 @@ class SentinelFrameTag(_TagDataBase):
                 _draw_mask(bd, safe_frame, mask_px, c4d.Vector(0.0, 0.0, 0.0), mask_transparency)
 
         if show_guides:
+            # Frame v2 focus dimming: the last-touched format row draws at full
+            # intensity, the rest multiplied by Dim (1.0 = effect off, 0.0 =
+            # hidden). Line opacity approximates alpha by scaling the color
+            # toward the dark viewport (BaseDraw lines have no true alpha).
+            focus = 0
+            try:
+                focus = int(_bc_get_data(_node_data_container(tag), ID_PRIVATE_FOCUS_FORMAT) or 0)
+            except Exception:
+                focus = 0
+            focus_fmt = None
+            defs = _format_defs()
+            if 0 < focus <= len(defs):
+                focus_fmt = defs[focus - 1].get("id")
+            dim = max(0.0, min(1.0, _as_float(_get_node_value(tag, ID_DIM_NONVIEWED, 0.7), 0.7)))
+            line_opacity = max(0.0, min(1.0, _as_float(_get_node_value(tag, ID_LINE_OPACITY, 1.0), 1.0)))
+            line_width = max(1, int(round(_as_float(_get_node_value(tag, ID_LINE_WIDTH, 2.0), 2.0))))
             for entry, guide_px in pixel_guides:
-                _draw_rect(bd, guide_px, entry["color"], width=2)
+                color = entry["color"]
+                if focus_fmt is not None and entry["id"] != focus_fmt:
+                    if dim <= 0.0:
+                        continue
+                    color = _dim_color(color, dim)
+                if line_opacity < 1.0:
+                    color = _dim_color(color, line_opacity)
+                _draw_rect(bd, guide_px, color, width=line_width)
 
         if show_platform and pixel_guides:
             for entry, _guide_px in pixel_guides:
@@ -1534,19 +1972,108 @@ class SentinelFrameTag(_TagDataBase):
             )
 
         if show_hud:
-            for entry, guide_px in pixel_guides:
-                text = f"{entry['id']}  {entry['width']}x{entry['height']}"
-                _draw_hud_text(bd, guide_px[0] + 5, guide_px[1] + 5, text)
-            if _is_stale_from_signature(tag):
-                _draw_hud_text(bd, safe_frame[0] + 8, safe_frame[1] + 26, "Takes out of date")
+            # Frame v2 HUD, iteration 2 (live design feedback): a corner
+            # legend DIVORCES each label from its rectangle (mental color→
+            # rect mapping). The viewfinder/gate-label convention instead:
+            # the label lives ON its own rect — short text (`9x16` + color
+            # chip, resolution lives in the AM/panel and in the format-take
+            # HUD) anchored at the rect's own top-left corner. Nested rects
+            # differ in X, so anchors separate naturally; a deterministic
+            # stagger drops a label one line when two would overlap in the
+            # same row (the v1 collision cause was long labels + a shared
+            # anchor corner).
+            hud_x = safe_frame[0] + 8
+            hud_y = safe_frame[1] + 8
+            _draw_hud_text(bd, hud_x, hud_y, "Viewing: Master  %s" % _sync_status_text(tag))
+
+            label_focus = 0
+            try:
+                label_focus = int(_bc_get_data(_node_data_container(tag), ID_PRIVATE_FOCUS_FORMAT) or 0)
+            except Exception:
+                label_focus = 0
+            label_focus_fmt = None
+            label_defs = _format_defs()
+            if 0 < label_focus <= len(label_defs):
+                label_focus_fmt = label_defs[label_focus - 1].get("id")
+            label_dim = max(0.0, min(1.0, _as_float(_get_node_value(tag, ID_DIM_NONVIEWED, 0.7), 0.7)))
+
+            # Anchor each label at its own rect's inner top-left; stagger a
+            # line lower while it would overlap an already-placed label.
+            placed = []  # (x_left, x_right, y_row)
+            row_h = 18.0
+            for entry, guide_px in sorted(pixel_guides, key=lambda p: (p[1][0], p[1][1])):
+                lx = guide_px[0] + 5
+                ly = guide_px[1] + 5
+                approx_w = 16 + 7.5 * len(str(entry["id"]))
+                while any(
+                    abs(ly - py) < row_h and lx < pr and (lx + approx_w) > pl
+                    for pl, pr, py in placed
+                ):
+                    ly += row_h
+                placed.append((lx, lx + approx_w, ly))
+                chip_color = entry["color"]
+                if label_focus_fmt is not None and entry["id"] != label_focus_fmt:
+                    chip_color = _dim_color(chip_color, max(0.25, label_dim))
+                _draw_color_chip(bd, lx, ly + 3, 9, chip_color)
+                _draw_hud_text(bd, lx + 14, ly, str(entry["id"]))
+
+            comp = _get_node_value(tag, ID_COMPOSITION, COMPOSITION_CROP)
+            if comp == COMPOSITION_OFF:
+                _draw_hud_text(
+                    bd, hud_x, hud_y + 22,
+                    "None: guides are reference only - no crop",
+                )
 
         _DRAW_CALLS += 1
         return True
+
+    def Execute(self, tag, doc, op, bt, priority, flags):
+        # Catch-all drift detection (see _observe_signature_drift): the AM's
+        # right-click reset and programmatic writes never send
+        # POSTSETPARAMETER, but every change re-evaluates the scene.
+        _observe_signature_drift(tag)
+        return c4d.EXECUTIONRESULT_OK
 
     def Message(self, node, mid, data):
         description_command = getattr(c4d, "MSG_DESCRIPTION_COMMAND", None)
         if description_command is not None and mid == description_command:
             return self._handle_command(node, data)
+
+        # Frame v2 auto-sync trigger: after any AM parameter write, compare the
+        # takes-relevant signature against the last one this hook OBSERVED
+        # (2501). Display toggles never change that signature, so they never
+        # trigger; a fresh tag / v1.8.0 scene seeds 2501 silently on first
+        # touch (adoption) instead of regenerating takes unprompted. The sync
+        # itself runs later, debounced, from the FrameSyncMessageData tick —
+        # NEVER here (parameter messages must not mutate document structure).
+        post_set = getattr(c4d, "MSG_DESCRIPTION_POSTSETPARAMETER", None)
+        if post_set is not None and mid == post_set:
+            _observe_signature_drift(node)
+            # Viewport focus (dimming): touching a per-format row focuses that
+            # format; touching a global param returns to all-equal.
+            try:
+                changed = None
+                try:
+                    changed = _desc_level_id(data["descid"])
+                except Exception:
+                    changed = None
+                if changed is not None:
+                    span = len(_format_defs()) * ID_FORMAT_STRIDE
+                    if ID_FORMAT_BASE <= changed < ID_FORMAT_BASE + span:
+                        index = (changed - ID_FORMAT_BASE) // ID_FORMAT_STRIDE
+                        _bc_set_data(
+                            _node_data_container(node),
+                            ID_PRIVATE_FOCUS_FORMAT, int(index) + 1)
+                    elif changed in (
+                        ID_ENABLED, ID_COMPOSITION, ID_SHOW_GUIDES,
+                        ID_SHOW_MASK, ID_SHOW_PLATFORM, ID_SHOW_HUD,
+                        ID_MASK_OPACITY, ID_VIEWING,
+                    ):
+                        _bc_set_data(
+                            _node_data_container(node),
+                            ID_PRIVATE_FOCUS_FORMAT, 0)
+            except Exception:
+                pass
 
         # Keep the pre-resolved platform insets on the tag container fresh so
         # Draw stays read-only (it never resolves sentinel_rules.json itself).

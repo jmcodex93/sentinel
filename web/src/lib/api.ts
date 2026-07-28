@@ -1161,7 +1161,14 @@ export async function fetchPanelDeliver(): Promise<PanelDeliverState> {
  * the real payload (React #31 lesson). */
 function mockPanelFrame(): PanelFrameState {
   return {
-    frame: { has_tag: true, camera_name: "heroCam", format_count: 5, stale: false },
+    frame: {
+      has_tag: true,
+      camera_name: "heroCam",
+      format_count: 5,
+      stale: false,
+      viewing: "master",
+      viewing_options: ["master", "16x9", "9x16", "1x1", "4x5", "21x9"],
+    },
     subjects: { marked_count: 2 },
     qc12: { pass: false, violations: 3, has_takes: true },
   };
@@ -1196,6 +1203,25 @@ export async function fetchPanelFrame(): Promise<PanelFrameState> {
     return EMPTY_PANEL_FRAME;
   }
   return data as PanelFrameState;
+}
+
+/** `POST /api/panel/frame/set_viewing` — activate the take behind a Viewing
+ * selection ("master" or a format id). Two-way with the tag's AM cycle. */
+export async function postPanelFrameSetViewing(
+  target: string,
+): Promise<{ ok: boolean; viewing: string | null; error: string | null }> {
+  if (isMock()) return { ok: true, viewing: target, error: null };
+  try {
+    const response = await fetch("/api/panel/frame/set_viewing", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target }),
+    });
+    const data = (await response.json()) as { ok?: boolean; viewing?: string | null; error?: string | null };
+    return { ok: !!data.ok, viewing: data.viewing ?? null, error: data.error ?? null };
+  } catch {
+    return { ok: false, viewing: null, error: "network" };
+  }
 }
 
 /** `POST /api/panel/deliver/open_version` — open (or re-activate) a version

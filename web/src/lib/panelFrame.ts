@@ -3,24 +3,23 @@ import type { PanelFrameBlock, PanelFrameQc12, PanelFrameState } from "../types"
 /** The single next-step hint for the Frame sub-view — derived from state,
  * NOT a forced wizard. Priority:
  *   1. no tag → add one (base precondition)
- *   2. stale → takes out of date (a wrong QC read until refreshed)
- *   3. NO delivery Takes → QC #12 can't run; generate them. This ranks above
- *      violations/subjects/pass because without Takes the check early-returns
- *      a trivial pass — so a "✓ all inside" here would be a false all-clear
- *      for subjects that were never actually checked.
- *   4. violations → warn
- *   5. no subjects → mark them
- *   6. all-clear */
+ *   2. NO delivery Takes → QC #12 can't run; enable a format on the tag
+ *      (Frame v2 auto-sync generates the Takes from that — no button). This
+ *      ranks above violations/subjects/pass because without Takes the check
+ *      early-returns a trivial pass — a "✓ all inside" here would be a false
+ *      all-clear for subjects that were never actually checked.
+ *   3. violations → warn
+ *   4. no subjects → mark them
+ *   5. all-clear
+ * (The old "Takes out of date" branch is gone: auto-sync makes staleness a
+ * sub-second transient, not an actionable state.) */
 export function frameHint(state: PanelFrameState): string {
   const { frame, subjects, qc12 } = state;
   if (!frame || !frame.has_tag) {
     return "Add a Sentinel Frame to your camera to start.";
   }
-  if (frame.stale) {
-    return "Takes out of date — update them from the tag.";
-  }
   if (qc12 && !qc12.has_takes) {
-    return "Generate the delivery Takes from the tag so QC #12 can verify your subjects.";
+    return "Enable a delivery format on the tag — its Takes generate automatically and QC #12 can then verify your subjects.";
   }
   if (qc12 && !qc12.pass && qc12.violations > 0) {
     return `⚠ ${qc12.violations} subject/format violation${qc12.violations === 1 ? "" : "s"} — subjects leave the safe area.`;

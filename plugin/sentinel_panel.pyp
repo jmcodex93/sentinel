@@ -40,6 +40,11 @@ except Exception as _exc:
     _SENTINEL_FRAME_TAG_AVAILABLE = False
     _FRAME_TAG_IMPORT_ERROR = _exc
 
+try:
+    from sentinel.ui import frame_sync as _frame_sync
+except Exception:
+    _frame_sync = None
+
 # Compatibility surface for tests, fixture runner, and C4D scripts that import
 # sentinel_panel.pyp directly. Keep private helpers too.
 for _module in (_dialogs, _ids, _user_areas):
@@ -190,6 +195,22 @@ def Register():
     else:
         reason = f" ({_FRAME_TAG_IMPORT_ERROR})" if _FRAME_TAG_IMPORT_ERROR else ""
         safe_print(f"TagData API unavailable{reason} — Sentinel Frame tag disabled")
+
+    # Frame v2 auto-sync pump (MessageData): drains the debounced per-tag sync
+    # queue on main thread. Non-fatal on failure — the tag still works, just
+    # without auto-sync (buttons/manual flows remain).
+    if _frame_sync is not None and getattr(_frame_sync, "FrameSyncMessageData", None) is not None:
+        try:
+            sync_ok = plugins.RegisterMessagePlugin(
+                id=_frame_sync.PLUGIN_ID,
+                str="Sentinel Frame Sync",
+                info=0,
+                dat=_frame_sync.FrameSyncMessageData(),
+            )
+            safe_print("Sentinel Frame Sync (MessageData) registered"
+                       if sync_ok else "Failed to register Sentinel Frame Sync")
+        except Exception as e:
+            safe_print(f"Sentinel Frame Sync registration crashed: {e}")
 
     return ok_panel_spa
 

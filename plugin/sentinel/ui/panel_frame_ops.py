@@ -23,16 +23,30 @@ from sentinel import safe_areas
 
 def _frame_block(doc):
     """Sentinel Frame presence + host camera + enabled-format count +
-    staleness. Reuses ``panel_render_ops._panel_frame_block`` for the first
-    three (zero duplication) and adds the tag's own staleness signal."""
+    current Viewing state. Reuses ``panel_render_ops._panel_frame_block``
+    for the first three (zero duplication).
+
+    Frame v2: ``stale`` is kept as a constant ``False`` for one release (the
+    auto-sync engine makes staleness a sub-second transient, and an older SPA
+    bundle may still read the key) — it is no longer an actionable signal.
+    ``viewing`` mirrors the tag's Viewing cycle: "master" or a format id."""
     base = panel_render_ops._panel_frame_block(doc)
     base["stale"] = False
+    base["viewing"] = "master"
+    base["viewing_options"] = ["master"]
     if base.get("has_tag"):
         found = panel_render_ops._find_sentinel_frame_tag(doc)
         if found:
             try:
-                from sentinel.ui.frame_tag import _is_stale_from_signature
-                base["stale"] = bool(_is_stale_from_signature(found[0]))
+                from sentinel.ui.frame_tag import (
+                    _current_own_format_id,
+                    _enabled_format_ids_from_params,
+                )
+                fmt = _current_own_format_id(found[0], doc)
+                if fmt:
+                    base["viewing"] = fmt
+                base["viewing_options"] = ["master"] + list(
+                    _enabled_format_ids_from_params(found[0]) or [])
             except Exception:
                 pass
     return base
@@ -87,4 +101,22 @@ def _op_panel_frame(payload):
     return build_panel_frame(doc)
 
 
-PANEL_FRAME_OPS = {"panel/frame": _op_panel_frame}
+def _op_panel_frame_set_viewing(payload):
+    """Mutation: activate the take behind a Viewing selection ("master" or a
+    format id). Thin adapter over the tag's dialog-free ``set_viewing`` core
+    — the same routine the AM cycle uses (two-way by construction)."""
+    doc = c4d.documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "viewing": None, "error": "no_document"}
+    found = panel_render_ops._find_sentinel_frame_tag(doc)
+    if not found:
+        return {"ok": False, "viewing": None, "error": "no_tag"}
+    from sentinel.ui.frame_tag import set_viewing
+    target = (payload or {}).get("target") or "master"
+    return set_viewing(doc, found[0], target)
+
+
+PANEL_FRAME_OPS = {
+    "panel/frame": _op_panel_frame,
+    "panel/frame/set_viewing": _op_panel_frame_set_viewing,
+}
