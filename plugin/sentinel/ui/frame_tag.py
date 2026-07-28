@@ -926,6 +926,30 @@ def _command_id_from_data(data):
     return _desc_level_id(cid)
 
 
+def _force_viewport_refresh():
+    """Force a synchronous editor redraw. C4D's viewport is LAZY about
+    re-deriving the camera projection / render-aspect letterbox when the
+    active take (and with it the active RenderData + camera overrides)
+    changes — the stale view snaps into place only on a panel resize
+    (live-caught: the 'initial crop sometimes wrong until I resize the
+    viewport' report). EVENT_FORCEREDRAW + DrawViews recomputes it now."""
+    try:
+        c4d.EventAdd(c4d.EVENT_FORCEREDRAW)
+    except Exception:
+        try:
+            c4d.EventAdd()
+        except Exception:
+            pass
+    try:
+        c4d.DrawViews(
+            c4d.DRAWFLAGS_ONLY_ACTIVE_VIEW
+            | c4d.DRAWFLAGS_NO_THREAD
+            | c4d.DRAWFLAGS_STATICBREAK
+        )
+    except Exception:
+        pass
+
+
 def _observe_signature_drift(node):
     """Signature-drift detector for the auto-sync — shared by the
     POSTSETPARAMETER hook AND ``Execute`` (belt-and-braces, live-caught bug:
@@ -1010,6 +1034,7 @@ def _activate_viewing(node, doc, value):
     try:
         td.SetCurrentTake(target)
         _event_add()
+        _force_viewport_refresh()
         return True
     except Exception:
         return False

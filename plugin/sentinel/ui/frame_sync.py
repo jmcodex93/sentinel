@@ -155,8 +155,9 @@ def _drain(now):
     doc = c4d.documents.GetActiveDocument()
     if doc is None:
         return
-    from sentinel.ui.frame_tag import run_full_sync
+    from sentinel.ui.frame_tag import run_full_sync, _force_viewport_refresh
 
+    ran_any = False
     for key, _sig in entries:
         tag = _find_tag_by_guid(doc, key)
         if tag is None:
@@ -165,6 +166,7 @@ def _drain(now):
         scheduler.begin_sync()
         try:
             result = run_full_sync(doc, tag)
+            ran_any = True
             last_sync_result[key] = "ok" if result.get("ok") else "failed"
             if not result.get("ok"):
                 safe_print("Sentinel Frame auto-sync failed: %s" % result.get("error"))
@@ -173,6 +175,11 @@ def _drain(now):
             safe_print("Sentinel Frame auto-sync crashed: %s" % exc)
         finally:
             scheduler.end_sync()
+    if ran_any:
+        # A sync can rewrite the CURRENTLY-VIEWED take's overrides (nudging a
+        # format while viewing it) — the editor won't re-derive the camera
+        # projection on its own (same lazy-viewport gap as _activate_viewing).
+        _force_viewport_refresh()
 
 
 if _c4d_plugins is not None:
