@@ -45,6 +45,9 @@ class SyncScheduler(object):
         self._in_sync = False
 
     def has_pending(self, key):
+        # Forward interface for the AM's sync-status line (Task 4 reads it to
+        # show "⟳ syncing…" while a debounce window is open) — no production
+        # caller in Task 3 yet.
         return key in self._pending
 
     def due(self, now):

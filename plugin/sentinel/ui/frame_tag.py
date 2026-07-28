@@ -965,6 +965,17 @@ def run_full_sync(doc, tag):
 
     doc.StartUndo()
     try:
+        # Unconditional undo anchor for the TAG itself: the prune's
+        # take-link clears and the signature stamp below write to the tag's
+        # BaseContainer, and with zero enabled formats the generation core
+        # (whose _tag_link_writer would otherwise add this) never runs —
+        # without this anchor a Cmd+Z would restore the deleted Takes but
+        # leave the tag container in the post-sync state (review finding,
+        # mirrors _handle_remove_stale's explicit AddUndo).
+        try:
+            doc.AddUndo(_undo_type_change(), tag)
+        except Exception:
+            pass
         report = None
         if formats:
             report = _run_takes_generation(doc, tag)
