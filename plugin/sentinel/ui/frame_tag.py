@@ -460,6 +460,11 @@ def _format_index_for_id(fmt_id, node=None):
     for index, fmt in enumerate(_format_defs(node)):
         if fmt.get("id") == fmt_id:
             return index
+    # The custom row keeps its link slots addressable even while DISABLED
+    # (its def drops out of _format_defs, but prune must still clear the
+    # stored take links of a now-disabled custom row).
+    if fmt_id == CUSTOM_FORMAT_ID:
+        return CUSTOM_FORMAT_INDEX
     return None
 
 
@@ -946,11 +951,8 @@ def _undo_type_delete():
     return getattr(c4d, "UNDOTYPE_DELETE", getattr(c4d, "UNDOTYPE_DELETEOBJ", 0))
 
 
-def _write_take_link(node, fmt_id, take):
-    index = _format_index_for_id(fmt_id, node)
-    if index is None:
-        return False
-    bc = _node_data_container(node)
+def _store_link(bc, key_id, take):
+    """Shared BaseLink wrap for every take-link slot (per-format + slice)."""
     if bc is None:
         return False
     value = take
@@ -962,24 +964,20 @@ def _write_take_link(node, fmt_id, take):
             value = link
         except Exception:
             value = take
-    return _bc_set_data(bc, _format_take_link_id(index), value)
+    return _bc_set_data(bc, key_id, value)
 
 
-def _read_take_link(node, fmt_id, doc=None):
-    index = _format_index_for_id(fmt_id, node)
-    if index is None:
-        return None
-    bc = _node_data_container(node)
-    key = _format_take_link_id(index)
+def _load_link(bc, key_id, doc=None):
+    """Shared BaseLink unwrap for every take-link slot (per-format + slice)."""
     getter = getattr(bc, "GetLink", None)
     if callable(getter):
         try:
-            linked = getter(key, doc)
+            linked = getter(key_id, doc)
             if linked is not None:
                 return linked
         except Exception:
             pass
-    value = _bc_get_data(bc, key)
+    value = _bc_get_data(bc, key_id)
     link_getter = getattr(value, "GetLink", None)
     if callable(link_getter):
         try:
@@ -987,6 +985,70 @@ def _read_take_link(node, fmt_id, doc=None):
         except Exception:
             return None
     return value
+
+
+def _write_take_link(node, fmt_id, take):
+    index = _format_index_for_id(fmt_id, node)
+    if index is None:
+        return False
+    return _store_link(_node_data_container(node), _format_take_link_id(index), take)
+
+
+def _read_take_link(node, fmt_id, doc=None):
+    index = _format_index_for_id(fmt_id, node)
+    if index is None:
+        return None
+    return _load_link(_node_data_container(node), _format_take_link_id(index), doc)
+
+
+def _slice_link_id(index, ordinal):
+    """Slice take-link slot: 2600 + row_index*256 + (ordinal-1), 1-based
+    ordinal. Disjoint from the per-format links (2400+) and the private
+    signature/focus keys (2500-2502) because the base starts above them."""
+    return ID_PRIVATE_SLICE_LINK_BASE + int(index) * MAX_SLICE_ORDINALS + (int(ordinal) - 1)
+
+
+def _split_key(key):
+    """'custom:s02' -> ('custom', 's02'); 'custom' -> ('custom', None).
+
+    The engine NEVER emits a bare '<fmt>:' — a clamped-to-1x1 grid degrades
+    to key = fmt_id with no separator (Task 3 contract)."""
+    if ":" in (key or ""):
+        fmt_id, _sep, sfx = key.partition(":")
+        return fmt_id, sfx
+    return key, None
+
+
+def _ordinal_from_suffix(suffix):
+    try:
+        return int(str(suffix)[1:])
+    except Exception:
+        return None
+
+
+def _write_link_for_key(node, key, take):
+    """Key-based take-link writer: key = fmt_id (whole format, 2400+ slot)
+    or '<fmt>:sNN' (slice variant, 2600+ slot)."""
+    fmt_id, suffix = _split_key(key)
+    if suffix is None:
+        return _write_take_link(node, fmt_id, take)
+    index = _format_index_for_id(fmt_id, node)
+    ordinal = _ordinal_from_suffix(suffix)
+    if index is None or ordinal is None or not (1 <= ordinal <= MAX_SLICE_ORDINALS):
+        return False
+    return _store_link(_node_data_container(node), _slice_link_id(index, ordinal), take)
+
+
+def _read_link_for_key(node, key, doc=None):
+    """Key-based take-link reader — mirror of _write_link_for_key."""
+    fmt_id, suffix = _split_key(key)
+    if suffix is None:
+        return _read_take_link(node, fmt_id, doc)
+    index = _format_index_for_id(fmt_id, node)
+    ordinal = _ordinal_from_suffix(suffix)
+    if index is None or ordinal is None or not (1 <= ordinal <= MAX_SLICE_ORDINALS):
+        return None
+    return _load_link(_node_data_container(node), _slice_link_id(index, ordinal), doc)
 
 
 def _write_takes_signature(node, signature):
@@ -1069,16 +1131,42 @@ def _observe_signature_drift(node):
         pass
 
 
-def _viewing_cycle_entries(node):
-    """Cycle for ID_VIEWING: 0=Master plus every ENABLED format (value =
-    format index + 1, stable against enable/disable churn)."""
-    entries = [(0, "Master")]
+def _viewing_entry_pairs(node):
+    """[(value, target_str, label)] for the Viewing cycle AND the panel's
+    target list — ONE source. Whole formats keep value = index + 1 (stable
+    against enable churn, v1.28 encoding); a sliced format replaces its
+    whole entry with per-slice entries encoded as
+    (index + 1) * VIEWING_SLICE_STRIDE + ordinal."""
+    pairs = []
     for index, fmt in enumerate(_format_defs(node)):
-        ids = _format_ids(index)
-        if _as_bool(_get_node_value(node, ids["enabled"], True), True):
-            label = fmt.get("label") or fmt.get("id", "Format")
-            entries.append((index + 1, label))
-    return entries
+        if not _row_enabled(node, index):
+            continue
+        fmt_id = fmt.get("id")
+        label = fmt.get("label") or fmt_id
+        sx, sy = _slices_for_index(node, index)
+        if sx * sy > 1:
+            for ordinal in range(1, sx * sy + 1):
+                sfx = "s%02d" % ordinal
+                pairs.append(((index + 1) * VIEWING_SLICE_STRIDE + ordinal,
+                              f"{fmt_id}:{sfx}",
+                              f"{label} · {sfx}"))
+        else:
+            pairs.append((index + 1, fmt_id, label))
+    return pairs
+
+
+def viewing_targets(node):
+    """Ordered viewing targets for the panel (Task 8's source):
+    ["master", "16x9", "custom:s01", ...]."""
+    return ["master"] + [target for _value, target, _label in _viewing_entry_pairs(node)]
+
+
+def _viewing_cycle_entries(node):
+    """Cycle for ID_VIEWING: 0=Master plus every ENABLED format entry
+    (whole formats or their slice variants)."""
+    return [(0, "Master")] + [
+        (value, label) for value, _target, label in _viewing_entry_pairs(node)
+    ]
 
 
 def _viewing_value_from_takes(node, doc):
@@ -1101,6 +1189,19 @@ def _viewing_value_from_takes(node, doc):
                 return index + 1
         except Exception:
             continue
+    # Slice links of sliced formats (v1.29): same identity idiom.
+    for index, fmt in enumerate(_format_defs(node)):
+        sx, sy = _slices_for_index(node, index)
+        if sx * sy <= 1:
+            continue
+        fmt_id = fmt.get("id")
+        for ordinal in range(1, sx * sy + 1):
+            linked = _read_link_for_key(node, "%s:s%02d" % (fmt_id, ordinal), doc)
+            try:
+                if linked is not None and linked == current:
+                    return (index + 1) * VIEWING_SLICE_STRIDE + ordinal
+            except Exception:
+                continue
     return 0
 
 
@@ -1114,13 +1215,21 @@ def _activate_viewing(node, doc, value):
     if td is None:
         return False
     target = None
-    if int(value) <= 0:
+    value = int(value)
+    if value <= 0:
         try:
             target = td.GetMainTake()
         except Exception:
             target = None
+    elif value >= VIEWING_SLICE_STRIDE:
+        index = value // VIEWING_SLICE_STRIDE - 1
+        ordinal = value % VIEWING_SLICE_STRIDE
+        defs = _format_defs(node)
+        if 0 <= index < len(defs) and 1 <= ordinal <= MAX_SLICE_ORDINALS:
+            target = _read_link_for_key(
+                node, "%s:s%02d" % (defs[index].get("id"), ordinal), doc)
     else:
-        index = int(value) - 1
+        index = value - 1
         defs = _format_defs(node)
         if 0 <= index < len(defs):
             target = _read_take_link(node, defs[index].get("id"), doc)
@@ -1137,16 +1246,17 @@ def _activate_viewing(node, doc, value):
 
 def set_viewing(doc, tag, target):
     """Dialog-free core for the Viewing selector (AM cycle AND the panel's
-    ``panel/frame/set_viewing`` op share it). ``target`` = "master" or a
-    format id; activating a take is DOCUMENT state, legitimate from either
-    surface. Returns a status dict, never raises, never shows a dialog."""
+    ``panel/frame/set_viewing`` op share it). ``target`` = "master", a
+    format id, or a "<fmt>:sNN" slice; activating a take is DOCUMENT state,
+    legitimate from either surface. Returns a status dict, never raises,
+    never shows a dialog."""
     if target in (None, "", "master"):
         ok = _activate_viewing(tag, doc, 0)
         return {"ok": bool(ok), "viewing": "master" if ok else None,
                 "error": None if ok else "no_take_data"}
-    for index, fmt in enumerate(_format_defs(tag)):
-        if fmt.get("id") == target:
-            ok = _activate_viewing(tag, doc, index + 1)
+    for value, entry_target, _label in _viewing_entry_pairs(tag):
+        if entry_target == target:
+            ok = _activate_viewing(tag, doc, value)
             return {"ok": bool(ok), "viewing": target if ok else None,
                     "error": None if ok else "take_not_found"}
     return {"ok": False, "viewing": None, "error": "unknown_format"}
@@ -1178,14 +1288,15 @@ def _run_takes_generation(doc, node):
     prefix = _safe_node_name(host, "Camera")
     undo_added = [False]
 
-    def _tag_link_writer(fmt_id, take):
+    def _tag_link_writer(key, take):
+        # key = fmt_id or "<fmt>:sNN" (Task 3 engine contract).
         if not undo_added[0]:
             try:
                 doc.AddUndo(_undo_type_change(), node)
             except Exception:
                 pass
             undo_added[0] = True
-        _write_take_link(node, fmt_id, take)
+        _write_link_for_key(node, key, take)
 
     options = {
         "formats": formats,
@@ -1197,8 +1308,9 @@ def _run_takes_generation(doc, node):
             _get_node_value(node, ID_COMPOSITION, COMPOSITION_CROP)
         ),
         "film_offsets": _film_offsets_from_params(node),
+        "format_defs": _engine_format_defs(node),
         "tag_link_writer": _tag_link_writer,
-        "existing_take_resolver": lambda fmt_id: _read_take_link(node, fmt_id, doc),
+        "existing_take_resolver": lambda key: _read_link_for_key(node, key, doc),
     }
     report = generate_multiformat_takes(doc, options)
     if not undo_added[0]:
@@ -1225,7 +1337,7 @@ def _prune_orphaned_takes(doc, node):
         current = td.GetCurrentTake() if td else None
     except Exception:
         td, current = None, None
-    for fmt_id, take in _find_orphaned_takes_for_tag(node, doc):
+    for key, take in _find_orphaned_takes_for_tag(node, doc):
         if td is not None and current is not None and take == current:
             try:
                 td.SetCurrentTake(td.GetMainTake())
@@ -1243,7 +1355,7 @@ def _prune_orphaned_takes(doc, node):
             except Exception:
                 continue
             removed += 1
-            _write_take_link(node, fmt_id, None)
+            _write_link_for_key(node, key, None)
     return removed
 
 
@@ -1315,17 +1427,50 @@ def _walk_child_takes(take_data):
         yield take
 
 
-def _find_orphaned_takes_for_tag(node, doc):
-    """Find disabled-format takes owned by this tag, never deleting them."""
+def _expected_take_names(node):
+    """Take names this tag SHOULD own right now -> their link key. The prune
+    orphan set is everything tag-owned that is NOT in here: disabled formats
+    (whole + slices), the whole-format take of a now-sliced format, slice
+    takes beyond the current grid (3x1 -> 2x1 leaves s03), disabled custom."""
     host = _tag_host(node)
     prefix = _safe_node_name(host, "")
-    enabled = set(_enabled_format_ids_from_params(node))
-    disabled_ids = {fmt.get("id") for fmt in _format_defs(node)} - enabled
+    expected = {}
+    if not prefix:
+        return expected
+    for index, fmt in enumerate(_format_defs(node)):
+        if not _row_enabled(node, index):
+            continue
+        fmt_id = fmt.get("id")
+        sx, sy = _slices_for_index(node, index)
+        if sx * sy > 1:
+            for ordinal in range(1, sx * sy + 1):
+                sfx = "s%02d" % ordinal
+                expected[f"{prefix}_{fmt_id}_{sfx}"] = f"{fmt_id}:{sfx}"
+        else:
+            expected[f"{prefix}_{fmt_id}"] = fmt_id
+    return expected
+
+
+def _all_parse_defs():
+    """Name-parse defs for the prune walk: the 5 standard formats plus the
+    custom row UNCONDITIONALLY — a disabled custom's takes must still be
+    found (its def drops out of _format_defs while its takes linger)."""
+    return [{"id": fmt.get("id")} for fmt in MULTIFORMAT_DEFS] + [
+        {"id": CUSTOM_FORMAT_ID}
+    ]
+
+
+def _find_orphaned_takes_for_tag(node, doc):
+    """Find tag-owned takes that are NOT in the expected set, never deleting
+    them. Returns (key, take) pairs; key = fmt_id or '<fmt>:sNN'."""
+    host = _tag_host(node)
+    prefix = _safe_node_name(host, "")
+    expected = _expected_take_names(node)
     found = []
     seen = set()
 
-    def _add(fmt_id, take):
-        if take is None or fmt_id not in disabled_ids:
+    def _add(key, take):
+        if take is None:
             return
         # Dedup by take name, not id(): the same take is reached by two paths
         # (stored BaseLink + name walk) and C4D hands out a fresh Python wrapper
@@ -1335,24 +1480,43 @@ def _find_orphaned_takes_for_tag(node, doc):
             marker = take.GetName()
         except Exception:
             marker = id(take)
+        if marker in expected:
+            return
         if marker in seen:
             return
         seen.add(marker)
-        found.append((fmt_id, take))
+        found.append((key, take))
 
-    for fmt_id in disabled_ids:
-        _add(fmt_id, _read_take_link(node, fmt_id, doc))
+    # Link-walk: every per-format link plus every slice link slot (BC misses
+    # are cheap dict lookups; MAX_SLICE_ORDINALS = 16x16 caps the loop).
+    for parse_def in _all_parse_defs():
+        fmt_id = parse_def.get("id")
+        _add(fmt_id, _read_link_for_key(node, fmt_id, doc))
+        for ordinal in range(1, MAX_SLICE_ORDINALS + 1):
+            key = "%s:s%02d" % (fmt_id, ordinal)
+            _add(key, _read_link_for_key(node, key, doc))
 
+    # Name-walk: any child take named <prefix>_<suffix> whose suffix parses
+    # against ALL defs (standard + custom, regardless of enabled state).
     try:
         take_data = doc.GetTakeData()
     except Exception:
         take_data = None
-    name_to_id = {f"{prefix}_{fmt_id}": fmt_id for fmt_id in disabled_ids if prefix}
-    for take in _walk_child_takes(take_data):
-        try:
-            _add(name_to_id.get(take.GetName()), take)
-        except Exception:
-            pass
+    if prefix:
+        marker_prefix = prefix + "_"
+        parse_defs = _all_parse_defs()
+        for take in _walk_child_takes(take_data):
+            try:
+                name = take.GetName() or ""
+            except Exception:
+                continue
+            if not name.startswith(marker_prefix):
+                continue
+            parsed = _parse_own_format_suffix(name[len(marker_prefix):], parse_defs)
+            if parsed is None:
+                continue
+            fmt_id, suffix = parsed
+            _add(f"{fmt_id}:{suffix}" if suffix else fmt_id, take)
     return found
 
 
@@ -1401,9 +1565,21 @@ def _report_summary_text(report):
     return "\n".join(lines)
 
 
-def _current_take_is_own_format(tag, doc):
-    """Return True when the active take is one of THIS tag's generated format
-    takes (named ``<host camera>_<fmt>``).
+def _parse_own_format_suffix(suffix, defs):
+    """Pure suffix parser for tag-owned take names: '16x9' -> ('16x9', None),
+    'custom_s02' -> ('custom', 's02'), anything else -> None."""
+    ids = {d.get("id") for d in defs}
+    if suffix in ids:
+        return (suffix, None)
+    stem, sep, tail = suffix.rpartition("_s")
+    if sep and stem in ids and tail.isdigit():
+        return (stem, "s" + tail)
+    return None
+
+
+def _current_own_take_info(tag, doc):
+    """(fmt_id, slice_suffix|None) when the active take is one of THIS tag's
+    generated format takes (named ``<host camera>_<fmt>[_sNN]``), else None.
 
     In such a take the host camera is already cropped/zoomed to the format, so
     drawing the multi-format guides would draw a crop-of-a-crop and mislead the
@@ -1414,59 +1590,39 @@ def _current_take_is_own_format(tag, doc):
     """
     getter = getattr(doc, "GetTakeData", None)
     if not callable(getter):
-        return False
+        return None
     try:
         td = getter()
         current = td.GetCurrentTake()
         main = td.GetMainTake()
     except Exception:
-        return False
+        return None
     if current is None or main is None or current == main:
-        return False
+        return None
     prefix = _safe_node_name(_tag_host(tag), "")
     if not prefix:
-        return False
+        return None
     try:
         name = current.GetName() or ""
     except Exception:
-        return False
+        return None
     marker = prefix + "_"
     if not name.startswith(marker):
-        return False
-    suffix = name[len(marker):]
-    return any(d.get("id") == suffix for d in _format_defs(tag))
+        return None
+    return _parse_own_format_suffix(name[len(marker):], _format_defs(tag))
+
+
+def _current_take_is_own_format(tag, doc):
+    """True when the active take is one of THIS tag's generated format takes
+    (whole or slice) — thin view over ``_current_own_take_info``."""
+    return _current_own_take_info(tag, doc) is not None
 
 
 def _current_own_format_id(tag, doc):
-    """Format id of the active take when it is one of THIS tag's generated
-    format takes, else None. Same read-only name resolution as
-    ``_current_take_is_own_format`` (safe on the draw thread)."""
-    getter = getattr(doc, "GetTakeData", None)
-    if not callable(getter):
-        return None
-    try:
-        td = getter()
-        current = td.GetCurrentTake()
-        main = td.GetMainTake()
-    except Exception:
-        return None
-    if current is None or main is None or current == main:
-        return None
-    prefix = _safe_node_name(_tag_host(tag), "")
-    if not prefix:
-        return None
-    try:
-        name = current.GetName() or ""
-    except Exception:
-        return None
-    marker = prefix + "_"
-    if not name.startswith(marker):
-        return None
-    suffix = name[len(marker):]
-    for d in _format_defs(tag):
-        if d.get("id") == suffix:
-            return suffix
-    return None
+    """Format id of the active own-format take (slice takes report their
+    parent format), else None — thin view over ``_current_own_take_info``."""
+    info = _current_own_take_info(tag, doc)
+    return info[0] if info else None
 
 
 try:
@@ -1866,8 +2022,8 @@ class SentinelFrameTag(_TagDataBase):
             "Remove these stale Takes?",
             "",
         ]
-        for fmt_id, take in orphans:
-            lines.append(f"- {_safe_node_name(take, fmt_id)}")
+        for key, take in orphans:
+            lines.append(f"- {_safe_node_name(take, key)}")
         lines.extend(["", "This cannot be done without confirmation."])
         if not _ask_question("\n".join(lines)):
             return True
@@ -1879,7 +2035,7 @@ class SentinelFrameTag(_TagDataBase):
                 doc.AddUndo(_undo_type_change(), node)
             except Exception:
                 pass
-            for fmt_id, take in orphans:
+            for key, take in orphans:
                 try:
                     doc.AddUndo(_undo_type_delete(), take)
                 except Exception:
@@ -1891,7 +2047,7 @@ class SentinelFrameTag(_TagDataBase):
                     except Exception:
                         continue
                     removed += 1
-                    _write_take_link(node, fmt_id, None)
+                    _write_link_for_key(node, key, None)
         finally:
             doc.EndUndo()
             _event_add()
