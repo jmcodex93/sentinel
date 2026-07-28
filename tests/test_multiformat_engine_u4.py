@@ -551,8 +551,24 @@ def test_reset_camera_dimensions_to_native_clears_film_offset_overrides(sentinel
 
     assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] == pytest.approx(0.0)
     assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_Y] == pytest.approx(0.0)
+    # NOT current take → the reset must NOT push into the scene state
+    # (UpdateSceneNode applies regardless of the active take — live-caught:
+    # multi-format syncs thrashed the camera through every format's values).
+    assert override.updated == []
+
+
+def test_reset_pushes_scene_state_only_for_the_current_take(sentinel_module):
+    mf = sentinel_module.multiformat
+    doc = FakeDocument(sentinel_module.c4d)
+    take = FakeTake("CamA_9x16", doc.take_data.main)
+    doc.take_data.current = take  # viewing this take
+    override = take.overrides.setdefault(doc.camera, FakeOverride())
+    override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] = 0.25
+
+    mf._reset_camera_dimensions_to_native(take, doc.take_data, doc.camera)
+
+    assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] == pytest.approx(0.0)
     assert framing.CAMERAOBJECT_FILM_OFFSET_X in override.updated
-    assert framing.CAMERAOBJECT_FILM_OFFSET_Y in override.updated
 
 
 def test_prefixed_existing_takes_report_orphaned_and_adopted_without_deleting(sentinel_module):

@@ -338,6 +338,20 @@ def _read_vector_param(node, param_id, fallback):
         return fallback
 
 
+def _take_is_current(takeData, take):
+    """True when ``take`` is the document's ACTIVE take. UpdateSceneNode
+    pushes the override value into the evaluated scene state REGARDLESS of
+    which take is current (live-caught: syncing several formats thrashed the
+    camera through every format's values and the LAST format written won —
+    with 1x1+9x16 enabled, viewing 9x16 showed 1x1's crop until a viewport
+    resize forced a real take re-evaluation). Only the current take's
+    overrides may push; inactive takes apply naturally on activation."""
+    try:
+        return takeData.GetCurrentTake() == take
+    except Exception:
+        return False
+
+
 def _set_camera_override(take, takeData, cam, param_id, value):
     """Find-or-add and explicitly set a camera override parameter.
 
@@ -367,7 +381,8 @@ def _set_camera_override(take, takeData, cam, param_id, value):
         except Exception:
             pass
         ovr.SetParameter(target, value, c4d.DESCFLAGS_SET_0)
-        ovr.UpdateSceneNode(takeData, target)
+        if _take_is_current(takeData, take):
+            ovr.UpdateSceneNode(takeData, target)
     return ovr
 
 
@@ -467,7 +482,8 @@ def _reset_camera_dimensions_to_native(take, takeData, cam):
             except Exception:
                 continue
             ovr.SetParameter(descid, native, c4d.DESCFLAGS_SET_0)
-            ovr.UpdateSceneNode(takeData, descid)
+            if _take_is_current(takeData, take):
+                ovr.UpdateSceneNode(takeData, descid)
         except Exception:
             continue
 
