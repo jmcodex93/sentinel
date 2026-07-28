@@ -54,6 +54,13 @@ ID_PLATFORM_INSET_STRIDE = 10
 ID_PRIVATE_TAKE_LINK_BASE = 2400
 ID_PRIVATE_TAKE_LINK_STRIDE = 1
 ID_PRIVATE_TAKES_SIGNATURE = 2500
+# Last takes-signature OBSERVED by the POSTSETPARAMETER hook (Frame v2
+# auto-sync). Distinct from 2500 (signature of the last GENERATED takes):
+# 2501 exists so the hook only requests a sync when the takes-relevant
+# signature actually changed — display toggles leave it untouched, and a
+# fresh tag / v1.8.0 scene seeds it silently on first touch (adoption)
+# instead of regenerating takes just because the AM was poked.
+ID_PRIVATE_LAST_SEEN_SIGNATURE = 2501
 
 # Actions: 3000s. Declared only in U2; command logic is U5.
 ID_GROUP_ACTIONS = 3000
@@ -882,6 +889,102 @@ def _command_id_from_data(data):
     return _desc_level_id(cid)
 
 
+def _run_takes_generation(doc, node):
+    """Dialog-free create/update core shared by the button handler and the
+    Frame v2 auto-sync. The CALLER owns the undo block (this passes
+    ``external_undo`` to the engine and never opens its own). Returns the
+    engine report; raises nothing on its own beyond what the engine raises."""
+    host = _tag_host(node)
+    formats = _enabled_format_ids_from_params(node)
+    prefix = _safe_node_name(host, "Camera")
+    undo_added = [False]
+
+    def _tag_link_writer(fmt_id, take):
+        if not undo_added[0]:
+            try:
+                doc.AddUndo(_undo_type_change(), node)
+            except Exception:
+                pass
+            undo_added[0] = True
+        _write_take_link(node, fmt_id, take)
+
+    options = {
+        "formats": formats,
+        "update_existing": True,
+        "name_prefix": prefix,
+        "external_undo": True,
+        "source_cam": host,
+        "composition_mode": composition_mode_for_engine(
+            _get_node_value(node, ID_COMPOSITION, COMPOSITION_CROP)
+        ),
+        "film_offsets": _film_offsets_from_params(node),
+        "tag_link_writer": _tag_link_writer,
+        "existing_take_resolver": lambda fmt_id: _read_take_link(node, fmt_id, doc),
+    }
+    report = generate_multiformat_takes(doc, options)
+    if not undo_added[0]:
+        try:
+            doc.AddUndo(_undo_type_change(), node)
+        except Exception:
+            pass
+    return report
+
+
+def _prune_orphaned_takes(doc, node):
+    """Silently remove takes for formats no longer enabled (auto-sync's
+    implicit Remove Stale — no confirmation dialog). Caller owns the undo
+    block. Returns the number removed."""
+    removed = 0
+    for fmt_id, take in _find_orphaned_takes_for_tag(node, doc):
+        try:
+            doc.AddUndo(_undo_type_delete(), take)
+        except Exception:
+            pass
+        remover = getattr(take, "Remove", None)
+        if callable(remover):
+            try:
+                remover()
+            except Exception:
+                continue
+            removed += 1
+            _write_take_link(node, fmt_id, None)
+    return removed
+
+
+def run_full_sync(doc, tag):
+    """Frame v2 auto-sync unit: regenerate takes + outputs for the enabled
+    formats, prune takes of disabled formats, and stamp the signature — all
+    in ONE undo step. Strictly dialog-free (runs from a MessageData tick;
+    a MessageDialog here would freeze C4D). Returns a status dict, never
+    raises for the expected failure modes."""
+    host = _tag_host(tag)
+    if not is_valid_camera_host(_node_type(host)):
+        return {"ok": False, "error": "invalid_host"}
+    signature = _params_signature_for_takes(tag)
+    formats = _enabled_format_ids_from_params(tag)
+
+    doc.StartUndo()
+    try:
+        report = None
+        if formats:
+            report = _run_takes_generation(doc, tag)
+        removed = _prune_orphaned_takes(doc, tag)
+        _write_takes_signature(tag, signature)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        doc.EndUndo()
+        _event_add()
+
+    errors = list(report.get("errors", [])) if report else []
+    return {
+        "ok": not errors,
+        "error": "; ".join(errors) if errors else None,
+        "report": report,
+        "removed": removed,
+    }
+
+
 def _walk_child_takes(take_data):
     if take_data is None:
         return
@@ -1243,48 +1346,15 @@ class SentinelFrameTag(_TagDataBase):
             _show_message("Enable at least one format before creating Takes.")
             return True
 
-        prefix = _safe_node_name(host, "Camera")
         signature = _params_signature_for_takes(node)
-        undo_added = [False]
 
-        def _tag_link_writer(fmt_id, take):
-            if not undo_added[0]:
-                try:
-                    doc.AddUndo(_undo_type_change(), node)
-                except Exception:
-                    pass
-                undo_added[0] = True
-            _write_take_link(node, fmt_id, take)
-
-        options = {
-            "formats": formats,
-            "update_existing": True,
-            "name_prefix": prefix,
-            # This handler owns the undo block (StartUndo/EndUndo below) so the
-            # take generation + BaseLink/signature writes revert as ONE Cmd+Z;
-            # the engine must not open its own nested block.
-            "external_undo": True,
-            # Bind the generated Takes to THIS tag's host camera, not whatever
-            # the viewport/Main take resolves to — the tag is per-camera.
-            "source_cam": host,
-            "composition_mode": composition_mode_for_engine(
-                _get_node_value(node, ID_COMPOSITION, COMPOSITION_CROP)
-            ),
-            "film_offsets": _film_offsets_from_params(node),
-            "tag_link_writer": _tag_link_writer,
-            # Rename-safe re-run: re-find our own Takes by stored BaseLink even
-            # if the take or the host camera was renamed (KTD4).
-            "existing_take_resolver": lambda fmt_id: _read_take_link(node, fmt_id, doc),
-        }
-
+        # This handler owns the undo block so the take generation +
+        # BaseLink/signature writes revert as ONE Cmd+Z; the shared core
+        # (`_run_takes_generation`, also used by the Frame v2 auto-sync)
+        # never opens its own.
         doc.StartUndo()
         try:
-            report = generate_multiformat_takes(doc, options)
-            if not undo_added[0]:
-                try:
-                    doc.AddUndo(_undo_type_change(), node)
-                except Exception:
-                    pass
+            report = _run_takes_generation(doc, node)
             _write_takes_signature(node, signature)
         finally:
             doc.EndUndo()
@@ -1553,6 +1623,28 @@ class SentinelFrameTag(_TagDataBase):
         description_command = getattr(c4d, "MSG_DESCRIPTION_COMMAND", None)
         if description_command is not None and mid == description_command:
             return self._handle_command(node, data)
+
+        # Frame v2 auto-sync trigger: after any AM parameter write, compare the
+        # takes-relevant signature against the last one this hook OBSERVED
+        # (2501). Display toggles never change that signature, so they never
+        # trigger; a fresh tag / v1.8.0 scene seeds 2501 silently on first
+        # touch (adoption) instead of regenerating takes unprompted. The sync
+        # itself runs later, debounced, from the FrameSyncMessageData tick —
+        # NEVER here (parameter messages must not mutate document structure).
+        post_set = getattr(c4d, "MSG_DESCRIPTION_POSTSETPARAMETER", None)
+        if post_set is not None and mid == post_set:
+            try:
+                sig = _params_signature_for_takes(node)
+                bc = _node_data_container(node)
+                last_seen = _bc_get_data(bc, ID_PRIVATE_LAST_SEEN_SIGNATURE)
+                last_seen = str(last_seen) if last_seen else ""
+                if sig != last_seen:
+                    _bc_set_data(bc, ID_PRIVATE_LAST_SEEN_SIGNATURE, sig)
+                    if last_seen:  # seeded before → a real change: sync
+                        from sentinel.ui import frame_sync
+                        frame_sync.request_sync(node)
+            except Exception:
+                pass
 
         # Keep the pre-resolved platform insets on the tag container fresh so
         # Draw stays read-only (it never resolves sentinel_rules.json itself).
