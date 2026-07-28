@@ -7,6 +7,8 @@ parameter namespace (7002 sensor size / 7012 sensor shift). See
 docs/solutions/workflow-issues/2026-07-28-rs-camera-take-overrides.md.
 """
 
+import pytest
+
 from sentinel import framing
 
 
@@ -77,15 +79,37 @@ def test_inscribed_crop_factor_narrower_and_wider():
     assert framing.inscribed_crop_factor(1920, 1080, 2560, 1080) == 1.0
 
 
-def test_nudge_to_film_matches_format_crop_values_pan_math():
-    # Parity: nudge_to_film must reproduce the exact film pan that the
-    # existing focal-based format_crop_values computes (same optics, same
-    # gate-relative math — only the lever driving the crop factor changes).
-    nudge = (0.0, 1.0)
-    src_w, src_h, tgt_w, tgt_h = 1920, 1080, 1080, 1920
-    _, old_film_x, old_film_y = framing.format_crop_values(
-        36.0, src_w, src_h, tgt_w, tgt_h, nudge, 0.0, 0.0)
-    new_film_x, new_film_y = framing.nudge_to_film(
-        nudge, 0.0, 0.0, src_w, src_h, tgt_w, tgt_h)
-    assert new_film_x == old_film_x
-    assert new_film_y == old_film_y
+def test_nudge_to_film_narrower_target_hand_computed():
+    # Hardcoded ground truth (computed BY HAND from the pre-refactor
+    # max_film_x/max_film_y formula, independent of nudge_to_film itself —
+    # format_crop_values now calls nudge_to_film internally, so comparing
+    # the two would be circular and couldn't catch a shared regression).
+    #
+    #   source 1920x1080 -> target 1080x1080 (narrower, square)
+    #   sa = 1920/1080 = 16/9;  ta = 1080/1080 = 1.0
+    #   max_film_x = max(0, sa/ta - 1) * 0.5 = (16/9 - 1) * 0.5 = (7/9) * 0.5 = 7/18
+    #   max_film_y = max(0, ta/sa - 1) * 0.5 = 0 (ta < sa, no vertical room)
+    #   nudge = (0.5, 0.0) -> film_x = 0.0 + (7/18)*0.5 = 7/36; film_y = 0.0
+    film_x, film_y = framing.nudge_to_film(
+        (0.5, 0.0), 0.0, 0.0, 1920, 1080, 1080, 1080)
+    assert film_x == pytest.approx(7.0 / 36.0)
+    assert film_y == pytest.approx(0.0)
+
+
+def test_nudge_to_film_wider_target_with_source_offsets_hand_computed():
+    # Second hardcoded ground-truth case: a WIDER target (vertical travel
+    # room instead of horizontal) plus non-zero source film offsets, so the
+    # additive term is also exercised.
+    #
+    #   source 1920x1080 -> target 2560x1080 (21:9, wider)
+    #   sa = 1920/1080 = 16/9;  ta = 2560/1080 = 64/27
+    #   max_film_x = max(0, sa/ta - 1) * 0.5 = max(0, 0.75 - 1) * 0.5 = 0
+    #   max_film_y = max(0, ta/sa - 1) * 0.5 = ((64/27)/(16/9) - 1) * 0.5
+    #              = (4/3 - 1) * 0.5 = (1/3) * 0.5 = 1/6
+    #   source_film = (0.1, -0.05); nudge = (0.0, 1.0)
+    #   film_x = 0.1 + 0 * 0.0 = 0.1
+    #   film_y = -0.05 + (1/6) * 1.0 = -0.05 + 1/6 = 7/60
+    film_x, film_y = framing.nudge_to_film(
+        (0.0, 1.0), 0.1, -0.05, 1920, 1080, 2560, 1080)
+    assert film_x == pytest.approx(0.1)
+    assert film_y == pytest.approx(7.0 / 60.0)

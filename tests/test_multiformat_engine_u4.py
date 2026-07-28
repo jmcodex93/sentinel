@@ -352,10 +352,27 @@ def test_crop_mode_narrower_zooms_aperture_and_pans_gate_relative(sentinel_modul
 
     take = _child_by_name(doc.take_data.main, "CamA_1x1")
     override = take.FindOverride(doc.take_data, doc.camera)
+
+    # Ground truth computed BY HAND (independent of framing.py, so a
+    # regression in inscribed_crop_factor/nudge_to_film can't hide behind a
+    # test that re-derives its own expectation from the same code):
+    #   source aspect = 1920/1080 = 16/9 ≈ 1.77778; target aspect = 1080/1080 = 1.0
+    #   factor = target_aspect / source_aspect = 1.0 / (16/9) = 9/16 = 0.5625 exactly
+    #   aperture = 36.0 * 0.5625 = 20.25
+    #   max_film_x = max(0, source_aspect/target_aspect - 1) * 0.5
+    #              = max(0, 16/9 - 1) * 0.5 = (7/9) * 0.5 = 0.388888...
+    #   film_x = 0.0 + max_film_x * 1.0 (full-right nudge) = 0.388888...
+    #   max_film_y = max(0, target_aspect/source_aspect - 1) * 0.5 = 0 (no room, narrower axis is X)
+    #   film_y = 0.0 + 0 * 0.0 = 0.0
+    assert override.params[framing.CAMERAOBJECT_APERTURE] == pytest.approx(20.25)
+    assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] == pytest.approx(7.0 / 18.0)
+    assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_Y] == pytest.approx(0.0)
+
+    # Derived check kept alongside the literal above (belt-and-suspenders —
+    # the literal is the actual regression guard).
     factor = framing.inscribed_crop_factor(1920, 1080, 1080, 1080)
     exp_fx, exp_fy = framing.nudge_to_film(
         (1.0, 0.0), 0.0, 0.0, 1920, 1080, 1080, 1080)
-
     assert override.params[framing.CAMERAOBJECT_APERTURE] == pytest.approx(36.0 * factor)
     assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_X] == pytest.approx(exp_fx)
     assert override.params[framing.CAMERAOBJECT_FILM_OFFSET_Y] == pytest.approx(exp_fy)
