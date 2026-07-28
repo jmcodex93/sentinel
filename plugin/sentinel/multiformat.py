@@ -431,10 +431,21 @@ def _reset_camera_dimensions_to_native(take, takeData, cam):
         (framing.RS_SENSOR_SIZE, framing.RS_SENSOR_SIZE, True),
         (framing.RS_SENSOR_SHIFT, framing.RS_SENSOR_SHIFT, True),
     ]
+    # Match by the override's OWN stored DescIDs, never by re-constructing
+    # one: `IsOverriddenParam` returns False for a hand-built DescID even
+    # when the override plainly holds the param (live-caught — the exact
+    # dtype/creator levels of the stored DescID don't match a fresh
+    # `DescLevel(id)` or `DescLevel(id, DTYPE_VECTOR, 0)`), which silently
+    # skipped every reset and left stale shift/offset overrides behind when
+    # a nudge went back to 0.
+    try:
+        stored = {did[0].id: did for did in (ovr.GetAllOverrideDescID() or [])}
+    except Exception:
+        stored = {}
     for param_id, native_attr, is_vector in targets:
         try:
-            descid = _real_descid(param_id, vector=is_vector)
-            if not ovr.IsOverriddenParam(descid):
+            descid = stored.get(param_id)
+            if descid is None:
                 continue
             try:
                 native = cam[native_attr] if is_vector else float(cam[native_attr])
