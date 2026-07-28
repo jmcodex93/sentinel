@@ -625,3 +625,21 @@ def test_set_viewing_accepts_slice_targets(sentinel_module):
 
     # Unknown slice target -> rejected, never activates anything.
     assert frame_tag.set_viewing(doc, tag, "16x9:s09")["ok"] is False
+
+
+def test_slice_cut_segments_internal_boundaries_only(sentinel_module):
+    import importlib
+    frame_tag = importlib.import_module("sentinel.ui.frame_tag")
+    guide = {"left": -0.9, "right": 0.9, "bottom": -0.1, "top": 0.1}
+    segs = frame_tag._slice_cut_segments(guide, 3, 1, 9000, 500)
+    # 3x1 -> exactly 2 internal vertical cuts, spanning top..bottom.
+    assert len(segs) == 2
+    xs = sorted(p1[0] for p1, _p2 in segs)
+    assert xs[0] == pytest.approx(-0.3)
+    assert xs[1] == pytest.approx(0.3)
+    for (x1, y1), (x2, y2) in segs:
+        assert x1 == x2
+        ys = sorted((y1, y2))
+        assert ys[0] == pytest.approx(-0.1)
+        assert ys[1] == pytest.approx(0.1)
+    assert frame_tag._slice_cut_segments(guide, 1, 1, 100, 100) == []

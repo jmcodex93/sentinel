@@ -740,6 +740,7 @@ def _compute_inline_rects(node, master_aspect):
                     "top": guide[3],
                 },
                 "platform": safe_rect,
+                "slices": _slices_for_index(node, index),
             }
         )
     return formats
@@ -770,20 +771,45 @@ def _safe_frame_rect(bd):
     return (cl, ct, cr, cb)
 
 
-def _ndc_rect_to_pixels(rect, safe_frame):
+def _ndc_point_to_pixels(point, safe_frame):
     cl, ct, cr, cb = safe_frame
     master_w = cr - cl
     master_h = cb - ct
+    x, y = float(point[0]), float(point[1])
+    return (
+        cl + (x + 1.0) * 0.5 * master_w,
+        ct + (1.0 - y) * 0.5 * master_h,
+    )
+
+
+def _ndc_rect_to_pixels(rect, safe_frame):
     left = float(rect["left"])
     right = float(rect["right"])
     bottom = float(rect["bottom"])
     top = float(rect["top"])
-    return (
-        cl + (left + 1.0) * 0.5 * master_w,
-        ct + (1.0 - top) * 0.5 * master_h,
-        cl + (right + 1.0) * 0.5 * master_w,
-        ct + (1.0 - bottom) * 0.5 * master_h,
-    )
+    px1, py1 = _ndc_point_to_pixels((left, top), safe_frame)
+    px2, py2 = _ndc_point_to_pixels((right, bottom), safe_frame)
+    return (px1, py1, px2, py2)
+
+
+def _slice_cut_segments(guide, sx, sy, px_w, px_h):
+    """Internal slice boundaries of a guide rect (NDC dict) as endpoint
+    pairs. Reuses framing.slice_windows' floor-exact boundaries by passing
+    the rect as (left, top, right, bottom) — linear interpolation makes the
+    y-up NDC convention transparent."""
+    windows = framing.slice_windows(
+        (guide["left"], guide["top"], guide["right"], guide["bottom"]),
+        sx, sy, px_w, px_h)
+    if len(windows) <= 1:
+        return []
+    xs = sorted({round(w[0][0], 9) for w in windows} | {round(w[0][2], 9) for w in windows})
+    ys = sorted({round(w[0][1], 9) for w in windows} | {round(w[0][3], 9) for w in windows})
+    segs = []
+    for x in xs[1:-1]:
+        segs.append(((x, guide["top"]), (x, guide["bottom"])))
+    for y in ys[1:-1]:
+        segs.append(((guide["left"], y), (guide["right"], y)))
+    return segs
 
 
 def _intersect_ndc_rects(rects):
@@ -1630,6 +1656,33 @@ def _current_own_format_id(tag, doc):
     return info[0] if info else None
 
 
+def _slice_dims(node, fmt_id, suffix):
+    """Pixel dims for the own-format-take HUD: the format's full dims when
+    ``suffix`` is None, else the dims of that specific slice window. Resolves
+    the format def through the per-tag defs (``_format_defs(node)``, never
+    ``get_multiformat_def``) so a Custom format resolves correctly."""
+    defs = _format_defs(node)
+    index = None
+    fmt = None
+    for i, d in enumerate(defs):
+        if d.get("id") == fmt_id:
+            index = i
+            fmt = d
+            break
+    if fmt is None:
+        return (0, 0)
+    width = int(fmt.get("width", 0) or 0)
+    height = int(fmt.get("height", 0) or 0)
+    if suffix is None:
+        return (width, height)
+    sx, sy = _slices_for_index(node, index)
+    windows = framing.slice_windows((0, 0, 1, 1), sx, sy, width, height)
+    for _sub, w_px, h_px, sfx in windows:
+        if sfx == suffix:
+            return (w_px, h_px)
+    return (width, height)
+
+
 try:
     _TagDataBase = plugins.TagData
     if not isinstance(_TagDataBase, type):
@@ -2171,24 +2224,26 @@ class SentinelFrameTag(_TagDataBase):
         # crop-of-a-crop. Guides live in the master (Main) view; format takes
         # show the clean final crop — plus a minimal HUD saying WHAT you are
         # viewing (Frame v2), since without guides there is no other cue.
-        own_fmt = _current_own_format_id(tag, doc)
-        if own_fmt is not None:
+        own_info = _current_own_take_info(tag, doc)
+        if own_info is not None:
+            own_fmt, own_sfx = own_info
             if _as_bool(_get_node_value(tag, ID_SHOW_HUD, True), True):
                 sf = _safe_frame_rect(bd)
                 if sf is not None:
-                    fmt = get_multiformat_def(own_fmt) or {}
+                    w_px, h_px = _slice_dims(tag, own_fmt, own_sfx)
                     try:
                         bd.SetMatrix_Screen()
                     except Exception:
                         return True
-                    _draw_hud_text(
-                        bd, sf[0] + 8, sf[1] + 8,
-                        "Viewing: %s  %dx%d  %s" % (
-                            own_fmt,
-                            int(fmt.get("width", 0)), int(fmt.get("height", 0)),
-                            _sync_status_text(tag),
-                        ),
-                    )
+                    if own_sfx:
+                        text = "Viewing: %s %s  %dx%d  %s" % (
+                            own_fmt, own_sfx, w_px, h_px, _sync_status_text(tag),
+                        )
+                    else:
+                        text = "Viewing: %s  %dx%d  %s" % (
+                            own_fmt, w_px, h_px, _sync_status_text(tag),
+                        )
+                    _draw_hud_text(bd, sf[0] + 8, sf[1] + 8, text)
             return True
 
         if not _as_bool(_get_node_value(tag, ID_ENABLED, True), True):
@@ -2254,6 +2309,14 @@ class SentinelFrameTag(_TagDataBase):
                 if line_opacity < 1.0:
                     color = _dim_color(color, line_opacity)
                 _draw_rect(bd, guide_px, color, width=line_width)
+                sx, sy = entry.get("slices", (1, 1))
+                if sx * sy > 1:
+                    for (nx1, ny1), (nx2, ny2) in _slice_cut_segments(
+                        entry["guide"], sx, sy, entry["width"], entry["height"]
+                    ):
+                        p1 = c4d.Vector(*_ndc_point_to_pixels((nx1, ny1), safe_frame), 0)
+                        p2 = c4d.Vector(*_ndc_point_to_pixels((nx2, ny2), safe_frame), 0)
+                        _draw_dashed_line(bd, p1, p2, 1)
 
         if show_platform and pixel_guides:
             for entry, _guide_px in pixel_guides:
@@ -2315,6 +2378,25 @@ class SentinelFrameTag(_TagDataBase):
                     chip_color = _dim_color(chip_color, max(0.25, label_dim))
                 _draw_color_chip(bd, lx, ly + 3, 9, chip_color)
                 _draw_hud_text(bd, lx + 14, ly, str(entry["id"]))
+
+            # Slice numbering: only for the focused format (or the sole
+            # enabled one) — otherwise every slice grid across every visible
+            # format would carpet the viewport with labels (spec noise rule).
+            for entry, guide_px in pixel_guides:
+                sx, sy = entry.get("slices", (1, 1))
+                if sx * sy <= 1:
+                    continue
+                if len(pixel_guides) != 1 and entry["id"] != label_focus_fmt:
+                    continue
+                windows = framing.slice_windows(
+                    (entry["guide"]["left"], entry["guide"]["top"],
+                     entry["guide"]["right"], entry["guide"]["bottom"]),
+                    sx, sy, entry["width"], entry["height"],
+                )
+                for ordinal, (sub, _w_px, _h_px, _sfx) in enumerate(windows, start=1):
+                    sub_left, sub_top, _sub_right, _sub_bottom = sub
+                    px, py = _ndc_point_to_pixels((sub_left, sub_top), safe_frame)
+                    _draw_hud_text(bd, px + 4, py + 4, "s%d" % ordinal)
 
             comp = _get_node_value(tag, ID_COMPOSITION, COMPOSITION_CROP)
             if comp == COMPOSITION_OFF:
