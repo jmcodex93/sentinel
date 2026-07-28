@@ -738,6 +738,24 @@ def _draw_rect(bd, pixel_rect, color, width=1, dashed=False):
             _draw_line(bd, p1, p2, width)
 
 
+def _draw_color_chip(bd, x, y, size, color):
+    """Small solid color swatch for the HUD legend (stacked horizontal lines
+    — BaseDraw has no filled-rect primitive for this)."""
+    try:
+        bd.SetPen(color)
+        row = 0
+        while row < size:
+            _draw_line(
+                bd,
+                c4d.Vector(x, y + row, 0),
+                c4d.Vector(x + size, y + row, 0),
+                2,
+            )
+            row += 2
+    except Exception:
+        pass
+
+
 def _draw_dashed_line(bd, p1, p2, width=1, dash=8.0, gap=5.0):
     dx = p2.x - p1.x
     dy = p2.y - p1.y
@@ -1502,41 +1520,40 @@ class SentinelFrameTag(_TagDataBase):
         if not sync_bc_ok:
             return False
 
-        # Per-format rows (Social Frame pattern, 4 columns): the enable
-        # checkbox CARRIES the format label; swatch identifies the guide;
-        # nudge X/Y inline (feedback = the format's rect moves in the master
-        # view while dragging). Row group = titlebar-less + columns.
+        # Per-format rows (Social Frame pattern): ONE 4-column grid group
+        # holding every format's cells DIRECTLY (no per-row sub-groups —
+        # live-caught polish: per-row groups each sized their own columns
+        # from their own label width, so the columns didn't line up
+        # vertically across rows; a single grid shares column widths and
+        # aligns every row). The enable checkbox CARRIES the format label;
+        # swatch identifies the guide; nudge X/Y inline (feedback = the
+        # format's rect moves in the master view while dragging).
         if not self._set_description_group(
-            node, description, ID_GROUP_FORMATS, "Formats", main_group
+            node, description, ID_GROUP_FORMATS, "Formats", main_group,
+            columns=4, titlebar=False
         ):
             return False
         color_dtype = getattr(c4d, "DTYPE_COLOR", c4d.DTYPE_VECTOR)
         for index, fmt in enumerate(_format_defs()):
             ids = _format_ids(index)
             label = fmt.get("label") or fmt.get("id", "Format")
-            row_group = _description_parent(ids["group"], c4d.DTYPE_GROUP, node)
-            if not self._set_description_group(
-                node, description, ids["group"], "", formats_group,
-                columns=4, titlebar=False
+            if not self._set_description_parameter(
+                node, description, ids["enabled"], c4d.DTYPE_BOOL, label, formats_group
             ):
                 return False
             if not self._set_description_parameter(
-                node, description, ids["enabled"], c4d.DTYPE_BOOL, label, row_group
-            ):
-                return False
-            if not self._set_description_parameter(
-                node, description, ids["color"], color_dtype, "", row_group
+                node, description, ids["color"], color_dtype, "", formats_group
             ):
                 return False
             # Nudge is a film-offset FRACTION (percent unit: raw 1.0 == 100%),
             # so the clamp is -1.0..1.0 (=-100%..100%), step 0.01 (=1%). Using
             # -100..100 here would read as +/-10000% under the percent unit.
             if not self._set_description_parameter(
-                node, description, ids["nudge_x"], c4d.DTYPE_REAL, "X", row_group, -1.0, 1.0, 0.01
+                node, description, ids["nudge_x"], c4d.DTYPE_REAL, "X", formats_group, -1.0, 1.0, 0.01
             ):
                 return False
             if not self._set_description_parameter(
-                node, description, ids["nudge_y"], c4d.DTYPE_REAL, "Y", row_group, -1.0, 1.0, 0.01
+                node, description, ids["nudge_y"], c4d.DTYPE_REAL, "Y", formats_group, -1.0, 1.0, 0.01
             ):
                 return False
 
@@ -1930,21 +1947,40 @@ class SentinelFrameTag(_TagDataBase):
             )
 
         if show_hud:
-            for entry, guide_px in pixel_guides:
-                text = f"{entry['id']}  {entry['width']}x{entry['height']}"
-                _draw_hud_text(bd, guide_px[0] + 5, guide_px[1] + 5, text)
-            # Frame v2 HUD: what you're viewing + sync state (auto-sync makes
-            # "Takes out of date" a transient, so the old stale banner is gone),
-            # plus an honest warning in None mode (guides suggest a crop that
-            # None will NOT apply — render extends vertically instead).
-            _draw_hud_text(
-                bd, safe_frame[0] + 8, safe_frame[1] + 8,
-                "Viewing: Master  %s" % _sync_status_text(tag),
-            )
+            # Frame v2 HUD (live-caught polish): the old per-rect floating
+            # labels collided whenever formats shared a top edge — replaced
+            # by a stacked LEGEND under the Viewing line, one row per active
+            # format with a chip in its guide color (the color ties label →
+            # rectangle, which is the hierarchy the overlapping rects lack).
+            # Chips honor the same focus dimming as their guides.
+            hud_x = safe_frame[0] + 8
+            hud_y = safe_frame[1] + 8
+            _draw_hud_text(bd, hud_x, hud_y, "Viewing: Master  %s" % _sync_status_text(tag))
+            hud_y += 20
+            legend_focus = 0
+            try:
+                legend_focus = int(_bc_get_data(_node_data_container(tag), ID_PRIVATE_FOCUS_FORMAT) or 0)
+            except Exception:
+                legend_focus = 0
+            legend_focus_fmt = None
+            legend_defs = _format_defs()
+            if 0 < legend_focus <= len(legend_defs):
+                legend_focus_fmt = legend_defs[legend_focus - 1].get("id")
+            legend_dim = max(0.0, min(1.0, _as_float(_get_node_value(tag, ID_DIM_NONVIEWED, 0.7), 0.7)))
+            for entry, _guide_px in pixel_guides:
+                chip_color = entry["color"]
+                if legend_focus_fmt is not None and entry["id"] != legend_focus_fmt:
+                    chip_color = _dim_color(chip_color, max(0.25, legend_dim))
+                _draw_color_chip(bd, hud_x, hud_y + 3, 10, chip_color)
+                _draw_hud_text(
+                    bd, hud_x + 16, hud_y,
+                    f"{entry['id']}  {entry['width']}x{entry['height']}",
+                )
+                hud_y += 18
             comp = _get_node_value(tag, ID_COMPOSITION, COMPOSITION_CROP)
             if comp == COMPOSITION_OFF:
                 _draw_hud_text(
-                    bd, safe_frame[0] + 8, safe_frame[1] + 26,
+                    bd, hud_x, hud_y + 4,
                     "None: guides are reference only - no crop",
                 )
 
