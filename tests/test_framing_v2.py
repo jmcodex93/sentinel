@@ -113,3 +113,28 @@ def test_nudge_to_film_wider_target_with_source_offsets_hand_computed():
         (0.0, 1.0), 0.1, -0.05, 1920, 1080, 2560, 1080)
     assert film_x == pytest.approx(0.1)
     assert film_y == pytest.approx(7.0 / 60.0)
+
+
+def test_crop_writes_wider_emits_pan_only():
+    # 21:9-style WIDER target: the crop is resolution-only, but a vertical
+    # nudge must still pan inside the top/bottom crop (live-caught: the old
+    # early-return [] swallowed 21:9's vertical nudge entirely). Hand math
+    # (1920x1080 -> 2560x1080, full nudge): film_y = (ta/sa - 1)/2 = 1/6.
+    writes = framing.crop_writes(
+        "orscamera", aperture=None, sensor=(36.0, 24.0), factor=4.0 / 3.0,
+        nudge_film=(0.0, 1.0 / 6.0), src_film=(0.0, 0.0))
+    assert writes == [(framing.RS_SENSOR_SHIFT, (0.0, 1.0 / 6.0, 0.0))]
+
+    writes_o = framing.crop_writes(
+        "ocamera", aperture=36.0, sensor=None, factor=4.0 / 3.0,
+        nudge_film=(0.0, 1.0 / 6.0), src_film=(0.0, 0.0))
+    assert writes_o == [
+        (framing.CAMERAOBJECT_FILM_OFFSET_X, 0.0),
+        (framing.CAMERAOBJECT_FILM_OFFSET_Y, 1.0 / 6.0),
+    ]
+
+
+def test_crop_writes_wider_without_nudge_stays_empty():
+    assert framing.crop_writes(
+        "ocamera", aperture=36.0, sensor=None, factor=4.0 / 3.0,
+        nudge_film=(0.0, 0.0), src_film=(0.0, 0.0)) == []

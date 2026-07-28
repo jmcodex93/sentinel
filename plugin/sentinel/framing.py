@@ -317,8 +317,21 @@ def crop_writes(
     src_film: tuple[float, float],
 ) -> list:
     """Pure table of ``(param_id, value)`` camera-override writes for a TRUE
-    inscribed crop of ``factor`` (``< 1`` narrower target; ``== 1`` → no
-    writes, wider-or-equal formats are resolution-only).
+    inscribed crop of ``factor``.
+
+    ``factor < 1`` (narrower target): sensor/aperture scaled + pan writes.
+    ``factor >= 1`` (wider-or-equal): resolution-only for the CROP itself
+    (no sensor/aperture write), but the pan writes are STILL emitted when
+    the nudge differs from the source — a wider format crops top/bottom via
+    the render aspect, and its VERTICAL nudge pans inside that crop
+    (live-caught regression: returning ``[]`` here swallowed 21:9's vertical
+    nudge, which v1.8.0's focal-path did write).
+
+    Film offset / sensor shift units are fractions of the take's CURRENT
+    gate (C4D semantics), and ``nudge_to_film`` already emits in exactly
+    those units for both the narrower (sensor-cropped gate) and wider
+    (resolution-cropped vertical gate) cases — do NOT rescale by ``factor``
+    (live-verified: a ÷factor "correction" overshoots the pan 1/factor×).
 
     Same optics both camera kinds — a sensor/aperture crop keeps focal
     length (and therefore DOF + zoom keyframes) intact:
@@ -336,12 +349,21 @@ def crop_writes(
     See docs/solutions/workflow-issues/2026-07-28-rs-camera-take-overrides.md
     for the live spike that confirmed these ids and units.
     """
-    if factor >= 1.0 - 1e-9:
-        return []
-
     nx, ny = float(nudge_film[0]), float(nudge_film[1])
     sx, sy = float(src_film[0]), float(src_film[1])
     has_nudge = abs(nx - sx) > 1e-9 or abs(ny - sy) > 1e-9
+
+    if factor >= 1.0 - 1e-9:
+        # Wider/equal: the crop itself is resolution-only, but the pan still
+        # applies (vertical nudge inside the top/bottom crop).
+        if not has_nudge:
+            return []
+        if kind == "orscamera":
+            return [(RS_SENSOR_SHIFT, (nx, ny, 0.0))]
+        return [
+            (CAMERAOBJECT_FILM_OFFSET_X, nx),
+            (CAMERAOBJECT_FILM_OFFSET_Y, ny),
+        ]
 
     writes = []
     if kind == "orscamera":
