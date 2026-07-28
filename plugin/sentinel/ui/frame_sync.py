@@ -85,10 +85,17 @@ last_sync_result = {}
 
 
 def _tag_key(tag):
+    """Stable per-tag identity. BaseTag has NO GetGUID() (that's BaseObject
+    API — live-caught bug: the old str(tag.GetGUID()) raised, returned None
+    and silently disabled the whole auto-sync). FindUniqueID(MAXON_CREATOR_ID)
+    is the BaseList2D-level unique id, present on tags."""
     try:
-        return str(tag.GetGUID())
+        uid = tag.FindUniqueID(c4d.MAXON_CREATOR_ID)
+        if uid:
+            return bytes(uid).hex()
     except Exception:
-        return None
+        pass
+    return None
 
 
 def request_sync(tag):
