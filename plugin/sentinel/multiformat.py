@@ -351,8 +351,23 @@ def _set_camera_override(take, takeData, cam, param_id, value):
     ovr = take.FindOrAddOverrideParam(takeData, cam, descid, value)
     if ovr:
         # C4D's API is find-OR-add; SetParameter makes re-runs idempotent.
-        ovr.SetParameter(descid, value, c4d.DESCFLAGS_SET_0)
-        ovr.UpdateSceneNode(takeData, descid)
+        # CRITICAL (live-caught, same lesson as _reset_camera_dimensions_to_
+        # native): a hand-built DescID does NOT reliably match the override's
+        # STORED param — SetParameter/UpdateSceneNode with it can silently
+        # no-op on an existing override, so re-syncs left the scene at
+        # whatever the last matched push wrote (the reset's native values →
+        # "takes stopped cropping"). Always resolve the override's own
+        # stored DescID and use IT for both calls.
+        target = descid
+        try:
+            for did in (ovr.GetAllOverrideDescID() or []):
+                if did[0].id == param_id:
+                    target = did
+                    break
+        except Exception:
+            pass
+        ovr.SetParameter(target, value, c4d.DESCFLAGS_SET_0)
+        ovr.UpdateSceneNode(takeData, target)
     return ovr
 
 
