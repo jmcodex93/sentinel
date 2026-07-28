@@ -1050,9 +1050,26 @@ def _run_takes_generation(doc, node):
 def _prune_orphaned_takes(doc, node):
     """Silently remove takes for formats no longer enabled (auto-sync's
     implicit Remove Stale — no confirmation dialog). Caller owns the undo
-    block. Returns the number removed."""
+    block. Returns the number removed.
+
+    Viewing guard (final-review finding): with auto-sync + the Viewing
+    selector, "the user is currently looking at the take about to be
+    deleted" is routine (view 9:16 → disable 9:16 → debounce fires). Never
+    delete the ACTIVE take out from under the viewport — fall back to Main
+    first, same SetCurrentTake idiom as _activate_viewing."""
     removed = 0
+    try:
+        td = doc.GetTakeData()
+        current = td.GetCurrentTake() if td else None
+    except Exception:
+        td, current = None, None
     for fmt_id, take in _find_orphaned_takes_for_tag(node, doc):
+        if td is not None and current is not None and take == current:
+            try:
+                td.SetCurrentTake(td.GetMainTake())
+                current = td.GetCurrentTake()
+            except Exception:
+                pass
         try:
             doc.AddUndo(_undo_type_delete(), take)
         except Exception:
