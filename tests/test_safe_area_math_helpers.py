@@ -171,6 +171,64 @@ def test_corners_violation_sides(sentinel_module):
     ) == {"left", "right", "top", "bottom"}
 
 
+def test_find_active_multiformat_takes_dedupes_slice_families(sentinel_module):
+    # v1.29 slices: a sliced format has no whole-format take, only
+    # "<prefix>_<fmt>_sNN" children. QC #12 must still count the format as an
+    # active delivery Take (else it silently stops evaluating, a regression
+    # vs v1.28) but must report each family once, not once per slice.
+    sa = importlib.import_module("sentinel.safe_areas")
+
+    class T:
+        def __init__(self, name):
+            self._n = name
+            self._down = None
+            self._next = None
+
+        def GetName(self):
+            return self._n
+
+        def GetDown(self):
+            return self._down
+
+        def GetNext(self):
+            return self._next
+
+    class Main:
+        def __init__(self, first):
+            self._first = first
+
+        def GetDown(self):
+            return self._first
+
+        def GetName(self):
+            return "Main"
+
+        def GetNext(self):
+            return None
+
+    class TD:
+        def __init__(self, main):
+            self._main = main
+
+        def GetTakeData(self):
+            return self
+
+        def GetMainTake(self):
+            return self._main
+
+    s01 = T("Hero_9x16_s01")
+    s02 = T("Hero_9x16_s02")
+    whole = T("Hero_16x9")
+    s01._next = s02
+    s02._next = whole
+
+    doc = TD(Main(s01))
+
+    result = sa.find_active_multiformat_takes(doc)
+    ids = [fmt_id for fmt_id, _take in result]
+    assert sorted(ids) == ["16x9", "9x16"]
+
+
 def test_project_world_to_ndc_identity_matrix(sentinel_module):
     class IdentityMatrix:
         def __mul__(self, other):
