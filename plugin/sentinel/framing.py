@@ -257,6 +257,78 @@ def inscribed_crop_factor(src_w: float, src_h: float, tgt_w: float, tgt_h: float
     return ta / sa
 
 
+def slice_windows(rect, sx, sy, px_w, px_h):
+    """Split ``rect`` into an ``sx``×``sy`` grid of render-slice windows.
+
+    Pixel boundaries are FLOOR-EXACT (spec v1.29 decision 4): boundary ``i``
+    on the X axis is ``(i*px_w)//sx``, so slice widths differ by at most 1 px
+    when ``px_w`` isn't divisible and the sum is exactly ``px_w`` — no
+    overlap, no gap (physical LED panels). Returns row-major (reading order,
+    top-left first) ``(sub_rect, w_px, h_px, suffix)`` tuples with 1-based
+    zero-padded suffixes ``"s01"``…; a 1×1 grid returns ``[(rect, px_w,
+    px_h, "")]`` so non-sliced callers stay byte-identical.
+
+    Works in any linear rect convention — the sub-rects interpolate from
+    ``(left, top)`` to ``(right, bottom)`` proportionally to the pixel
+    boundaries, so both the abstract top-left frame (crop writer) and an
+    NDC y-up rect passed as ``(left, top_ndc, right, bottom_ndc)`` (viewport
+    cut lines) slice correctly.
+    """
+    sx = max(1, int(sx))
+    sy = max(1, int(sy))
+    px_w = max(1, int(px_w))
+    px_h = max(1, int(px_h))
+    sx = min(sx, px_w)  # never emit 0-px slices
+    sy = min(sy, px_h)
+    if sx == 1 and sy == 1:
+        return [(rect, px_w, px_h, "")]
+
+    left, top, right, bottom = rect
+    xs = [(i * px_w) // sx for i in range(sx + 1)]
+    ys = [(j * px_h) // sy for j in range(sy + 1)]
+    out = []
+    ordinal = 0
+    for j in range(sy):
+        for i in range(sx):
+            ordinal += 1
+            sub = (
+                left + (right - left) * (xs[i] / float(px_w)),
+                top + (bottom - top) * (ys[j] / float(px_h)),
+                left + (right - left) * (xs[i + 1] / float(px_w)),
+                top + (bottom - top) * (ys[j + 1] / float(px_h)),
+            )
+            out.append((sub, xs[i + 1] - xs[i], ys[j + 1] - ys[j],
+                        "s%02d" % ordinal))
+    return out
+
+
+def window_crop_values(window, src_aspect, src_film=(0.0, 0.0)):
+    """Return ``(factor, film_x, film_y)`` for an ARBITRARY window rect in
+    the abstract master frame ``(0, 0, src_aspect, 1)`` (top-left, y down).
+
+    Generalizes the centered+nudge pair ``inscribed_crop_factor`` +
+    ``nudge_to_film`` to any anchor — same math, different anchor (spec
+    v1.29): ``factor`` is the window width as a fraction of the master
+    width (the sensor/aperture scale ``crop_writes`` consumes), and the
+    film offsets are the window center's displacement from the master
+    center in fractions of the CURRENT (cropped) gate — X relative to the
+    gate width, Y relative to the gate height, exactly C4D's film-offset /
+    RS sensor-shift semantics that v1.28 live-verified. Feed the result to
+    ``crop_writes`` unchanged (its ``factor >= 1`` branch keeps working:
+    a full-width window yields factor 1.0 → resolution-only crop + pan).
+    """
+    sa = max(0.0001, float(src_aspect))
+    left, top, right, bottom = window
+    ww = float(right) - float(left)
+    wh = float(bottom) - float(top)
+    if ww <= 0.0 or wh <= 0.0:
+        return (1.0, float(src_film[0]), float(src_film[1]))
+    factor = ww / sa
+    film_x = float(src_film[0]) + (((left + right) * 0.5) - sa * 0.5) / ww
+    film_y = float(src_film[1]) + (((top + bottom) * 0.5) - 0.5) / wh
+    return (factor, film_x, film_y)
+
+
 def format_crop_values(
     source_focal: float,
     src_w: float,
