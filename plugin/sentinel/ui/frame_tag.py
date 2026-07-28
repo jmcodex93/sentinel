@@ -930,14 +930,13 @@ def _viewing_value_from_takes(node, doc):
         current = None
     if current is None:
         return 0
-    try:
-        current_name = current.GetName()
-    except Exception:
-        return 0
     for index, fmt in enumerate(_format_defs()):
         linked = _read_take_link(node, fmt.get("id"), doc)
         try:
-            if linked is not None and linked.GetName() == current_name:
+            # Object identity, not name comparison: take names aren't unique
+            # in C4D, and the BaseLink already resolved the real node (review
+            # finding — same identity idiom as _current_take_is_own_format).
+            if linked is not None and linked == current:
                 return index + 1
         except Exception:
             continue
@@ -1338,7 +1337,11 @@ class SentinelFrameTag(_TagDataBase):
             _set_bc_value(bc, "SetFloat", c4d.DESC_MAXSLIDER, float(maximum))
         if step is not None:
             _set_bc_value(bc, "SetFloat", c4d.DESC_STEP, float(step))
-        if dtype == c4d.DTYPE_REAL:
+        if dtype == c4d.DTYPE_REAL and parameter_id != ID_LINE_WIDTH:
+            # Every other REAL here is a genuine 0-1 fraction (opacity, dim,
+            # nudge) — but Line Width is a literal pixel-ish thickness (0.5-4)
+            # that Draw consumes raw; the percent unit would render 2.0 as
+            # "200%" in the AM (review finding).
             _set_bc_value(bc, "SetInt32", c4d.DESC_UNIT, c4d.DESC_UNIT_PERCENT)
         if dtype == c4d.DTYPE_BUTTON:
             # A DTYPE_BUTTON only renders as a clickable button when its
