@@ -22,7 +22,7 @@ export function Select({ id, value, options, onChange, disabled = false }: Selec
       value={value}
       disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
-      className="text-body w-full rounded-md border px-3 py-1.5 outline-none transition-colors duration-100 ease-out focus:border-[var(--color-primary)] disabled:cursor-not-allowed disabled:opacity-50"
+      className="text-body w-full rounded-md border px-3 py-1.5 outline-none transition-colors duration-[var(--motion-fast)] ease-[var(--ease-glide)] focus:border-[var(--color-primary)] disabled:cursor-not-allowed disabled:opacity-50"
       style={{ backgroundColor: "var(--color-surface-1)", borderColor: "var(--color-hairline)", color: "var(--color-ink)" }}
     >
       {options.map((option) => (

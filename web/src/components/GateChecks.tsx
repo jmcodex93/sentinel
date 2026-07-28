@@ -1,6 +1,6 @@
 import { Wrench } from "lucide-react";
 import { CheckRow } from "./CheckRow";
-import type { StatusTone } from "./StatusDot";
+import type { StatusTone } from "./StatusMark";
 import type { GateCheck } from "../types";
 
 function toneForSeverity(severity: string): StatusTone {

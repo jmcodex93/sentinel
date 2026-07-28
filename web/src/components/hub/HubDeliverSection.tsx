@@ -7,6 +7,7 @@ import { FieldRow } from "../form/FieldRow";
 import { TextArea } from "../form/TextArea";
 import { TextInput } from "../form/TextInput";
 import { GateCheckRow } from "../GateChecks";
+import { SectionGroup } from "../SectionGroup";
 import {
   fetchGateState,
   fetchHubJobStatus,
@@ -272,38 +273,42 @@ export function HubDeliverSection({
 
   if (phase === "idle") {
     return (
-      <div className="flex flex-col gap-3 rounded-lg border p-4" style={cardStyle}>
-        {missingCount > 0 && (
-          <div
-            className="flex items-center gap-2 rounded-md px-3 py-2"
-            style={{ backgroundColor: "var(--color-status-warn-tint-10)" }}
-          >
-            <AlertTriangle size={14} style={{ color: "var(--color-status-warn)" }} aria-hidden="true" />
-            <p className="text-caption" style={{ color: "var(--color-status-warn)" }}>
-              {missingCount} asset{missingCount === 1 ? "" : "s"} missing — delivery will proceed, the manifest
-              seals them as missing.
-            </p>
+      <div className="flex flex-col p-3">
+        <SectionGroup title="Deliver" first>
+          <div className="flex flex-col gap-3">
+            {missingCount > 0 && (
+              <div
+                className="flex items-center gap-2 rounded-md px-3 py-2"
+                style={{ backgroundColor: "var(--color-status-warn-tint-10)" }}
+              >
+                <AlertTriangle size={14} style={{ color: "var(--color-status-warn)" }} aria-hidden="true" />
+                <p className="text-caption" style={{ color: "var(--color-status-warn)" }}>
+                  {missingCount} asset{missingCount === 1 ? "" : "s"} missing — delivery will proceed, the manifest
+                  seals them as missing.
+                </p>
+              </div>
+            )}
+            <FieldRow label="Deliver to" htmlFor="hub-deliver-target">
+              <div className="flex gap-2">
+                <TextInput
+                  id="hub-deliver-target"
+                  value={target}
+                  onChange={(e) => setTarget(e.target.value)}
+                  placeholder="Choose a delivery folder…"
+                />
+                <Button variant="secondary" onClick={handleChoose}>
+                  Choose…
+                </Button>
+              </div>
+            </FieldRow>
+            <Checkbox id="hub-deliver-zip" checked={zip} onChange={setZip} label="Also create a .zip" />
+            <div className="flex justify-end">
+              <Button variant="primary" disabled={busy} onClick={handleDeliverClick}>
+                Deliver
+              </Button>
+            </div>
           </div>
-        )}
-        <FieldRow label="Deliver to" htmlFor="hub-deliver-target">
-          <div className="flex gap-2">
-            <TextInput
-              id="hub-deliver-target"
-              value={target}
-              onChange={(e) => setTarget(e.target.value)}
-              placeholder="Choose a delivery folder…"
-            />
-            <Button variant="secondary" onClick={handleChoose}>
-              Choose…
-            </Button>
-          </div>
-        </FieldRow>
-        <Checkbox id="hub-deliver-zip" checked={zip} onChange={setZip} label="Also create a .zip" />
-        <div className="flex justify-end">
-          <Button variant="primary" disabled={busy} onClick={handleDeliverClick}>
-            Deliver
-          </Button>
-        </div>
+        </SectionGroup>
       </div>
     );
   }
@@ -314,90 +319,97 @@ export function HubDeliverSection({
     const hasFixable = byBucket.fixable.length > 0;
 
     return (
-      <div className="flex flex-col gap-3 rounded-lg border p-4" style={cardStyle}>
-        <p className="text-body-lg" style={{ color: "var(--color-status-fail)" }}>
-          Quality Gate — {gateState.checks.length} check(s) need attention
-        </p>
-        {gateState.sidecar_invalid && (
-          <p className="text-caption" style={{ color: "var(--color-status-warn)" }}>
-            Baseline sidecar unreadable.
-          </p>
-        )}
-
-        {BUCKET_ORDER.map((bucket) =>
-          byBucket[bucket].length > 0 ? (
-            <div key={bucket}>
-              <h3 className="text-subhead mb-2" style={{ color: "var(--color-ink)" }}>
-                {BUCKET_TITLE[bucket]}
-              </h3>
-              <div className="rounded-lg border" style={{ backgroundColor: "var(--color-surface-1)", borderColor: "var(--color-hairline)" }}>
-                {byBucket[bucket].map((check) => (
-                  <GateCheckRow
-                    key={check.check_id}
-                    check={check}
-                    selectable={acceptOpen}
-                    selected={selected.has(check.check_id)}
-                    onToggleSelect={toggleSelect}
-                  />
-                ))}
-              </div>
-            </div>
-          ) : null,
-        )}
-
-        {acceptOpen && (
-          <div className="flex flex-col gap-3 rounded-lg border p-3" style={{ borderColor: "var(--color-hairline)", backgroundColor: "var(--color-surface-2)" }}>
-            <p className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
-              {selected.size > 0 ? `${selected.size} check(s) selected above` : "Select checks above to accept"}
+      <div className="flex flex-col p-3">
+        <SectionGroup title="Quality Gate" first>
+          <div className="flex flex-col gap-3">
+            <p className="text-body-lg" style={{ color: "var(--color-status-fail)" }}>
+              {gateState.checks.length} check(s) need attention
             </p>
-            <FieldRow label="Author" htmlFor="hub-gate-author">
-              <TextInput id="hub-gate-author" value={author} onChange={(e) => setAuthor(e.target.value)} placeholder="Your name" />
-            </FieldRow>
-            <FieldRow label="Reason" htmlFor="hub-gate-reason" error={acceptError}>
-              <TextArea
-                id="hub-gate-reason"
-                rows={2}
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                placeholder="Why is this acceptable?"
-              />
-            </FieldRow>
-            <div className="flex justify-end gap-2">
-              <Button
-                variant="secondary"
-                disabled={gateBusy}
-                onClick={() => {
-                  setAcceptOpen(false);
-                  setAcceptError(null);
-                }}
+            {gateState.sidecar_invalid && (
+              <p className="text-caption" style={{ color: "var(--color-status-warn)" }}>
+                Baseline sidecar unreadable.
+              </p>
+            )}
+
+            {BUCKET_ORDER.map((bucket) =>
+              byBucket[bucket].length > 0 ? (
+                <div key={bucket}>
+                  <h3 className="text-subhead mb-2" style={{ color: "var(--color-ink)" }}>
+                    {BUCKET_TITLE[bucket]}
+                  </h3>
+                  <div className="rounded-lg border" style={{ backgroundColor: "var(--color-surface-1)", borderColor: "var(--color-hairline)" }}>
+                    {byBucket[bucket].map((check) => (
+                      <GateCheckRow
+                        key={check.check_id}
+                        check={check}
+                        selectable={acceptOpen}
+                        selected={selected.has(check.check_id)}
+                        onToggleSelect={toggleSelect}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ) : null,
+            )}
+
+            {acceptOpen && (
+              <div
+                className="mt-2 flex flex-col gap-2 rounded-md border p-2"
+                style={{ borderColor: "var(--color-hairline)", backgroundColor: "var(--color-surface-2)" }}
               >
+                <p className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
+                  {selected.size > 0 ? `${selected.size} check(s) selected above` : "Select checks above to accept"}
+                </p>
+                <FieldRow label="Author" htmlFor="hub-gate-author">
+                  <TextInput id="hub-gate-author" value={author} onChange={(e) => setAuthor(e.target.value)} placeholder="Your name" />
+                </FieldRow>
+                <FieldRow label="Reason" htmlFor="hub-gate-reason" error={acceptError}>
+                  <TextArea
+                    id="hub-gate-reason"
+                    rows={2}
+                    value={reason}
+                    onChange={(e) => setReason(e.target.value)}
+                    placeholder="Why is this acceptable?"
+                  />
+                </FieldRow>
+                <div className="flex justify-end gap-2">
+                  <Button
+                    variant="secondary"
+                    disabled={gateBusy}
+                    onClick={() => {
+                      setAcceptOpen(false);
+                      setAcceptError(null);
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="primary"
+                    disabled={gateBusy || !author.trim() || !reason.trim() || selected.size === 0}
+                    onClick={confirmAccept}
+                  >
+                    Confirm Accept
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Button variant="secondary" disabled={gateBusy} onClick={() => runGateAction("cancel")}>
                 Cancel
               </Button>
-              <Button
-                variant="primary"
-                disabled={gateBusy || !author.trim() || !reason.trim() || selected.size === 0}
-                onClick={confirmAccept}
-              >
-                Confirm Accept
+              <Button variant="secondary" disabled={gateBusy || !hasFixable} onClick={() => runGateAction("fix_all")}>
+                Fix auto-fixables
+              </Button>
+              <Button variant="secondary" disabled={gateBusy} onClick={() => setAcceptOpen((v) => !v)}>
+                Accept…
+              </Button>
+              <Button variant="primary" disabled={gateBusy} onClick={() => runGateAction("proceed")}>
+                Proceed anyway
               </Button>
             </div>
           </div>
-        )}
-
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <Button variant="secondary" disabled={gateBusy} onClick={() => runGateAction("cancel")}>
-            Cancel
-          </Button>
-          <Button variant="secondary" disabled={gateBusy || !hasFixable} onClick={() => runGateAction("fix_all")}>
-            Fix auto-fixables
-          </Button>
-          <Button variant="secondary" disabled={gateBusy} onClick={() => setAcceptOpen((v) => !v)}>
-            Accept…
-          </Button>
-          <Button variant="primary" disabled={gateBusy} onClick={() => runGateAction("proceed")}>
-            Proceed anyway
-          </Button>
-        </div>
+        </SectionGroup>
       </div>
     );
   }
@@ -416,7 +428,7 @@ export function HubDeliverSection({
         )}
         <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ backgroundColor: "var(--color-surface-2)" }}>
           <div
-            className="h-full rounded-full transition-all duration-150 ease-out"
+            className="h-full rounded-full transition-all duration-[var(--motion-base)] ease-[var(--ease-glide)]"
             style={{ width: `${Math.min(100, Math.max(0, pct))}%`, backgroundColor: "var(--color-status-pass)" }}
           />
         </div>
@@ -431,16 +443,18 @@ export function HubDeliverSection({
     // `HubShrinkResult` never reaches this code path.
     const result = (jobStatus?.result as HubCollectResult | null) ?? null;
     return (
-      <div className="flex flex-col gap-3">
-        <div className="flex items-center gap-2 rounded-lg border p-4" style={cardStyle}>
-          <CheckCircle2 size={16} style={{ color: "var(--color-status-pass)" }} aria-hidden="true" />
-          <p className="text-body" style={{ color: "var(--color-ink)" }}>
-            {result ? "Delivery complete." : "Delivery complete (mock — no report data)."}
-          </p>
-          <Button variant="secondary" className="ml-auto" onClick={handleDeliverAgain}>
-            Deliver Again
-          </Button>
-        </div>
+      <div className="flex flex-col gap-3 p-3">
+        <SectionGroup first>
+          <div className="flex items-center gap-2">
+            <CheckCircle2 size={16} style={{ color: "var(--color-status-pass)" }} aria-hidden="true" />
+            <p className="text-body" style={{ color: "var(--color-ink)" }}>
+              {result ? "Delivery complete." : "Delivery complete (mock — no report data)."}
+            </p>
+            <Button variant="secondary" className="ml-auto" onClick={handleDeliverAgain}>
+              Deliver Again
+            </Button>
+          </div>
+        </SectionGroup>
         {result && (
           <div className="overflow-hidden rounded-lg border" style={cardStyle}>
             <DeliverySummaryView data={result.report} />
@@ -469,21 +483,25 @@ export function HubDeliverSection({
 
   // error
   return (
-    <div className="flex flex-col gap-3 rounded-lg border p-4" style={cardStyle}>
-      <div className="flex items-center gap-2">
-        <AlertTriangle size={16} style={{ color: "var(--color-status-fail)" }} aria-hidden="true" />
-        <p className="text-body" style={{ color: "var(--color-status-fail)" }}>
-          {error || "Delivery failed."}
-        </p>
-      </div>
-      <div className="flex justify-end gap-2">
-        <Button variant="secondary" onClick={handleDeliverAgain}>
-          Back
-        </Button>
-        <Button variant="primary" disabled={busy} onClick={handleRetry}>
-          Retry
-        </Button>
-      </div>
+    <div className="flex flex-col p-3">
+      <SectionGroup first>
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={16} style={{ color: "var(--color-status-fail)" }} aria-hidden="true" />
+            <p className="text-body" style={{ color: "var(--color-status-fail)" }}>
+              {error || "Delivery failed."}
+            </p>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={handleDeliverAgain}>
+              Back
+            </Button>
+            <Button variant="primary" disabled={busy} onClick={handleRetry}>
+              Retry
+            </Button>
+          </div>
+        </div>
+      </SectionGroup>
     </div>
   );
 }

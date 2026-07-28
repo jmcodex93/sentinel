@@ -29,7 +29,7 @@ function Chip({
       aria-pressed={active}
       onClick={onClick}
       disabled={count === 0 && !active}
-      className="text-label inline-flex shrink-0 items-center gap-1 rounded-sm px-2 py-1 transition-colors duration-100 ease-out disabled:cursor-not-allowed disabled:opacity-40"
+      className="text-label inline-flex shrink-0 items-center gap-1 rounded-sm px-2 py-1 transition-colors duration-[var(--motion-fast)] ease-[var(--ease-glide)] disabled:cursor-not-allowed disabled:opacity-40"
       style={{
         color: active ? "var(--color-on-primary)" : "var(--color-ink-secondary)",
         backgroundColor: active ? "var(--color-primary)" : "var(--color-surface-2)",

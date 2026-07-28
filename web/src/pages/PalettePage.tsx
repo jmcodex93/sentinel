@@ -237,7 +237,7 @@ export function PalettePage({ onNavigate }: { onNavigate: (page: Page) => void }
                   disabled={busy}
                   onMouseEnter={() => setActiveIndex(rowIndex)}
                   onClick={() => runAction(action)}
-                  className="text-body flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left transition-colors duration-100 ease-out disabled:cursor-not-allowed"
+                  className="text-body flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left transition-colors duration-[var(--motion-fast)] ease-[var(--ease-glide)] disabled:cursor-not-allowed"
                   style={{
                     backgroundColor: isActive ? "var(--color-surface-2)" : "transparent",
                     color: action.enabled ? "var(--color-ink)" : "var(--color-ink-secondary)",

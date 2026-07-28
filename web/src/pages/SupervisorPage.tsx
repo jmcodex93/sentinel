@@ -61,7 +61,7 @@ export function SupervisorPage() {
           type="button"
           onClick={handleScan}
           disabled={!folderInput.trim()}
-          className="text-label inline-flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 transition-colors duration-100 ease-out disabled:opacity-50"
+          className="text-label inline-flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 transition-colors duration-[var(--motion-fast)] ease-[var(--ease-glide)] disabled:opacity-50"
           style={{ backgroundColor: "var(--color-primary)", color: "var(--color-on-primary)" }}
           onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--color-primary-hover)")}
           onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "var(--color-primary)")}

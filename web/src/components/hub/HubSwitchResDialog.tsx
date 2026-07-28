@@ -30,6 +30,7 @@ export function HubSwitchResDialog({
 }) {
   const { targets, total } = switchTargets(selectedKeys, variants, repathableKeys);
   const [target, setTarget] = useState<number | "highest">(targets[0]?.px ?? "highest");
+  const [entered, setEntered] = useState(false);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -38,6 +39,11 @@ export function HubSwitchResDialog({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
+
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => setEntered(true));
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   const selectedTarget = targets.find((t) => t.px === target);
 
@@ -52,8 +58,15 @@ export function HubSwitchResDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="hub-switch-res-dialog-title"
-        className="flex w-full max-w-md flex-col gap-4 rounded-lg border p-5"
-        style={{ backgroundColor: "var(--color-surface-1)", borderColor: "var(--color-hairline-strong)" }}
+        className="flex w-full max-w-md flex-col gap-4 rounded-lg border p-5 transition-[opacity,transform] ease-[var(--ease-glide)]"
+        style={{
+          backgroundColor: "var(--color-surface-1)",
+          borderColor: "var(--color-hairline-strong)",
+          boxShadow: "var(--shadow-float)",
+          transitionDuration: "var(--motion-glide)",
+          opacity: entered ? 1 : 0,
+          transform: entered ? "translateY(0)" : "translateY(-4px)",
+        }}
         onClick={(event) => event.stopPropagation()}
       >
         <h2 id="hub-switch-res-dialog-title" className="text-title" style={{ color: "var(--color-ink)" }}>

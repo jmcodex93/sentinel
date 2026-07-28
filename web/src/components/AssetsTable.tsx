@@ -1,7 +1,8 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
 import type { CSSProperties } from "react";
 import type { DeliveryAsset } from "../types";
-import { StatusBadge } from "./StatusBadge";
+import { StatusMark } from "./StatusMark";
+import { assetStatusTone } from "../lib/status";
 
 const headerCellStyle: CSSProperties = {
   backgroundColor: "var(--color-surface-1)",
@@ -51,7 +52,7 @@ export function AssetsTable({ assets }: { assets: DeliveryAsset[] }) {
             {assets.map((asset, index) => (
               <tr
                 key={`${asset.status}:${asset.path}:${index}`}
-                className="h-8 transition-colors duration-100 ease-out hover:bg-[var(--color-surface-2)]"
+                className="h-8 transition-colors duration-[var(--motion-fast)] ease-[var(--ease-glide)] hover:bg-[var(--color-surface-2)]"
               >
                 <td className="text-body px-4" style={rowCellStyle}>
                   <Tooltip.Root>
@@ -76,7 +77,7 @@ export function AssetsTable({ assets }: { assets: DeliveryAsset[] }) {
                   </Tooltip.Root>
                 </td>
                 <td className="px-4" style={rowCellStyle}>
-                  <StatusBadge status={asset.status} />
+                  <StatusMark tone={assetStatusTone(asset.status)} label={asset.status} />
                 </td>
                 <td
                   className="text-body truncate px-4"

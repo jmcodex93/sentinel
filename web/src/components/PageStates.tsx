@@ -50,7 +50,7 @@ export function ErrorState({ message, onRetry, title = "Couldn't load the Delive
       <button
         type="button"
         onClick={onRetry}
-        className="text-label mt-4 inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 transition-colors duration-100 ease-out"
+        className="text-label mt-4 inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 transition-colors duration-[var(--motion-fast)] ease-[var(--ease-glide)]"
         style={{ backgroundColor: "var(--color-primary)", color: "var(--color-on-primary)" }}
         onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--color-primary-hover)")}
         onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "var(--color-primary)")}

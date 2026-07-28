@@ -37,6 +37,7 @@ export function HubShrinkDialog({
   onClose: () => void;
 }) {
   const [targetPx, setTargetPx] = useState(2048);
+  const [entered, setEntered] = useState(false);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -45,6 +46,11 @@ export function HubShrinkDialog({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
+
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => setEntered(true));
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   const preview = shrinkPreview(assets, metas, selectedKeys, targetPx);
   const vramSaved = preview.vramBefore - preview.vramAfter;
@@ -60,8 +66,15 @@ export function HubShrinkDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="hub-shrink-dialog-title"
-        className="flex w-full max-w-md flex-col gap-4 rounded-lg border p-5"
-        style={{ backgroundColor: "var(--color-surface-1)", borderColor: "var(--color-hairline-strong)" }}
+        className="flex w-full max-w-md flex-col gap-4 rounded-lg border p-5 transition-[opacity,transform] ease-[var(--ease-glide)]"
+        style={{
+          backgroundColor: "var(--color-surface-1)",
+          borderColor: "var(--color-hairline-strong)",
+          boxShadow: "var(--shadow-float)",
+          transitionDuration: "var(--motion-glide)",
+          opacity: entered ? 1 : 0,
+          transform: entered ? "translateY(0)" : "translateY(-4px)",
+        }}
         onClick={(event) => event.stopPropagation()}
       >
         <h2 id="hub-shrink-dialog-title" className="text-title" style={{ color: "var(--color-ink)" }}>

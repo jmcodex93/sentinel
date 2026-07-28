@@ -6,9 +6,9 @@ import { PANEL_SECTIONS } from "../../lib/panel";
 /** Badge for a rail entry — status-fail chroma for QC (a failure count IS
  * state, per the plan's Global Constraints), status-warn for assets missing
  * (mirrors the mockup's orange "1" pill). Same tint-10-background/full-color-
- * text convention as `StatusBadge.tsx` (no `--color-on-status-*` token exists
- * in tokens.css, so a solid fill + white/black text would be an invented
- * value). `null` renders nothing. */
+ * text convention used by the shared status-tone components elsewhere in the
+ * panel (no `--color-on-status-*` token exists in tokens.css, so a solid fill
+ * + white/black text would be an invented value). `null` renders nothing. */
 function RailBadge({ count, tone }: { count: number | null; tone: "fail" | "warn" }) {
   if (count === null) return null;
   const color = tone === "fail" ? "var(--color-status-fail)" : "var(--color-status-warn)";

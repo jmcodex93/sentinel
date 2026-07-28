@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { CheckRow } from "../components/CheckRow";
 import { EmptyState, ErrorState, LoadingState } from "../components/PageStates";
 import { Section } from "../components/Section";
-import type { StatusTone } from "../components/StatusDot";
+import type { StatusTone } from "../components/StatusMark";
 import { fetchQcReport } from "../lib/api";
 import type { QcCheck, QcReportResult } from "../types";
 
