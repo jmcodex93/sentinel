@@ -192,3 +192,21 @@ def test_engine_slices_ignored_outside_crop_mode(multiformat, sentinel_module):
     assert report["created"] == ["Hero_custom"]
     assert set(links) == {"custom"}
     assert any("slices ignored" in n for n in report["notes"])
+
+
+def test_engine_clamped_slice_grid_degrades_to_whole_format_identity(
+        multiformat, sentinel_module):
+    # A degenerate 1px-wide format with a requested 3x1 slice grid gets
+    # clamped by framing.slice_windows (sx = min(sx, px_w) = 1) back to a
+    # single whole-window slice with an empty "" suffix. That must NOT leak
+    # as a "tiny:" key/take — it degrades to the exact same identity as the
+    # no-slice path (key = fmt_id, take name has no trailing slice suffix).
+    tiny = {"id": "tiny", "label": "Tiny", "width": 1, "height": 500,
+            "slices": (3, 1)}
+    report, links, doc, _cam = _run_sliced(
+        multiformat, sentinel_module, ["tiny"], [tiny])
+    assert report["success"] is True
+    assert report["created"] == ["Hero_tiny"]
+    assert set(links) == {"tiny"}
+    assert all(":" not in key for key in links)
+    assert all(not name.endswith("_") for name in report["created"])

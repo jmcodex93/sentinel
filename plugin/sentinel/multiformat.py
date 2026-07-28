@@ -585,9 +585,13 @@ def generate_multiformat_takes(doc, options):
               outside the requested formats are reported as orphaned.
             - film_offsets: optional dict fmt_id -> (x, y) camera film offset
               override values.
-            - tag_link_writer: optional callback(fmt_id, take). This keeps
+            - tag_link_writer: optional callback(key, take). This keeps
               BaseLink tracking owned by the tag/UI layer while letting the
-              engine expose the created/adopted take objects at the right time.
+              engine expose the created/adopted take objects at the right
+              time. `key` is `fmt_id` for a whole-format take, or
+              "<fmt_id>:<slice_suffix>" for a slice variant (e.g. "16x9:s01")
+              — never a bare "<fmt_id>:" with an empty suffix. Same key shape
+              applies to `existing_take_resolver` below.
 
     Returns:
         dict report:
@@ -598,6 +602,8 @@ def generate_multiformat_takes(doc, options):
             orphaned: list[str] — prefixed fmt ids that exist but were not requested
             adopted: list[str] — existing prefixed takes updated in place
             errors: list[str] — non-fatal issues encountered
+            notes: list[str] — non-error advisories (e.g. slices ignored for a
+              non-crop composition mode)
             source_take_name, source_resolution, composition_mode
     """
     report = {
@@ -726,12 +732,22 @@ def generate_multiformat_takes(doc, options):
             if sx * sy > 1:
                 fmt_window = framing.format_crop_rect(
                     src_w, src_h, tw, th, film_offsets.get(fmt_id))
-                variants = [
-                    {"suffix": sfx, "window": sub, "width": w_px,
-                     "height": h_px, "key": f"{fmt_id}:{sfx}"}
-                    for sub, w_px, h_px, sfx in framing.slice_windows(
-                        fmt_window, sx, sy, tw, th)
-                ]
+                variants = []
+                for sub, w_px, h_px, sfx in framing.slice_windows(
+                        fmt_window, sx, sy, tw, th):
+                    # A grid that fully clamps back to a single window (e.g. a
+                    # degenerate 1px-wide format) comes back with an empty
+                    # suffix — normalize to the same "whole format" identity
+                    # (suffix None, key = fmt_id) used by the no-slice path,
+                    # so tag_link_writer/existing_take_resolver never see a
+                    # dangling "<fmt_id>:" key that no whole-format lookup
+                    # would ever hit.
+                    norm_sfx = sfx or None
+                    variants.append({
+                        "suffix": norm_sfx, "window": sub, "width": w_px,
+                        "height": h_px,
+                        "key": f"{fmt_id}:{norm_sfx}" if norm_sfx else fmt_id,
+                    })
             else:
                 variants = [{"suffix": None, "window": None, "width": tw,
                              "height": th, "key": fmt_id}]
