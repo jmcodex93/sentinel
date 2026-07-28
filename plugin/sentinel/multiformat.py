@@ -113,10 +113,16 @@ COMPOSITION_MODE_RESIZE_CANVAS = "resize_canvas"
 #     - C4D physical/RS cameras don't clamp aperture overrides (FOV is the
 #       derived value), so this works in both directions (wider AND narrower)
 
-# "crop" — TRUE inscribed crop that matches the viewport guides (WYSIWYG),
-#   implemented by scaling the film gate (aperture) to the inscribed rect and
-#   panning with a gate-relative film offset. Focal length is untouched so DOF
-#   and zoom animations stay intact. This is the Sentinel Frame default.
+# "crop" — TRUE inscribed crop that matches the viewport guides (WYSIWYG) on
+#   BOTH standard C4D cameras AND native Redshift cameras (ORSCAMERA). Each
+#   camera type has its own parameter namespace — Ocamera crops via
+#   CAMERAOBJECT_APERTURE (film gate) + FILM_OFFSET_X/Y (pan); ORSCAMERA has
+#   its own sensor ids (7002 sensor size / 7012 sensor shift) — Ocamera's ids
+#   are inert on it (a confirmed production bug: the nudge silently didn't
+#   render). `framing.detect_camera_kind` + `framing.crop_writes` pick the
+#   right table per camera type. Focal length is untouched by either lever,
+#   so DOF and zoom animations stay intact. This is the Sentinel Frame
+#   default. See docs/solutions/workflow-issues/2026-07-28-rs-camera-take-overrides.md.
 COMPOSITION_MODE_CROP = "crop"
 
 # Legacy focal-compensation modes kept for the old Multi-Format dialog path.
@@ -307,9 +313,10 @@ def _existing_prefixed_format_ids(takeData, name_prefix):
     return found
 
 
-def _real_descid(param_id):
-    """Build a REAL parameter DescID."""
-    return c4d.DescID(c4d.DescLevel(param_id, c4d.DTYPE_REAL, 0))
+def _real_descid(param_id, vector=False):
+    """Build a REAL (or, with ``vector=True``, VECTOR) parameter DescID."""
+    dtype = c4d.DTYPE_VECTOR if vector else c4d.DTYPE_REAL
+    return c4d.DescID(c4d.DescLevel(param_id, dtype, 0))
 
 
 def _read_real_param(node, param_id, fallback):
@@ -322,9 +329,25 @@ def _read_real_param(node, param_id, fallback):
     return fallback
 
 
+def _read_vector_param(node, param_id, fallback):
+    """Read a Vector-typed parameter as an ``(x, y)`` tuple, or ``fallback``."""
+    try:
+        v = node[param_id]
+        return (float(v.x), float(v.y))
+    except Exception:
+        return fallback
+
+
 def _set_camera_override(take, takeData, cam, param_id, value):
-    """Find-or-add and explicitly set a camera override parameter."""
-    descid = _real_descid(param_id)
+    """Find-or-add and explicitly set a camera override parameter.
+
+    ``value`` may be a plain 3-tuple (from ``framing.crop_writes``' pure
+    output) — coerced to ``c4d.Vector`` here, at the C4D boundary, so
+    ``framing.py`` stays free of any ``import c4d``.
+    """
+    if isinstance(value, tuple):
+        value = c4d.Vector(*value)
+    descid = _real_descid(param_id, vector=isinstance(value, c4d.Vector))
     ovr = take.FindOrAddOverrideParam(takeData, cam, descid, value)
     if ovr:
         # C4D's API is find-OR-add; SetParameter makes re-runs idempotent.
@@ -396,21 +419,25 @@ def _reset_camera_dimensions_to_native(take, takeData, cam):
     if ovr is None:
         return
 
-    # Parameters Sentinel may have touched in any prior version
+    # Parameters Sentinel may have touched in any prior version. Scalar
+    # (Ocamera) ids first, then the ORSCAMERA vector ids (7002 sensor size /
+    # 7012 sensor shift) added in Frame v2 — see crop_writes' docstring.
     targets = [
-        (c4d.CAMERAOBJECT_FOV, c4d.CAMERAOBJECT_FOV),
-        (framing.CAMERA_FOCUS, framing.CAMERA_FOCUS),
-        (framing.CAMERAOBJECT_APERTURE, framing.CAMERAOBJECT_APERTURE),
-        (framing.CAMERAOBJECT_FILM_OFFSET_X, framing.CAMERAOBJECT_FILM_OFFSET_X),
-        (framing.CAMERAOBJECT_FILM_OFFSET_Y, framing.CAMERAOBJECT_FILM_OFFSET_Y),
+        (c4d.CAMERAOBJECT_FOV, c4d.CAMERAOBJECT_FOV, False),
+        (framing.CAMERA_FOCUS, framing.CAMERA_FOCUS, False),
+        (framing.CAMERAOBJECT_APERTURE, framing.CAMERAOBJECT_APERTURE, False),
+        (framing.CAMERAOBJECT_FILM_OFFSET_X, framing.CAMERAOBJECT_FILM_OFFSET_X, False),
+        (framing.CAMERAOBJECT_FILM_OFFSET_Y, framing.CAMERAOBJECT_FILM_OFFSET_Y, False),
+        (framing.RS_SENSOR_SIZE, framing.RS_SENSOR_SIZE, True),
+        (framing.RS_SENSOR_SHIFT, framing.RS_SENSOR_SHIFT, True),
     ]
-    for param_id, native_attr in targets:
+    for param_id, native_attr, is_vector in targets:
         try:
-            descid = _real_descid(param_id)
+            descid = _real_descid(param_id, vector=is_vector)
             if not ovr.IsOverriddenParam(descid):
                 continue
             try:
-                native = float(cam[native_attr])
+                native = cam[native_attr] if is_vector else float(cam[native_attr])
             except Exception:
                 continue
             ovr.SetParameter(descid, native, c4d.DESCFLAGS_SET_0)
@@ -666,10 +693,15 @@ def generate_multiformat_takes(doc, options):
             # Camera overrides — depend on composition_mode.
             #
             # "crop" (Sentinel Frame default): a TRUE inscribed crop that
-            #   matches the viewport guides exactly (WYSIWYG). Scales the film
-            #   gate (aperture) to the inscribed rect and pans with a gate-
-            #   relative film offset, leaving focal length untouched so DOF and
-            #   zoom animations are preserved. See framing.format_crop_values.
+            #   matches the viewport guides exactly (WYSIWYG) on BOTH standard
+            #   and native Redshift (ORSCAMERA) cameras. Scales the per-camera-
+            #   type sensor lever (APERTURE for Ocamera, SENSOR_SIZE for
+            #   ORSCAMERA) to the inscribed rect and pans with that type's
+            #   gate-relative offset (FILM_OFFSET for Ocamera, SENSOR_SHIFT for
+            #   ORSCAMERA — Ocamera's film-offset ids are inert on ORSCAMERA),
+            #   leaving focal length untouched so DOF and zoom animations are
+            #   preserved. See framing.detect_camera_kind / framing.crop_writes
+            #   and docs/solutions/workflow-issues/2026-07-28-rs-camera-take-overrides.md.
             # "none": camera unchanged (C4D keeps horizontal FOV, aspect changes
             #   vertical extent — wider formats crop, narrower ones EXTEND, so
             #   this does NOT match the crop guides for narrower formats). The
@@ -693,30 +725,38 @@ def generate_multiformat_takes(doc, options):
 
                     if composition_mode == COMPOSITION_MODE_CROP:
                         _reset_camera_dimensions_to_native(take, td, source_cam)
-                        # TRUE inscribed crop via FOCAL LENGTH. Focal is the
-                        # universal lever — it crops cleanly on standard AND
-                        # Redshift cameras (verified live), unlike aperture which
-                        # Redshift ignores. For a narrower target the focal is
-                        # zoomed in; for wider/equal it comes back == src_focal
-                        # and we skip the override (the resolution change alone
-                        # crops top/bottom, which works on every camera).
-                        focal, film_x, film_y = framing.format_crop_values(
-                            src_focal, src_w, src_h, tw, th,
-                            nudge, src_film_x, src_film_y)
-                        if focal > src_focal + 1e-6:
-                            _set_camera_override(
-                                take, td, source_cam,
-                                framing.CAMERA_FOCUS, focal)
-                        # Film offset (pan) only when there is an actual offset —
-                        # a spurious 0 override can disturb some cameras.
-                        if (abs(film_x - src_film_x) > 1e-9
-                                or abs(film_y - src_film_y) > 1e-9):
-                            _set_camera_override(
-                                take, td, source_cam,
-                                framing.CAMERAOBJECT_FILM_OFFSET_X, float(film_x))
-                            _set_camera_override(
-                                take, td, source_cam,
-                                framing.CAMERAOBJECT_FILM_OFFSET_Y, float(film_y))
+                        # TRUE inscribed crop, WYSIWYG on BOTH standard
+                        # (Ocamera) and native Redshift (ORSCAMERA) cameras.
+                        # Each camera type has its own parameter namespace —
+                        # Ocamera crops via APERTURE + FILM_OFFSET_X/Y;
+                        # ORSCAMERA has its own sensor ids (7002 size / 7012
+                        # shift) — Ocamera's ids are inert on it (the
+                        # confirmed production nudge bug: the pan showed in
+                        # guides but not in the render). See
+                        # docs/solutions/workflow-issues/2026-07-28-rs-camera-take-overrides.md.
+                        try:
+                            cam_type = source_cam.GetType()
+                        except Exception:
+                            cam_type = None
+                        kind = framing.detect_camera_kind(
+                            cam_type if cam_type is not None else 0)
+                        factor = framing.inscribed_crop_factor(src_w, src_h, tw, th)
+                        if kind == "orscamera":
+                            crop_src_film = _read_vector_param(
+                                source_cam, framing.RS_SENSOR_SHIFT, (0.0, 0.0))
+                            sensor = _read_vector_param(
+                                source_cam, framing.RS_SENSOR_SIZE,
+                                (src_aperture, src_aperture))
+                        else:
+                            crop_src_film = (src_film_x, src_film_y)
+                            sensor = None
+                        nudge_film = framing.nudge_to_film(
+                            nudge, crop_src_film[0], crop_src_film[1],
+                            src_w, src_h, tw, th)
+                        for pid, val in framing.crop_writes(
+                                kind, src_aperture, sensor, factor,
+                                nudge_film, crop_src_film):
+                            _set_camera_override(take, td, source_cam, pid, val)
                     elif composition_mode == COMPOSITION_MODE_RESIZE_CANVAS:
                         new_aperture = compute_target_aperture(
                             src_aperture, src_w, tw)

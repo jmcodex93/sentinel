@@ -63,8 +63,14 @@ ID_REMOVE_STALE = 3003
 ID_MARK_SUBJECT = 3004
 
 # Crop is the default: a true inscribed crop that matches the viewport guides
-# exactly (WYSIWYG) by scaling the film gate (aperture) and panning with a
-# gate-relative film offset — focal length untouched, so DOF/zoom are intact.
+# exactly (WYSIWYG) on BOTH standard C4D cameras and native Redshift cameras
+# (ORSCAMERA) — each camera type has its own parameter namespace, so the
+# writer scales the type's own sensor lever (APERTURE for Ocamera, SENSOR_SIZE
+# for ORSCAMERA) and pans with that type's own gate-relative offset
+# (FILM_OFFSET for Ocamera, SENSOR_SHIFT for ORSCAMERA — Ocamera's ids are
+# inert on ORSCAMERA, a confirmed production bug). Focal length is untouched
+# by either lever, so DOF/zoom are intact. See
+# docs/solutions/workflow-issues/2026-07-28-rs-camera-take-overrides.md.
 # "None" leaves the camera alone (C4D keeps horizontal FOV; narrower formats
 # EXTEND vertically rather than crop, so guides are only a reference there).
 # The legacy focal/resize modes are kept as constants for back-compat mapping

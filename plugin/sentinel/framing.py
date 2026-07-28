@@ -33,6 +33,18 @@ CAMERAOBJECT_APERTURE = 1006
 CAMERAOBJECT_FILM_OFFSET_X = 1118
 CAMERAOBJECT_FILM_OFFSET_Y = 1119
 
+# --- Camera-type-aware crop writes (Frame v2) -------------------------------
+# ORSCAMERA (native Redshift camera, C4D 2023.1+) has its OWN parameter
+# namespace — Ocamera ids (APERTURE=1006, FILM_OFFSET_X/Y=1118/1119) are
+# inert on it. That's the confirmed production bug: the crop factor (driven
+# by focal, id 500, which DOES exist on both node types) rendered fine, but
+# the WYSIWYG nudge/pan silently didn't — 1118/1119 have no effect on
+# ORSCAMERA. Live spike results + the writer decision are in
+# docs/solutions/workflow-issues/2026-07-28-rs-camera-take-overrides.md.
+ORSCAMERA_TYPE = 1057516          # confirmed live, C4D 2026.303
+RS_SENSOR_SIZE = 7002             # RSCAMERAOBJECT_SENSOR_SIZE (Vector, mm)
+RS_SENSOR_SHIFT = 7012            # RSCAMERAOBJECT_SENSOR_SHIFT (Vector, fraction-of-frame — gate-relative, same semantics as Ocamera film offset)
+
 
 def _aspect(width: float, height: float, fallback: float = 1.0) -> float:
     width = float(width)
@@ -199,6 +211,52 @@ def compensated_focus(
     return focus
 
 
+def nudge_to_film(
+    nudge: Optional[tuple[float, float]],
+    src_film_x: float,
+    src_film_y: float,
+    src_w: float,
+    src_h: float,
+    tgt_w: float,
+    tgt_h: float,
+) -> tuple[float, float]:
+    """Return ``(film_x, film_y)`` — the gate-relative pan for a crop-mode
+    override.  C4D's film offset (and its ORSCAMERA sensor-shift analogue)
+    is GATE-relative (an offset of 1.0 shifts by a full frame width), so the
+    per-full-nudge travel is ``(source_aspect/target_aspect - 1)/2`` on the
+    axis that actually has room.  This is identical whether the crop is
+    driven by focal, aperture or sensor size, because the world-space crop
+    rect is the same — extracted once here so every crop-writer lever (Task
+    2's ``crop_writes`` included) reuses the exact same pan math.
+    """
+    sa = _aspect(src_w, src_h, fallback=0.0)
+    ta = _aspect(tgt_w, tgt_h, fallback=0.0)
+    if sa <= 0.0 or ta <= 0.0:
+        return (float(src_film_x), float(src_film_y))
+
+    offset_x, offset_y = _coerce_nudge(nudge)
+    max_film_x = max(0.0, sa / ta - 1.0) * 0.5  # horizontal travel (narrower targets)
+    max_film_y = max(0.0, ta / sa - 1.0) * 0.5  # vertical travel (wider targets)
+    film_x = float(src_film_x) + max_film_x * offset_x
+    film_y = float(src_film_y) + max_film_y * offset_y
+    return (film_x, film_y)
+
+
+def inscribed_crop_factor(src_w: float, src_h: float, tgt_w: float, tgt_h: float) -> float:
+    """Return the sensor/aperture scale factor for a crop-mode override.
+
+    ``< 1.0`` for target formats NARROWER than the source (the crop kicks
+    in — sensor/aperture shrinks by ``target_aspect / source_aspect``);
+    ``1.0`` for wider-or-equal targets (the resolution change alone crops
+    top/bottom on every camera, so the caller skips the override).
+    """
+    sa = _aspect(src_w, src_h, fallback=0.0)
+    ta = _aspect(tgt_w, tgt_h, fallback=0.0)
+    if sa <= 0.0 or ta <= 0.0 or ta >= sa:
+        return 1.0
+    return ta / sa
+
+
 def format_crop_values(
     source_focal: float,
     src_w: float,
@@ -211,11 +269,14 @@ def format_crop_values(
 ) -> tuple[float, float, float]:
     """Return ``(focal, film_x, film_y)`` for a TRUE inscribed crop.
 
-    This is the WYSIWYG crop that matches the viewport guide exactly, and it
-    works on EVERY camera — standard *and* Redshift.  (An earlier version
-    scaled the film gate/aperture, which preserves focal length but Redshift
-    cameras ignore aperture overrides; focal length is the universal lever,
-    verified live on Orscamera.)
+    Kept as the documented focal-based fallback (e.g. for callers that
+    cannot resolve a camera-type-aware writer).  The camera-type-aware
+    Frame v2 path (``detect_camera_kind`` / ``crop_writes``) is now the
+    default in ``multiformat.generate_multiformat_takes`` — it drives the
+    crop via APERTURE (Ocamera) or SENSOR SIZE (ORSCAMERA) instead of focal,
+    because ORSCAMERA's own film-offset ids (7012 sensor shift) are what the
+    nudge actually needs — Ocamera's FILM_OFFSET_X/Y (1118/1119) are inert on
+    it.  See docs/solutions/workflow-issues/2026-07-28-rs-camera-take-overrides.md.
 
     * For a target NARROWER than the source, the FOCAL length is zoomed in by
       ``source_aspect / target_aspect`` to crop the sides down to the inscribed
@@ -223,25 +284,80 @@ def format_crop_values(
       master height, so it matches the guide.  For a WIDER-or-equal target the
       focal is unchanged (returned == source) — the resolution change alone
       crops top/bottom — and the caller should skip the override.
-    * The nudge pans the crop within the master.  C4D's film offset is
-      GATE-relative (an offset of 1.0 shifts by a full frame width), so the
-      per-full-nudge travel is ``(source_aspect/target_aspect - 1)/2`` on the
-      axis that actually has room.  This is identical whether the crop is done
-      via focal or aperture, because the world-space crop rect is the same.
+    * The nudge pan math is shared with ``crop_writes`` via ``nudge_to_film``.
     """
     sa = _aspect(src_w, src_h, fallback=0.0)
     ta = _aspect(tgt_w, tgt_h, fallback=0.0)
     if sa <= 0.0 or ta <= 0.0:
         return (float(source_focal), float(source_film_x), float(source_film_y))
 
-    offset_x, offset_y = _coerce_nudge(nudge)
     # Zoom in only when the target is narrower (sa/ta > 1); unchanged otherwise.
     focal = float(source_focal) * max(1.0, sa / ta)
-    max_film_x = max(0.0, sa / ta - 1.0) * 0.5  # horizontal travel (narrower targets)
-    max_film_y = max(0.0, ta / sa - 1.0) * 0.5  # vertical travel (wider targets)
-    film_x = float(source_film_x) + max_film_x * offset_x
-    film_y = float(source_film_y) + max_film_y * offset_y
+    film_x, film_y = nudge_to_film(
+        nudge, source_film_x, source_film_y, src_w, src_h, tgt_w, tgt_h)
     return (focal, film_x, film_y)
+
+
+def detect_camera_kind(type_int: int) -> str:
+    """Return ``"orscamera"`` for a native Redshift camera type id, else
+    ``"ocamera"`` (the default/fallback for standard C4D cameras and any
+    unrecognized type)."""
+    try:
+        return "orscamera" if int(type_int) == ORSCAMERA_TYPE else "ocamera"
+    except Exception:
+        return "ocamera"
+
+
+def crop_writes(
+    kind: str,
+    aperture: Optional[float],
+    sensor: Optional[tuple[float, float]],
+    factor: float,
+    nudge_film: tuple[float, float],
+    src_film: tuple[float, float],
+) -> list:
+    """Pure table of ``(param_id, value)`` camera-override writes for a TRUE
+    inscribed crop of ``factor`` (``< 1`` narrower target; ``== 1`` → no
+    writes, wider-or-equal formats are resolution-only).
+
+    Same optics both camera kinds — a sensor/aperture crop keeps focal
+    length (and therefore DOF + zoom keyframes) intact:
+
+    * ``"ocamera"`` — ``CAMERAOBJECT_APERTURE`` (1006) scaled by ``factor``,
+      plus ``CAMERAOBJECT_FILM_OFFSET_X/Y`` (1118/1119) when the nudge pans
+      away from the source film offset.
+    * ``"orscamera"`` — ``RS_SENSOR_SIZE`` (7002, Vector, mm) scaled by
+      ``factor`` on both axes, plus ``RS_SENSOR_SHIFT`` (7012, Vector,
+      fraction-of-frame) when the nudge pans away from the source. Values
+      are returned as plain 3-tuples ``(x, y, z)`` — the C4D-bound caller
+      coerces to ``c4d.Vector`` at the override call site (this module stays
+      pure, no ``import c4d``).
+
+    See docs/solutions/workflow-issues/2026-07-28-rs-camera-take-overrides.md
+    for the live spike that confirmed these ids and units.
+    """
+    if factor >= 1.0 - 1e-9:
+        return []
+
+    nx, ny = float(nudge_film[0]), float(nudge_film[1])
+    sx, sy = float(src_film[0]), float(src_film[1])
+    has_nudge = abs(nx - sx) > 1e-9 or abs(ny - sy) > 1e-9
+
+    writes = []
+    if kind == "orscamera":
+        sensor = sensor or (0.0, 0.0)
+        w = float(sensor[0]) * float(factor)
+        h = float(sensor[1]) * float(factor)
+        writes.append((RS_SENSOR_SIZE, (w, h, 0.0)))
+        if has_nudge:
+            writes.append((RS_SENSOR_SHIFT, (nx, ny, 0.0)))
+        return writes
+
+    writes.append((CAMERAOBJECT_APERTURE, float(aperture) * float(factor)))
+    if has_nudge:
+        writes.append((CAMERAOBJECT_FILM_OFFSET_X, nx))
+        writes.append((CAMERAOBJECT_FILM_OFFSET_Y, ny))
+    return writes
 
 
 def format_camera_framing_values(
