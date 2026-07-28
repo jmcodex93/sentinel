@@ -249,3 +249,87 @@ def test_frame_tag_inline_rects_compute_from_tag_params_without_rect_cache(senti
         "bottom": pytest.approx(expected_platform["bottom"]),
         "top": pytest.approx(expected_platform["top"]),
     }
+
+
+def _base_tag(frame_tag, enabled_indexes=(0,)):
+    tag = {frame_tag.ID_COMPOSITION: frame_tag.COMPOSITION_CROP}
+    for index in range(frame_tag.FORMAT_ROW_COUNT):
+        ids = frame_tag._format_ids(index)
+        tag[ids["enabled"]] = index in enabled_indexes
+        tag[ids["nudge_x"]] = 0.0
+        tag[ids["nudge_y"]] = 0.0
+        tag[ids["slice_x"]] = 1
+        tag[ids["slice_y"]] = 1
+    return tag
+
+
+def test_format_defs_without_node_are_the_five_standard(sentinel_module):
+    import importlib
+    frame_tag = importlib.import_module("sentinel.ui.frame_tag")
+    assert [d["id"] for d in frame_tag._format_defs()] == [
+        "16x9", "9x16", "1x1", "4x5", "21x9"]
+
+
+def test_format_defs_include_custom_when_enabled(sentinel_module):
+    import importlib
+    frame_tag = importlib.import_module("sentinel.ui.frame_tag")
+    tag = _base_tag(frame_tag, enabled_indexes=(0, frame_tag.CUSTOM_FORMAT_INDEX))
+    ids = frame_tag._format_ids(frame_tag.CUSTOM_FORMAT_INDEX)
+    tag[ids["width"]] = 9000
+    tag[ids["height"]] = 500
+    defs = frame_tag._format_defs(tag)
+    assert defs[-1] == {"id": "custom", "label": "Custom", "width": 9000, "height": 500}
+    # Disabled custom -> absent.
+    tag[ids["enabled"]] = False
+    assert [d["id"] for d in frame_tag._format_defs(tag)] == [
+        "16x9", "9x16", "1x1", "4x5", "21x9"]
+    # Canonical standard defs are never mutated by per-tag resolution.
+    from sentinel.multiformat import MULTIFORMAT_DEFS
+    assert "slices" not in MULTIFORMAT_DEFS[0]
+
+
+def test_engine_format_defs_inject_slices(sentinel_module):
+    import importlib
+    frame_tag = importlib.import_module("sentinel.ui.frame_tag")
+    tag = _base_tag(frame_tag, enabled_indexes=(1, frame_tag.CUSTOM_FORMAT_INDEX))
+    cids = frame_tag._format_ids(frame_tag.CUSTOM_FORMAT_INDEX)
+    tag[cids["width"]] = 9000
+    tag[cids["height"]] = 500
+    tag[cids["slice_x"]] = 3
+    defs = frame_tag._engine_format_defs(tag)
+    by_id = {d["id"]: d for d in defs}
+    assert by_id["custom"]["slices"] == (3, 1)
+    assert by_id["9x16"]["slices"] == (1, 1)
+    assert frame_tag._total_slice_count(tag) == 3
+
+
+def test_signature_changes_with_slices_and_custom_size(sentinel_module):
+    import importlib
+    frame_tag = importlib.import_module("sentinel.ui.frame_tag")
+    tag = _base_tag(frame_tag, enabled_indexes=(0, frame_tag.CUSTOM_FORMAT_INDEX))
+    cids = frame_tag._format_ids(frame_tag.CUSTOM_FORMAT_INDEX)
+    tag[cids["width"]] = 9000
+    tag[cids["height"]] = 500
+    base_sig = frame_tag._params_signature_for_takes(dict(tag))
+    tag[frame_tag._format_ids(0)["slice_x"]] = 2
+    assert frame_tag._params_signature_for_takes(dict(tag)) != base_sig
+    tag[frame_tag._format_ids(0)["slice_x"]] = 1
+    tag[cids["width"]] = 9001
+    assert frame_tag._params_signature_for_takes(dict(tag)) != base_sig
+
+
+def test_slices_default_to_1x1_for_v128_tags(sentinel_module):
+    # A v1.28 scene has NO slice/custom params stored: defaults must resolve
+    # to slices (1,1) and custom disabled, i.e. the same defs as before.
+    import importlib
+    frame_tag = importlib.import_module("sentinel.ui.frame_tag")
+    tag = {frame_tag.ID_COMPOSITION: frame_tag.COMPOSITION_CROP}
+    for index in range(5):
+        ids = frame_tag._format_ids(index)
+        tag[ids["enabled"]] = True
+        tag[ids["nudge_x"]] = 0.0
+        tag[ids["nudge_y"]] = 0.0
+    assert [d["id"] for d in frame_tag._format_defs(tag)] == [
+        "16x9", "9x16", "1x1", "4x5", "21x9"]
+    assert all(d["slices"] == (1, 1) for d in frame_tag._engine_format_defs(tag))
+    assert frame_tag._slices_for_index(tag, 0) == (1, 1)

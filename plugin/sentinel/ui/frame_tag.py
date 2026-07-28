@@ -57,6 +57,18 @@ ID_GROUP_FORMATS = 903     # sub-group of Main holding the per-format rows
 ID_FORMAT_BASE = 1100
 ID_FORMAT_STRIDE = 20
 
+# Frame v2.1 (custom ratio + render slices). Row indexes: 0..4 follow
+# MULTIFORMAT_DEFS order, 5 = the Custom row. The custom row's `enabled`
+# defaults to False everywhere (v1.28 scenes must not sprout a custom
+# format); standard rows keep default True — see _row_enabled.
+FORMAT_ROW_COUNT = 6
+CUSTOM_FORMAT_INDEX = 5
+CUSTOM_FORMAT_ID = "custom"
+ID_GROUP_CUSTOM = 904            # 8-column sub-grid under the formats grid
+ID_PRIVATE_SLICE_LINK_BASE = 2600  # slice take BaseLinks:
+MAX_SLICE_ORDINALS = 256           # id = 2600 + row_index*256 + (ordinal-1)
+VIEWING_SLICE_STRIDE = 1000        # ID_VIEWING encoding for slices (Task 5)
+
 # Private per-format platform insets: stored on the tag container so Draw can
 # stay read-only and avoid resolving sentinel_rules.json on the draw thread.
 ID_PLATFORM_INSET_BASE = 2000
@@ -130,6 +142,7 @@ _FORMAT_COLORS = {
     "1x1": (0.50, 0.85, 0.95),
     "4x5": (0.85, 0.35, 0.85),
     "21x9": (0.95, 0.85, 0.20),
+    "custom": (0.35, 0.95, 0.55),
 }
 
 
@@ -138,14 +151,39 @@ def is_valid_camera_host(obj_type_int):
     return int(obj_type_int or 0) in (OCAMERA, ORSCAMERA)
 
 
-def _format_defs():
-    """Return the canonical multi-format definitions without duplicating data."""
+def _format_defs(node=None):
+    """Canonical defs — the 5 standard entries plus, when ``node`` is given
+    and its Custom row is enabled, a FRESH custom def dict (v1.29). The
+    standard entries are the shared MULTIFORMAT_DEFS dicts and must never be
+    mutated; the custom def is rebuilt per call from the tag params."""
     defs = []
     for fmt in MULTIFORMAT_DEFS:
         canonical = get_multiformat_def(fmt.get("id"))
         if canonical:
             defs.append(canonical)
+    if node is not None:
+        custom = _custom_def_from_params(node)
+        if custom is not None:
+            defs.append(custom)
     return defs
+
+
+def _custom_def_from_params(node):
+    ids = _format_ids(CUSTOM_FORMAT_INDEX)
+    if not _as_bool(_get_node_value(node, ids["enabled"], False), False):
+        return None
+    width = max(16, _as_int(_get_node_value(node, ids["width"], 1920), 1920))
+    height = max(16, _as_int(_get_node_value(node, ids["height"], 1080), 1080))
+    return {"id": CUSTOM_FORMAT_ID, "label": "Custom",
+            "width": width, "height": height}
+
+
+def _row_enabled(node, index):
+    """Per-row enabled with the migration-safe default: standard rows (0-4)
+    default True (v1.8.0 behavior), the Custom row defaults False (a v1.28
+    tag with no stored custom params must NOT sprout a custom format)."""
+    default = index != CUSTOM_FORMAT_INDEX
+    return _as_bool(_get_node_value(node, _format_ids(index)["enabled"], default), default)
 
 
 def _format_ids(index):
@@ -156,16 +194,53 @@ def _format_ids(index):
         "color": base + 2,
         "nudge_x": base + 3,
         "nudge_y": base + 4,
+        "slice_x": base + 5,
+        "slice_y": base + 6,
+        "width": base + 7,   # custom row only
+        "height": base + 8,  # custom row only
     }
 
 
+def _slices_for_index(node, index):
+    ids = _format_ids(index)
+    sx = max(1, min(16, _as_int(_get_node_value(node, ids["slice_x"], 1), 1)))
+    sy = max(1, min(16, _as_int(_get_node_value(node, ids["slice_y"], 1), 1)))
+    return (sx, sy)
+
+
+def _engine_format_defs(node):
+    """Resolved defs for the multiformat engine: enabled formats only is NOT
+    the contract here — the engine filters by options['formats']; this returns
+    ALL per-tag defs (5 standard + custom-if-enabled) as shallow copies with
+    the per-row slice grid injected."""
+    out = []
+    for index, fmt in enumerate(_format_defs(node)):
+        d = dict(fmt)
+        d["slices"] = _slices_for_index(node, index)
+        out.append(d)
+    return out
+
+
+def _total_slice_count(node):
+    total = 0
+    for index, fmt in enumerate(_format_defs(node)):
+        if not _row_enabled(node, index):
+            continue
+        sx, sy = _slices_for_index(node, index)
+        if sx * sy > 1:
+            total += sx * sy
+    return total
+
+
 def _format_param_map():
+    # Covers all 6 rows and every per-row param regardless of custom state
+    # (it gates AM enabling), so it is built from the row count, not defs.
     mapping = {}
-    for index, fmt in enumerate(_format_defs()):
+    for index in range(FORMAT_ROW_COUNT):
         ids = _format_ids(index)
-        mapping[ids["color"]] = ids["enabled"]
-        mapping[ids["nudge_x"]] = ids["enabled"]
-        mapping[ids["nudge_y"]] = ids["enabled"]
+        for key in ("color", "nudge_x", "nudge_y", "slice_x", "slice_y",
+                    "width", "height"):
+            mapping[ids[key]] = ids["enabled"]
     return mapping
 
 
@@ -250,6 +325,13 @@ def _as_float(value, default=0.0):
         return float(value)
     except Exception:
         return float(default)
+
+
+def _as_int(value, default=0):
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
 
 
 def _vector(rgb):
@@ -345,7 +427,7 @@ def _master_aspect_for_doc(doc):
 
 def _enabled_format_entries(node):
     entries = []
-    for index, fmt in enumerate(_format_defs()):
+    for index, fmt in enumerate(_format_defs(node)):
         ids = _format_ids(index)
         if not _as_bool(_get_node_value(node, ids["enabled"], True), True):
             continue
@@ -374,8 +456,8 @@ def _format_take_link_id(index):
     return ID_PRIVATE_TAKE_LINK_BASE + (index * ID_PRIVATE_TAKE_LINK_STRIDE)
 
 
-def _format_index_for_id(fmt_id):
-    for index, fmt in enumerate(_format_defs()):
+def _format_index_for_id(fmt_id, node=None):
+    for index, fmt in enumerate(_format_defs(node)):
         if fmt.get("id") == fmt_id:
             return index
     return None
@@ -393,7 +475,7 @@ def composition_mode_for_engine(composition_id):
 def _enabled_format_ids_from_params(node):
     """Return enabled format ids in canonical UI order."""
     enabled = []
-    for index, fmt in enumerate(_format_defs()):
+    for index, fmt in enumerate(_format_defs(node)):
         ids = _format_ids(index)
         if _as_bool(_get_node_value(node, ids["enabled"], True), True):
             enabled.append(fmt.get("id"))
@@ -403,7 +485,7 @@ def _enabled_format_ids_from_params(node):
 def _film_offsets_from_params(node):
     """Build the engine film_offsets dict from enabled per-format nudges."""
     offsets = {}
-    for index, fmt in enumerate(_format_defs()):
+    for index, fmt in enumerate(_format_defs(node)):
         ids = _format_ids(index)
         if not _as_bool(_get_node_value(node, ids["enabled"], True), True):
             continue
@@ -417,19 +499,21 @@ def _film_offsets_from_params(node):
 def _params_payload_for_takes(node):
     """Return the stable, pure payload that defines generated take freshness."""
     formats = []
-    for index, fmt in enumerate(_format_defs()):
+    for index, fmt in enumerate(_format_defs(node)):
         ids = _format_ids(index)
         if not _as_bool(_get_node_value(node, ids["enabled"], True), True):
             continue
-        formats.append(
-            {
-                "id": fmt.get("id"),
-                "nudge": [
-                    round(_as_float(_get_node_value(node, ids["nudge_x"], 0.0), 0.0), 8),
-                    round(_as_float(_get_node_value(node, ids["nudge_y"], 0.0), 0.0), 8),
-                ],
-            }
-        )
+        entry = {
+            "id": fmt.get("id"),
+            "nudge": [
+                round(_as_float(_get_node_value(node, ids["nudge_x"], 0.0), 0.0), 8),
+                round(_as_float(_get_node_value(node, ids["nudge_y"], 0.0), 0.0), 8),
+            ],
+            "slices": list(_slices_for_index(node, index)),
+        }
+        if fmt.get("id") == CUSTOM_FORMAT_ID:
+            entry["size"] = [int(fmt.get("width", 0)), int(fmt.get("height", 0))]
+        formats.append(entry)
     return {
         "composition_mode": composition_mode_for_engine(
             _get_node_value(node, ID_COMPOSITION, COMPOSITION_CROP)
@@ -538,10 +622,21 @@ def _coerce_insets(insets, fallback=None):
     }
 
 
+def _row_format_id(index):
+    """Row index -> format id for all 6 rows (custom has no MULTIFORMAT def)."""
+    if index < len(MULTIFORMAT_DEFS):
+        return MULTIFORMAT_DEFS[index]["id"]
+    return CUSTOM_FORMAT_ID
+
+
 def _standard_platform_insets_by_format():
+    # All 6 rows: custom insets default to zeros (SAFE_AREA_INSETS has no
+    # "custom" key, so .get() -> None -> _coerce_insets zeros).
     return {
-        fmt.get("id"): _coerce_insets(SAFE_AREA_INSETS.get(fmt.get("id")), None)
-        for fmt in _format_defs()
+        _row_format_id(index): _coerce_insets(
+            SAFE_AREA_INSETS.get(_row_format_id(index)), None
+        )
+        for index in range(FORMAT_ROW_COUNT)
     }
 
 
@@ -562,8 +657,8 @@ def _write_platform_insets_to_node(node, insets_by_format):
     if bc is None:
         return False
     changed = False
-    for index, fmt in enumerate(_format_defs()):
-        fmt_id = fmt.get("id")
+    for index in range(FORMAT_ROW_COUNT):
+        fmt_id = _row_format_id(index)
         insets = _coerce_insets((insets_by_format or {}).get(fmt_id), SAFE_AREA_INSETS.get(fmt_id))
         for side, param_id in _format_inset_ids(index).items():
             value = float(insets[side])
@@ -852,7 +947,7 @@ def _undo_type_delete():
 
 
 def _write_take_link(node, fmt_id, take):
-    index = _format_index_for_id(fmt_id)
+    index = _format_index_for_id(fmt_id, node)
     if index is None:
         return False
     bc = _node_data_container(node)
@@ -871,7 +966,7 @@ def _write_take_link(node, fmt_id, take):
 
 
 def _read_take_link(node, fmt_id, doc=None):
-    index = _format_index_for_id(fmt_id)
+    index = _format_index_for_id(fmt_id, node)
     if index is None:
         return None
     bc = _node_data_container(node)
@@ -978,7 +1073,7 @@ def _viewing_cycle_entries(node):
     """Cycle for ID_VIEWING: 0=Master plus every ENABLED format (value =
     format index + 1, stable against enable/disable churn)."""
     entries = [(0, "Master")]
-    for index, fmt in enumerate(_format_defs()):
+    for index, fmt in enumerate(_format_defs(node)):
         ids = _format_ids(index)
         if _as_bool(_get_node_value(node, ids["enabled"], True), True):
             label = fmt.get("label") or fmt.get("id", "Format")
@@ -996,7 +1091,7 @@ def _viewing_value_from_takes(node, doc):
         current = None
     if current is None:
         return 0
-    for index, fmt in enumerate(_format_defs()):
+    for index, fmt in enumerate(_format_defs(node)):
         linked = _read_take_link(node, fmt.get("id"), doc)
         try:
             # Object identity, not name comparison: take names aren't unique
@@ -1026,7 +1121,7 @@ def _activate_viewing(node, doc, value):
             target = None
     else:
         index = int(value) - 1
-        defs = _format_defs()
+        defs = _format_defs(node)
         if 0 <= index < len(defs):
             target = _read_take_link(node, defs[index].get("id"), doc)
     if target is None:
@@ -1049,7 +1144,7 @@ def set_viewing(doc, tag, target):
         ok = _activate_viewing(tag, doc, 0)
         return {"ok": bool(ok), "viewing": "master" if ok else None,
                 "error": None if ok else "no_take_data"}
-    for index, fmt in enumerate(_format_defs()):
+    for index, fmt in enumerate(_format_defs(tag)):
         if fmt.get("id") == target:
             ok = _activate_viewing(tag, doc, index + 1)
             return {"ok": bool(ok), "viewing": target if ok else None,
@@ -1225,7 +1320,7 @@ def _find_orphaned_takes_for_tag(node, doc):
     host = _tag_host(node)
     prefix = _safe_node_name(host, "")
     enabled = set(_enabled_format_ids_from_params(node))
-    disabled_ids = {fmt.get("id") for fmt in _format_defs()} - enabled
+    disabled_ids = {fmt.get("id") for fmt in _format_defs(node)} - enabled
     found = []
     seen = set()
 
@@ -1339,7 +1434,7 @@ def _current_take_is_own_format(tag, doc):
     if not name.startswith(marker):
         return False
     suffix = name[len(marker):]
-    return any(d.get("id") == suffix for d in _format_defs())
+    return any(d.get("id") == suffix for d in _format_defs(tag))
 
 
 def _current_own_format_id(tag, doc):
@@ -1368,7 +1463,7 @@ def _current_own_format_id(tag, doc):
     if not name.startswith(marker):
         return None
     suffix = name[len(marker):]
-    for d in _format_defs():
+    for d in _format_defs(tag):
         if d.get("id") == suffix:
             return suffix
     return None
@@ -1486,16 +1581,26 @@ class SentinelFrameTag(_TagDataBase):
         _set_node_value(node, ID_SHOW_HUD, True)
         _set_node_value(node, ID_SCHEMA_VERSION, SCHEMA_VERSION)
 
-        for index, fmt in enumerate(_format_defs()):
+        for index in range(FORMAT_ROW_COUNT):
+            fmt_id = _row_format_id(index)
             ids = _format_ids(index)
             self._init_attr(node, bool, ids["enabled"])
             self._init_attr(node, c4d.Vector, ids["color"])
             self._init_attr(node, float, ids["nudge_x"])
             self._init_attr(node, float, ids["nudge_y"])
-            _set_node_value(node, ids["enabled"], True)
-            _set_node_value(node, ids["color"], _vector(_FORMAT_COLORS.get(fmt["id"], (0.6, 0.6, 0.6))))
+            self._init_attr(node, int, ids["slice_x"])
+            self._init_attr(node, int, ids["slice_y"])
+            _set_node_value(node, ids["enabled"], index != CUSTOM_FORMAT_INDEX)
+            _set_node_value(node, ids["color"], _vector(_FORMAT_COLORS.get(fmt_id, (0.6, 0.6, 0.6))))
             _set_node_value(node, ids["nudge_x"], 0.0)
             _set_node_value(node, ids["nudge_y"], 0.0)
+            _set_node_value(node, ids["slice_x"], 1)
+            _set_node_value(node, ids["slice_y"], 1)
+            if index == CUSTOM_FORMAT_INDEX:
+                self._init_attr(node, int, ids["width"])
+                self._init_attr(node, int, ids["height"])
+                _set_node_value(node, ids["width"], 1920)
+                _set_node_value(node, ids["height"], 1080)
 
         priority_factory = getattr(c4d, "PriorityData", None)
         if callable(priority_factory):
@@ -1555,7 +1660,7 @@ class SentinelFrameTag(_TagDataBase):
         # format's rect moves in the master view while dragging).
         if not self._set_description_group(
             node, description, ID_GROUP_FORMATS, "Formats", main_group,
-            columns=4, titlebar=False
+            columns=6, titlebar=False
         ):
             return False
         color_dtype = getattr(c4d, "DTYPE_COLOR", c4d.DTYPE_VECTOR)
@@ -1579,6 +1684,39 @@ class SentinelFrameTag(_TagDataBase):
                 return False
             if not self._set_description_parameter(
                 node, description, ids["nudge_y"], c4d.DTYPE_REAL, "Y", formats_group, -1.0, 1.0, 0.01
+            ):
+                return False
+            if not self._set_description_parameter(
+                node, description, ids["slice_x"], c4d.DTYPE_LONG, "Sx", formats_group, 1, 16, 1
+            ):
+                return False
+            if not self._set_description_parameter(
+                node, description, ids["slice_y"], c4d.DTYPE_LONG, "Sy", formats_group, 1, 16, 1
+            ):
+                return False
+
+        # Custom row (spec: own 8-column sub-grid under the main grid; W/H need
+        # two extra cells so the shared 6-column widths can't apply — accepted
+        # deviation).
+        custom_group = _description_parent(ID_GROUP_CUSTOM, c4d.DTYPE_GROUP, node)
+        if not self._set_description_group(
+            node, description, ID_GROUP_CUSTOM, "Custom", main_group,
+            columns=8, titlebar=False
+        ):
+            return False
+        cids = _format_ids(CUSTOM_FORMAT_INDEX)
+        for pid, dtype, name, lo, hi, st in (
+            (cids["enabled"], c4d.DTYPE_BOOL, "Custom", None, None, None),
+            (cids["color"], color_dtype, "", None, None, None),
+            (cids["width"], c4d.DTYPE_LONG, "W", 16, 16384, 1),
+            (cids["height"], c4d.DTYPE_LONG, "H", 16, 16384, 1),
+            (cids["nudge_x"], c4d.DTYPE_REAL, "X", -1.0, 1.0, 0.01),
+            (cids["nudge_y"], c4d.DTYPE_REAL, "Y", -1.0, 1.0, 0.01),
+            (cids["slice_x"], c4d.DTYPE_LONG, "Sx", 1, 16, 1),
+            (cids["slice_y"], c4d.DTYPE_LONG, "Sy", 1, 16, 1),
+        ):
+            if not self._set_description_parameter(
+                node, description, pid, dtype, name, custom_group, lo, hi, st
             ):
                 return False
 
@@ -1940,7 +2078,7 @@ class SentinelFrameTag(_TagDataBase):
             except Exception:
                 focus = 0
             focus_fmt = None
-            defs = _format_defs()
+            defs = _format_defs(tag)
             if 0 < focus <= len(defs):
                 focus_fmt = defs[focus - 1].get("id")
             dim = max(0.0, min(1.0, _as_float(_get_node_value(tag, ID_DIM_NONVIEWED, 0.7), 0.7)))
@@ -1992,7 +2130,7 @@ class SentinelFrameTag(_TagDataBase):
             except Exception:
                 label_focus = 0
             label_focus_fmt = None
-            label_defs = _format_defs()
+            label_defs = _format_defs(tag)
             if 0 < label_focus <= len(label_defs):
                 label_focus_fmt = label_defs[label_focus - 1].get("id")
             label_dim = max(0.0, min(1.0, _as_float(_get_node_value(tag, ID_DIM_NONVIEWED, 0.7), 0.7)))
@@ -2058,7 +2196,7 @@ class SentinelFrameTag(_TagDataBase):
                 except Exception:
                     changed = None
                 if changed is not None:
-                    span = len(_format_defs()) * ID_FORMAT_STRIDE
+                    span = FORMAT_ROW_COUNT * ID_FORMAT_STRIDE
                     if ID_FORMAT_BASE <= changed < ID_FORMAT_BASE + span:
                         index = (changed - ID_FORMAT_BASE) // ID_FORMAT_STRIDE
                         _bc_set_data(
