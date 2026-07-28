@@ -24,6 +24,7 @@ import {
   postPanelOpenPalette,
   postPanelOpenSettings,
   postPanelOpenVersion,
+  postPanelFrameSetViewing,
   postPanelQcAccept,
   postPanelQcFixAll,
   postPanelQcSelect,
@@ -520,6 +521,23 @@ export function PanelPage() {
     handleQcSelect("cross_aspect");
   }
 
+  /** Frame v2 — Viewing selector: activates the take behind the selection
+   * (document state; two-way with the tag's AM cycle). */
+  async function handleSetViewing(target: string) {
+    setBusyRenderId("set_viewing");
+    const r = await postPanelFrameSetViewing(target);
+    setBusyRenderId(null);
+    if (!r.ok) {
+      toast({
+        message: r.error === "take_not_found"
+          ? "That format has no Take yet — enable it on the tag first."
+          : "Couldn't switch the view.",
+        variant: "warn",
+      });
+    }
+    loadFrame(true);
+  }
+
   async function handleSetMultipart(enabled: boolean) {
     setBusyRenderId("set_multipart");
     const response = await postPanelRenderSetMultipart(enabled);
@@ -730,6 +748,7 @@ export function PanelPage() {
                   onCancelConfirm={() => setRenderConfirm(null)}
                   onMarkSubjects={handleMarkSubjects}
                   onSelectViolations={handleSelectFrameViolations}
+                  onSetViewing={handleSetViewing}
                   onOpenQc={() => setSection("qc")}
                 />
               )}

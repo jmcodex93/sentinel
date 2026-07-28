@@ -1136,7 +1136,13 @@ export interface PanelFrameBlock {
   has_tag: boolean;
   camera_name: string | null;
   format_count: number | null;
+  /** Frame v2: constant `false` (auto-sync made staleness a transient);
+   * kept one release for payload compatibility. */
   stale: boolean;
+  /** What the document is currently viewing: "master" or a format id. */
+  viewing: string;
+  /** Selector options: ["master", ...enabled format ids]. */
+  viewing_options: string[];
 }
 
 export interface PanelFrameSubjects {

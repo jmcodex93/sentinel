@@ -104,6 +104,7 @@ export function RenderSection({
   onMarkSubjects,
   onSelectViolations,
   onOpenQc,
+  onSetViewing,
 }: {
   render: PanelRenderSectionData;
   /** `panel/frame` state for the Frame sub-view (Fase 6.6) — a separate read
@@ -144,6 +145,7 @@ export function RenderSection({
   onMarkSubjects: () => void;
   onSelectViolations: () => void;
   onOpenQc: () => void;
+  onSetViewing: (target: string) => void;
 }) {
   const [aovListState, setAovListState] = useState<AovListState>({ kind: "idle" });
   const [renderView, setRenderView] = useState<"main" | "frame">("main");
@@ -160,6 +162,7 @@ export function RenderSection({
         onMarkSubjects={onMarkSubjects}
         onSelectViolations={onSelectViolations}
         onOpenQc={onOpenQc}
+        onSetViewing={onSetViewing}
       />
     );
   }

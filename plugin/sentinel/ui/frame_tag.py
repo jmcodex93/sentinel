@@ -974,6 +974,23 @@ def _activate_viewing(node, doc, value):
         return False
 
 
+def set_viewing(doc, tag, target):
+    """Dialog-free core for the Viewing selector (AM cycle AND the panel's
+    ``panel/frame/set_viewing`` op share it). ``target`` = "master" or a
+    format id; activating a take is DOCUMENT state, legitimate from either
+    surface. Returns a status dict, never raises, never shows a dialog."""
+    if target in (None, "", "master"):
+        ok = _activate_viewing(tag, doc, 0)
+        return {"ok": bool(ok), "viewing": "master" if ok else None,
+                "error": None if ok else "no_take_data"}
+    for index, fmt in enumerate(_format_defs()):
+        if fmt.get("id") == target:
+            ok = _activate_viewing(tag, doc, index + 1)
+            return {"ok": bool(ok), "viewing": target if ok else None,
+                    "error": None if ok else "take_not_found"}
+    return {"ok": False, "viewing": None, "error": "unknown_format"}
+
+
 def _sync_status_text(node):
     """Derived AM status line: pending window > failed > drift > synced."""
     try:
