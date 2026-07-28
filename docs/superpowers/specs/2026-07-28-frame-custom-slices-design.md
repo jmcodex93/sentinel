@@ -1,7 +1,7 @@
 # Sentinel Frame v2.1 — Custom ratio + Slices (v1.29)
 
 **Fecha**: 2026-07-28
-**Estado**: aprobado en brainstorm (decisiones del usuario: slices para TODOS los formatos como C4DFrame; slices en X e Y según config; cortes exactos sin solape)
+**Estado**: implementado en la rama `feat/frame-slices` (8 tareas subagent-driven, todas Approved en review adversarial; pytest 912, vitest 136) — **pendiente de verificación live en C4D real y de merge a main** (decisiones del usuario en brainstorm: slices para TODOS los formatos como C4DFrame; slices en X e Y según config; cortes exactos sin solape — todas implementadas tal cual)
 **Contexto**: sobre el Frame v2 (v1.28.0 — auto-sync, control strip, crop camera-type-aware). Caso motor: entregas ultra-anchas de pantallas de eventos (p.ej. 9000×500) que conviene renderizar como N slices (3×3000×500) en vez de un chunk — mejor para farm/memoria/re-renders parciales; ensamblado en comp trivial (Reads contiguos). El film offset de C4D existe para exactamente este tiled-render.
 
 ## Decisiones cerradas
