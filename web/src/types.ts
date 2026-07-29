@@ -1229,3 +1229,47 @@ export interface RenameApplyResult {
   source?: string;
   error?: string;
 }
+
+/** One channel row of a recognized texture set — see
+ * `matwire.preview_payload` (colorspace comes from the engine's single
+ * `channel_colorspace` table: "srgb" | "raw"). */
+export interface MatwireChannelRow {
+  channel: string;
+  file: string;
+  colorspace: string;
+}
+
+/** One recognized texture set. `ignored` rows are `[filename, reason]`
+ * pairs (JSON-flattened tuples); reasons are labeled client-side via
+ * `IGNORED_REASON_LABELS` in lib/panelMatwire.ts. */
+export interface MatwireSet {
+  name: string;
+  channels: MatwireChannelRow[];
+  normal_flipy: boolean;
+  ignored: [string, string][];
+}
+
+/** `panel/tools/matwire_preview` response — see `_op_matwire_preview` in
+ * panel_tools_ops.py. `names` is position-aligned with `sets`: the default
+ * material name per set, already deduped against the Material Manager.
+ * No row cap (unlike rename_preview) — a texture folder is small. `error`
+ * is one of `no_document` / `redshift_unavailable` / `bad_folder` /
+ * `no_sets`. */
+export interface MatwirePreviewResult {
+  ok: boolean;
+  sets?: MatwireSet[];
+  ignored?: [string, string][];
+  names?: string[];
+  error?: string;
+}
+
+/** `panel/tools/matwire_create` response — see `_op_matwire_create` in
+ * panel_tools_ops.py. Per-set failures land in `errors` as
+ * `[set_name, error]` pairs without aborting the batch (`ok` stays true). */
+export interface MatwireCreateResult {
+  ok: boolean;
+  created?: number;
+  materials?: string[];
+  errors?: [string, string][];
+  error?: string;
+}

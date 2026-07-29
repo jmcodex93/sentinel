@@ -4,6 +4,7 @@ import { TextInput } from "../form/TextInput";
 import { restoreFocus } from "../../lib/focus";
 import { TOOL_GROUPS } from "../../lib/panelTools";
 import { SectionGroup } from "../SectionGroup";
+import { MatwireSubview } from "./MatwireSubview";
 import { RenameSubview } from "./RenameSubview";
 
 /** Tools section (Fase 6.4, Cleanup + Frames row added later) — grouped
@@ -26,19 +27,16 @@ export function ToolsSection({
   // Local sub-router (the Render→Frame / Deliver idiom): "rename" swaps the
   // whole section for the Batch Rename sub-view, which owns its own fetches
   // and busy state (server-driven preview — see RenameSubview).
-  const [view, setView] = useState<"main" | "rename">("main");
-  if (view === "rename") {
-    return (
-      <RenameSubview
-        onBack={() => {
-          // restoreFocus BEFORE the flip unmounts the sub-view: its focused
-          // "← Tools" button leaves the DOM, and a webview with nothing
-          // focused swallows the next Cmd+Z (v1.18 lesson, lib/focus.ts).
-          restoreFocus();
-          setView("main");
-        }}
-      />
-    );
+  const [view, setView] = useState<"main" | "rename" | "matwire">("main");
+  if (view !== "main") {
+    // restoreFocus BEFORE the flip unmounts the sub-view: its focused
+    // "← Tools" button leaves the DOM, and a webview with nothing
+    // focused swallows the next Cmd+Z (v1.18 lesson, lib/focus.ts).
+    const back = () => {
+      restoreFocus();
+      setView("main");
+    };
+    return view === "rename" ? <RenameSubview onBack={back} /> : <MatwireSubview onBack={back} />;
   }
   return (
     // During a mutation we lock interaction at the container (`pointerEvents`)
@@ -91,12 +89,15 @@ export function ToolsSection({
           )}
         </SectionGroup>
         {group.title === "Cleanup" && (
-          // Naming is a sub-router trigger, not an op button, so it lives
+          // Authoring holds sub-router triggers, not op buttons, so it lives
           // outside TOOL_GROUPS (which stays op-only for `toolToast`).
-          <SectionGroup title="Naming">
+          <SectionGroup title="Authoring">
             <div className="flex flex-wrap gap-2">
               <Button variant="secondary" onClick={() => setView("rename")}>
                 Batch Rename →
+              </Button>
+              <Button variant="secondary" onClick={() => setView("matwire")}>
+                Material from Folder →
               </Button>
             </div>
           </SectionGroup>
