@@ -1,19 +1,26 @@
+import { useState } from "react";
 import { Button } from "../form/Button";
+import { TextInput } from "../form/TextInput";
 import { TOOL_GROUPS } from "../../lib/panelTools";
 import { SectionGroup } from "../SectionGroup";
 
-/** Tools section (Fase 6.4) — grouped action buttons for scene-authoring
- * utilities. Action-only: each button runs its op and toasts the result;
- * no read state, no confirm (nothing destructive). The Asset Hub is reached
- * from Overview / QC #6 / Deliver, not from here. */
+/** Tools section (Fase 6.4, Cleanup + Frames row added later) — grouped
+ * action buttons for scene-authoring utilities. Action-only: each button
+ * runs its op and toasts the result; no read state, no confirm (nothing
+ * destructive). The Asset Hub is reached from Overview / QC #6 / Deliver,
+ * not from here. The Frames row is the first parameterized Tools action —
+ * `frames` is local UI state forwarded as the op payload; the toast itself
+ * always reads the frames value back from the op RESULT, never from this
+ * state, so it stays truthful to what actually ran. */
 export function ToolsSection({
   busy,
   onRunTool,
 }: {
   busy: string | null;
-  onRunTool: (id: string) => void;
+  onRunTool: (id: string, payload?: Record<string, unknown>) => void;
 }) {
   const isBusy = busy !== null;
+  const [frames, setFrames] = useState(5);
   return (
     <div className="flex flex-col p-3">
       {TOOL_GROUPS.map((group, index) => (
@@ -30,6 +37,32 @@ export function ToolsSection({
               </Button>
             ))}
           </div>
+          {group.title === "Animation" && (
+            <div className="mt-2 flex items-center gap-2">
+              <label className="text-xs text-[var(--color-text-secondary)]">Frames</label>
+              <div className="w-16">
+                <TextInput
+                  type="number"
+                  value={frames}
+                  onChange={(e) => setFrames(parseInt(e.target.value || "0", 10))}
+                />
+              </div>
+              <Button
+                variant="secondary"
+                disabled={isBusy}
+                onClick={() => onRunTool("panel/tools/keyframe_offset", { frames })}
+              >
+                Offset
+              </Button>
+              <Button
+                variant="secondary"
+                disabled={isBusy}
+                onClick={() => onRunTool("panel/tools/keyframe_stagger", { frames })}
+              >
+                Stagger
+              </Button>
+            </div>
+          )}
         </SectionGroup>
       ))}
     </div>

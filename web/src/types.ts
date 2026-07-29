@@ -1186,4 +1186,10 @@ export interface PanelToolResult {
   marked?: number;
   unmarked?: number;
   verb?: string;
+  removed?: number;
+  removed_broken?: number;
+  removed_dupes?: number;
+  keys?: number;
+  objects?: number;
+  frames?: number;
 }

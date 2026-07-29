@@ -613,9 +613,9 @@ export function PanelPage() {
 
   /** Tools section (Fase 6.4) — action-only, no confirm gate (nothing
    * destructive). Every button runs its op and toasts via `toolToast`. */
-  async function handleRunTool(id: string) {
+  async function handleRunTool(id: string, payload?: Record<string, unknown>) {
     setBusyTool(id);
-    const r = await postPanelTool(id);
+    const r = await postPanelTool(id, payload);
     setBusyTool(null);
     const t = toolToast(id, r);
     toast({ message: t.message, variant: t.variant });

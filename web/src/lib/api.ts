@@ -1254,12 +1254,17 @@ export async function postPanelOpenCollect(): Promise<PaletteRunResponse> {
 // ---------------------------------------------------------------------------
 
 /** `POST /api/<op>` — run a Tools action; returns a status dict the SPA
- * turns into a toast (see `toolToast`). `?mock=1` has no stateful scene to
- * mutate, so it resolves a bare success (same no-stateful convention as
- * `postPanelQcSelect`/`startHubShrink`). */
-export async function postPanelTool(op: string): Promise<PanelToolResult> {
+ * turns into a toast (see `toolToast`). `payload` is forwarded as the POST
+ * body for parameterized tools (e.g. keyframe offset/stagger's `frames`);
+ * omitted for the existing no-payload actions. `?mock=1` has no stateful
+ * scene to mutate, so it resolves a bare success (same no-stateful
+ * convention as `postPanelQcSelect`/`startHubShrink`). */
+export async function postPanelTool(
+  op: string,
+  payload?: Record<string, unknown>,
+): Promise<PanelToolResult> {
   if (isMock()) return { ok: true };
-  return postForm<PanelToolResult>(`/api/${op}`, {});
+  return postForm<PanelToolResult>(`/api/${op}`, payload ?? {});
 }
 
 /** `POST /api/panel/open_external` — GitHub / Report Bug (opens the URL in
