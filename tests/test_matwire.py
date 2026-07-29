@@ -185,3 +185,38 @@ def test_channel_colorspace_single_source(matwire):
 def test_dedupe_names(matwire):
     assert matwire.dedupe_names(["wood", "wood", "Plaster"], ["plaster"]) == [
         "wood", "wood_02", "Plaster_02"]
+
+
+class TestPreviewPayload:
+    """Pure preview shaping (Task 3): scan result -> SPA payload with
+    colorspace-annotated channel rows + defaults deduped vs the Material
+    Manager. JSON-friendly: tuples become lists."""
+
+    def test_shapes_channels_with_colorspace(self, matwire):
+        scan = matwire.scan_texture_sets(
+            ["plaster_BaseColor.jpg", "plaster_Roughness.jpg",
+             "plaster_NormalDX.png", "notes.txt"])
+        payload = matwire.preview_payload(scan, [])
+        assert len(payload["sets"]) == 1
+        s = payload["sets"][0]
+        assert s["name"] == "plaster"
+        assert s["normal_flipy"] is True  # DX-only set
+        rows = {r["channel"]: r for r in s["channels"]}
+        assert rows["basecolor"]["file"] == "plaster_BaseColor.jpg"
+        assert rows["basecolor"]["colorspace"] == "srgb"
+        assert rows["roughness"]["colorspace"] == "raw"
+        assert rows["normal"]["colorspace"] == "raw"
+        assert payload["ignored"] == [["notes.txt", "bad_extension"]]
+        assert payload["names"] == ["plaster"]
+
+    def test_names_deduped_against_existing(self, matwire):
+        scan = matwire.scan_texture_sets(
+            ["wood_col.png", "Plaster_col.png"])
+        payload = matwire.preview_payload(scan, ["plaster", "wood"])
+        assert payload["names"] == ["wood_02", "Plaster_02"]
+
+    def test_set_ignored_rows_are_lists(self, matwire):
+        scan = matwire.scan_texture_sets(
+            ["y_col.png", "y_diffuse.png"])
+        payload = matwire.preview_payload(scan, [])
+        assert ["y_diffuse.png", "duplicate_channel"] in payload["sets"][0]["ignored"]

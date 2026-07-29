@@ -202,6 +202,32 @@ def scan_texture_sets(filenames, default_root="material"):
     return {"sets": out_sets, "ignored": ignored}
 
 
+def preview_payload(scan_result, existing_names):
+    """Shape a ``scan_texture_sets`` result for the SPA preview: channel
+    rows annotated with their colorspace (single source:
+    ``channel_colorspace``), tuples flattened to JSON-friendly lists, and
+    default material names deduped against ``existing_names`` (the
+    Material Manager) position-aligned with ``sets``."""
+    sets = []
+    for tex_set in scan_result.get("sets") or []:
+        channels = [
+            {"channel": channel, "file": filename,
+             "colorspace": channel_colorspace(channel)}
+            for channel, filename in sorted(tex_set["channels"].items())]
+        sets.append({
+            "name": tex_set["name"],
+            "channels": channels,
+            "normal_flipy": tex_set["normal_flipy"],
+            "ignored": [list(row) for row in tex_set["ignored"]],
+        })
+    names = dedupe_names([s["name"] for s in sets], existing_names)
+    return {
+        "sets": sets,
+        "ignored": [list(row) for row in scan_result.get("ignored") or []],
+        "names": names,
+    }
+
+
 def dedupe_names(names, existing):
     """Position-aligned final names, case-insensitively unique against
     ``existing`` and within the batch (``_02``, ``_03``…)."""

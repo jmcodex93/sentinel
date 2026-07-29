@@ -6,6 +6,7 @@ panel's Timer drain freezes all of C4D — v1.21.0 pattern); the op calls the
 core and returns its status dict, which the SPA renders as a toast. Tools
 are action-only: no read op, no confirm (nothing destructive)."""
 import c4d
+import os
 import webbrowser
 
 from sentinel.ui import scene_tools
@@ -215,6 +216,99 @@ def _op_rename_apply(payload):
             "source": (payload or {}).get("source")}
 
 
+def _existing_material_names(doc):
+    """Material Manager names for dedupe — defensive, never raises."""
+    names = []
+    try:
+        for mat in doc.GetMaterials() or []:
+            try:
+                names.append(mat.GetName() or "")
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return names
+
+
+def _matwire_request(payload):
+    """Shared front half for the matwire ops: re-derives the scan from the
+    FOLDER on every call (v1.31 rename-ops pattern — client rows are never
+    trusted). Returns ``{doc, folder, scan}`` or an error dict."""
+    from sentinel import matwire
+    from sentinel import matwire_c4d
+    doc = c4d.documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+    if not matwire_c4d.redshift_available():
+        return {"ok": False, "error": "redshift_unavailable"}
+    folder = str((payload or {}).get("folder") or "")
+    if not folder or not os.path.isdir(folder):
+        return {"ok": False, "error": "bad_folder"}
+    try:
+        files = sorted(os.listdir(folder))  # non-recursive v1, deterministic
+    except OSError:
+        return {"ok": False, "error": "bad_folder"}
+    default_root = os.path.basename(folder.rstrip(os.sep)) or "material"
+    scan = matwire.scan_texture_sets(files, default_root=default_root)
+    if not scan["sets"]:
+        return {"ok": False, "error": "no_sets"}
+    return {"doc": doc, "folder": folder, "scan": scan}
+
+
+def _op_matwire_preview(payload):
+    from sentinel import matwire
+    result = _matwire_request(payload)
+    if "error" in result:
+        return result
+    existing = _existing_material_names(result["doc"])
+    out = matwire.preview_payload(result["scan"], existing)
+    out["ok"] = True
+    return out
+
+
+def _op_matwire_create(payload):
+    """Wire every included set inside ONE StartUndo/EndUndo (per-material
+    AddUndo anchors nest inside — one Cmd+Z reverts the batch). Per-set
+    failures are collected, never abort the batch."""
+    from sentinel import matwire
+    from sentinel import matwire_c4d
+    result = _matwire_request(payload)
+    if "error" in result:
+        return result
+    doc, folder, scan = result["doc"], result["folder"], result["scan"]
+    payload = payload or {}
+    exclude = {str(n) for n in payload.get("exclude") or []}
+    names_map = payload.get("names") or {}
+    included = [s for s in scan["sets"] if s["name"] not in exclude]
+    if not included:
+        return {"ok": False, "error": "no_sets"}
+    requested = [str(names_map.get(s["name"]) or s["name"]) for s in included]
+    final_names = matwire.dedupe_names(requested, _existing_material_names(doc))
+    materials = []
+    errors = []
+    doc.StartUndo()
+    try:
+        for tex_set, name in zip(included, final_names):
+            try:
+                created = matwire_c4d.create_material_for_set(
+                    doc, folder, tex_set, name)
+            except Exception as exc:  # writer contract is no-raise; belt+braces
+                errors.append([tex_set["name"], str(exc)])
+                continue
+            if created.get("ok"):
+                materials.append(created.get("material_name") or name)
+            else:
+                errors.append([tex_set["name"], created.get("error") or "failed"])
+    finally:
+        doc.EndUndo()
+        try:
+            c4d.EventAdd()
+        except Exception:
+            pass
+    return {"ok": True, "created": len(materials),
+            "materials": materials, "errors": errors}
+
+
 PANEL_TOOLS_OPS = {
     "panel/tools/hierarchy": _op_tool_hierarchy,
     "panel/tools/vibrate_null": _op_tool_vibrate_null,
@@ -234,4 +328,6 @@ PANEL_TOOLS_OPS = {
     "panel/tools/keyframe_stagger": _op_tool_keyframe_stagger,
     "panel/tools/rename_preview": _op_rename_preview,
     "panel/tools/rename_apply": _op_rename_apply,
+    "panel/tools/matwire_preview": _op_matwire_preview,
+    "panel/tools/matwire_create": _op_matwire_create,
 }
