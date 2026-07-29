@@ -56,6 +56,9 @@ export function RenameSubview({ onBack }: { onBack: () => void }) {
   // stamp does move, so refetch when it changes.
   useEffect(() => {
     const interval = setInterval(async () => {
+      // Same guard as PanelPage's poll: a hidden webview shouldn't keep
+      // hitting the server (review Minor).
+      if (document.visibilityState !== "visible") return;
       const stamp = await fetchPanelStamp();
       if (stamp !== null && stamp !== stampRef.current) {
         stampRef.current = stamp;
