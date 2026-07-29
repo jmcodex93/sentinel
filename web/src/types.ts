@@ -354,6 +354,7 @@ export interface SettingsState {
   compositor: { value: number; options: string[] };
   multipart_default: boolean;
   slate: { value: boolean };
+  render_notify: boolean;
   mv_max_motion: number;
   snapshot_dir: { value: string; detected: boolean; locked: boolean };
   history_max: { value: number; options: number[] };
@@ -368,6 +369,7 @@ export interface SettingsSubmitPayload {
   compositor: number;
   multipart_default: boolean;
   slate: boolean;
+  render_notify: boolean;
   mv_max_motion: number;
   snapshot_dir: string;
   history_max: number;

@@ -3,6 +3,7 @@
   "compositor": { "value": 0, "options": ["Nuke", "After Effects"] },
   "multipart_default": true,
   "slate": { "value": true },
+  "render_notify": true,
   "mv_max_motion": 64,
   "snapshot_dir": { "value": "/Volumes/render/robot_010/snapshots", "detected": true, "locked": true },
   "history_max": { "value": 5, "options": [5, 10, 20] }
