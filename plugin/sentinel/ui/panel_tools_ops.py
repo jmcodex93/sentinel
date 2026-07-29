@@ -56,6 +56,24 @@ def _op_tool_mark_safe_area(payload):
     return _tool(scene_tools._toggle_safe_area_mark_core)
 
 
+def _op_tool_delete_empty_nulls(payload):
+    return _tool(scene_tools._delete_empty_nulls_core)
+
+
+def _op_tool_clean_material_tags(payload):
+    return _tool(scene_tools._clean_material_tags_core)
+
+
+def _op_tool_keyframe_offset(payload):
+    from sentinel import keyframes
+    return _tool(lambda doc: keyframes.run_offset(doc, (payload or {}).get("frames")))
+
+
+def _op_tool_keyframe_stagger(payload):
+    from sentinel import keyframes
+    return _tool(lambda doc: keyframes.run_stagger(doc, (payload or {}).get("frames")))
+
+
 _EXTERNAL_URLS = {
     "github": "https://github.com/jmcodex93/sentinel",
     "bug": "https://github.com/jmcodex93/sentinel/issues/new",
@@ -114,4 +132,8 @@ PANEL_TOOLS_OPS = {
     "panel/tools/open_settings": _op_open_settings,
     "panel/tools/open_palette": _op_open_palette,
     "panel/open_external": _op_open_external,
+    "panel/tools/delete_empty_nulls": _op_tool_delete_empty_nulls,
+    "panel/tools/clean_material_tags": _op_tool_clean_material_tags,
+    "panel/tools/keyframe_offset": _op_tool_keyframe_offset,
+    "panel/tools/keyframe_stagger": _op_tool_keyframe_stagger,
 }

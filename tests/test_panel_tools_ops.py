@@ -503,3 +503,185 @@ def test_clean_material_tags_no_document(sentinel_module):
     scene_tools = importlib.import_module("sentinel.ui.scene_tools")
     assert scene_tools._clean_material_tags_core(None) == {
         "ok": False, "error": "no_document"}
+
+
+class TestCleanupKeyframeOps:
+    """panel/tools/delete_empty_nulls, clean_material_tags, keyframe_offset,
+    keyframe_stagger — thin _tool()/forwarding adapters, mirrors
+    TestMergeOps/TestParityOps above."""
+
+    def _forbid_dialog(self, monkeypatch):
+        from sentinel.ui import scene_tools
+
+        def _boom(*a, **k):
+            raise AssertionError("no dialog in op path")
+
+        monkeypatch.setattr(scene_tools.c4d.gui, "MessageDialog", _boom)
+
+    def test_ops_registered(self, sentinel_module):
+        from sentinel.ui import panel_tools_ops
+        for key in ("panel/tools/delete_empty_nulls",
+                    "panel/tools/clean_material_tags",
+                    "panel/tools/keyframe_offset",
+                    "panel/tools/keyframe_stagger"):
+            assert key in panel_tools_ops.PANEL_TOOLS_OPS
+
+    def test_op_delete_empty_nulls_routes_to_core(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        from sentinel.ui import scene_tools
+        self._forbid_dialog(monkeypatch)
+        doc = _FakeDoc()
+        captured = {}
+        sentinel = {"ok": True, "removed": 2}
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+
+        def _fake_core(d):
+            captured["doc"] = d
+            return sentinel
+
+        monkeypatch.setattr(scene_tools, "_delete_empty_nulls_core", _fake_core)
+        result = panel_tools_ops._op_tool_delete_empty_nulls({})
+        assert captured["doc"] is doc
+        assert result is sentinel
+
+    def test_op_clean_material_tags_routes_to_core(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        from sentinel.ui import scene_tools
+        self._forbid_dialog(monkeypatch)
+        doc = _FakeDoc()
+        captured = {}
+        sentinel = {"ok": True, "removed_broken": 1, "removed_dupes": 0}
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+
+        def _fake_core(d):
+            captured["doc"] = d
+            return sentinel
+
+        monkeypatch.setattr(scene_tools, "_clean_material_tags_core", _fake_core)
+        result = panel_tools_ops._op_tool_clean_material_tags({})
+        assert captured["doc"] is doc
+        assert result is sentinel
+
+    def test_op_delete_empty_nulls_no_document(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: None)
+        assert panel_tools_ops._op_tool_delete_empty_nulls({}) == {
+            "ok": False, "error": "no_document"}
+
+    def test_op_clean_material_tags_no_document(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: None)
+        assert panel_tools_ops._op_tool_clean_material_tags({}) == {
+            "ok": False, "error": "no_document"}
+
+    def test_op_keyframe_offset_forwards_frames(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        from sentinel import keyframes
+        self._forbid_dialog(monkeypatch)
+        doc = _FakeDoc()
+        captured = {}
+        sentinel = {"ok": True, "objects": 2, "keys": 5, "frames": 7}
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+
+        def _fake_run_offset(d, frames):
+            captured["doc"] = d
+            captured["frames"] = frames
+            return sentinel
+
+        monkeypatch.setattr(keyframes, "run_offset", _fake_run_offset)
+        result = panel_tools_ops._op_tool_keyframe_offset({"frames": 7})
+        assert captured["doc"] is doc
+        assert captured["frames"] == 7
+        assert result is sentinel
+
+    def test_op_keyframe_stagger_forwards_frames(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        from sentinel import keyframes
+        self._forbid_dialog(monkeypatch)
+        doc = _FakeDoc()
+        captured = {}
+        sentinel = {"ok": True, "objects": 3, "keys": 9, "frames": -4}
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+
+        def _fake_run_stagger(d, frames):
+            captured["doc"] = d
+            captured["frames"] = frames
+            return sentinel
+
+        monkeypatch.setattr(keyframes, "run_stagger", _fake_run_stagger)
+        result = panel_tools_ops._op_tool_keyframe_stagger({"frames": -4})
+        assert captured["doc"] is doc
+        assert captured["frames"] == -4
+        assert result is sentinel
+
+    def test_op_keyframe_offset_no_payload_forwards_none(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        from sentinel import keyframes
+        self._forbid_dialog(monkeypatch)
+        doc = _FakeDoc()
+        captured = {}
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+
+        def _fake_run_offset(d, frames):
+            captured["frames"] = frames
+            return {"ok": False, "error": "bad_frames"}
+
+        monkeypatch.setattr(keyframes, "run_offset", _fake_run_offset)
+        result = panel_tools_ops._op_tool_keyframe_offset(None)
+        assert captured["frames"] is None
+        assert result == {"ok": False, "error": "bad_frames"}
+
+    def test_op_keyframe_ops_forbid_dialog(self, sentinel_module, monkeypatch):
+        """Exercise all 4 new routes with no-document AND happy paths and
+        assert no MessageDialog/QuestionDialog is reachable."""
+        from sentinel.ui import panel_tools_ops
+        from sentinel.ui import scene_tools
+        from sentinel import keyframes
+
+        def _boom_msg(*a, **k):
+            raise AssertionError("no MessageDialog allowed in op path")
+
+        def _boom_question(*a, **k):
+            raise AssertionError("no QuestionDialog allowed in op path")
+
+        monkeypatch.setattr(scene_tools.c4d.gui, "MessageDialog", _boom_msg)
+        monkeypatch.setattr(scene_tools.c4d.gui, "QuestionDialog", _boom_question)
+
+        # no-document path for all 4 routes
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: None)
+        assert panel_tools_ops._op_tool_delete_empty_nulls({}) == {
+            "ok": False, "error": "no_document"}
+        assert panel_tools_ops._op_tool_clean_material_tags({}) == {
+            "ok": False, "error": "no_document"}
+        assert panel_tools_ops._op_tool_keyframe_offset({"frames": 3}) == {
+            "ok": False, "error": "no_document"}
+        assert panel_tools_ops._op_tool_keyframe_stagger({"frames": 3}) == {
+            "ok": False, "error": "no_document"}
+
+        # happy path for all 4 routes, with the real active document
+        doc = _FakeDoc()
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(scene_tools, "_delete_empty_nulls_core",
+                            lambda d: {"ok": True, "removed": 1})
+        monkeypatch.setattr(scene_tools, "_clean_material_tags_core",
+                            lambda d: {"ok": True, "removed_broken": 0, "removed_dupes": 1})
+        monkeypatch.setattr(keyframes, "run_offset",
+                            lambda d, frames: {"ok": True, "objects": 1, "keys": 1, "frames": frames})
+        monkeypatch.setattr(keyframes, "run_stagger",
+                            lambda d, frames: {"ok": True, "objects": 1, "keys": 1, "frames": frames})
+
+        assert panel_tools_ops._op_tool_delete_empty_nulls({})["ok"] is True
+        assert panel_tools_ops._op_tool_clean_material_tags({})["ok"] is True
+        assert panel_tools_ops._op_tool_keyframe_offset({"frames": 5})["ok"] is True
+        assert panel_tools_ops._op_tool_keyframe_stagger({"frames": 5})["ok"] is True
