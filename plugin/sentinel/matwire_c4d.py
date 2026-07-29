@@ -128,18 +128,20 @@ def build_description(folder, tex_set):
 
 def _layout_nodes(graph):
     """GraphDescription assigns no positions (§6) — set xpos/ypos explicitly
-    so the graph never stacks at (0,0). Nodes located by assetid; samplers
-    (and any same-kind siblings) stagger down their column."""
+    so the graph never stacks at (0,0). Nodes located by assetid; rows are
+    keyed by COLUMN (x value), not kind — bumpmap and displacement share
+    column -300.0, so keying by kind would stack them at the same (x,y)
+    whenever a set has both normal and height."""
     rows = {}
     with graph.BeginTransaction() as tr:
         for node in graph.GetViewRoot().GetInnerNodes(
                 mask=maxon.NODE_KIND.NODE, includeThis=False):
             asset_id = str(node.GetValue(_ASSETID_ATTR) or "")
             kind = asset_id.rsplit(".", 1)[-1]
-            index = rows.get(kind, 0)
-            rows[kind] = index + 1
-            node.SetValue("net.maxon.node.base.xpos",
-                          maxon.Float(_LAYOUT_COLS.get(kind, 0.0)))
+            col = _LAYOUT_COLS.get(kind, 0.0)
+            index = rows.get(col, 0)
+            rows[col] = index + 1
+            node.SetValue("net.maxon.node.base.xpos", maxon.Float(col))
             node.SetValue("net.maxon.node.base.ypos",
                           maxon.Float(index * _LAYOUT_ROW_STEP))
         tr.Commit()
@@ -168,6 +170,12 @@ def create_material_for_set(doc, folder, tex_set, name):
     except Exception as exc:
         if mat is not None:
             try:
+                # NEWOBJ/CHANGE were already recorded inside the batch's open
+                # undo bracket above — a bare Remove() here would leave that
+                # bracket unbalanced (redo could resurrect the half-built
+                # material). Balance it with a DELETE record first, matching
+                # the repo convention (fixes.py:258, scene_tools.py:1475).
+                doc.AddUndo(c4d.UNDOTYPE_DELETE, mat)
                 mat.Remove()
             except Exception:
                 pass

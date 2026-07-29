@@ -999,9 +999,13 @@ class _FakeMatwireDoc:
         self._materials = [_FakeMatwireMat(n) for n in (material_names or [])]
         self.start_undo_count = 0
         self.end_undo_count = 0
+        self.undo_operations = []
 
     def GetMaterials(self):
         return list(self._materials)
+
+    def AddUndo(self, undo_type, target):
+        self.undo_operations.append((undo_type, target))
 
     def StartUndo(self):
         self.start_undo_count += 1
@@ -1182,8 +1186,17 @@ class TestMatwireOps:
         folder = self._folder(
             tmp_path, "brick_col.png", "plaster_col.png", "wood_col.png")
 
+        removed_mats = {}
+
         def _fake_create(d, f, tex_set, name):
             if tex_set["name"] == "brick":
+                # Mirror matwire_c4d.create_material_for_set's real §8c
+                # cleanup contract: a DELETE undo record MUST balance the
+                # NEWOBJ/CHANGE records taken inside the batch's open undo
+                # bracket before the half-built material is removed.
+                mat = _FakeMatwireMat(name)
+                removed_mats["brick"] = mat
+                d.AddUndo(matwire_c4d.c4d.UNDOTYPE_DELETE, mat)
                 return {"ok": False, "material_name": name, "error": "apply_failed"}
             if tex_set["name"] == "plaster":
                 raise RuntimeError("boom")
@@ -1198,3 +1211,5 @@ class TestMatwireOps:
         assert any(row[0] == "plaster" for row in result["errors"])
         assert doc.start_undo_count == 1
         assert doc.end_undo_count == 1
+        assert (matwire_c4d.c4d.UNDOTYPE_DELETE, removed_mats["brick"]) in \
+            doc.undo_operations
