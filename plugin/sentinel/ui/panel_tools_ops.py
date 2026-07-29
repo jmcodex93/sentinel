@@ -119,6 +119,102 @@ def _op_open_palette(payload):
     return {"ok": True}
 
 
+PREVIEW_CAP = 500
+
+
+def _rename_items(doc, source):
+    """(items, nodes) in final order, or (None, None) on bad source.
+    Objects follow the artist's SELECTION order (spec decision 3)."""
+    if source == "objects":
+        try:
+            nodes = doc.GetActiveObjects(c4d.GETACTIVEOBJECTFLAGS_SELECTIONORDER) or []
+        except Exception:
+            nodes = []
+    elif source == "materials":
+        try:
+            nodes = doc.GetActiveMaterials() or []
+        except Exception:
+            nodes = []
+    else:
+        return None, None
+    items = []
+    for node in nodes:
+        parent = ""
+        try:
+            up = node.GetUp() if hasattr(node, "GetUp") else None
+            parent = up.GetName() if up is not None else ""
+        except Exception:
+            parent = ""
+        try:
+            type_name = node.GetTypeName() or ""
+        except Exception:
+            type_name = ""
+        items.append({"name": node.GetName() or "", "parent": parent,
+                      "type_name": type_name})
+    return items, nodes
+
+
+def _rename_request(payload):
+    """Shared front half: (doc, nodes, plan, ops) or an error dict."""
+    from sentinel import renaming
+    doc = c4d.documents.GetActiveDocument()
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+    payload = payload or {}
+    ops = renaming.normalize_ops(payload.get("ops"))
+    if renaming.ops_is_noop(ops):
+        return {"ok": False, "error": "nothing_to_do"}
+    items, nodes = _rename_items(doc, payload.get("source"))
+    if items is None:
+        return {"ok": False, "error": "bad_source"}
+    if not items:
+        return {"ok": False, "error": "no_selection"}
+    return {"doc": doc, "nodes": nodes, "plan": renaming.rename_plan(items, ops)}
+
+
+def _op_rename_preview(payload):
+    result = _rename_request(payload)
+    if "error" in result:
+        return result
+    plan = result["plan"]
+    return {"ok": True, "rows": plan[:PREVIEW_CAP],
+            "truncated": len(plan) > PREVIEW_CAP, "total": len(plan)}
+
+
+def _op_rename_apply(payload):
+    # Re-derives the plan from the CURRENT selection + payload ops — any
+    # client-side rows are ignored (a stale preview can never apply
+    # misaligned names).
+    result = _rename_request(payload)
+    if "error" in result:
+        return result
+    doc, nodes, plan = result["doc"], result["nodes"], result["plan"]
+    renamed = 0
+    doc.StartUndo()
+    try:
+        for node, row in zip(nodes, plan):
+            if row["old"] == row["new"]:
+                continue
+            try:
+                doc.AddUndo(c4d.UNDOTYPE_CHANGE, node)
+            except Exception:
+                pass
+            try:
+                node.SetName(row["new"])
+            except Exception:
+                continue
+            renamed += 1
+    finally:
+        doc.EndUndo()
+        try:
+            c4d.EventAdd()
+        except Exception:
+            pass
+    return {"ok": True, "renamed": renamed,
+            "collisions": sum(1 for r in plan if r["collision"]),
+            "source": (payload or {}).get("source")}
+
+
 PANEL_TOOLS_OPS = {
     "panel/tools/hierarchy": _op_tool_hierarchy,
     "panel/tools/vibrate_null": _op_tool_vibrate_null,
@@ -136,4 +232,6 @@ PANEL_TOOLS_OPS = {
     "panel/tools/clean_material_tags": _op_tool_clean_material_tags,
     "panel/tools/keyframe_offset": _op_tool_keyframe_offset,
     "panel/tools/keyframe_stagger": _op_tool_keyframe_stagger,
+    "panel/tools/rename_preview": _op_rename_preview,
+    "panel/tools/rename_apply": _op_rename_apply,
 }
