@@ -545,11 +545,22 @@ def _params_payload_for_takes(node):
             _get_node_value(node, ID_COMPOSITION, COMPOSITION_CROP)
         ),
         "formats": formats,
+        # Host-camera name: the take names are prefixed with it, so a camera
+        # RENAME drifts the canonical names and must trigger the auto-sync
+        # (live-caught in the v1.31 Batch Rename matrix: renaming the host
+        # camera left the takes under the old prefix until an unrelated
+        # takes-relevant edit fired a sync — the BaseLink rename-safety
+        # worked, the TRIGGER was missing). Execute's drift detector runs on
+        # every scene evaluation, so the rename lands here. Existing scenes
+        # get one benign adoption re-sync from the new field, same contract
+        # as the v1.29 signature extension.
+        "prefix": _safe_node_name(_tag_host(node), ""),
     }
 
 
 def _params_signature_for_takes(node):
-    """Hash enabled formats, nudges and composition mode for staleness checks."""
+    """Hash enabled formats, nudges, composition mode and host-camera prefix
+    for staleness checks."""
     raw = json.dumps(_params_payload_for_takes(node), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 

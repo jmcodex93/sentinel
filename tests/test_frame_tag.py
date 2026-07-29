@@ -678,3 +678,45 @@ def test_slice_cut_segments_internal_boundaries_only(sentinel_module):
         assert ys[0] == pytest.approx(-0.1)
         assert ys[1] == pytest.approx(0.1)
     assert frame_tag._slice_cut_segments(guide, 1, 1, 100, 100) == []
+
+
+def test_signature_changes_on_host_camera_rename(sentinel_module):
+    # Live-caught (v1.31 Batch Rename matrix): renaming the host camera left
+    # the takes under the old prefix because the signature ignored the name —
+    # the BaseLink rename-safety worked, the auto-sync TRIGGER was missing.
+    import importlib
+    frame_tag = importlib.import_module("sentinel.ui.frame_tag")
+
+    class _Cam:
+        def __init__(self, name):
+            self._name = name
+
+        def GetName(self):
+            return self._name
+
+    class _Tag(dict):
+        def __init__(self, cam):
+            super().__init__()
+            self._cam = cam
+
+        def GetObject(self):
+            return self._cam
+
+    cam = _Cam("Hero")
+    tag = _Tag(cam)
+    tag[frame_tag.ID_COMPOSITION] = frame_tag.COMPOSITION_CROP
+    for index in range(frame_tag.FORMAT_ROW_COUNT):
+        ids = frame_tag._format_ids(index)
+        tag[ids["enabled"]] = index == 0
+        tag[ids["nudge_x"]] = 0.0
+        tag[ids["nudge_y"]] = 0.0
+        tag[ids["slice_x"]] = 1
+        tag[ids["slice_y"]] = 1
+
+    before = frame_tag._params_signature_for_takes(tag)
+    cam._name = "Villain"
+    after = frame_tag._params_signature_for_takes(tag)
+    assert before != after
+    # Dict-only tags (no GetObject) keep a stable empty prefix — the whole
+    # existing signature suite relies on that.
+    assert frame_tag._params_payload_for_takes({frame_tag.ID_COMPOSITION: 0})["prefix"] == ""
