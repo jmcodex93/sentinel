@@ -1193,3 +1193,39 @@ export interface PanelToolResult {
   objects?: number;
   frames?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Batch Rename (v1.31) — mirrors `_op_rename_preview` / `_op_rename_apply` in
+// plugin/sentinel/ui/panel_tools_ops.py. The plan is ALWAYS server-derived
+// (`renaming.rename_plan`) — the SPA never computes a name client-side, so
+// the preview is WYSIWYG with what apply will do by construction.
+// ---------------------------------------------------------------------------
+
+/** One row of the server's rename plan (`renaming.rename_plan`). */
+export interface RenameRow {
+  old: string;
+  new: string;
+  /** True when this row's FINAL name duplicates another row's in the batch. */
+  collision: boolean;
+}
+
+/** `panel/tools/rename_preview` response — rows capped at PREVIEW_CAP (500),
+ * `truncated`/`total` describe the cap; `error` is one of `no_document` /
+ * `nothing_to_do` / `bad_source` / `no_selection`. */
+export interface RenamePreviewResult {
+  ok: boolean;
+  rows?: RenameRow[];
+  truncated?: boolean;
+  total?: number;
+  error?: string;
+}
+
+/** `panel/tools/rename_apply` response — plan re-derived server-side from
+ * the CURRENT selection (a stale preview can never apply misaligned names). */
+export interface RenameApplyResult {
+  ok: boolean;
+  renamed?: number;
+  collisions?: number;
+  source?: string;
+  error?: string;
+}

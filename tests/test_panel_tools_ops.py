@@ -714,3 +714,270 @@ class TestCleanupKeyframeOps:
         assert panel_tools_ops._op_tool_clean_material_tags({})["ok"] is True
         assert panel_tools_ops._op_tool_keyframe_offset({"frames": 5})["ok"] is True
         assert panel_tools_ops._op_tool_keyframe_stagger({"frames": 5})["ok"] is True
+
+
+class _FakeRenameNode:
+    """Minimal object/material fake for rename ops: GetName/SetName/GetUp/
+    GetTypeName, matching the mechanics rename_plan needs from ``_rename_items``."""
+
+    def __init__(self, name, parent=None, type_name="Cube"):
+        self._name = name
+        self._parent = parent
+        self._type_name = type_name
+        self.set_name_calls = []
+
+    def GetName(self):
+        return self._name
+
+    def SetName(self, name):
+        self.set_name_calls.append(name)
+        self._name = name
+
+    def GetUp(self):
+        return self._parent
+
+    def GetTypeName(self):
+        return self._type_name
+
+
+class _FakeRenameDoc:
+    def __init__(self, objects=None, materials=None):
+        self._objects = list(objects or [])
+        self._materials = list(materials or [])
+        self.start_undo_count = 0
+        self.end_undo_count = 0
+        self.undo_operations = []
+
+    def GetActiveObjects(self, flags):
+        return list(self._objects)
+
+    def GetActiveMaterials(self):
+        return list(self._materials)
+
+    def StartUndo(self):
+        self.start_undo_count += 1
+
+    def EndUndo(self):
+        self.end_undo_count += 1
+
+    def AddUndo(self, undo_type, target):
+        self.undo_operations.append((undo_type, target))
+
+
+class TestRenameOps:
+    """panel/tools/rename_preview + rename_apply — server derives the plan
+    from renaming.normalize_ops/ops_is_noop/rename_plan (Task 1) against the
+    LIVE selection; the client can never supply rows that get applied."""
+
+    def _forbid_dialog(self, monkeypatch):
+        from sentinel.ui import scene_tools
+
+        def _boom_msg(*a, **k):
+            raise AssertionError("no MessageDialog allowed in rename op path")
+
+        def _boom_question(*a, **k):
+            raise AssertionError("no QuestionDialog allowed in rename op path")
+
+        monkeypatch.setattr(scene_tools.c4d.gui, "MessageDialog", _boom_msg)
+        monkeypatch.setattr(scene_tools.c4d.gui, "QuestionDialog", _boom_question)
+
+    def test_ops_registered(self, sentinel_module):
+        from sentinel.ui import panel_tools_ops
+        assert "panel/tools/rename_preview" in panel_tools_ops.PANEL_TOOLS_OPS
+        assert "panel/tools/rename_apply" in panel_tools_ops.PANEL_TOOLS_OPS
+
+    # 1. preview objects: 3 fake selected objects + pattern "u_$n" -> rows
+    #    u_001..u_003, truncated False, total 3; source "materials" reads
+    #    GetActiveMaterials().
+    def test_preview_objects_pattern(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        objects = [_FakeRenameNode("a"), _FakeRenameNode("b"), _FakeRenameNode("c")]
+        doc = _FakeRenameDoc(objects=objects)
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+        result = panel_tools_ops._op_rename_preview(
+            {"source": "objects", "ops": {"pattern": "u_$n"}})
+        assert result["ok"] is True
+        assert [r["new"] for r in result["rows"]] == ["u_001", "u_002", "u_003"]
+        assert result["truncated"] is False
+        assert result["total"] == 3
+
+    def test_preview_materials_reads_active_materials(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        mats = [_FakeRenameNode("matA"), _FakeRenameNode("matB")]
+        doc = _FakeRenameDoc(materials=mats)
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+        result = panel_tools_ops._op_rename_preview(
+            {"source": "materials", "ops": {"pattern": "mat_$n"}})
+        assert result["ok"] is True
+        assert [r["new"] for r in result["rows"]] == ["mat_001", "mat_002"]
+        assert result["total"] == 2
+
+    # 2. preview with >500 selected (fake 501) -> 500 rows, truncated True,
+    #    total 501.
+    def test_preview_truncates_at_500(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        objects = [_FakeRenameNode(f"obj{i}") for i in range(501)]
+        doc = _FakeRenameDoc(objects=objects)
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+        result = panel_tools_ops._op_rename_preview(
+            {"source": "objects", "ops": {"pattern": "u_$n"}})
+        assert result["ok"] is True
+        assert len(result["rows"]) == 500
+        assert result["truncated"] is True
+        assert result["total"] == 501
+
+    # 3. preview neutral ops -> nothing_to_do; empty selection -> no_selection;
+    #    source "layers" -> bad_source.
+    def test_preview_neutral_ops_nothing_to_do(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        doc = _FakeRenameDoc(objects=[_FakeRenameNode("a")])
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+        result = panel_tools_ops._op_rename_preview({"source": "objects", "ops": {}})
+        assert result == {"ok": False, "error": "nothing_to_do"}
+
+    def test_preview_empty_selection_no_selection(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        doc = _FakeRenameDoc(objects=[])
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+        result = panel_tools_ops._op_rename_preview(
+            {"source": "objects", "ops": {"pattern": "u_$n"}})
+        assert result == {"ok": False, "error": "no_selection"}
+
+    def test_preview_bad_source(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        doc = _FakeRenameDoc(objects=[_FakeRenameNode("a")])
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+        result = panel_tools_ops._op_rename_preview(
+            {"source": "layers", "ops": {"pattern": "u_$n"}})
+        assert result == {"ok": False, "error": "bad_source"}
+
+    def test_preview_no_document(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: None)
+        result = panel_tools_ops._op_rename_preview(
+            {"source": "objects", "ops": {"pattern": "u_$n"}})
+        assert result == {"ok": False, "error": "no_document"}
+
+    # 4. apply: renames only rows where old != new via SetName, records ONE
+    #    StartUndo/EndUndo pair and AddUndo per renamed node, returns renamed
+    #    count + collisions count. Apply IGNORES any "rows" key smuggled into
+    #    the payload.
+    def test_apply_renames_and_records_one_undo_pair(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        a = _FakeRenameNode("a")
+        b = _FakeRenameNode("b")
+        doc = _FakeRenameDoc(objects=[a, b])
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+        result = panel_tools_ops._op_rename_apply(
+            {"source": "objects", "ops": {"pattern": "u_$n"}})
+        assert result["ok"] is True
+        assert result["renamed"] == 2
+        assert result["collisions"] == 0
+        assert result["source"] == "objects"
+        assert a.set_name_calls == ["u_001"]
+        assert b.set_name_calls == ["u_002"]
+        assert doc.start_undo_count == 1
+        assert doc.end_undo_count == 1
+        assert len(doc.undo_operations) == 2
+
+    def test_apply_skips_unchanged_names(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        # prefix "" + suffix "" leaves unmatched names untouched; find/replace
+        # that only matches one of the two objects.
+        a = _FakeRenameNode("keep_me")
+        b = _FakeRenameNode("change_me")
+        doc = _FakeRenameDoc(objects=[a, b])
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+        result = panel_tools_ops._op_rename_apply(
+            {"source": "objects", "ops": {"find": "change_me", "replace": "changed"}})
+        assert result["ok"] is True
+        assert result["renamed"] == 1
+        assert a.set_name_calls == []
+        assert b.set_name_calls == ["changed"]
+        assert doc.undo_operations == [(panel_tools_ops.c4d.UNDOTYPE_CHANGE, b)]
+
+    def test_apply_reports_collisions(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        a = _FakeRenameNode("a")
+        b = _FakeRenameNode("b")
+        doc = _FakeRenameDoc(objects=[a, b])
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+        result = panel_tools_ops._op_rename_apply(
+            {"source": "objects", "ops": {"pattern": "same"}})
+        assert result["ok"] is True
+        assert result["renamed"] == 2
+        assert result["collisions"] == 2
+
+    def test_apply_ignores_smuggled_client_rows(self, sentinel_module, monkeypatch):
+        """A poisoned payload with fake 'rows' must still rename from the
+        REAL selection-derived plan, never the client-supplied rows."""
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        a = _FakeRenameNode("a")
+        doc = _FakeRenameDoc(objects=[a])
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+        poisoned = {
+            "source": "objects",
+            "ops": {"pattern": "real_$n"},
+            "rows": [{"old": "a", "new": "MALICIOUS_NAME", "collision": False}],
+        }
+        result = panel_tools_ops._op_rename_apply(poisoned)
+        assert result["ok"] is True
+        assert a.set_name_calls == ["real_001"]
+        assert a._name == "real_001"
+
+    def test_apply_neutral_ops_nothing_to_do(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        a = _FakeRenameNode("a")
+        doc = _FakeRenameDoc(objects=[a])
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+        result = panel_tools_ops._op_rename_apply({"source": "objects", "ops": {}})
+        assert result == {"ok": False, "error": "nothing_to_do"}
+        assert a.set_name_calls == []
+        assert doc.start_undo_count == 0
+
+    def test_apply_bad_source(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        doc = _FakeRenameDoc(objects=[_FakeRenameNode("a")])
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+        result = panel_tools_ops._op_rename_apply(
+            {"source": "layers", "ops": {"pattern": "u_$n"}})
+        assert result == {"ok": False, "error": "bad_source"}
+
+    def test_apply_no_document(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: None)
+        result = panel_tools_ops._op_rename_apply(
+            {"source": "objects", "ops": {"pattern": "u_$n"}})
+        assert result == {"ok": False, "error": "no_document"}
+
+    # 5. _forbid_dialog on both routes (no-document AND happy paths) — covered
+    #    inline above via self._forbid_dialog(monkeypatch) applied to every
+    #    test in this class (both error and happy paths for preview+apply).
