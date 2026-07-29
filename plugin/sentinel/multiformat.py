@@ -157,7 +157,7 @@ def compute_target_aperture(source_aperture, source_width, target_width):
     return float(source_aperture) * (float(target_width) / float(source_width))
 
 
-def compute_format_output_path(source_path, fmt_id, mode="subfolder"):
+def compute_format_output_path(source_path, fmt_id, mode="subfolder", slice_suffix=None):
     """Generate output path for a format variant.
 
     Args:
@@ -166,6 +166,9 @@ def compute_format_output_path(source_path, fmt_id, mode="subfolder"):
         fmt_id: format identifier (e.g., "16x9", "9x16").
         mode: "subfolder" (insert /<fmt>/ before filename) or
               "suffix" (append _<fmt> to filename).
+        slice_suffix: optional "s01"-style render-slice suffix (v1.29).
+            Subfolder mode nests .../<fmt>/<sNN>/...; suffix mode appends
+            _<fmt>_<sNN>. Idempotent like the fmt guards.
 
     Returns:
         Modified output path. Forward-slash style on all platforms (C4D's
@@ -177,6 +180,52 @@ def compute_format_output_path(source_path, fmt_id, mode="subfolder"):
         ("$prj_$frame", "9x16", "subfolder")        -> "9x16/$prj_$frame"
         ("", "1x1", "subfolder")                    -> "1x1/$prj_$frame"
     """
+    if not slice_suffix or not fmt_id:
+        return _compute_format_output_path_no_slice(source_path, fmt_id, mode)
+
+    # Idempotency guard against a path already fully composed with this
+    # fmt+slice (checked on the RAW source_path — re-running the no-slice
+    # transform on an already-nested .../<fmt>/<slice>/... path would not
+    # recognize the immediate parent as fmt_id and double-nest it).
+    raw_norm = (source_path or "").replace("\\", "/")
+    if "/" in raw_norm:
+        raw_head, raw_tail = raw_norm.rsplit("/", 1)
+    else:
+        raw_head, raw_tail = "", raw_norm
+    if mode == "suffix":
+        if raw_tail.endswith(f"_{fmt_id}_{slice_suffix}"):
+            return raw_norm
+    else:
+        raw_head_parts = raw_head.split("/") if raw_head else []
+        if (len(raw_head_parts) >= 2
+                and raw_head_parts[-2] == fmt_id
+                and raw_head_parts[-1] == slice_suffix):
+            return raw_norm
+
+    base = _compute_format_output_path_no_slice(source_path, fmt_id, mode)
+    norm = base.replace("\\", "/")
+    if "/" in norm:
+        head, tail = norm.rsplit("/", 1)
+    else:
+        head, tail = "", norm
+    if mode == "suffix":
+        if tail.endswith(f"_{slice_suffix}"):
+            return norm
+        new_tail = f"{tail}_{slice_suffix}" if tail else f"_{slice_suffix}"
+        return f"{head}/{new_tail}" if head else new_tail
+    head_parts = head.split("/") if head else []
+    if head_parts and head_parts[-1] == slice_suffix:
+        return norm
+    if head and tail:
+        return f"{head}/{slice_suffix}/{tail}"
+    if head:
+        return f"{head}/{slice_suffix}"
+    if tail:
+        return f"{slice_suffix}/{tail}"
+    return slice_suffix
+
+
+def _compute_format_output_path_no_slice(source_path, fmt_id, mode="subfolder"):
     if not fmt_id:
         return source_path or ""
     if not source_path:
@@ -233,14 +282,19 @@ def take_name_for_format(fmt_def, source_take_name=""):
     return fid
 
 
-def _take_name_for_options(fmt_def, source_take_name="", name_prefix=None):
-    """Compose the Take name, optionally scoped to a camera/tag prefix."""
+def _take_name_for_options(fmt_def, source_take_name="", name_prefix=None, slice_suffix=None):
+    """Compose the Take name, optionally scoped to a camera/tag prefix and a
+    render-slice suffix (v1.29: '<prefix>_<fmt>_s01')."""
     if not fmt_def:
         return ""
     prefix = (name_prefix or "").strip()
     if prefix:
-        return f"{prefix}_{fmt_def.get('id', '')}"
-    return take_name_for_format(fmt_def, source_take_name)
+        base = f"{prefix}_{fmt_def.get('id', '')}"
+    else:
+        base = take_name_for_format(fmt_def, source_take_name)
+    if slice_suffix:
+        return f"{base}_{slice_suffix}"
+    return base
 
 
 def _find_take_by_name(takeData, name):
@@ -293,21 +347,27 @@ def _walk_child_takes(takeData):
         yield take
 
 
-def _existing_prefixed_format_ids(takeData, name_prefix):
-    """Return fmt ids for existing takes named '<prefix>_<fmt_id>'."""
+def _existing_prefixed_format_ids(takeData, name_prefix, defs=None):
+    """Return fmt ids for existing takes named '<prefix>_<fmt_id>' or a
+    slice thereof ('<prefix>_<fmt_id>_sNN', v1.29)."""
     prefix = (name_prefix or "").strip()
     if not prefix:
         return set()
+    source_defs = defs if defs is not None else MULTIFORMAT_DEFS
     name_to_id = {
-        f"{prefix}_{fmt_def['id']}": fmt_def["id"]
-        for fmt_def in MULTIFORMAT_DEFS
+        f"{prefix}_{fmt_def['id']}": fmt_def["id"] for fmt_def in source_defs
     }
     found = set()
     for take in _walk_child_takes(takeData):
         try:
-            fmt_id = name_to_id.get(take.GetName())
+            name = take.GetName() or ""
         except Exception:
-            fmt_id = None
+            continue
+        fmt_id = name_to_id.get(name)
+        if fmt_id is None and "_s" in name:
+            stem, _sep, tail = name.rpartition("_s")
+            if tail.isdigit():
+                fmt_id = name_to_id.get(stem)
         if fmt_id:
             found.add(fmt_id)
     return found
@@ -525,9 +585,13 @@ def generate_multiformat_takes(doc, options):
               outside the requested formats are reported as orphaned.
             - film_offsets: optional dict fmt_id -> (x, y) camera film offset
               override values.
-            - tag_link_writer: optional callback(fmt_id, take). This keeps
+            - tag_link_writer: optional callback(key, take). This keeps
               BaseLink tracking owned by the tag/UI layer while letting the
-              engine expose the created/adopted take objects at the right time.
+              engine expose the created/adopted take objects at the right
+              time. `key` is `fmt_id` for a whole-format take, or
+              "<fmt_id>:<slice_suffix>" for a slice variant (e.g. "16x9:s01")
+              — never a bare "<fmt_id>:" with an empty suffix. Same key shape
+              applies to `existing_take_resolver` below.
 
     Returns:
         dict report:
@@ -538,6 +602,8 @@ def generate_multiformat_takes(doc, options):
             orphaned: list[str] — prefixed fmt ids that exist but were not requested
             adopted: list[str] — existing prefixed takes updated in place
             errors: list[str] — non-fatal issues encountered
+            notes: list[str] — non-error advisories (e.g. slices ignored for a
+              non-crop composition mode)
             source_take_name, source_resolution, composition_mode
     """
     report = {
@@ -615,232 +681,304 @@ def generate_multiformat_takes(doc, options):
     # NOT open a second nested StartUndo/EndUndo/EventAdd. Legacy dialog caller
     # omits it → the engine self-manages exactly as before.
     external_undo = bool(options.get("external_undo", False))
+    # Optional RESOLVED def source (v1.29): a list of dicts {"id", "label",
+    # "width", "height", "slices"?}. When present, format ids are looked up
+    # here (custom ratios + slice grids); when absent, behavior is exactly
+    # v1.28 (the built-in get_multiformat_def table).
+    format_defs_opt = options.get("format_defs")
+
+    def _resolve_def(fmt_id):
+        if format_defs_opt:
+            for d in format_defs_opt:
+                if d.get("id") == fmt_id:
+                    return d
+            return None
+        return get_multiformat_def(fmt_id)
+
     report["composition_mode"] = composition_mode
     report["orphaned"] = sorted(
-        _existing_prefixed_format_ids(td, name_prefix) - requested_formats
+        _existing_prefixed_format_ids(td, name_prefix, format_defs_opt)
+        - requested_formats
     )
 
     if not external_undo:
         doc.StartUndo()
     try:
         for fmt_id in formats:
-            fmt_def = get_multiformat_def(fmt_id)
+            fmt_def = _resolve_def(fmt_id)
             if not fmt_def:
                 report["errors"].append(f"Unknown format: {fmt_id}")
                 continue
 
-            take_name = _take_name_for_options(
-                fmt_def, report["source_take_name"], name_prefix)
-
-            # Prefer the tag's tracked Take (rename-safe) over name matching.
-            existing = None
-            if callable(existing_take_resolver):
-                try:
-                    linked = existing_take_resolver(fmt_id)
-                except Exception:
-                    linked = None
-                if linked is not None:
-                    existing = linked
-                    # Re-sync a drifted name back to the canonical camera-scoped
-                    # name so the take (and orphan detection) stays consistent.
-                    try:
-                        if existing.GetName() != take_name:
-                            doc.AddUndo(c4d.UNDOTYPE_CHANGE, existing)
-                            existing.SetName(take_name)
-                    except Exception:
-                        pass
-            if existing is None:
-                existing = _find_take_by_name(td, take_name)
-            if existing and not update_existing:
-                report["skipped"].append(take_name)
-                continue
-
-            # Create or reuse take
-            if existing:
-                take = existing
-                is_update = True
+            # Slice variants (v1.29): a resolved def may carry a slice grid
+            # (sx, sy) — each slice renders a window-anchored sub-crop of the
+            # format's crop window (LED walls / seamed deliveries). Slices are
+            # a CROP-mode concept; any other composition mode ignores them
+            # with an explicit note. The no-slice path is byte-identical to
+            # v1.28: a single variant with suffix None / key fmt_id / window
+            # None degrades every substitution below to the previous
+            # expressions.
+            sx, sy = 1, 1
+            raw_slices = fmt_def.get("slices") or (1, 1)
+            try:
+                sx, sy = max(1, int(raw_slices[0])), max(1, int(raw_slices[1]))
+            except Exception:
+                sx, sy = 1, 1
+            tw, th = int(fmt_def["width"]), int(fmt_def["height"])
+            if (sx * sy) > 1 and composition_mode != COMPOSITION_MODE_CROP:
+                report["notes"].append(
+                    f"slices ignored for {fmt_id} (composition mode is not crop)")
+                sx, sy = 1, 1
+            if sx * sy > 1:
+                fmt_window = framing.format_crop_rect(
+                    src_w, src_h, tw, th, film_offsets.get(fmt_id))
+                variants = []
+                for sub, w_px, h_px, sfx in framing.slice_windows(
+                        fmt_window, sx, sy, tw, th):
+                    # A grid that fully clamps back to a single window (e.g. a
+                    # degenerate 1px-wide format) comes back with an empty
+                    # suffix — normalize to the same "whole format" identity
+                    # (suffix None, key = fmt_id) used by the no-slice path,
+                    # so tag_link_writer/existing_take_resolver never see a
+                    # dangling "<fmt_id>:" key that no whole-format lookup
+                    # would ever hit.
+                    norm_sfx = sfx or None
+                    variants.append({
+                        "suffix": norm_sfx, "window": sub, "width": w_px,
+                        "height": h_px,
+                        "key": f"{fmt_id}:{norm_sfx}" if norm_sfx else fmt_id,
+                    })
             else:
-                try:
-                    take = td.AddTake(take_name, source_take, None)
-                except Exception as e:
-                    report["errors"].append(f"AddTake({take_name}) failed: {e}")
-                    continue
-                if not take:
-                    report["errors"].append(f"AddTake({take_name}) returned None")
-                    continue
-                try:
-                    doc.AddUndo(c4d.UNDOTYPE_NEW, take)
-                except Exception:
-                    pass
-                is_update = False
+                variants = [{"suffix": None, "window": None, "width": tw,
+                             "height": th, "key": fmt_id}]
 
-            # Resolve / create render data for this take.
-            # Only reuse the take's existing render data if it is an
-            # engine-owned per-format clone (named "<source>_<fmt>"). A take
-            # adopted via existing_take_resolver could point at the SHARED
-            # source render data (or a foreign one); writing this format's
-            # resolution/path onto that would corrupt the base settings. In
-            # that case we fall through and clone a fresh dedicated render data.
-            expected_rd_name = f"{source_rd.GetName()}_{fmt_id}"
-            new_rd = None
-            if is_update:
-                try:
-                    existing_rd = take.GetRenderData(td)
-                    if existing_rd and existing_rd.GetName() == expected_rd_name:
-                        new_rd = existing_rd
+            for variant in variants:
+                take_name = _take_name_for_options(
+                    fmt_def, report["source_take_name"], name_prefix,
+                    variant["suffix"])
+
+                # Prefer the tag's tracked Take (rename-safe) over name matching.
+                existing = None
+                if callable(existing_take_resolver):
+                    try:
+                        linked = existing_take_resolver(variant["key"])
+                    except Exception:
+                        linked = None
+                    if linked is not None:
+                        existing = linked
+                        # Re-sync a drifted name back to the canonical camera-scoped
+                        # name so the take (and orphan detection) stays consistent.
                         try:
-                            doc.AddUndo(c4d.UNDOTYPE_CHANGE, new_rd)
+                            if existing.GetName() != take_name:
+                                doc.AddUndo(c4d.UNDOTYPE_CHANGE, existing)
+                                existing.SetName(take_name)
                         except Exception:
                             pass
-                except Exception:
-                    pass
-
-            if new_rd is None:
-                try:
-                    new_rd = source_rd.GetClone(c4d.COPYFLAGS_0)
-                    new_rd.SetName(f"{source_rd.GetName()}_{fmt_id}")
-                    doc.InsertRenderDataLast(new_rd)
-                    take.SetRenderData(td, new_rd)
-                    try:
-                        doc.AddUndo(c4d.UNDOTYPE_NEW, new_rd)
-                    except Exception:
-                        pass
-                except Exception as e:
-                    report["errors"].append(f"Render data clone failed for {take_name}: {e}")
+                if existing is None:
+                    existing = _find_take_by_name(td, take_name)
+                if existing and not update_existing:
+                    report["skipped"].append(take_name)
                     continue
 
-            # Bug fix (v1.5.5): explicitly assign the camera to the Take so
-            # `take.GetCamera(td)` returns it. Without this, even though the
-            # FOV override targets `source_cam`, the Take has no camera
-            # assignment and renders fall back to scene defaults — and our
-            # QC #12 cross-aspect check has no camera to project from.
-            # `BaseTake.SetCamera` is the official Maxon SDK pattern
-            # (see takesystem_cameras_r17.py).
-            if source_cam is not None:
-                try:
-                    take.SetCamera(td, source_cam)
-                except Exception as e:
-                    report["errors"].append(f"SetCamera failed for {take_name}: {e}")
-
-            # Apply format-specific overrides on render data
-            try:
-                new_rd[c4d.RDATA_XRES] = float(fmt_def["width"])
-                new_rd[c4d.RDATA_YRES] = float(fmt_def["height"])
-                new_path = compute_format_output_path(src_path, fmt_id, output_mode)
-                new_rd[c4d.RDATA_PATH] = new_path
-            except Exception as e:
-                report["errors"].append(f"Render data setup failed for {take_name}: {e}")
-                continue
-
-            # Camera overrides — depend on composition_mode.
-            #
-            # "crop" (Sentinel Frame default): a TRUE inscribed crop that
-            #   matches the viewport guides exactly (WYSIWYG) on BOTH standard
-            #   and native Redshift (ORSCAMERA) cameras. Scales the per-camera-
-            #   type sensor lever (APERTURE for Ocamera, SENSOR_SIZE for
-            #   ORSCAMERA) to the inscribed rect and pans with that type's
-            #   gate-relative offset (FILM_OFFSET for Ocamera, SENSOR_SHIFT for
-            #   ORSCAMERA — Ocamera's film-offset ids are inert on ORSCAMERA),
-            #   leaving focal length untouched so DOF and zoom animations are
-            #   preserved. See framing.detect_camera_kind / framing.crop_writes
-            #   and docs/solutions/workflow-issues/2026-07-28-rs-camera-take-overrides.md.
-            # "none": camera unchanged (C4D keeps horizontal FOV, aspect changes
-            #   vertical extent — wider formats crop, narrower ones EXTEND, so
-            #   this does NOT match the crop guides for narrower formats). The
-            #   nudge, if any, pans via a master-relative film offset.
-            # "resize_canvas" / focal modes: legacy Multi-Format dialog paths.
-            if source_cam:
-                try:
+                # Create or reuse take
+                if existing:
+                    take = existing
+                    is_update = True
+                else:
                     try:
-                        src_film_x = float(
-                            source_cam[framing.CAMERAOBJECT_FILM_OFFSET_X])
-                    except Exception:
-                        src_film_x = 0.0
+                        take = td.AddTake(take_name, source_take, None)
+                    except Exception as e:
+                        report["errors"].append(f"AddTake({take_name}) failed: {e}")
+                        continue
+                    if not take:
+                        report["errors"].append(f"AddTake({take_name}) returned None")
+                        continue
                     try:
-                        src_film_y = float(
-                            source_cam[framing.CAMERAOBJECT_FILM_OFFSET_Y])
+                        doc.AddUndo(c4d.UNDOTYPE_NEW, take)
                     except Exception:
-                        src_film_y = 0.0
-                    nudge = film_offsets.get(fmt_id)
-                    tw = int(fmt_def["width"])
-                    th = int(fmt_def["height"])
+                        pass
+                    is_update = False
 
-                    if composition_mode == COMPOSITION_MODE_CROP:
-                        _reset_camera_dimensions_to_native(take, td, source_cam)
-                        # TRUE inscribed crop, WYSIWYG on BOTH standard
-                        # (Ocamera) and native Redshift (ORSCAMERA) cameras.
-                        # Each camera type has its own parameter namespace —
-                        # Ocamera crops via APERTURE + FILM_OFFSET_X/Y;
-                        # ORSCAMERA has its own sensor ids (7002 size / 7012
-                        # shift) — Ocamera's ids are inert on it (the
-                        # confirmed production nudge bug: the pan showed in
-                        # guides but not in the render). See
-                        # docs/solutions/workflow-issues/2026-07-28-rs-camera-take-overrides.md.
+                # Resolve / create render data for this take.
+                # Only reuse the take's existing render data if it is an
+                # engine-owned per-format clone (named "<source>_<fmt>", plus
+                # "_<slice>" for slice takes). A take adopted via
+                # existing_take_resolver could point at the SHARED source
+                # render data (or a foreign one); writing this format's
+                # resolution/path onto that would corrupt the base settings. In
+                # that case we fall through and clone a fresh dedicated render data.
+                expected_rd_name = f"{source_rd.GetName()}_{fmt_id}" + (
+                    f"_{variant['suffix']}" if variant["suffix"] else "")
+                new_rd = None
+                if is_update:
+                    try:
+                        existing_rd = take.GetRenderData(td)
+                        if existing_rd and existing_rd.GetName() == expected_rd_name:
+                            new_rd = existing_rd
+                            try:
+                                doc.AddUndo(c4d.UNDOTYPE_CHANGE, new_rd)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+                if new_rd is None:
+                    try:
+                        new_rd = source_rd.GetClone(c4d.COPYFLAGS_0)
+                        new_rd.SetName(expected_rd_name)
+                        doc.InsertRenderDataLast(new_rd)
+                        take.SetRenderData(td, new_rd)
                         try:
-                            cam_type = source_cam.GetType()
+                            doc.AddUndo(c4d.UNDOTYPE_NEW, new_rd)
                         except Exception:
-                            cam_type = None
-                        kind = framing.detect_camera_kind(
-                            cam_type if cam_type is not None else 0)
-                        factor = framing.inscribed_crop_factor(src_w, src_h, tw, th)
-                        if kind == "orscamera":
-                            crop_src_film = _read_vector_param(
-                                source_cam, framing.RS_SENSOR_SHIFT, (0.0, 0.0))
-                            sensor = _read_vector_param(
-                                source_cam, framing.RS_SENSOR_SIZE,
-                                (src_aperture, src_aperture))
-                        else:
-                            crop_src_film = (src_film_x, src_film_y)
-                            sensor = None
-                        nudge_film = framing.nudge_to_film(
-                            nudge, crop_src_film[0], crop_src_film[1],
-                            src_w, src_h, tw, th)
-                        for pid, val in framing.crop_writes(
-                                kind, src_aperture, sensor, factor,
-                                nudge_film, crop_src_film):
-                            _set_camera_override(take, td, source_cam, pid, val)
-                    elif composition_mode == COMPOSITION_MODE_RESIZE_CANVAS:
-                        new_aperture = compute_target_aperture(
-                            src_aperture, src_w, tw)
-                        _set_camera_override(
-                            take, td, source_cam,
-                            framing.CAMERAOBJECT_APERTURE, new_aperture)
-                    elif composition_mode in FOCAL_COMPOSITION_MODES:
-                        _reset_camera_dimensions_to_native(take, td, source_cam)
-                        new_focal = framing.compensated_focus(
-                            src_focal, src_w, src_h, tw, th, composition_mode)
-                        _set_camera_override(
-                            take, td, source_cam, framing.CAMERA_FOCUS, new_focal)
-                    else:  # "none" — camera unchanged; nudge pans (master-relative)
-                        _reset_camera_dimensions_to_native(take, td, source_cam)
-                        if nudge is not None:
-                            _f, film_x, film_y = framing.format_camera_framing_values(
-                                src_focal, src_w, src_h, tw, th,
-                                framing.COMPENSATE_OFF, nudge,
-                                src_film_x, src_film_y)
-                            _set_camera_override(
-                                take, td, source_cam,
-                                framing.CAMERAOBJECT_FILM_OFFSET_X, float(film_x))
-                            _set_camera_override(
-                                take, td, source_cam,
-                                framing.CAMERAOBJECT_FILM_OFFSET_Y, float(film_y))
-                except Exception as e:
-                    report["errors"].append(
-                        f"Camera dimension setup failed for {take_name}: {e}")
+                            pass
+                    except Exception as e:
+                        report["errors"].append(f"Render data clone failed for {take_name}: {e}")
+                        continue
 
-            if is_update:
-                report["updated"].append(take_name)
-                if name_prefix:
-                    report["adopted"].append(take_name)
-            else:
-                report["created"].append(take_name)
+                # Bug fix (v1.5.5): explicitly assign the camera to the Take so
+                # `take.GetCamera(td)` returns it. Without this, even though the
+                # FOV override targets `source_cam`, the Take has no camera
+                # assignment and renders fall back to scene defaults — and our
+                # QC #12 cross-aspect check has no camera to project from.
+                # `BaseTake.SetCamera` is the official Maxon SDK pattern
+                # (see takesystem_cameras_r17.py).
+                if source_cam is not None:
+                    try:
+                        take.SetCamera(td, source_cam)
+                    except Exception as e:
+                        report["errors"].append(f"SetCamera failed for {take_name}: {e}")
 
-            if callable(tag_link_writer):
+                # Apply format-specific overrides on render data
                 try:
-                    tag_link_writer(fmt_id, take)
+                    new_rd[c4d.RDATA_XRES] = float(variant["width"])
+                    new_rd[c4d.RDATA_YRES] = float(variant["height"])
+                    new_path = compute_format_output_path(
+                        src_path, fmt_id, output_mode, variant["suffix"])
+                    new_rd[c4d.RDATA_PATH] = new_path
                 except Exception as e:
-                    report["errors"].append(
-                        f"Tag link writer failed for {take_name}: {e}")
+                    report["errors"].append(f"Render data setup failed for {take_name}: {e}")
+                    continue
+
+                # Camera overrides — depend on composition_mode.
+                #
+                # "crop" (Sentinel Frame default): a TRUE inscribed crop that
+                #   matches the viewport guides exactly (WYSIWYG) on BOTH standard
+                #   and native Redshift (ORSCAMERA) cameras. Scales the per-camera-
+                #   type sensor lever (APERTURE for Ocamera, SENSOR_SIZE for
+                #   ORSCAMERA) to the inscribed rect and pans with that type's
+                #   gate-relative offset (FILM_OFFSET for Ocamera, SENSOR_SHIFT for
+                #   ORSCAMERA — Ocamera's film-offset ids are inert on ORSCAMERA),
+                #   leaving focal length untouched so DOF and zoom animations are
+                #   preserved. Slice variants anchor the crop to their sub-window
+                #   via framing.window_crop_values (same lever, different anchor).
+                #   See framing.detect_camera_kind / framing.crop_writes
+                #   and docs/solutions/workflow-issues/2026-07-28-rs-camera-take-overrides.md.
+                # "none": camera unchanged (C4D keeps horizontal FOV, aspect changes
+                #   vertical extent — wider formats crop, narrower ones EXTEND, so
+                #   this does NOT match the crop guides for narrower formats). The
+                #   nudge, if any, pans via a master-relative film offset.
+                # "resize_canvas" / focal modes: legacy Multi-Format dialog paths.
+                if source_cam:
+                    try:
+                        try:
+                            src_film_x = float(
+                                source_cam[framing.CAMERAOBJECT_FILM_OFFSET_X])
+                        except Exception:
+                            src_film_x = 0.0
+                        try:
+                            src_film_y = float(
+                                source_cam[framing.CAMERAOBJECT_FILM_OFFSET_Y])
+                        except Exception:
+                            src_film_y = 0.0
+                        nudge = film_offsets.get(fmt_id)
+
+                        if composition_mode == COMPOSITION_MODE_CROP:
+                            _reset_camera_dimensions_to_native(take, td, source_cam)
+                            # TRUE inscribed crop, WYSIWYG on BOTH standard
+                            # (Ocamera) and native Redshift (ORSCAMERA) cameras.
+                            # Each camera type has its own parameter namespace —
+                            # Ocamera crops via APERTURE + FILM_OFFSET_X/Y;
+                            # ORSCAMERA has its own sensor ids (7002 size / 7012
+                            # shift) — Ocamera's ids are inert on it (the
+                            # confirmed production nudge bug: the pan showed in
+                            # guides but not in the render). See
+                            # docs/solutions/workflow-issues/2026-07-28-rs-camera-take-overrides.md.
+                            try:
+                                cam_type = source_cam.GetType()
+                            except Exception:
+                                cam_type = None
+                            kind = framing.detect_camera_kind(
+                                cam_type if cam_type is not None else 0)
+                            if kind == "orscamera":
+                                crop_src_film = _read_vector_param(
+                                    source_cam, framing.RS_SENSOR_SHIFT, (0.0, 0.0))
+                                sensor = _read_vector_param(
+                                    source_cam, framing.RS_SENSOR_SIZE,
+                                    (src_aperture, src_aperture))
+                            else:
+                                crop_src_film = (src_film_x, src_film_y)
+                                sensor = None
+                            if variant["window"] is not None:
+                                # Slice: window-anchored crop — factor + pan
+                                # come from the slice's sub-window (the format
+                                # nudge is already baked into fmt_window).
+                                factor, film_x, film_y = framing.window_crop_values(
+                                    variant["window"], src_w / float(src_h),
+                                    (crop_src_film[0], crop_src_film[1]))
+                                nudge_film = (film_x, film_y)
+                            else:
+                                factor = framing.inscribed_crop_factor(
+                                    src_w, src_h, tw, th)
+                                nudge_film = framing.nudge_to_film(
+                                    nudge, crop_src_film[0], crop_src_film[1],
+                                    src_w, src_h, tw, th)
+                            for pid, val in framing.crop_writes(
+                                    kind, src_aperture, sensor, factor,
+                                    nudge_film, crop_src_film):
+                                _set_camera_override(take, td, source_cam, pid, val)
+                        elif composition_mode == COMPOSITION_MODE_RESIZE_CANVAS:
+                            new_aperture = compute_target_aperture(
+                                src_aperture, src_w, tw)
+                            _set_camera_override(
+                                take, td, source_cam,
+                                framing.CAMERAOBJECT_APERTURE, new_aperture)
+                        elif composition_mode in FOCAL_COMPOSITION_MODES:
+                            _reset_camera_dimensions_to_native(take, td, source_cam)
+                            new_focal = framing.compensated_focus(
+                                src_focal, src_w, src_h, tw, th, composition_mode)
+                            _set_camera_override(
+                                take, td, source_cam, framing.CAMERA_FOCUS, new_focal)
+                        else:  # "none" — camera unchanged; nudge pans (master-relative)
+                            _reset_camera_dimensions_to_native(take, td, source_cam)
+                            if nudge is not None:
+                                _f, film_x, film_y = framing.format_camera_framing_values(
+                                    src_focal, src_w, src_h, tw, th,
+                                    framing.COMPENSATE_OFF, nudge,
+                                    src_film_x, src_film_y)
+                                _set_camera_override(
+                                    take, td, source_cam,
+                                    framing.CAMERAOBJECT_FILM_OFFSET_X, float(film_x))
+                                _set_camera_override(
+                                    take, td, source_cam,
+                                    framing.CAMERAOBJECT_FILM_OFFSET_Y, float(film_y))
+                    except Exception as e:
+                        report["errors"].append(
+                            f"Camera dimension setup failed for {take_name}: {e}")
+
+                if is_update:
+                    report["updated"].append(take_name)
+                    if name_prefix:
+                        report["adopted"].append(take_name)
+                else:
+                    report["created"].append(take_name)
+
+                if callable(tag_link_writer):
+                    try:
+                        tag_link_writer(variant["key"], take)
+                    except Exception as e:
+                        report["errors"].append(
+                            f"Tag link writer failed for {take_name}: {e}")
 
         report["success"] = True
     except Exception as e:

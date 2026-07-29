@@ -57,6 +57,23 @@ ID_GROUP_FORMATS = 903     # sub-group of Main holding the per-format rows
 ID_FORMAT_BASE = 1100
 ID_FORMAT_STRIDE = 20
 
+# Frame v2.1 (custom ratio + render slices). Row indexes: 0..4 follow
+# MULTIFORMAT_DEFS order, 5 = the Custom row. The custom row's `enabled`
+# defaults to False everywhere (v1.28 scenes must not sprout a custom
+# format); standard rows keep default True — see _row_enabled.
+FORMAT_ROW_COUNT = 6
+CUSTOM_FORMAT_INDEX = 5
+CUSTOM_FORMAT_ID = "custom"
+ID_GROUP_CUSTOM = 904            # 8-column sub-grid under the formats grid
+# Slice take BaseLinks. Base sits above ALL declared description ids (the
+# highest is ID_MARK_SUBJECT = 3004) so that 6 rows x 256 ordinals — ids
+# 10000..11535 (10000 + 5*256 + 255) — can never collide with a real
+# description field, however many rows/ordinals grow. id = 10000 +
+# row_index*256 + (ordinal-1).
+ID_PRIVATE_SLICE_LINK_BASE = 10000
+MAX_SLICE_ORDINALS = 256
+VIEWING_SLICE_STRIDE = 1000        # ID_VIEWING encoding for slices (Task 5)
+
 # Private per-format platform insets: stored on the tag container so Draw can
 # stay read-only and avoid resolving sentinel_rules.json on the draw thread.
 ID_PLATFORM_INSET_BASE = 2000
@@ -130,6 +147,7 @@ _FORMAT_COLORS = {
     "1x1": (0.50, 0.85, 0.95),
     "4x5": (0.85, 0.35, 0.85),
     "21x9": (0.95, 0.85, 0.20),
+    "custom": (0.35, 0.95, 0.55),
 }
 
 
@@ -138,14 +156,39 @@ def is_valid_camera_host(obj_type_int):
     return int(obj_type_int or 0) in (OCAMERA, ORSCAMERA)
 
 
-def _format_defs():
-    """Return the canonical multi-format definitions without duplicating data."""
+def _format_defs(node=None):
+    """Canonical defs — the 5 standard entries plus, when ``node`` is given
+    and its Custom row is enabled, a FRESH custom def dict (v1.29). The
+    standard entries are the shared MULTIFORMAT_DEFS dicts and must never be
+    mutated; the custom def is rebuilt per call from the tag params."""
     defs = []
     for fmt in MULTIFORMAT_DEFS:
         canonical = get_multiformat_def(fmt.get("id"))
         if canonical:
             defs.append(canonical)
+    if node is not None:
+        custom = _custom_def_from_params(node)
+        if custom is not None:
+            defs.append(custom)
     return defs
+
+
+def _custom_def_from_params(node):
+    ids = _format_ids(CUSTOM_FORMAT_INDEX)
+    if not _as_bool(_get_node_value(node, ids["enabled"], False), False):
+        return None
+    width = max(16, _as_int(_get_node_value(node, ids["width"], 1920), 1920))
+    height = max(16, _as_int(_get_node_value(node, ids["height"], 1080), 1080))
+    return {"id": CUSTOM_FORMAT_ID, "label": "Custom",
+            "width": width, "height": height}
+
+
+def _row_enabled(node, index):
+    """Per-row enabled with the migration-safe default: standard rows (0-4)
+    default True (v1.8.0 behavior), the Custom row defaults False (a v1.28
+    tag with no stored custom params must NOT sprout a custom format)."""
+    default = index != CUSTOM_FORMAT_INDEX
+    return _as_bool(_get_node_value(node, _format_ids(index)["enabled"], default), default)
 
 
 def _format_ids(index):
@@ -156,16 +199,69 @@ def _format_ids(index):
         "color": base + 2,
         "nudge_x": base + 3,
         "nudge_y": base + 4,
+        "slice_x": base + 5,
+        "slice_y": base + 6,
+        "width": base + 7,   # custom row only
+        "height": base + 8,  # custom row only
     }
 
 
+def _slices_for_index(node, index):
+    """Effective slice grid for a format row. Returns (1, 1) whenever the
+    tag's composition mode is not Crop: slices are a tiling of the CROP
+    window, and in "None" mode the camera is never cropped, so a slice
+    window is meaningless — the engine applies the exact same rule
+    (multiformat degrades slice grids to 1x1 outside Crop mode and creates
+    the whole-format take). Neutralizing here, at the single choke point,
+    keeps `_engine_format_defs`, `_expected_take_names`,
+    `_viewing_entry_pairs`, `_total_slice_count`,
+    `_params_payload_for_takes` and Draw coherent with what the engine
+    actually generates (otherwise `_prune_orphaned_takes` inside the same
+    `run_full_sync` would delete the freshly created whole-format take),
+    and stops the takes signature churning on Sx/Sy edits in None mode."""
+    if composition_mode_for_engine(
+        _get_node_value(node, ID_COMPOSITION, COMPOSITION_CROP)
+    ) != "crop":
+        return (1, 1)
+    ids = _format_ids(index)
+    sx = max(1, min(16, _as_int(_get_node_value(node, ids["slice_x"], 1), 1)))
+    sy = max(1, min(16, _as_int(_get_node_value(node, ids["slice_y"], 1), 1)))
+    return (sx, sy)
+
+
+def _engine_format_defs(node):
+    """Resolved defs for the multiformat engine: enabled formats only is NOT
+    the contract here — the engine filters by options['formats']; this returns
+    ALL per-tag defs (5 standard + custom-if-enabled) as shallow copies with
+    the per-row slice grid injected."""
+    out = []
+    for index, fmt in enumerate(_format_defs(node)):
+        d = dict(fmt)
+        d["slices"] = _slices_for_index(node, index)
+        out.append(d)
+    return out
+
+
+def _total_slice_count(node):
+    total = 0
+    for index, fmt in enumerate(_format_defs(node)):
+        if not _row_enabled(node, index):
+            continue
+        sx, sy = _slices_for_index(node, index)
+        if sx * sy > 1:
+            total += sx * sy
+    return total
+
+
 def _format_param_map():
+    # Covers all 6 rows and every per-row param regardless of custom state
+    # (it gates AM enabling), so it is built from the row count, not defs.
     mapping = {}
-    for index, fmt in enumerate(_format_defs()):
+    for index in range(FORMAT_ROW_COUNT):
         ids = _format_ids(index)
-        mapping[ids["color"]] = ids["enabled"]
-        mapping[ids["nudge_x"]] = ids["enabled"]
-        mapping[ids["nudge_y"]] = ids["enabled"]
+        for key in ("color", "nudge_x", "nudge_y", "slice_x", "slice_y",
+                    "width", "height"):
+            mapping[ids[key]] = ids["enabled"]
     return mapping
 
 
@@ -250,6 +346,13 @@ def _as_float(value, default=0.0):
         return float(value)
     except Exception:
         return float(default)
+
+
+def _as_int(value, default=0):
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
 
 
 def _vector(rgb):
@@ -345,7 +448,7 @@ def _master_aspect_for_doc(doc):
 
 def _enabled_format_entries(node):
     entries = []
-    for index, fmt in enumerate(_format_defs()):
+    for index, fmt in enumerate(_format_defs(node)):
         ids = _format_ids(index)
         if not _as_bool(_get_node_value(node, ids["enabled"], True), True):
             continue
@@ -374,10 +477,15 @@ def _format_take_link_id(index):
     return ID_PRIVATE_TAKE_LINK_BASE + (index * ID_PRIVATE_TAKE_LINK_STRIDE)
 
 
-def _format_index_for_id(fmt_id):
-    for index, fmt in enumerate(_format_defs()):
+def _format_index_for_id(fmt_id, node=None):
+    for index, fmt in enumerate(_format_defs(node)):
         if fmt.get("id") == fmt_id:
             return index
+    # The custom row keeps its link slots addressable even while DISABLED
+    # (its def drops out of _format_defs, but prune must still clear the
+    # stored take links of a now-disabled custom row).
+    if fmt_id == CUSTOM_FORMAT_ID:
+        return CUSTOM_FORMAT_INDEX
     return None
 
 
@@ -393,7 +501,7 @@ def composition_mode_for_engine(composition_id):
 def _enabled_format_ids_from_params(node):
     """Return enabled format ids in canonical UI order."""
     enabled = []
-    for index, fmt in enumerate(_format_defs()):
+    for index, fmt in enumerate(_format_defs(node)):
         ids = _format_ids(index)
         if _as_bool(_get_node_value(node, ids["enabled"], True), True):
             enabled.append(fmt.get("id"))
@@ -403,7 +511,7 @@ def _enabled_format_ids_from_params(node):
 def _film_offsets_from_params(node):
     """Build the engine film_offsets dict from enabled per-format nudges."""
     offsets = {}
-    for index, fmt in enumerate(_format_defs()):
+    for index, fmt in enumerate(_format_defs(node)):
         ids = _format_ids(index)
         if not _as_bool(_get_node_value(node, ids["enabled"], True), True):
             continue
@@ -417,19 +525,21 @@ def _film_offsets_from_params(node):
 def _params_payload_for_takes(node):
     """Return the stable, pure payload that defines generated take freshness."""
     formats = []
-    for index, fmt in enumerate(_format_defs()):
+    for index, fmt in enumerate(_format_defs(node)):
         ids = _format_ids(index)
         if not _as_bool(_get_node_value(node, ids["enabled"], True), True):
             continue
-        formats.append(
-            {
-                "id": fmt.get("id"),
-                "nudge": [
-                    round(_as_float(_get_node_value(node, ids["nudge_x"], 0.0), 0.0), 8),
-                    round(_as_float(_get_node_value(node, ids["nudge_y"], 0.0), 0.0), 8),
-                ],
-            }
-        )
+        entry = {
+            "id": fmt.get("id"),
+            "nudge": [
+                round(_as_float(_get_node_value(node, ids["nudge_x"], 0.0), 0.0), 8),
+                round(_as_float(_get_node_value(node, ids["nudge_y"], 0.0), 0.0), 8),
+            ],
+            "slices": list(_slices_for_index(node, index)),
+        }
+        if fmt.get("id") == CUSTOM_FORMAT_ID:
+            entry["size"] = [int(fmt.get("width", 0)), int(fmt.get("height", 0))]
+        formats.append(entry)
     return {
         "composition_mode": composition_mode_for_engine(
             _get_node_value(node, ID_COMPOSITION, COMPOSITION_CROP)
@@ -538,10 +648,21 @@ def _coerce_insets(insets, fallback=None):
     }
 
 
+def _row_format_id(index):
+    """Row index -> format id for all 6 rows (custom has no MULTIFORMAT def)."""
+    if index < len(MULTIFORMAT_DEFS):
+        return MULTIFORMAT_DEFS[index]["id"]
+    return CUSTOM_FORMAT_ID
+
+
 def _standard_platform_insets_by_format():
+    # All 6 rows: custom insets default to zeros (SAFE_AREA_INSETS has no
+    # "custom" key, so .get() -> None -> _coerce_insets zeros).
     return {
-        fmt.get("id"): _coerce_insets(SAFE_AREA_INSETS.get(fmt.get("id")), None)
-        for fmt in _format_defs()
+        _row_format_id(index): _coerce_insets(
+            SAFE_AREA_INSETS.get(_row_format_id(index)), None
+        )
+        for index in range(FORMAT_ROW_COUNT)
     }
 
 
@@ -562,8 +683,8 @@ def _write_platform_insets_to_node(node, insets_by_format):
     if bc is None:
         return False
     changed = False
-    for index, fmt in enumerate(_format_defs()):
-        fmt_id = fmt.get("id")
+    for index in range(FORMAT_ROW_COUNT):
+        fmt_id = _row_format_id(index)
         insets = _coerce_insets((insets_by_format or {}).get(fmt_id), SAFE_AREA_INSETS.get(fmt_id))
         for side, param_id in _format_inset_ids(index).items():
             value = float(insets[side])
@@ -635,6 +756,7 @@ def _compute_inline_rects(node, master_aspect):
                     "top": guide[3],
                 },
                 "platform": safe_rect,
+                "slices": _slices_for_index(node, index),
             }
         )
     return formats
@@ -665,20 +787,45 @@ def _safe_frame_rect(bd):
     return (cl, ct, cr, cb)
 
 
-def _ndc_rect_to_pixels(rect, safe_frame):
+def _ndc_point_to_pixels(point, safe_frame):
     cl, ct, cr, cb = safe_frame
     master_w = cr - cl
     master_h = cb - ct
+    x, y = float(point[0]), float(point[1])
+    return (
+        cl + (x + 1.0) * 0.5 * master_w,
+        ct + (1.0 - y) * 0.5 * master_h,
+    )
+
+
+def _ndc_rect_to_pixels(rect, safe_frame):
     left = float(rect["left"])
     right = float(rect["right"])
     bottom = float(rect["bottom"])
     top = float(rect["top"])
-    return (
-        cl + (left + 1.0) * 0.5 * master_w,
-        ct + (1.0 - top) * 0.5 * master_h,
-        cl + (right + 1.0) * 0.5 * master_w,
-        ct + (1.0 - bottom) * 0.5 * master_h,
-    )
+    px1, py1 = _ndc_point_to_pixels((left, top), safe_frame)
+    px2, py2 = _ndc_point_to_pixels((right, bottom), safe_frame)
+    return (px1, py1, px2, py2)
+
+
+def _slice_cut_segments(guide, sx, sy, px_w, px_h):
+    """Internal slice boundaries of a guide rect (NDC dict) as endpoint
+    pairs. Reuses framing.slice_windows' floor-exact boundaries by passing
+    the rect as (left, top, right, bottom) — linear interpolation makes the
+    y-up NDC convention transparent."""
+    windows = framing.slice_windows(
+        (guide["left"], guide["top"], guide["right"], guide["bottom"]),
+        sx, sy, px_w, px_h)
+    if len(windows) <= 1:
+        return []
+    xs = sorted({round(w[0][0], 9) for w in windows} | {round(w[0][2], 9) for w in windows})
+    ys = sorted({round(w[0][1], 9) for w in windows} | {round(w[0][3], 9) for w in windows})
+    segs = []
+    for x in xs[1:-1]:
+        segs.append(((x, guide["top"]), (x, guide["bottom"])))
+    for y in ys[1:-1]:
+        segs.append(((guide["left"], y), (guide["right"], y)))
+    return segs
 
 
 def _intersect_ndc_rects(rects):
@@ -851,11 +998,8 @@ def _undo_type_delete():
     return getattr(c4d, "UNDOTYPE_DELETE", getattr(c4d, "UNDOTYPE_DELETEOBJ", 0))
 
 
-def _write_take_link(node, fmt_id, take):
-    index = _format_index_for_id(fmt_id)
-    if index is None:
-        return False
-    bc = _node_data_container(node)
+def _store_link(bc, key_id, take):
+    """Shared BaseLink wrap for every take-link slot (per-format + slice)."""
     if bc is None:
         return False
     value = take
@@ -867,24 +1011,20 @@ def _write_take_link(node, fmt_id, take):
             value = link
         except Exception:
             value = take
-    return _bc_set_data(bc, _format_take_link_id(index), value)
+    return _bc_set_data(bc, key_id, value)
 
 
-def _read_take_link(node, fmt_id, doc=None):
-    index = _format_index_for_id(fmt_id)
-    if index is None:
-        return None
-    bc = _node_data_container(node)
-    key = _format_take_link_id(index)
+def _load_link(bc, key_id, doc=None):
+    """Shared BaseLink unwrap for every take-link slot (per-format + slice)."""
     getter = getattr(bc, "GetLink", None)
     if callable(getter):
         try:
-            linked = getter(key, doc)
+            linked = getter(key_id, doc)
             if linked is not None:
                 return linked
         except Exception:
             pass
-    value = _bc_get_data(bc, key)
+    value = _bc_get_data(bc, key_id)
     link_getter = getattr(value, "GetLink", None)
     if callable(link_getter):
         try:
@@ -892,6 +1032,70 @@ def _read_take_link(node, fmt_id, doc=None):
         except Exception:
             return None
     return value
+
+
+def _write_take_link(node, fmt_id, take):
+    index = _format_index_for_id(fmt_id, node)
+    if index is None:
+        return False
+    return _store_link(_node_data_container(node), _format_take_link_id(index), take)
+
+
+def _read_take_link(node, fmt_id, doc=None):
+    index = _format_index_for_id(fmt_id, node)
+    if index is None:
+        return None
+    return _load_link(_node_data_container(node), _format_take_link_id(index), doc)
+
+
+def _slice_link_id(index, ordinal):
+    """Slice take-link slot: 10000 + row_index*256 + (ordinal-1), 1-based
+    ordinal. Disjoint from the per-format links (2400+) and the private
+    signature/focus keys (2500-2502) because the base starts above them."""
+    return ID_PRIVATE_SLICE_LINK_BASE + int(index) * MAX_SLICE_ORDINALS + (int(ordinal) - 1)
+
+
+def _split_key(key):
+    """'custom:s02' -> ('custom', 's02'); 'custom' -> ('custom', None).
+
+    The engine NEVER emits a bare '<fmt>:' — a clamped-to-1x1 grid degrades
+    to key = fmt_id with no separator (Task 3 contract)."""
+    if ":" in (key or ""):
+        fmt_id, _sep, sfx = key.partition(":")
+        return fmt_id, sfx
+    return key, None
+
+
+def _ordinal_from_suffix(suffix):
+    try:
+        return int(str(suffix)[1:])
+    except Exception:
+        return None
+
+
+def _write_link_for_key(node, key, take):
+    """Key-based take-link writer: key = fmt_id (whole format, 2400+ slot)
+    or '<fmt>:sNN' (slice variant, 2600+ slot)."""
+    fmt_id, suffix = _split_key(key)
+    if suffix is None:
+        return _write_take_link(node, fmt_id, take)
+    index = _format_index_for_id(fmt_id, node)
+    ordinal = _ordinal_from_suffix(suffix)
+    if index is None or ordinal is None or not (1 <= ordinal <= MAX_SLICE_ORDINALS):
+        return False
+    return _store_link(_node_data_container(node), _slice_link_id(index, ordinal), take)
+
+
+def _read_link_for_key(node, key, doc=None):
+    """Key-based take-link reader — mirror of _write_link_for_key."""
+    fmt_id, suffix = _split_key(key)
+    if suffix is None:
+        return _read_take_link(node, fmt_id, doc)
+    index = _format_index_for_id(fmt_id, node)
+    ordinal = _ordinal_from_suffix(suffix)
+    if index is None or ordinal is None or not (1 <= ordinal <= MAX_SLICE_ORDINALS):
+        return None
+    return _load_link(_node_data_container(node), _slice_link_id(index, ordinal), doc)
 
 
 def _write_takes_signature(node, signature):
@@ -974,16 +1178,42 @@ def _observe_signature_drift(node):
         pass
 
 
+def _viewing_entry_pairs(node):
+    """[(value, target_str, label)] for the Viewing cycle AND the panel's
+    target list — ONE source. Whole formats keep value = index + 1 (stable
+    against enable churn, v1.28 encoding); a sliced format replaces its
+    whole entry with per-slice entries encoded as
+    (index + 1) * VIEWING_SLICE_STRIDE + ordinal."""
+    pairs = []
+    for index, fmt in enumerate(_format_defs(node)):
+        if not _row_enabled(node, index):
+            continue
+        fmt_id = fmt.get("id")
+        label = fmt.get("label") or fmt_id
+        sx, sy = _slices_for_index(node, index)
+        if sx * sy > 1:
+            for ordinal in range(1, sx * sy + 1):
+                sfx = "s%02d" % ordinal
+                pairs.append(((index + 1) * VIEWING_SLICE_STRIDE + ordinal,
+                              f"{fmt_id}:{sfx}",
+                              f"{label} · {sfx}"))
+        else:
+            pairs.append((index + 1, fmt_id, label))
+    return pairs
+
+
+def viewing_targets(node):
+    """Ordered viewing targets for the panel (Task 8's source):
+    ["master", "16x9", "custom:s01", ...]."""
+    return ["master"] + [target for _value, target, _label in _viewing_entry_pairs(node)]
+
+
 def _viewing_cycle_entries(node):
-    """Cycle for ID_VIEWING: 0=Master plus every ENABLED format (value =
-    format index + 1, stable against enable/disable churn)."""
-    entries = [(0, "Master")]
-    for index, fmt in enumerate(_format_defs()):
-        ids = _format_ids(index)
-        if _as_bool(_get_node_value(node, ids["enabled"], True), True):
-            label = fmt.get("label") or fmt.get("id", "Format")
-            entries.append((index + 1, label))
-    return entries
+    """Cycle for ID_VIEWING: 0=Master plus every ENABLED format entry
+    (whole formats or their slice variants)."""
+    return [(0, "Master")] + [
+        (value, label) for value, _target, label in _viewing_entry_pairs(node)
+    ]
 
 
 def _viewing_value_from_takes(node, doc):
@@ -996,7 +1226,7 @@ def _viewing_value_from_takes(node, doc):
         current = None
     if current is None:
         return 0
-    for index, fmt in enumerate(_format_defs()):
+    for index, fmt in enumerate(_format_defs(node)):
         linked = _read_take_link(node, fmt.get("id"), doc)
         try:
             # Object identity, not name comparison: take names aren't unique
@@ -1006,6 +1236,19 @@ def _viewing_value_from_takes(node, doc):
                 return index + 1
         except Exception:
             continue
+    # Slice links of sliced formats (v1.29): same identity idiom.
+    for index, fmt in enumerate(_format_defs(node)):
+        sx, sy = _slices_for_index(node, index)
+        if sx * sy <= 1:
+            continue
+        fmt_id = fmt.get("id")
+        for ordinal in range(1, sx * sy + 1):
+            linked = _read_link_for_key(node, "%s:s%02d" % (fmt_id, ordinal), doc)
+            try:
+                if linked is not None and linked == current:
+                    return (index + 1) * VIEWING_SLICE_STRIDE + ordinal
+            except Exception:
+                continue
     return 0
 
 
@@ -1019,14 +1262,22 @@ def _activate_viewing(node, doc, value):
     if td is None:
         return False
     target = None
-    if int(value) <= 0:
+    value = int(value)
+    if value <= 0:
         try:
             target = td.GetMainTake()
         except Exception:
             target = None
+    elif value >= VIEWING_SLICE_STRIDE:
+        index = value // VIEWING_SLICE_STRIDE - 1
+        ordinal = value % VIEWING_SLICE_STRIDE
+        defs = _format_defs(node)
+        if 0 <= index < len(defs) and 1 <= ordinal <= MAX_SLICE_ORDINALS:
+            target = _read_link_for_key(
+                node, "%s:s%02d" % (defs[index].get("id"), ordinal), doc)
     else:
-        index = int(value) - 1
-        defs = _format_defs()
+        index = value - 1
+        defs = _format_defs(node)
         if 0 <= index < len(defs):
             target = _read_take_link(node, defs[index].get("id"), doc)
     if target is None:
@@ -1042,16 +1293,17 @@ def _activate_viewing(node, doc, value):
 
 def set_viewing(doc, tag, target):
     """Dialog-free core for the Viewing selector (AM cycle AND the panel's
-    ``panel/frame/set_viewing`` op share it). ``target`` = "master" or a
-    format id; activating a take is DOCUMENT state, legitimate from either
-    surface. Returns a status dict, never raises, never shows a dialog."""
+    ``panel/frame/set_viewing`` op share it). ``target`` = "master", a
+    format id, or a "<fmt>:sNN" slice; activating a take is DOCUMENT state,
+    legitimate from either surface. Returns a status dict, never raises,
+    never shows a dialog."""
     if target in (None, "", "master"):
         ok = _activate_viewing(tag, doc, 0)
         return {"ok": bool(ok), "viewing": "master" if ok else None,
                 "error": None if ok else "no_take_data"}
-    for index, fmt in enumerate(_format_defs()):
-        if fmt.get("id") == target:
-            ok = _activate_viewing(tag, doc, index + 1)
+    for value, entry_target, _label in _viewing_entry_pairs(tag):
+        if entry_target == target:
+            ok = _activate_viewing(tag, doc, value)
             return {"ok": bool(ok), "viewing": target if ok else None,
                     "error": None if ok else "take_not_found"}
     return {"ok": False, "viewing": None, "error": "unknown_format"}
@@ -1083,14 +1335,15 @@ def _run_takes_generation(doc, node):
     prefix = _safe_node_name(host, "Camera")
     undo_added = [False]
 
-    def _tag_link_writer(fmt_id, take):
+    def _tag_link_writer(key, take):
+        # key = fmt_id or "<fmt>:sNN" (Task 3 engine contract).
         if not undo_added[0]:
             try:
                 doc.AddUndo(_undo_type_change(), node)
             except Exception:
                 pass
             undo_added[0] = True
-        _write_take_link(node, fmt_id, take)
+        _write_link_for_key(node, key, take)
 
     options = {
         "formats": formats,
@@ -1102,8 +1355,9 @@ def _run_takes_generation(doc, node):
             _get_node_value(node, ID_COMPOSITION, COMPOSITION_CROP)
         ),
         "film_offsets": _film_offsets_from_params(node),
+        "format_defs": _engine_format_defs(node),
         "tag_link_writer": _tag_link_writer,
-        "existing_take_resolver": lambda fmt_id: _read_take_link(node, fmt_id, doc),
+        "existing_take_resolver": lambda key: _read_link_for_key(node, key, doc),
     }
     report = generate_multiformat_takes(doc, options)
     if not undo_added[0]:
@@ -1130,7 +1384,7 @@ def _prune_orphaned_takes(doc, node):
         current = td.GetCurrentTake() if td else None
     except Exception:
         td, current = None, None
-    for fmt_id, take in _find_orphaned_takes_for_tag(node, doc):
+    for key, take in _find_orphaned_takes_for_tag(node, doc):
         if td is not None and current is not None and take == current:
             try:
                 td.SetCurrentTake(td.GetMainTake())
@@ -1148,7 +1402,7 @@ def _prune_orphaned_takes(doc, node):
             except Exception:
                 continue
             removed += 1
-            _write_take_link(node, fmt_id, None)
+            _write_link_for_key(node, key, None)
     return removed
 
 
@@ -1220,17 +1474,50 @@ def _walk_child_takes(take_data):
         yield take
 
 
-def _find_orphaned_takes_for_tag(node, doc):
-    """Find disabled-format takes owned by this tag, never deleting them."""
+def _expected_take_names(node):
+    """Take names this tag SHOULD own right now -> their link key. The prune
+    orphan set is everything tag-owned that is NOT in here: disabled formats
+    (whole + slices), the whole-format take of a now-sliced format, slice
+    takes beyond the current grid (3x1 -> 2x1 leaves s03), disabled custom."""
     host = _tag_host(node)
     prefix = _safe_node_name(host, "")
-    enabled = set(_enabled_format_ids_from_params(node))
-    disabled_ids = {fmt.get("id") for fmt in _format_defs()} - enabled
+    expected = {}
+    if not prefix:
+        return expected
+    for index, fmt in enumerate(_format_defs(node)):
+        if not _row_enabled(node, index):
+            continue
+        fmt_id = fmt.get("id")
+        sx, sy = _slices_for_index(node, index)
+        if sx * sy > 1:
+            for ordinal in range(1, sx * sy + 1):
+                sfx = "s%02d" % ordinal
+                expected[f"{prefix}_{fmt_id}_{sfx}"] = f"{fmt_id}:{sfx}"
+        else:
+            expected[f"{prefix}_{fmt_id}"] = fmt_id
+    return expected
+
+
+def _all_parse_defs():
+    """Name-parse defs for the prune walk: the 5 standard formats plus the
+    custom row UNCONDITIONALLY — a disabled custom's takes must still be
+    found (its def drops out of _format_defs while its takes linger)."""
+    return [{"id": fmt.get("id")} for fmt in MULTIFORMAT_DEFS] + [
+        {"id": CUSTOM_FORMAT_ID}
+    ]
+
+
+def _find_orphaned_takes_for_tag(node, doc):
+    """Find tag-owned takes that are NOT in the expected set, never deleting
+    them. Returns (key, take) pairs; key = fmt_id or '<fmt>:sNN'."""
+    host = _tag_host(node)
+    prefix = _safe_node_name(host, "")
+    expected = _expected_take_names(node)
     found = []
     seen = set()
 
-    def _add(fmt_id, take):
-        if take is None or fmt_id not in disabled_ids:
+    def _add(key, take):
+        if take is None:
             return
         # Dedup by take name, not id(): the same take is reached by two paths
         # (stored BaseLink + name walk) and C4D hands out a fresh Python wrapper
@@ -1240,24 +1527,43 @@ def _find_orphaned_takes_for_tag(node, doc):
             marker = take.GetName()
         except Exception:
             marker = id(take)
+        if marker in expected:
+            return
         if marker in seen:
             return
         seen.add(marker)
-        found.append((fmt_id, take))
+        found.append((key, take))
 
-    for fmt_id in disabled_ids:
-        _add(fmt_id, _read_take_link(node, fmt_id, doc))
+    # Link-walk: every per-format link plus every slice link slot (BC misses
+    # are cheap dict lookups; MAX_SLICE_ORDINALS = 16x16 caps the loop).
+    for parse_def in _all_parse_defs():
+        fmt_id = parse_def.get("id")
+        _add(fmt_id, _read_link_for_key(node, fmt_id, doc))
+        for ordinal in range(1, MAX_SLICE_ORDINALS + 1):
+            key = "%s:s%02d" % (fmt_id, ordinal)
+            _add(key, _read_link_for_key(node, key, doc))
 
+    # Name-walk: any child take named <prefix>_<suffix> whose suffix parses
+    # against ALL defs (standard + custom, regardless of enabled state).
     try:
         take_data = doc.GetTakeData()
     except Exception:
         take_data = None
-    name_to_id = {f"{prefix}_{fmt_id}": fmt_id for fmt_id in disabled_ids if prefix}
-    for take in _walk_child_takes(take_data):
-        try:
-            _add(name_to_id.get(take.GetName()), take)
-        except Exception:
-            pass
+    if prefix:
+        marker_prefix = prefix + "_"
+        parse_defs = _all_parse_defs()
+        for take in _walk_child_takes(take_data):
+            try:
+                name = take.GetName() or ""
+            except Exception:
+                continue
+            if not name.startswith(marker_prefix):
+                continue
+            parsed = _parse_own_format_suffix(name[len(marker_prefix):], parse_defs)
+            if parsed is None:
+                continue
+            fmt_id, suffix = parsed
+            _add(f"{fmt_id}:{suffix}" if suffix else fmt_id, take)
     return found
 
 
@@ -1306,9 +1612,21 @@ def _report_summary_text(report):
     return "\n".join(lines)
 
 
-def _current_take_is_own_format(tag, doc):
-    """Return True when the active take is one of THIS tag's generated format
-    takes (named ``<host camera>_<fmt>``).
+def _parse_own_format_suffix(suffix, defs):
+    """Pure suffix parser for tag-owned take names: '16x9' -> ('16x9', None),
+    'custom_s02' -> ('custom', 's02'), anything else -> None."""
+    ids = {d.get("id") for d in defs}
+    if suffix in ids:
+        return (suffix, None)
+    stem, sep, tail = suffix.rpartition("_s")
+    if sep and stem in ids and tail.isdigit():
+        return (stem, "s" + tail)
+    return None
+
+
+def _current_own_take_info(tag, doc):
+    """(fmt_id, slice_suffix|None) when the active take is one of THIS tag's
+    generated format takes (named ``<host camera>_<fmt>[_sNN]``), else None.
 
     In such a take the host camera is already cropped/zoomed to the format, so
     drawing the multi-format guides would draw a crop-of-a-crop and mislead the
@@ -1319,59 +1637,66 @@ def _current_take_is_own_format(tag, doc):
     """
     getter = getattr(doc, "GetTakeData", None)
     if not callable(getter):
-        return False
+        return None
     try:
         td = getter()
         current = td.GetCurrentTake()
         main = td.GetMainTake()
     except Exception:
-        return False
+        return None
     if current is None or main is None or current == main:
-        return False
+        return None
     prefix = _safe_node_name(_tag_host(tag), "")
     if not prefix:
-        return False
+        return None
     try:
         name = current.GetName() or ""
     except Exception:
-        return False
+        return None
     marker = prefix + "_"
     if not name.startswith(marker):
-        return False
-    suffix = name[len(marker):]
-    return any(d.get("id") == suffix for d in _format_defs())
+        return None
+    return _parse_own_format_suffix(name[len(marker):], _format_defs(tag))
+
+
+def _current_take_is_own_format(tag, doc):
+    """True when the active take is one of THIS tag's generated format takes
+    (whole or slice) — thin view over ``_current_own_take_info``."""
+    return _current_own_take_info(tag, doc) is not None
 
 
 def _current_own_format_id(tag, doc):
-    """Format id of the active take when it is one of THIS tag's generated
-    format takes, else None. Same read-only name resolution as
-    ``_current_take_is_own_format`` (safe on the draw thread)."""
-    getter = getattr(doc, "GetTakeData", None)
-    if not callable(getter):
-        return None
-    try:
-        td = getter()
-        current = td.GetCurrentTake()
-        main = td.GetMainTake()
-    except Exception:
-        return None
-    if current is None or main is None or current == main:
-        return None
-    prefix = _safe_node_name(_tag_host(tag), "")
-    if not prefix:
-        return None
-    try:
-        name = current.GetName() or ""
-    except Exception:
-        return None
-    marker = prefix + "_"
-    if not name.startswith(marker):
-        return None
-    suffix = name[len(marker):]
-    for d in _format_defs():
-        if d.get("id") == suffix:
-            return suffix
-    return None
+    """Format id of the active own-format take (slice takes report their
+    parent format), else None — thin view over ``_current_own_take_info``."""
+    info = _current_own_take_info(tag, doc)
+    return info[0] if info else None
+
+
+def _slice_dims(node, fmt_id, suffix):
+    """Pixel dims for the own-format-take HUD: the format's full dims when
+    ``suffix`` is None, else the dims of that specific slice window. Resolves
+    the format def through the per-tag defs (``_format_defs(node)``, never
+    ``get_multiformat_def``) so a Custom format resolves correctly."""
+    defs = _format_defs(node)
+    index = None
+    fmt = None
+    for i, d in enumerate(defs):
+        if d.get("id") == fmt_id:
+            index = i
+            fmt = d
+            break
+    if fmt is None:
+        return (0, 0)
+    width = int(fmt.get("width", 0) or 0)
+    height = int(fmt.get("height", 0) or 0)
+    if suffix is None:
+        return (width, height)
+    sx, sy = _slices_for_index(node, index)
+    windows = framing.slice_windows((0, 0, 1, 1), sx, sy, width, height)
+    for _sub, w_px, h_px, sfx in windows:
+        if sfx == suffix:
+            return (w_px, h_px)
+    return (width, height)
 
 
 try:
@@ -1408,11 +1733,20 @@ class SentinelFrameTag(_TagDataBase):
         maximum=None,
         step=None,
         cycle=None,
+        animatable=True,
     ):
         desc_id = _description_parent(parameter_id, dtype, node)
         bc = c4d.GetCustomDatatypeDefault(dtype)
         _set_bc_value(bc, "SetString", c4d.DESC_NAME, name)
         _set_bc_value(bc, "SetString", c4d.DESC_SHORT_NAME, name)
+        if not animatable:
+            # The formats grid feeds the Take GENERATOR (auto-sync regenerates
+            # on change) — keyframing these params is meaningless, and the
+            # per-cell keyframe diamonds were the single biggest width cost in
+            # the AM grid (live design feedback, v1.29 polish).
+            animate_off = getattr(c4d, "DESC_ANIMATE_OFF", None)
+            if animate_off is not None:
+                _set_bc_value(bc, "SetInt32", c4d.DESC_ANIMATE, animate_off)
         if minimum is not None:
             _set_bc_value(bc, "SetFloat", c4d.DESC_MIN, float(minimum))
             _set_bc_value(bc, "SetFloat", c4d.DESC_MINSLIDER, float(minimum))
@@ -1486,16 +1820,26 @@ class SentinelFrameTag(_TagDataBase):
         _set_node_value(node, ID_SHOW_HUD, True)
         _set_node_value(node, ID_SCHEMA_VERSION, SCHEMA_VERSION)
 
-        for index, fmt in enumerate(_format_defs()):
+        for index in range(FORMAT_ROW_COUNT):
+            fmt_id = _row_format_id(index)
             ids = _format_ids(index)
             self._init_attr(node, bool, ids["enabled"])
             self._init_attr(node, c4d.Vector, ids["color"])
             self._init_attr(node, float, ids["nudge_x"])
             self._init_attr(node, float, ids["nudge_y"])
-            _set_node_value(node, ids["enabled"], True)
-            _set_node_value(node, ids["color"], _vector(_FORMAT_COLORS.get(fmt["id"], (0.6, 0.6, 0.6))))
+            self._init_attr(node, int, ids["slice_x"])
+            self._init_attr(node, int, ids["slice_y"])
+            _set_node_value(node, ids["enabled"], index != CUSTOM_FORMAT_INDEX)
+            _set_node_value(node, ids["color"], _vector(_FORMAT_COLORS.get(fmt_id, (0.6, 0.6, 0.6))))
             _set_node_value(node, ids["nudge_x"], 0.0)
             _set_node_value(node, ids["nudge_y"], 0.0)
+            _set_node_value(node, ids["slice_x"], 1)
+            _set_node_value(node, ids["slice_y"], 1)
+            if index == CUSTOM_FORMAT_INDEX:
+                self._init_attr(node, int, ids["width"])
+                self._init_attr(node, int, ids["height"])
+                _set_node_value(node, ids["width"], 1920)
+                _set_node_value(node, ids["height"], 1080)
 
         priority_factory = getattr(c4d, "PriorityData", None)
         if callable(priority_factory):
@@ -1555,7 +1899,7 @@ class SentinelFrameTag(_TagDataBase):
         # format's rect moves in the master view while dragging).
         if not self._set_description_group(
             node, description, ID_GROUP_FORMATS, "Formats", main_group,
-            columns=4, titlebar=False
+            columns=6, titlebar=False
         ):
             return False
         color_dtype = getattr(c4d, "DTYPE_COLOR", c4d.DTYPE_VECTOR)
@@ -1563,22 +1907,62 @@ class SentinelFrameTag(_TagDataBase):
             ids = _format_ids(index)
             label = fmt.get("label") or fmt.get("id", "Format")
             if not self._set_description_parameter(
-                node, description, ids["enabled"], c4d.DTYPE_BOOL, label, formats_group
+                node, description, ids["enabled"], c4d.DTYPE_BOOL, label, formats_group,
+                animatable=False
             ):
                 return False
             if not self._set_description_parameter(
-                node, description, ids["color"], color_dtype, "", formats_group
+                node, description, ids["color"], color_dtype, "", formats_group,
+                animatable=False
             ):
                 return False
             # Nudge is a film-offset FRACTION (percent unit: raw 1.0 == 100%),
             # so the clamp is -1.0..1.0 (=-100%..100%), step 0.01 (=1%). Using
             # -100..100 here would read as +/-10000% under the percent unit.
             if not self._set_description_parameter(
-                node, description, ids["nudge_x"], c4d.DTYPE_REAL, "X", formats_group, -1.0, 1.0, 0.01
+                node, description, ids["nudge_x"], c4d.DTYPE_REAL, "X", formats_group, -1.0, 1.0, 0.01,
+                animatable=False
             ):
                 return False
             if not self._set_description_parameter(
-                node, description, ids["nudge_y"], c4d.DTYPE_REAL, "Y", formats_group, -1.0, 1.0, 0.01
+                node, description, ids["nudge_y"], c4d.DTYPE_REAL, "Y", formats_group, -1.0, 1.0, 0.01,
+                animatable=False
+            ):
+                return False
+            if not self._set_description_parameter(
+                node, description, ids["slice_x"], c4d.DTYPE_LONG, "Sx", formats_group, 1, 16, 1,
+                animatable=False
+            ):
+                return False
+            if not self._set_description_parameter(
+                node, description, ids["slice_y"], c4d.DTYPE_LONG, "Sy", formats_group, 1, 16, 1,
+                animatable=False
+            ):
+                return False
+
+        # Custom row (spec: own 8-column sub-grid under the main grid; W/H need
+        # two extra cells so the shared 6-column widths can't apply — accepted
+        # deviation).
+        custom_group = _description_parent(ID_GROUP_CUSTOM, c4d.DTYPE_GROUP, node)
+        if not self._set_description_group(
+            node, description, ID_GROUP_CUSTOM, "Custom", main_group,
+            columns=8, titlebar=False
+        ):
+            return False
+        cids = _format_ids(CUSTOM_FORMAT_INDEX)
+        for pid, dtype, name, lo, hi, st in (
+            (cids["enabled"], c4d.DTYPE_BOOL, "Custom", None, None, None),
+            (cids["color"], color_dtype, "", None, None, None),
+            (cids["width"], c4d.DTYPE_LONG, "W", 16, 16384, 1),
+            (cids["height"], c4d.DTYPE_LONG, "H", 16, 16384, 1),
+            (cids["nudge_x"], c4d.DTYPE_REAL, "X", -1.0, 1.0, 0.01),
+            (cids["nudge_y"], c4d.DTYPE_REAL, "Y", -1.0, 1.0, 0.01),
+            (cids["slice_x"], c4d.DTYPE_LONG, "Sx", 1, 16, 1),
+            (cids["slice_y"], c4d.DTYPE_LONG, "Sy", 1, 16, 1),
+        ):
+            if not self._set_description_parameter(
+                node, description, pid, dtype, name, custom_group, lo, hi, st,
+                animatable=False
             ):
                 return False
 
@@ -1728,8 +2112,8 @@ class SentinelFrameTag(_TagDataBase):
             "Remove these stale Takes?",
             "",
         ]
-        for fmt_id, take in orphans:
-            lines.append(f"- {_safe_node_name(take, fmt_id)}")
+        for key, take in orphans:
+            lines.append(f"- {_safe_node_name(take, key)}")
         lines.extend(["", "This cannot be done without confirmation."])
         if not _ask_question("\n".join(lines)):
             return True
@@ -1741,7 +2125,7 @@ class SentinelFrameTag(_TagDataBase):
                 doc.AddUndo(_undo_type_change(), node)
             except Exception:
                 pass
-            for fmt_id, take in orphans:
+            for key, take in orphans:
                 try:
                     doc.AddUndo(_undo_type_delete(), take)
                 except Exception:
@@ -1753,7 +2137,7 @@ class SentinelFrameTag(_TagDataBase):
                     except Exception:
                         continue
                     removed += 1
-                    _write_take_link(node, fmt_id, None)
+                    _write_link_for_key(node, key, None)
         finally:
             doc.EndUndo()
             _event_add()
@@ -1872,24 +2256,26 @@ class SentinelFrameTag(_TagDataBase):
         # crop-of-a-crop. Guides live in the master (Main) view; format takes
         # show the clean final crop — plus a minimal HUD saying WHAT you are
         # viewing (Frame v2), since without guides there is no other cue.
-        own_fmt = _current_own_format_id(tag, doc)
-        if own_fmt is not None:
+        own_info = _current_own_take_info(tag, doc)
+        if own_info is not None:
+            own_fmt, own_sfx = own_info
             if _as_bool(_get_node_value(tag, ID_SHOW_HUD, True), True):
                 sf = _safe_frame_rect(bd)
                 if sf is not None:
-                    fmt = get_multiformat_def(own_fmt) or {}
+                    w_px, h_px = _slice_dims(tag, own_fmt, own_sfx)
                     try:
                         bd.SetMatrix_Screen()
                     except Exception:
                         return True
-                    _draw_hud_text(
-                        bd, sf[0] + 8, sf[1] + 8,
-                        "Viewing: %s  %dx%d  %s" % (
-                            own_fmt,
-                            int(fmt.get("width", 0)), int(fmt.get("height", 0)),
-                            _sync_status_text(tag),
-                        ),
-                    )
+                    if own_sfx:
+                        text = "Viewing: %s %s  %dx%d  %s" % (
+                            own_fmt, own_sfx, w_px, h_px, _sync_status_text(tag),
+                        )
+                    else:
+                        text = "Viewing: %s  %dx%d  %s" % (
+                            own_fmt, w_px, h_px, _sync_status_text(tag),
+                        )
+                    _draw_hud_text(bd, sf[0] + 8, sf[1] + 8, text)
             return True
 
         if not _as_bool(_get_node_value(tag, ID_ENABLED, True), True):
@@ -1940,7 +2326,7 @@ class SentinelFrameTag(_TagDataBase):
             except Exception:
                 focus = 0
             focus_fmt = None
-            defs = _format_defs()
+            defs = _format_defs(tag)
             if 0 < focus <= len(defs):
                 focus_fmt = defs[focus - 1].get("id")
             dim = max(0.0, min(1.0, _as_float(_get_node_value(tag, ID_DIM_NONVIEWED, 0.7), 0.7)))
@@ -1955,6 +2341,14 @@ class SentinelFrameTag(_TagDataBase):
                 if line_opacity < 1.0:
                     color = _dim_color(color, line_opacity)
                 _draw_rect(bd, guide_px, color, width=line_width)
+                sx, sy = entry.get("slices", (1, 1))
+                if sx * sy > 1:
+                    for (nx1, ny1), (nx2, ny2) in _slice_cut_segments(
+                        entry["guide"], sx, sy, entry["width"], entry["height"]
+                    ):
+                        p1 = c4d.Vector(*_ndc_point_to_pixels((nx1, ny1), safe_frame), 0)
+                        p2 = c4d.Vector(*_ndc_point_to_pixels((nx2, ny2), safe_frame), 0)
+                        _draw_dashed_line(bd, p1, p2, 1)
 
         if show_platform and pixel_guides:
             for entry, _guide_px in pixel_guides:
@@ -1992,7 +2386,7 @@ class SentinelFrameTag(_TagDataBase):
             except Exception:
                 label_focus = 0
             label_focus_fmt = None
-            label_defs = _format_defs()
+            label_defs = _format_defs(tag)
             if 0 < label_focus <= len(label_defs):
                 label_focus_fmt = label_defs[label_focus - 1].get("id")
             label_dim = max(0.0, min(1.0, _as_float(_get_node_value(tag, ID_DIM_NONVIEWED, 0.7), 0.7)))
@@ -2016,6 +2410,25 @@ class SentinelFrameTag(_TagDataBase):
                     chip_color = _dim_color(chip_color, max(0.25, label_dim))
                 _draw_color_chip(bd, lx, ly + 3, 9, chip_color)
                 _draw_hud_text(bd, lx + 14, ly, str(entry["id"]))
+
+            # Slice numbering: only for the focused format (or the sole
+            # enabled one) — otherwise every slice grid across every visible
+            # format would carpet the viewport with labels (spec noise rule).
+            for entry, guide_px in pixel_guides:
+                sx, sy = entry.get("slices", (1, 1))
+                if sx * sy <= 1:
+                    continue
+                if len(pixel_guides) != 1 and entry["id"] != label_focus_fmt:
+                    continue
+                windows = framing.slice_windows(
+                    (entry["guide"]["left"], entry["guide"]["top"],
+                     entry["guide"]["right"], entry["guide"]["bottom"]),
+                    sx, sy, entry["width"], entry["height"],
+                )
+                for ordinal, (sub, _w_px, _h_px, _sfx) in enumerate(windows, start=1):
+                    sub_left, sub_top, _sub_right, _sub_bottom = sub
+                    px, py = _ndc_point_to_pixels((sub_left, sub_top), safe_frame)
+                    _draw_hud_text(bd, px + 4, py + 4, "s%d" % ordinal)
 
             comp = _get_node_value(tag, ID_COMPOSITION, COMPOSITION_CROP)
             if comp == COMPOSITION_OFF:
@@ -2058,7 +2471,7 @@ class SentinelFrameTag(_TagDataBase):
                 except Exception:
                     changed = None
                 if changed is not None:
-                    span = len(_format_defs()) * ID_FORMAT_STRIDE
+                    span = FORMAT_ROW_COUNT * ID_FORMAT_STRIDE
                     if ID_FORMAT_BASE <= changed < ID_FORMAT_BASE + span:
                         index = (changed - ID_FORMAT_BASE) // ID_FORMAT_STRIDE
                         _bc_set_data(

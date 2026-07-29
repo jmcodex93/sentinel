@@ -532,6 +532,66 @@ class TestPanelFrameBlockFormatCount:
         assert result["format_count"] is None
 
 
+class TestPanelFrameBlockSliceCount:
+    """v1.29 (Task 8): ``_panel_frame_block`` also reports ``slice_count``
+    (total slices across enabled sliced formats; 0 when none sliced, None
+    on failure, None in the no-tag payload)."""
+
+    def _doc_with_tag(self, sentinel_module):
+        from sentinel.ui.frame_tag import SENTINEL_FRAME_TAG_PLUGIN_ID
+        F = TestPanelFrameBlockFormatCount
+        tag = F._FakeTag(SENTINEL_FRAME_TAG_PLUGIN_ID)
+        cam = F._FakeObj("Camera", tags=[tag])
+        null_ = F._FakeObj("Null", down=cam)
+
+        class _FakeDoc:
+            def GetFirstObject(self):
+                return null_
+
+        return _FakeDoc()
+
+    def test_no_tag_slice_count_none(self, sentinel_module):
+        from sentinel.ui import panel_render_ops
+
+        class _FakeDoc:
+            def GetFirstObject(self):
+                return None
+
+        assert panel_render_ops._panel_frame_block(_FakeDoc())["slice_count"] is None
+
+    def test_slice_count_reported(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        from sentinel.ui import frame_tag
+        doc = self._doc_with_tag(sentinel_module)
+        monkeypatch.setattr(panel_render_ops, "_enabled_format_ids_from_params",
+                            lambda node: ["16x9", "custom"])
+        monkeypatch.setattr(frame_tag, "_total_slice_count", lambda node: 3)
+        result = panel_render_ops._panel_frame_block(doc)
+        assert result["slice_count"] == 3
+
+    def test_slice_count_zero_when_unsliced(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        from sentinel.ui import frame_tag
+        doc = self._doc_with_tag(sentinel_module)
+        monkeypatch.setattr(panel_render_ops, "_enabled_format_ids_from_params",
+                            lambda node: ["16x9"])
+        monkeypatch.setattr(frame_tag, "_total_slice_count", lambda node: 0)
+        assert panel_render_ops._panel_frame_block(doc)["slice_count"] == 0
+
+    def test_slice_count_none_on_failure(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+        from sentinel.ui import frame_tag
+        doc = self._doc_with_tag(sentinel_module)
+        monkeypatch.setattr(panel_render_ops, "_enabled_format_ids_from_params",
+                            lambda node: ["16x9"])
+
+        def _boom(node):
+            raise RuntimeError("slice parse failed")
+
+        monkeypatch.setattr(frame_tag, "_total_slice_count", _boom)
+        assert panel_render_ops._panel_frame_block(doc)["slice_count"] is None
+
+
 class TestPanelRenderOpsTableTask2:
     def test_task2_ops_registered(self, sentinel_module):
         from sentinel.ui import panel_render_ops

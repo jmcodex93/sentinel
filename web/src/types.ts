@@ -1136,12 +1136,16 @@ export interface PanelFrameBlock {
   has_tag: boolean;
   camera_name: string | null;
   format_count: number | null;
+  /** v1.29: total slices across enabled sliced formats (0 when none sliced;
+   * null on failure / no tag). */
+  slice_count?: number | null;
   /** Frame v2: constant `false` (auto-sync made staleness a transient);
    * kept one release for payload compatibility. */
   stale: boolean;
-  /** What the document is currently viewing: "master" or a format id. */
+  /** What the document is currently viewing: "master", a format id, or a
+   * slice id ("fmt:sNN"). */
   viewing: string;
-  /** Selector options: ["master", ...enabled format ids]. */
+  /** Selector options: ["master", ...enabled format ids and slice ids]. */
   viewing_options: string[];
 }
 

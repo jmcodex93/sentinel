@@ -482,6 +482,7 @@ def find_active_multiformat_takes(doc):
 
     known_ids = {fmt["id"] for fmt in MULTIFORMAT_DEFS}
     result = []
+    seen_families = set()
 
     def _walk(take):
         while take is not None:
@@ -494,6 +495,23 @@ def find_active_multiformat_takes(doc):
                     if name.endswith("_" + kid):
                         matched_id = kid
                         break
+            if matched_id is None:
+                stem, sep, tail = name.rpartition("_s")
+                if sep and tail.isdigit():
+                    base = stem
+                    if base in known_ids:
+                        matched_id = base
+                    else:
+                        for kid in known_ids:
+                            if base.endswith("_" + kid):
+                                matched_id = kid
+                                break
+                    if matched_id:
+                        family = (matched_id, base)
+                        if family in seen_families:
+                            matched_id = None
+                        else:
+                            seen_families.add(family)
             if matched_id:
                 result.append((matched_id, take))
             child = take.GetDown()
