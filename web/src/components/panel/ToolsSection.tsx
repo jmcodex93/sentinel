@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { Button } from "../form/Button";
 import { TextInput } from "../form/TextInput";
 import { TOOL_GROUPS } from "../../lib/panelTools";
 import { SectionGroup } from "../SectionGroup";
+import { RenameSubview } from "./RenameSubview";
 
 /** Tools section (Fase 6.4, Cleanup + Frames row added later) — grouped
  * action buttons for scene-authoring utilities. Action-only: each button
@@ -21,6 +22,13 @@ export function ToolsSection({
 }) {
   const isBusy = busy !== null;
   const [frames, setFrames] = useState(5);
+  // Local sub-router (the Render→Frame / Deliver idiom): "rename" swaps the
+  // whole section for the Batch Rename sub-view, which owns its own fetches
+  // and busy state (server-driven preview — see RenameSubview).
+  const [view, setView] = useState<"main" | "rename">("main");
+  if (view === "rename") {
+    return <RenameSubview onBack={() => setView("main")} />;
+  }
   return (
     // During a mutation we lock interaction at the container (`pointerEvents`)
     // instead of `disabled`-ing every button: `disabled` dims with
@@ -28,7 +36,8 @@ export function ToolsSection({
     // the exact live-caught v1.26.0 Render flicker, same root, same fix.
     <div className="flex flex-col p-3" style={{ pointerEvents: isBusy ? "none" : undefined }}>
       {TOOL_GROUPS.map((group, index) => (
-        <SectionGroup key={group.title} title={group.title} first={index === 0}>
+        <Fragment key={group.title}>
+        <SectionGroup title={group.title} first={index === 0}>
           <div className="flex flex-wrap gap-2">
             {group.tools.map((tool) => (
               <Button
@@ -65,6 +74,18 @@ export function ToolsSection({
             </div>
           )}
         </SectionGroup>
+        {group.title === "Cleanup" && (
+          // Naming is a sub-router trigger, not an op button, so it lives
+          // outside TOOL_GROUPS (which stays op-only for `toolToast`).
+          <SectionGroup title="Naming">
+            <div className="flex flex-wrap gap-2">
+              <Button variant="secondary" onClick={() => setView("rename")}>
+                Batch Rename →
+              </Button>
+            </div>
+          </SectionGroup>
+        )}
+        </Fragment>
       ))}
     </div>
   );

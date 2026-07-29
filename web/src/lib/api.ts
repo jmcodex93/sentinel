@@ -65,6 +65,8 @@ import type {
   PanelRenderMutationResponse,
   PanelRenderResult,
   PanelRenderSection,
+  RenameApplyResult,
+  RenamePreviewResult,
   PaletteAction,
   PaletteActionsResult,
   PaletteRunResponse,
@@ -83,6 +85,7 @@ import type {
   SupervisorReport,
   SupervisorReportResult,
 } from "../types";
+import type { RenameOps, RenameSource } from "./panelRename";
 
 /** dispatch() in plugin/sentinel/ui/reports_dialog.py (Task 4) returns
  * `{"error": "no_manifest"}` when no sentinel_manifest.json sits next to
@@ -1304,4 +1307,45 @@ export async function postPanelOpenSettings(): Promise<{ ok: boolean; error?: st
 export async function postPanelOpenPalette(): Promise<{ ok: boolean; error?: string }> {
   if (isMock()) return { ok: true };
   return postForm<{ ok: boolean; error?: string }>("/api/panel/tools/open_palette", {});
+}
+
+// ---------------------------------------------------------------------------
+// Batch Rename (v1.31) — see `_op_rename_preview` / `_op_rename_apply` in
+// panel_tools_ops.py. Preview text ALWAYS comes from the op (the shared
+// `renaming.rename_plan` drives both preview and apply — WYSIWYG by
+// construction); the SPA never computes a name client-side.
+// ---------------------------------------------------------------------------
+
+/** `POST /api/panel/tools/rename_preview` — server-derived old→new plan for
+ * the current selection. `?mock=1` serves a tiny static plan so the sub-view
+ * is screenshot-able without a live C4D behind it. */
+export async function fetchRenamePreview(
+  source: RenameSource,
+  ops: RenameOps,
+): Promise<RenamePreviewResult> {
+  if (isMock()) {
+    return {
+      ok: true,
+      rows: [
+        { old: "Cube", new: "hero_001", collision: false },
+        { old: "Cube.1", new: "hero_002", collision: false },
+        { old: "Sphere", new: "hero_002", collision: true },
+      ],
+      truncated: false,
+      total: 3,
+    };
+  }
+  return postForm<RenamePreviewResult>("/api/panel/tools/rename_preview", { source, ops });
+}
+
+/** `POST /api/panel/tools/rename_apply` — re-derives the plan server-side
+ * from the CURRENT selection + ops and applies it in one undo. No stateful
+ * mock scene to rename, so `?mock=1` resolves an informative failure (same
+ * convention as `postPanelQcSelect`/`startHubShrink`). */
+export async function postRenameApply(
+  source: RenameSource,
+  ops: RenameOps,
+): Promise<RenameApplyResult> {
+  if (isMock()) return { ok: false, error: "mock" };
+  return postForm<RenameApplyResult>("/api/panel/tools/rename_apply", { source, ops });
 }
