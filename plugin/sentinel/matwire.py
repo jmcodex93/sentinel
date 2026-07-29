@@ -1,0 +1,187 @@
+# -*- coding: utf-8 -*-
+"""Material-from-folder recognition engine (v1.32) — PURE, no ``import c4d``.
+
+Recognizes PBR texture sets from filenames (suffix tables cross-checked
+against three live market implementations — see
+docs/research/2026-07-29-matwire-implementations.md; facts only, no code:
+those plugins are study-only). Grouping = filename root minus the channel
+suffix minus the resolution token (``split_res_token``, v1.18); a file with
+NO res token is the original and outranks tokened proxies (Shrink lesson).
+Precedences: Normal GL > generic > DX (DX-only sets ``normal_flipy`` for
+the writer's ``bumpmap.flipy``); Spec/Gloss are wired only when the set has
+neither Roughness nor Metalness (modern PBR wins). The colorspace table is
+the SINGLE source both the preview and the writer consume.
+"""
+
+import os
+import re
+
+from sentinel.assets import split_res_token
+
+IMAGE_EXTENSIONS = frozenset(
+    {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".exr", ".hdr",
+     ".tga", ".bmp", ".webp", ".tx"})
+
+# Ordered: more specific channels FIRST (normal_gl/normal_dx before normal;
+# packed ORM detected before anything else could half-match).
+_CHANNEL_VARIANTS = (
+    ("packed_orm", ("orm", "arm")),
+    ("normal_gl", ("normalgl", "normal_gl", "nor_gl", "normalopengl")),
+    ("normal_dx", ("normaldx", "normal_dx", "nrm_dx", "dx_normal", "nor_dx")),
+    ("normal", ("normal", "nrm", "nor", "norm", "nml", "nrml", "nmap")),
+    ("basecolor", ("basecolor", "base_color", "albedo", "diffuse", "col",
+                   "diff", "base", "dif")),
+    ("roughness", ("roughness", "rough", "rgh")),
+    ("metalness", ("metalness", "metallic", "metal", "met", "mtl")),
+    ("height", ("height", "displacement", "disp", "dsp", "depth")),
+    ("ao", ("ambientocclusion", "ambient_occlusion", "occlusion", "ao", "occ")),
+    ("opacity", ("opacity", "alpha", "cutout", "transparency")),
+    ("emission", ("emission", "emissive", "emit")),
+    ("specular", ("specular", "spec")),
+    ("glossiness", ("glossiness", "gloss")),
+)
+
+_SRGB_CHANNELS = frozenset({"basecolor", "emission"})
+
+# Separator REQUIRED before the variant (self-caught plan bug: an optional
+# separator lets glued stems false-positive — "protocol" would end-match
+# "col" → basecolor). A file named exactly like a variant ("albedo.png",
+# root empty) is legal: rootless files group under ``default_root``.
+_CHANNEL_RES = [
+    (channel, re.compile(
+        r"^(?P<root>.*?)(?:^|_)(?:" + "|".join(re.escape(v) for v in variants)
+        + r")(?:_?map)?$", re.IGNORECASE))
+    for channel, variants in _CHANNEL_VARIANTS
+]
+
+
+def channel_colorspace(channel):
+    return "srgb" if channel in _SRGB_CHANNELS else "raw"
+
+
+def _normalize(stem):
+    """Collapse separators (space, ``-``, ``.``) to ``_`` — case is
+    PRESERVED (channel matching is case-insensitive, see ``_CHANNEL_RES``,
+    but the captured ``root`` must keep the artist's original casing for
+    the set name, e.g. ``plaster_A`` must not become ``plaster_a``)."""
+    return re.sub(r"[\s\-.]+", "_", stem.strip())
+
+
+def _match_channel(norm_stem):
+    """(channel, root) for the FIRST (most specific) matching channel.
+    ``root`` may be "" (a file named exactly "albedo.png") — the caller
+    groups those under ``default_root``."""
+    for channel, rx in _CHANNEL_RES:
+        m = rx.match(norm_stem)
+        if m:
+            return channel, m.group("root").rstrip("_")
+    return None, None
+
+
+def _root_and_px(root):
+    """Split a residual resolution token off the grouping root.
+    No token → px None (treated as HIGHEST — Shrink-lesson originals)."""
+    try:
+        prefix, px, suffix = split_res_token(root)
+    except Exception:
+        return root, None
+    if px is None:
+        return root, None
+    merged = (prefix.rstrip("_-. ") + ("_" + suffix.lstrip("_-. ") if suffix.strip("_-. ") else ""))
+    return merged.rstrip("_"), px
+
+
+def _rank(px):
+    """Sort key where no-token (None) outranks every explicit px."""
+    return float("inf") if px is None else float(px)
+
+
+def scan_texture_sets(filenames, default_root="material"):
+    """``default_root`` names the set for ROOTLESS files ("albedo.png") —
+    the caller passes the folder's basename so bare-channel packs group
+    naturally."""
+    sets = {}
+    order = []
+    ignored = []
+
+    for filename in filenames or []:
+        base = os.path.basename(str(filename))
+        stem, ext = os.path.splitext(base)
+        if ext.lower() not in IMAGE_EXTENSIONS:
+            ignored.append((filename, "bad_extension"))
+            continue
+        channel, root = _match_channel(_normalize(stem))
+        if channel == "packed_orm":
+            ignored.append((filename, "packed_orm"))
+            continue
+        if channel is None:
+            ignored.append((filename, "no_channel"))
+            continue
+        root_key, px = _root_and_px(root)
+        if not root_key:
+            root_key = str(default_root) or "material"
+        if root_key not in sets:
+            sets[root_key] = {"candidates": {}, "ignored": []}
+            order.append(root_key)
+        sets[root_key]["candidates"].setdefault(channel, []).append((filename, px))
+
+    out_sets = []
+    for root_key in order:
+        data = sets[root_key]
+        channels = {}
+        set_ignored = list(data["ignored"])
+        for channel, entries in data["candidates"].items():
+            ranked = sorted(entries, key=lambda e: -_rank(e[1]))
+            best_rank = _rank(ranked[0][1])
+            channels[channel] = ranked[0][0]
+            for filename, px in ranked[1:]:
+                reason = ("duplicate_channel"
+                          if _rank(px) == best_rank else "lower_resolution")
+                set_ignored.append((filename, reason))
+
+        # Normal precedence: GL > generic > DX; DX-only flips Y.
+        normal_flipy = False
+        chosen_normal = None
+        for key, flipy in (("normal_gl", False), ("normal", False),
+                           ("normal_dx", True)):
+            if key in channels:
+                if chosen_normal is None:
+                    chosen_normal = channels[key]
+                    normal_flipy = flipy
+                else:
+                    set_ignored.append((channels[key], "dx_superseded"))
+                channels.pop(key)
+        if chosen_normal is not None:
+            channels["normal"] = chosen_normal
+
+        # Spec/Gloss precedence: modern PBR wins.
+        if ("roughness" in channels or "metalness" in channels):
+            for legacy in ("specular", "glossiness"):
+                if legacy in channels:
+                    set_ignored.append((channels.pop(legacy), "pbr_wins"))
+
+        out_sets.append({
+            "name": root_key,
+            "channels": channels,
+            "normal_flipy": normal_flipy,
+            "ignored": set_ignored,
+        })
+
+    return {"sets": out_sets, "ignored": ignored}
+
+
+def dedupe_names(names, existing):
+    """Position-aligned final names, case-insensitively unique against
+    ``existing`` and within the batch (``_02``, ``_03``…)."""
+    taken = {str(n).lower() for n in existing or []}
+    out = []
+    for name in names or []:
+        name = str(name)
+        final = name
+        counter = 2
+        while final.lower() in taken:
+            final = "%s_%02d" % (name, counter)
+            counter += 1
+        taken.add(final.lower())
+        out.append(final)
+    return out
