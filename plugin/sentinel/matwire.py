@@ -96,12 +96,39 @@ def _rank(px):
     return float("inf") if px is None else float(px)
 
 
+def _strip_trailing_res(norm_stem):
+    """Strip a TRAILING resolution token off ``norm_stem`` (the Poliigon
+    pattern — ``plaster_BaseColor_8k``, token AFTER the channel suffix,
+    which the end-anchored channel regex can't see past). Uses
+    ``split_res_token``: a match only counts as trailing when its
+    ``suffix`` is empty/separator-only (a token in the MIDDLE, like the
+    pre-token ``plaster_A_4k_BaseColor`` case, leaves a non-empty suffix
+    and is left for ``_root_and_px`` to handle on the extracted root
+    instead). Returns ``(stem, px)`` — ``(norm_stem, None)`` when there is
+    no trailing token."""
+    try:
+        result = split_res_token(norm_stem)
+    except Exception:
+        return norm_stem, None
+    if result is None:
+        return norm_stem, None
+    prefix, px, suffix = result
+    if suffix.strip("_-. "):
+        return norm_stem, None
+    return prefix.rstrip("_-. "), px
+
+
 def scan_texture_sets(filenames, default_root="material"):
     """``default_root`` names the set for ROOTLESS files ("albedo.png") —
     the caller passes the folder's basename so bare-channel packs group
-    naturally."""
+    naturally.
+
+    Set identity is CASE-INSENSITIVE (``root_key.lower()``) so
+    ``Rock_Cliff_BaseColor.jpg`` and ``rock_cliff_AO.jpg`` land in one
+    set — the DISPLAY name keeps the first-seen casing."""
     sets = {}
     order = []
+    display_names = {}
     ignored = []
 
     for filename in filenames or []:
@@ -110,24 +137,29 @@ def scan_texture_sets(filenames, default_root="material"):
         if ext.lower() not in IMAGE_EXTENSIONS:
             ignored.append((filename, "bad_extension"))
             continue
-        channel, root = _match_channel(_normalize(stem))
+        norm_stem, trailing_px = _strip_trailing_res(_normalize(stem))
+        channel, root = _match_channel(norm_stem)
         if channel == "packed_orm":
             ignored.append((filename, "packed_orm"))
             continue
         if channel is None:
             ignored.append((filename, "no_channel"))
             continue
-        root_key, px = _root_and_px(root)
+        root_key, root_px = _root_and_px(root)
         if not root_key:
             root_key = str(default_root) or "material"
-        if root_key not in sets:
-            sets[root_key] = {"candidates": {}, "ignored": []}
-            order.append(root_key)
-        sets[root_key]["candidates"].setdefault(channel, []).append((filename, px))
+        px = trailing_px if trailing_px is not None else root_px
+        group_key = root_key.lower()
+        if group_key not in sets:
+            sets[group_key] = {"candidates": {}, "ignored": []}
+            order.append(group_key)
+            display_names[group_key] = root_key
+        sets[group_key]["candidates"].setdefault(channel, []).append((filename, px))
 
     out_sets = []
-    for root_key in order:
-        data = sets[root_key]
+    for group_key in order:
+        root_key = display_names[group_key]
+        data = sets[group_key]
         channels = {}
         set_ignored = list(data["ignored"])
         for channel, entries in data["candidates"].items():

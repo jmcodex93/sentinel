@@ -87,6 +87,46 @@ def test_no_token_variant_outranks_tokened(matwire):
     assert ("wall_2k_BaseColor.jpg", "lower_resolution") in s["ignored"]
 
 
+def test_mixed_casing_groups_into_one_set(matwire):
+    # Set identity is case-insensitive; display name keeps first-seen casing.
+    out = _scan(matwire, "Rock_Cliff_BaseColor.jpg", "rock_cliff_AO.jpg")
+    assert len(out["sets"]) == 1
+    s = out["sets"][0]
+    assert s["name"] == "Rock_Cliff"
+    assert set(s["channels"]) == {"basecolor", "ao"}
+
+
+def test_trailing_resolution_token_poliigon_pattern(matwire):
+    # Poliigon pattern: resolution token AFTER the channel suffix.
+    out = _scan(matwire, "plaster_BaseColor_8k.jpg")
+    assert out["ignored"] == []
+    s = out["sets"][0]
+    assert s["channels"]["basecolor"] == "plaster_BaseColor_8k.jpg"
+
+
+def test_trailing_and_pre_token_resolution_compete(matwire):
+    # No-token wins regardless of whether the loser's token sits before
+    # or after the channel suffix.
+    out = _scan(
+        matwire,
+        "wall_BaseColor.jpg",       # no token -> wins
+        "wall_BaseColor_2k.jpg",    # trailing token
+        "wall_2k_BaseColor.jpg",    # pre-token
+    )
+    assert len(out["sets"]) == 1
+    s = out["sets"][0]
+    assert s["channels"]["basecolor"] == "wall_BaseColor.jpg"
+    reasons = {f: r for f, r in s["ignored"]}
+    assert reasons["wall_BaseColor_2k.jpg"] == "lower_resolution"
+    assert reasons["wall_2k_BaseColor.jpg"] == "lower_resolution"
+
+
+def test_orm_with_trailing_resolution_token(matwire):
+    out = _scan(matwire, "x_ORM_2k.png")
+    reasons = {f: r for f, r in out["ignored"]}
+    assert reasons["x_ORM_2k.png"] == "packed_orm"
+
+
 def test_spec_gloss_precedence(matwire):
     # PBR present -> spec/gloss suppressed per-set.
     pbr = _scan(matwire, "m_BaseColor.jpg", "m_Roughness.jpg",
