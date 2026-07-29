@@ -22,7 +22,11 @@ export function ToolsSection({
   const isBusy = busy !== null;
   const [frames, setFrames] = useState(5);
   return (
-    <div className="flex flex-col p-3">
+    // During a mutation we lock interaction at the container (`pointerEvents`)
+    // instead of `disabled`-ing every button: `disabled` dims with
+    // `opacity-50`, so each press flashed the whole section to 50% and back —
+    // the exact live-caught v1.26.0 Render flicker, same root, same fix.
+    <div className="flex flex-col p-3" style={{ pointerEvents: isBusy ? "none" : undefined }}>
       {TOOL_GROUPS.map((group, index) => (
         <SectionGroup key={group.title} title={group.title} first={index === 0}>
           <div className="flex flex-wrap gap-2">
@@ -30,7 +34,6 @@ export function ToolsSection({
               <Button
                 key={tool.id}
                 variant="secondary"
-                disabled={isBusy}
                 onClick={() => onRunTool(tool.id)}
               >
                 {tool.label}
@@ -49,14 +52,12 @@ export function ToolsSection({
               </div>
               <Button
                 variant="secondary"
-                disabled={isBusy}
                 onClick={() => onRunTool("panel/tools/keyframe_offset", { frames })}
               >
                 Offset
               </Button>
               <Button
                 variant="secondary"
-                disabled={isBusy}
                 onClick={() => onRunTool("panel/tools/keyframe_stagger", { frames })}
               >
                 Stagger
