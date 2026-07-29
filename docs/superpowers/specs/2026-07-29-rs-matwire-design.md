@@ -1,7 +1,7 @@
 # RS Material from Folder — auto-wire PBR desde carpeta de texturas (v1.32)
 
 **Fecha**: 2026-07-29
-**Estado**: aprobado en brainstorm (decisiones del usuario: vive en Tools como sub-vista — NO en el Asset Hub, corrigiendo la sugerencia del researcher; set PBR completo + Spec/Gloss legacy; carpetas multi-set agrupan y crean N materiales)
+**Estado**: implementado en rama `feat/rs-matwire` (v1.32.0), pendiente verificación live. (decisiones del usuario: vive en Tools como sub-vista — NO en el Asset Hub, corrigiendo la sugerencia del researcher; set PBR completo + Spec/Gloss legacy; carpetas multi-set agrupan y crean N materiales)
 **Contexto**: tercera fase del arco "expansión de Tools" (v1.30 quick-wins ✅ → v1.31 Batch Rename ✅ → **v1.32 este spec** → v1.33 Recall/template). Referencia de mercado: Node Ninja (School of Motion, free, muy citado, sin equivalente en Sentinel). Racional de ubicación (producto + supervisión): el auto-wire es AUTORÍA en momento look-dev (panel dockeado, ráfagas de packs), no inventario — el Hub es para assets YA en escena y entrega; además la IA de v1.23 fijó "Tools = utilidades de autoría" y podó las puertas redundantes. Valor Sentinel: **encodea la convención del estudio** (colorspaces, nodos correctos) — el material sale bien lo cablee quien lo cablee. Base: main con v1.31.0 mergeado y live-verified.
 
 ## Decisiones cerradas
