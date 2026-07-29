@@ -3,6 +3,8 @@
 **Fecha**: 2026-07-29 · **C4D**: 2026.303 (live, vía MCP `exec_python`) · **Redshift node space**: `com.redshift3d.redshift4c4d.class.nodespace`
 **Veredicto**: **GraphDescription puro cubre TODO el spec** — no hace falta ni un solo paso imperativo `GraphNode`+`BeginTransaction` para el wiring (solo para las posiciones de nodo, un `SetValue` trivial). Todos los items del checklist terminaron **VERIFIED** con read-back en el C4D vivo; ningún FAILED.
 
+**Fix pass (2026-07-29, segunda sesión live tras review)**: cierra los huecos señalados — emission/metalness **wired-tested** de verdad (§2b), estado honesto de los canales extrapolados y de `rsmathinv` (§2b), y la **decisión** de vía de creación/undo con evidencia (§8: material-handle es el default del writer). Mismo protocolo: doc throwaway `SENTINEL_MATWIRE_SPIKE_FIX`, kill al final, doc del usuario verificado intacto (5 materiales originales, cero residuo).
+
 Metodología: documento throwaway `SENTINEL_MATWIRE_SPIKE` insertado con `c4d.documents.InsertBaseDocument` + `SetActiveDocument`, todos los materiales de prueba creados ahí, y al final `KillDocument` + reactivación del doc del usuario (verificado: su doc quedó con sus 5 materiales originales, cero residuo). Texturas dummy reales en disco **con espacios en carpeta Y archivo** (`…/matwire spike tex/plaster base BaseColor.png`).
 
 ---
@@ -81,6 +83,24 @@ Valores (read-back `GetPortValue()`): `inputtype = maxon.Int32(1)`, `flipy = max
 
 Nota de dirección: la descripción se escribe del nodo TERMINAL hacia atrás (Output → material → samplers); al conectar un scope hijo a un puerto de entrada, GraphDescription elige el **puerto de salida default** del hijo — que en los 4 nodos RS que usamos es exactamente el del catálogo (`outcolor`/`out`), así que nunca necesitamos la sintaxis `->`.
 
+### 2b. Cobertura de wiring por canal — qué se probó CONECTADO de verdad (fix pass)
+
+El snippet de §2 solo cablea base_color/bump/roughness/displacement; emission y metalness iban como literal o extrapolados. Probe adicional en vivo (material nuevo `spikefix_emit`, mismo patrón de dict): sampler → `emission_color` **y** literal `emission_weight = 1.0` en el MISMO scope, más sampler → `metalness`, en un único ApplyDescription. Read-back literal:
+
+```
+census: {texturesampler: 2, output: 1, standardmaterial: 1}
+emission_color <- texturesampler.outcolor
+metalness      <- texturesampler.outcolor
+emission_weight <- (sin conexión)  · GetPortValue() = maxon.Float64(1)   ← literal + sampler conviven en el mismo scope
+sampler tex0/path: "/tmp/spike tex/emissive map.png", "/tmp/spike tex/metal map.png" (byte-idénticos, espacios OK)
+```
+
+**Estado por canal del spec** (honesto, tras el fix pass):
+
+- **VERIFIED — wired-tested en vivo**: `base_color`, `bump_input` (+ `bumpmap.input`), `refl_roughness`, `displacement.texmap` (§2), `emission_color` + literal `emission_weight` en el mismo scope, `metalness` (§2b).
+- **Extrapolados, mismo patrón — NO wired-tested independientemente**: `refl_color` (specular) y `opacity_color`. Ambos existen como inputs en el dump del nodo vivo (§3) y usarían la clave-sampler idéntica, pero nadie les conectó un sampler en vivo.
+- **`rsmathinv`: NO confirmado y sin uso por diseño** — el spec resuelve glossiness con `refl_isglossiness = True` sobre `refl_roughness` (verificado §2); `rsmathinv` (invertir el mapa) era un fallback muerto. Ni su id de nodo ni sus puertos se probaron en vivo: si alguna vez se necesitara, verificar primero.
+
 ## 3. Catálogo de IDs — cotejado 1:1 contra el grafo vivo
 
 Todos los ids del Global Constraints aparecieron VERBATIM en el read-back (assetid del nodo + ids de puerto completos `nodo.puerto`):
@@ -139,11 +159,31 @@ available = not desc.IsNullValue()
 
 Evidencia: id real → `IsNullValue()=False`; id bogus (`com.bogus.does.not.exist`) → devuelve AssetDescription **sin lanzar** con `IsNullValue()=True`. **Cuidado**: `bool(desc)` es `True` en ambos casos y el objeto NO tiene `IsPopulated()` (eso vive en otro tipo) — el discriminador es **`IsNullValue()`**. Envolver en try/except igualmente (defensa ante C4D sin RS instalado, no ejercitado en esta máquina).
 
-## 8. Creación del material — dos vías verificadas
+## 8. Creación del material + undo — DECISIÓN (fix pass live)
 
-- **Vía principal (writer)**: `maxon.GraphDescription.GetGraph(name=<nombre>, nodeSpaceId=maxon.NodeSpaceIdentifiers.RedshiftMaterial)` crea el material **en el documento activo**, con ese nombre, y devuelve el grafo (vacío, `createEmpty=True` default — la descripción crea también el nodo Output). Read-back del material: `GetType() == c4d.Mmaterial` (5703 — NO el 1036224 del RS material clásico), `GetNodeMaterialReference().HasSpace("com.redshift3d.redshift4c4d.class.nodespace") == True`. Es el "RS Node Material" moderno.
-- **Vía fallback / control de undo**: crear `c4d.BaseMaterial(c4d.Mmaterial)` + `doc.InsertMaterial(mat)` y luego `maxon.GraphDescription.GetGraph(mat, nodeSpaceId=…)` — nodifica el material existente (HasSpace RS pasa a True). Verificado OK. Útil si Task 3 quiere poseer la inserción para el anchor de undo (`doc.AddUndo(c4d.UNDOTYPE_NEWOBJ, mat)` antes de tocar el grafo).
-- `GetGraph(name=…)` inserta en el **documento activo** — en el op-drain del panel eso es el doc del usuario, que es exactamente donde matwire debe crear los materiales. (En el spike se activó el doc throwaway antes de cada GetGraph por esta misma razón.)
+**Default del writer: la vía material-handle.** Es la que garantiza el ancla de undo Y el cleanup por-set en fallo, porque tienes la referencia al material en la mano desde el primer instante:
+
+```python
+doc.StartUndo()                                   # (en matwire lo posee el caller, alrededor del LOTE)
+mat = c4d.BaseMaterial(c4d.Mmaterial)             # GetType() == 5703 — el "RS Node Material" moderno
+mat.SetName(name)
+doc.InsertMaterial(mat)
+doc.AddUndo(c4d.UNDOTYPE_NEWOBJ, mat)             # DESPUÉS de insertar (contrato de NEWOBJ)
+doc.AddUndo(c4d.UNDOTYPE_CHANGE, mat)             # ancla: la transacción maxon del Apply se UNE a este paso (lección v1.5.7)
+graph = maxon.GraphDescription.GetGraph(mat, nodeSpaceId=maxon.NodeSpaceIdentifiers.RedshiftMaterial)
+maxon.GraphDescription.ApplyDescription(graph, desc)
+doc.EndUndo()
+```
+
+Evidencia live (2026.303, doc throwaway `SENTINEL_MATWIRE_SPIKE_FIX`):
+
+- **(a) Cómo se crea y cómo se obtiene el grafo con handle** — re-ejecutado en esta sesión: `BaseMaterial(c4d.Mmaterial)` (`mat_type: 5703`) + `InsertMaterial` + `GetGraph(mat, nodeSpaceId=…)` nodifica el material y devuelve su grafo: read-back `hasspace_rs: true` (`com.redshift3d.redshift4c4d.class.nodespace`) y el ApplyDescription posterior construyó `{output: 1, standardmaterial: 1, texturesampler: 1}` con `base_color` cableado. La afirmación previa de este § era correcta; ahora con evidencia pegada.
+- **(b) UN undo elimina el material** — con la secuencia de arriba (ambos `AddUndo`), un solo `doc.DoUndo()` desde una llamada fresca devolvió el census de materiales al baseline (`spikefix_anchor` desapareció, material + grafo de una vez: `{"i": 0, "ok": true, "mats": [sin spikefix_anchor]}`). **Sin** el ancla `UNDOTYPE_CHANGE` hicieron falta DOS pasos de undo (la transacción maxon del Apply quedó como paso propio) — el ancla es obligatoria, no decorativa. **Caveat**: `doc.DoUndo()` desde script es orientativo (lección v1.5.7: no es proxy fiel de Cmd+Z; ejecutado en el mismo frame que el build ni siquiera surte efecto visible — se observó en vivo). La confirmación final es Cmd+Z real vía menú Edit en la verificación live de Task 3/4.
+- **(c) Cleanup por-set en fallo** — con el handle, `mat.Remove()` saca el material del doc: census 3 → 2, el material eliminado ya no aparece en el listado. Verificado también tras nodificar (`GetGraph(mat)` ya llamado).
+
+**Vía alternativa (DEMOVIDA a código de spike/prueba)**: `GetGraph(name=…, nodeSpaceId=…)` crea material+grafo de una vez **en el documento activo** y con ese nombre (verificado — §2 la usó), pero **no devuelve el material**: sin handle no hay `AddUndo` anclado, no hay `mat.Remove()` de cleanup, y habría que re-localizar el material a posteriori. El writer NO la usa.
+
+**Lookup grafo→material** (por si algún código acaba con solo el grafo en la mano): escanear `doc.GetFirstMaterial()`…`GetNext()` comparando `m.GetNodeMaterialReference().GetGraph("com.redshift3d.redshift4c4d.class.nodespace") == graph` — la **igualdad de grafos funciona** y encontró el material correcto en vivo (`graph_to_material_lookup: "spikefix_lookup"`). En el writer no hace falta nunca: la vía material-handle tiene el material desde el principio (media razón de la decisión).
 
 ## 9. Qué NO necesitó fallback imperativo
 
@@ -154,13 +194,13 @@ Grupo tex0 con hijos, bool ports (`refl_isglossiness`, `flipy`), enum int (`inpu
 ## Receta para `matwire_c4d.py` (Task 3 — seguir verbatim)
 
 1. `redshift_available()`: probe §7 (`GetUserPrefsRepository` + `FindLatestAsset` + `IsNullValue()`), try/except → False.
-2. `create_material_for_set(doc, folder, tex_set, name)`:
-   a. `graph = maxon.GraphDescription.GetGraph(name=name, nodeSpaceId=maxon.NodeSpaceIdentifiers.RedshiftMaterial)` (el doc activo es `doc` — los ops corren en main thread con el doc del usuario activo; el material nace ya con el nombre dedupeado).
-   b. Montar UN dict de descripción (§2) desde `tex_set["channels"]`: siempre `output` + `standardmaterial`; por canal presente añadir su clave (basecolor→`base_color` srgb; roughness→`refl_roughness` raw; metalness→`metalness` raw; normal→sub-scope bumpmap con `inputtype=1` (+`flipy=True` si `normal_flipy`); height→scope displacement colgado de `#<…output.displacement`; opacity→`opacity_color` raw; emission→`emission_color` srgb **+ literal `emission_weight: 1.0`**; specular→`refl_color` raw; glossiness→`refl_roughness` raw **+ literal `refl_isglossiness: True`**). Rutas = `os.path.join(folder, filename)` como **str plano** (§4).
+2. `create_material_for_set(doc, folder, tex_set, name)` — **vía material-handle (DECIDIDO, §8)**:
+   a. `mat = c4d.BaseMaterial(c4d.Mmaterial)` → `mat.SetName(name)` (nombre ya dedupeado) → `doc.InsertMaterial(mat)` → `doc.AddUndo(c4d.UNDOTYPE_NEWOBJ, mat)` → `doc.AddUndo(c4d.UNDOTYPE_CHANGE, mat)` (ancla de la transacción maxon — sin ella el Apply es un paso de undo aparte, §8b) → `graph = maxon.GraphDescription.GetGraph(mat, nodeSpaceId=maxon.NodeSpaceIdentifiers.RedshiftMaterial)`. **No** usar `GetGraph(name=…)`: no devuelve el material → sin ancla de undo ni cleanup (§8, demovida).
+   b. Montar UN dict de descripción (§2) desde `tex_set["channels"]`: siempre `output` + `standardmaterial`; por canal presente añadir su clave (basecolor→`base_color` srgb; roughness→`refl_roughness` raw; metalness→`metalness` raw [wired-tested §2b]; normal→sub-scope bumpmap con `inputtype=1` (+`flipy=True` si `normal_flipy`); height→scope displacement colgado de `#<…output.displacement`; opacity→`opacity_color` raw [extrapolado §2b]; emission→`emission_color` srgb **+ literal `emission_weight: 1.0`** [wired-tested juntos en el mismo scope, §2b]; specular→`refl_color` raw [extrapolado §2b]; glossiness→`refl_roughness` raw **+ literal `refl_isglossiness: True`**). Rutas = `os.path.join(folder, filename)` como **str plano** (§4).
    c. `ApplyDescription(graph, desc)` — transaccional todo-o-nada.
    d. Si hay AO: segundo `ApplyDescription` con el sampler suelto (§5).
    e. Posiciones: una transacción, `SetValue("net.maxon.node.base.xpos"/"ypos", maxon.Float(...))` por nodo (§6), localizando por assetid + `tex0/path`.
-   f. Excepción en cualquier paso → `{"ok": False, "error": str(e)}`; el material a medias se elimina (`doc.GetActiveDocument`… el caller decide; con ApplyDescription atómico el caso realista es material vacío → borrarlo).
-3. El caller (op `matwire_create`) posee `StartUndo/EndUndo` alrededor del LOTE completo.
+   f. Excepción en cualquier paso posterior a la inserción → `mat.Remove()` (verificado §8c) y `{"ok": False, "error": str(e)}`; el lote sigue con el siguiente set.
+3. El caller (op `matwire_create`) posee `StartUndo/EndUndo` alrededor del LOTE completo; los `AddUndo` por material se anidan dentro → un Cmd+Z revierte el lote entero.
 
-Gotchas en una línea: `#<` para puertos y `/` para hijos de grupo (§1) · colorspaces SIEMPRE explícitos (`RS_INPUT_COLORSPACE_SRGB|RAW`) · nunca `pathlib.as_uri()` · nunca `IsPopulated()`/`bool()` en el probe (§7) · nunca `CallCommand` de arrange · `GetGraph(name=…)` escribe en el doc ACTIVO.
+Gotchas en una línea: `#<` para puertos y `/` para hijos de grupo (§1) · colorspaces SIEMPRE explícitos (`RS_INPUT_COLORSPACE_SRGB|RAW`) · nunca `pathlib.as_uri()` · nunca `IsPopulated()`/`bool()` en el probe (§7) · nunca `CallCommand` de arrange · `AddUndo(CHANGE, mat)` SIEMPRE antes del primer toque al grafo (§8b) · `rsmathinv` no confirmado, no usar sin verificar (§2b).
