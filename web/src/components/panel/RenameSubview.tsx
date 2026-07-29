@@ -4,7 +4,8 @@ import { Checkbox } from "../form/Checkbox";
 import { SegmentedControl } from "../form/SegmentedControl";
 import { TextInput } from "../form/TextInput";
 import { SectionGroup } from "../SectionGroup";
-import { fetchPanelStamp, fetchRenamePreview, postRenameApply } from "../../lib/api";
+import { fetchRenamePreview, postRenameApply } from "../../lib/api";
+import { restoreFocus } from "../../lib/focus";
 import { DEFAULT_RENAME_OPS, renameToast } from "../../lib/panelRename";
 import type { RenameOps, RenameSource } from "../../lib/panelRename";
 import { useToast } from "../../lib/toast";
@@ -22,7 +23,7 @@ const PREVIEW_EMPTY_COPY: Record<string, string> = {
  * pages: owns its preview fetches, its stamp poll and its apply. The preview
  * is ALWAYS the server's `rename_plan` (no client-side name computation
  * anywhere — WYSIWYG with apply by construction). Refetch triggers: 300ms
- * debounce on any field/source edit, plus a 2s `fetchPanelStamp` poll so a
+ * debounce on any field/source edit, plus an unconditional 2s poll so a
  * selection change in C4D flows into the preview without touching the SPA. */
 export function RenameSubview({ onBack }: { onBack: () => void }) {
   const { toast } = useToast();
@@ -34,8 +35,7 @@ export function RenameSubview({ onBack }: { onBack: () => void }) {
   // Monotonic sequence: only the LATEST in-flight preview may land (a slow
   // stale response must never overwrite a newer plan).
   const seqRef = useRef(0);
-  const stampRef = useRef<string | null>(null);
-  // Latest source/ops for the stamp poll, without re-arming the interval.
+  // Latest source/ops for the 2s poll, without re-arming the interval.
   const paramsRef = useRef({ source, ops });
   paramsRef.current = { source, ops };
 
@@ -51,20 +51,21 @@ export function RenameSubview({ onBack }: { onBack: () => void }) {
     return () => clearTimeout(timer);
   }, [source, ops, loadPreview]);
 
-  // 2s stamp poll — the selection in C4D is part of the preview's input, but
-  // selection changes never reach the SPA on their own; the shared panel
-  // stamp does move, so refetch when it changes.
+  // 2s UNCONDITIONAL preview refetch — the selection in C4D is part of the
+  // preview's input, but a LIVE probe proved selection changes never move
+  // the shared panel stamp (DIRTYFLAGS_SELECT is not one of its components —
+  // same blindness class as the v1.17 repath-stamp lesson), so gating this
+  // on the stamp left the preview stale while Apply re-derived server-side
+  // against the NEW selection. The op is read-only and capped at 500 rows,
+  // so polling it directly is cheap; the seq guard in loadPreview keeps a
+  // slow older response from overwriting a newer plan.
   useEffect(() => {
-    const interval = setInterval(async () => {
+    const interval = setInterval(() => {
       // Same guard as PanelPage's poll: a hidden webview shouldn't keep
       // hitting the server (review Minor).
       if (document.visibilityState !== "visible") return;
-      const stamp = await fetchPanelStamp();
-      if (stamp !== null && stamp !== stampRef.current) {
-        stampRef.current = stamp;
-        const { source: src, ops: o } = paramsRef.current;
-        void loadPreview(src, o);
-      }
+      const { source: src, ops: o } = paramsRef.current;
+      void loadPreview(src, o);
     }, 2000);
     return () => clearInterval(interval);
   }, [loadPreview]);
@@ -77,9 +78,15 @@ export function RenameSubview({ onBack }: { onBack: () => void }) {
     try {
       const result = await postRenameApply(source, ops);
       toast(renameToast(source, result));
-      await loadPreview(source, ops);
+      // paramsRef, not the click-time closure: if the artist typed while the
+      // apply was in flight, the refetch must reflect the CURRENT fields.
+      const { source: src, ops: o } = paramsRef.current;
+      await loadPreview(src, o);
     } finally {
       setApplying(false);
+      // Apply may end up disabled after the refetch (v1.18 lesson: a focused
+      // element going away swallows the next Cmd+Z in the webview).
+      restoreFocus();
     }
   };
 
@@ -98,7 +105,12 @@ export function RenameSubview({ onBack }: { onBack: () => void }) {
         <TextInput
           type="number"
           value={ops[key]}
-          onChange={(e) => setOp(key, parseInt(e.target.value || "0", 10))}
+          onChange={(e) => {
+            // Number.isNaN guard: parseInt("") / "-" → NaN, and value={NaN}
+            // trips a React warning — fall back to 0 instead.
+            const parsed = parseInt(e.target.value, 10);
+            setOp(key, Number.isNaN(parsed) ? 0 : parsed);
+          }}
         />
       </div>
     </div>

@@ -1,6 +1,7 @@
 import { Fragment, useState } from "react";
 import { Button } from "../form/Button";
 import { TextInput } from "../form/TextInput";
+import { restoreFocus } from "../../lib/focus";
 import { TOOL_GROUPS } from "../../lib/panelTools";
 import { SectionGroup } from "../SectionGroup";
 import { RenameSubview } from "./RenameSubview";
@@ -27,7 +28,17 @@ export function ToolsSection({
   // and busy state (server-driven preview — see RenameSubview).
   const [view, setView] = useState<"main" | "rename">("main");
   if (view === "rename") {
-    return <RenameSubview onBack={() => setView("main")} />;
+    return (
+      <RenameSubview
+        onBack={() => {
+          // restoreFocus BEFORE the flip unmounts the sub-view: its focused
+          // "← Tools" button leaves the DOM, and a webview with nothing
+          // focused swallows the next Cmd+Z (v1.18 lesson, lib/focus.ts).
+          restoreFocus();
+          setView("main");
+        }}
+      />
+    );
   }
   return (
     // During a mutation we lock interaction at the container (`pointerEvents`)
@@ -56,7 +67,12 @@ export function ToolsSection({
                 <TextInput
                   type="number"
                   value={frames}
-                  onChange={(e) => setFrames(parseInt(e.target.value || "0", 10))}
+                  onChange={(e) => {
+                    // Number.isNaN guard: parseInt("") / "-" → NaN, and
+                    // value={NaN} trips a React warning — fall back to 0.
+                    const parsed = parseInt(e.target.value, 10);
+                    setFrames(Number.isNaN(parsed) ? 0 : parsed);
+                  }}
                 />
               </div>
               <Button

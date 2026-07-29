@@ -9,6 +9,7 @@ import { HubSwitchResDialog } from "../components/hub/HubSwitchResDialog";
 import { HubToolbar, type HubFilter } from "../components/hub/HubToolbar";
 import { EmptyState, ErrorState, LoadingState } from "../components/PageStates";
 import { Section } from "../components/Section";
+import { restoreFocus as restoreWebviewFocus } from "../lib/focus";
 import { formatBytes } from "../lib/format";
 import {
   fetchHubInventory,
@@ -143,14 +144,11 @@ export function HubPage() {
   const stampRef = useRef<string | null>(null);
   const deliverRef = useRef<HTMLDivElement>(null);
   // Focus-restoration target for when a hub dialog (Switch Res / Shrink)
-  // unmounts. Diagnosis: the webview needs SOME live focused element for
-  // Cmd+Z to pass through to C4D's key handling — a dialog's focused button
-  // is removed from the DOM on close, leaving nothing focused, and the very
-  // next Cmd+Z is swallowed. Shrink's own flow only dodged this because it
-  // takes seconds and the user typically clicks something else meanwhile.
+  // unmounts — full webview Cmd+Z diagnosis lives in lib/focus.ts (shared
+  // with the panel's Batch Rename sub-view).
   const tableWrapperRef = useRef<HTMLDivElement>(null);
   const restoreFocus = useCallback(() => {
-    tableWrapperRef.current?.focus({ preventScroll: true });
+    restoreWebviewFocus(tableWrapperRef.current);
   }, []);
   const pendingRef = useRef<Map<string, string>>(pending);
   useEffect(() => {
