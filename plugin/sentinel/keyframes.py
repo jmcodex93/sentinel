@@ -97,6 +97,13 @@ def _children_of(obj):
     return out
 
 
+def _get_up(obj):
+    try:
+        return obj.GetUp()
+    except Exception:
+        return None
+
+
 def _validated_frames(frames):
     try:
         frames = int(frames)
@@ -151,19 +158,33 @@ def run_stagger(doc, frames):
     roots = _selection_roots(doc)
     if not roots:
         return {"ok": False, "error": "no_selection"}
-    if len(roots) < 2:
-        return {"ok": False, "error": "need_two"}
-    # Dedupe NESTED selected roots up-front: a selected child of a selected
-    # root belongs to the parent's family (it must not get its own rung).
-    family = {}
+    # Dedupe NESTED selected roots, order-independently: a selected child of
+    # a selected root belongs to the parent's family (it must not get its
+    # own rung). Membership is checked against the FULL selected-id set (not
+    # a forward-only scan of previously-seen roots), so selection order
+    # (e.g. child listed before its parent) can't leak an extra rung.
+    selected_ids = {id(r) for r in roots}
+    seen_ids = set()
     top_roots = []
     for root in roots:
-        members = collect_shift_set([root], _children_of)
-        marker_set = {id(m) for m in members}
-        if any(id(root) in fam for fam in family.values()):
-            continue
-        family[id(root)] = marker_set
-        top_roots.append(root)
+        marker = id(root)
+        if marker in seen_ids:
+            continue  # literal duplicate entry in the selection
+        seen_ids.add(marker)
+        ancestor = _get_up(root)
+        is_top = True
+        while ancestor is not None:
+            if id(ancestor) in selected_ids:
+                is_top = False
+                break
+            ancestor = _get_up(ancestor)
+        if is_top:
+            top_roots.append(root)
+    # Gate AFTER dedup: two raw selected roots that collapse into one family
+    # (e.g. a root + its own child) must report the same honest "need_two"
+    # as selecting a single object, not a misleading "no_keys".
+    if len(top_roots) < 2:
+        return {"ok": False, "error": "need_two"}
     doc.StartUndo()
     total_objects = 0
     total_keys = 0

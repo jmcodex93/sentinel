@@ -53,10 +53,11 @@ class _FakeTrack:
 
 
 class _FakeAnimObj:
-    def __init__(self, tracks, down=None, next_=None):
+    def __init__(self, tracks, down=None, next_=None, parent=None):
         self._tracks = tracks
         self._down = down
         self._next = next_
+        self._parent = parent
 
     def GetCTracks(self):
         return list(self._tracks)
@@ -66,6 +67,9 @@ class _FakeAnimObj:
 
     def GetNext(self):
         return self._next
+
+    def GetUp(self):
+        return self._parent
 
 
 class _FakeDoc:
@@ -147,10 +151,11 @@ def test_run_stagger_nested_child_gets_no_own_rung(keyframes, monkeypatch):
     monkeypatch.setattr(keyframes, "_frames_to_time", lambda frames, fps: frames)
     monkeypatch.setattr(keyframes, "_add_time", lambda t, delta: t + delta)
     # Root 0 has a selected nested child; root 1 is a separate top root.
-    child_track = _FakeTrack([0])
-    child = _FakeAnimObj([child_track])
     root0_track = _FakeTrack([0])
-    root0 = _FakeAnimObj([root0_track], down=child)
+    root0 = _FakeAnimObj([root0_track])
+    child_track = _FakeTrack([0])
+    child = _FakeAnimObj([child_track], parent=root0)
+    root0._down = child
     root1_track = _FakeTrack([0])
     root1 = _FakeAnimObj([root1_track])
 
@@ -166,3 +171,62 @@ def test_run_stagger_nested_child_gets_no_own_rung(keyframes, monkeypatch):
     assert child_track.curve.keys[0].frame == 0
     # root1 (top root 1) gets offset 1*5 = 5.
     assert root1_track.curve.keys[0].frame == 5
+
+
+def test_run_stagger_root_plus_own_child_is_need_two(keyframes, monkeypatch):
+    # Two raw selected roots (root + its own child) collapse into ONE
+    # family after dedup -> must report "need_two", not a dishonest
+    # "no_keys" (finding 1: the gate must run AFTER dedup, not before).
+    monkeypatch.setattr(keyframes, "_frames_to_time", lambda frames, fps: frames)
+    monkeypatch.setattr(keyframes, "_add_time", lambda t, delta: t + delta)
+    root_track = _FakeTrack([0, 10])
+    root = _FakeAnimObj([root_track])
+    child_track = _FakeTrack([0])
+    child = _FakeAnimObj([child_track], parent=root)
+    root._down = child
+
+    doc = _FakeSelectionDoc([root, child])
+
+    result = keyframes.run_stagger(doc, 5)
+
+    assert result == {"ok": False, "error": "need_two"}
+    # Nothing shifted.
+    assert [k.frame for k in root_track.curve.keys] == [0, 10]
+    assert child_track.curve.keys[0].frame == 0
+
+
+def test_run_stagger_family_dedup_is_order_independent(keyframes, monkeypatch):
+    # Selection order [child, A, B] (child listed BEFORE its parent A) must
+    # produce the identical result as [A, child, B]: A's family at offset 0,
+    # B at offset 1*frames. A forward-only scan would wrongly give the
+    # child its own rung and shift every later family an extra step
+    # (finding 2).
+    monkeypatch.setattr(keyframes, "_frames_to_time", lambda frames, fps: frames)
+    monkeypatch.setattr(keyframes, "_add_time", lambda t, delta: t + delta)
+
+    def build():
+        a_track = _FakeTrack([0])
+        a = _FakeAnimObj([a_track])
+        child_track = _FakeTrack([0])
+        child = _FakeAnimObj([child_track], parent=a)
+        a._down = child
+        b_track = _FakeTrack([0])
+        b = _FakeAnimObj([b_track])
+        return a, child, b, a_track, child_track, b_track
+
+    # Ordering 1: child before its parent A.
+    a1, child1, b1, a1_track, child1_track, b1_track = build()
+    doc1 = _FakeSelectionDoc([child1, a1, b1])
+    result1 = keyframes.run_stagger(doc1, 5)
+
+    # Ordering 2: parent A before its child (canonical order).
+    a2, child2, b2, a2_track, child2_track, b2_track = build()
+    doc2 = _FakeSelectionDoc([a2, child2, b2])
+    result2 = keyframes.run_stagger(doc2, 5)
+
+    assert result1["ok"] is True
+    assert result2["ok"] is True
+    assert result1 == result2
+    assert a1_track.curve.keys[0].frame == a2_track.curve.keys[0].frame == 0
+    assert child1_track.curve.keys[0].frame == child2_track.curve.keys[0].frame == 0
+    assert b1_track.curve.keys[0].frame == b2_track.curve.keys[0].frame == 5
