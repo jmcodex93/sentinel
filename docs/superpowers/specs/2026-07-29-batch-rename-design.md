@@ -1,7 +1,7 @@
 # Batch Rename — objetos + materiales con tokens y preview (v1.31)
 
 **Fecha**: 2026-07-29
-**Estado**: aprobado en brainstorm (decisiones del usuario: alcance objetos+materiales; pipeline completo Find/Replace + patrón con numeración + prefijo/sufijo + tokens de contexto; sub-vista del panel; `$n` en orden de selección)
+**Estado**: implementado en rama `feat/batch-rename` (motor + ops + sub-vista SPA, pytest 976 + vitest 158 verdes), **PENDIENTE verificación live** (matriz al pie de este documento)
 **Contexto**: segunda fase del arco "expansión de Tools" (v1.30 quick-wins ✅ → **v1.31 este spec** → v1.32 RS auto-wire → v1.33 Recall/template). La investigación (`docs/research/2026-07-28-c4d-community-tools.md`) señala naming como la categoría más reinventada del mercado (4+ renamers independientes, Plus Renamer a $399/año). Motivo propio de Sentinel: QC #8 (default names) y el naming de takes del Frame dependen de nombres sanos — el renamer cierra el ciclo detectar→arreglar. Base: main con v1.30.0 mergeado y live-verified.
 
 ## Decisiones cerradas
