@@ -1733,11 +1733,20 @@ class SentinelFrameTag(_TagDataBase):
         maximum=None,
         step=None,
         cycle=None,
+        animatable=True,
     ):
         desc_id = _description_parent(parameter_id, dtype, node)
         bc = c4d.GetCustomDatatypeDefault(dtype)
         _set_bc_value(bc, "SetString", c4d.DESC_NAME, name)
         _set_bc_value(bc, "SetString", c4d.DESC_SHORT_NAME, name)
+        if not animatable:
+            # The formats grid feeds the Take GENERATOR (auto-sync regenerates
+            # on change) — keyframing these params is meaningless, and the
+            # per-cell keyframe diamonds were the single biggest width cost in
+            # the AM grid (live design feedback, v1.29 polish).
+            animate_off = getattr(c4d, "DESC_ANIMATE_OFF", None)
+            if animate_off is not None:
+                _set_bc_value(bc, "SetInt32", c4d.DESC_ANIMATE, animate_off)
         if minimum is not None:
             _set_bc_value(bc, "SetFloat", c4d.DESC_MIN, float(minimum))
             _set_bc_value(bc, "SetFloat", c4d.DESC_MINSLIDER, float(minimum))
@@ -1898,30 +1907,36 @@ class SentinelFrameTag(_TagDataBase):
             ids = _format_ids(index)
             label = fmt.get("label") or fmt.get("id", "Format")
             if not self._set_description_parameter(
-                node, description, ids["enabled"], c4d.DTYPE_BOOL, label, formats_group
+                node, description, ids["enabled"], c4d.DTYPE_BOOL, label, formats_group,
+                animatable=False
             ):
                 return False
             if not self._set_description_parameter(
-                node, description, ids["color"], color_dtype, "", formats_group
+                node, description, ids["color"], color_dtype, "", formats_group,
+                animatable=False
             ):
                 return False
             # Nudge is a film-offset FRACTION (percent unit: raw 1.0 == 100%),
             # so the clamp is -1.0..1.0 (=-100%..100%), step 0.01 (=1%). Using
             # -100..100 here would read as +/-10000% under the percent unit.
             if not self._set_description_parameter(
-                node, description, ids["nudge_x"], c4d.DTYPE_REAL, "X", formats_group, -1.0, 1.0, 0.01
+                node, description, ids["nudge_x"], c4d.DTYPE_REAL, "X", formats_group, -1.0, 1.0, 0.01,
+                animatable=False
             ):
                 return False
             if not self._set_description_parameter(
-                node, description, ids["nudge_y"], c4d.DTYPE_REAL, "Y", formats_group, -1.0, 1.0, 0.01
+                node, description, ids["nudge_y"], c4d.DTYPE_REAL, "Y", formats_group, -1.0, 1.0, 0.01,
+                animatable=False
             ):
                 return False
             if not self._set_description_parameter(
-                node, description, ids["slice_x"], c4d.DTYPE_LONG, "Sx", formats_group, 1, 16, 1
+                node, description, ids["slice_x"], c4d.DTYPE_LONG, "Sx", formats_group, 1, 16, 1,
+                animatable=False
             ):
                 return False
             if not self._set_description_parameter(
-                node, description, ids["slice_y"], c4d.DTYPE_LONG, "Sy", formats_group, 1, 16, 1
+                node, description, ids["slice_y"], c4d.DTYPE_LONG, "Sy", formats_group, 1, 16, 1,
+                animatable=False
             ):
                 return False
 
@@ -1946,7 +1961,8 @@ class SentinelFrameTag(_TagDataBase):
             (cids["slice_y"], c4d.DTYPE_LONG, "Sy", 1, 16, 1),
         ):
             if not self._set_description_parameter(
-                node, description, pid, dtype, name, custom_group, lo, hi, st
+                node, description, pid, dtype, name, custom_group, lo, hi, st,
+                animatable=False
             ):
                 return False
 
