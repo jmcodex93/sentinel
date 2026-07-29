@@ -199,6 +199,11 @@ if _c4d_plugins is not None:
                     _drain(time.monotonic())
                 except Exception as exc:  # never let the pump die
                     safe_print("Sentinel Frame sync pump error: %s" % exc)
+                try:
+                    from sentinel import renderwatch
+                    renderwatch.tick_active_document()
+                except Exception:
+                    pass
             return True
 
 else:  # pragma: no cover
