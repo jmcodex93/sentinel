@@ -43,7 +43,7 @@
 - `IMAGE_EXTENSIONS: frozenset` — the allowlist above.
 - `scan_texture_sets(filenames) -> {"sets": [set], "ignored": [(filename, reason)]}` where each `set` = `{"name": str, "channels": {channel: filename}, "normal_flipy": bool, "ignored": [(filename, reason)]}`. Channels use canonical keys: `basecolor, roughness, metalness, normal, height, ao, opacity, emission, specular, glossiness`. Global `ignored` reasons: `bad_extension`, `no_channel`, `packed_orm`. Per-set reasons: `lower_resolution`, `duplicate_channel`, `pbr_wins`, `dx_superseded`.
 - `channel_colorspace(channel) -> "srgb"|"raw"` — srgb ONLY for `basecolor`/`emission`.
-- `dedupe_names(names, existing) -> {name: final_name}` — case-insensitive collision against `existing` and within the batch → `_02`, `_03`… suffixes.
+- `dedupe_names(names, existing) -> list[str]` — position-aligned final names, case-insensitively unique against `existing` and within the batch → `_02`, `_03`… suffixes.
 
 - [ ] **Step 1: Write the failing tests** — create `tests/test_matwire.py`:
 
