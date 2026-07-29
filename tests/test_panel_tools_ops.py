@@ -334,14 +334,16 @@ class _FakeTag:
 
 
 class _FakeMaterial:
-    """Fake BaseMaterial with GetGUID — pins ``_material_key`` to use the
-    real GUID (not id()) when it's available, per the brief."""
+    """Fake BaseMaterial exposing ``FindUniqueID(creator_id)`` with stable
+    per-material bytes — NOT ``GetGUID``: real materials don't have it
+    (BaseObject-only API; third recurrence of the mock-shape lesson). Pins
+    ``_material_key`` to the FindUniqueID identity, not ``id()``."""
 
-    def __init__(self, guid):
-        self._guid = guid
+    def __init__(self, uid):
+        self._uid = uid.encode("utf-8") if isinstance(uid, str) else bytes(uid)
 
-    def GetGUID(self):
-        return self._guid
+    def FindUniqueID(self, creator_id):
+        return self._uid
 
 
 class _FakeObj:
@@ -471,7 +473,7 @@ def test_delete_empty_nulls_no_document(sentinel_module):
 def test_clean_material_tags_broken_and_exact_dupes(sentinel_module, fake_doc_factory):
     import importlib
     scene_tools = importlib.import_module("sentinel.ui.scene_tools")
-    mat = _FakeMaterial(guid="guid-A")
+    mat = _FakeMaterial(uid="guid-A")
     broken = _FakeTag(sentinel_module, material=None)
     dup_a = _FakeTag(sentinel_module, material=mat, restriction="SelA")
     dup_b = _FakeTag(sentinel_module, material=mat, restriction="SelA")   # exact dupe -> dup_a removed, dup_b (LAST) kept
@@ -484,11 +486,38 @@ def test_clean_material_tags_broken_and_exact_dupes(sentinel_module, fake_doc_fa
     assert not dup_b.removed and not different.removed
 
 
+def test_clean_material_tags_dedupes_across_fresh_wrappers(sentinel_module, fake_doc_factory):
+    """Regression (final-review C1): in real C4D every link read returns a
+    FRESH BaseMaterial wrapper — two reads of the same material are distinct
+    Python objects with distinct id(). The dupe key must still collide via
+    FindUniqueID bytes, or removed_dupes is forever 0."""
+    import importlib
+    scene_tools = importlib.import_module("sentinel.ui.scene_tools")
+
+    class _FreshWrapperTag(_FakeTag):
+        def __getitem__(self, key):
+            if key == self._c4d.TEXTURETAG_MATERIAL:
+                return _FakeMaterial(uid="guid-A")  # NEW wrapper per read
+            return super().__getitem__(key)
+
+    dup_a = _FreshWrapperTag(sentinel_module, restriction="SelA")
+    dup_b = _FreshWrapperTag(sentinel_module, restriction="SelA")
+    # sanity: the two wrapper objects really are distinct per read
+    w1 = dup_a[sentinel_module.c4d.TEXTURETAG_MATERIAL]
+    w2 = dup_a[sentinel_module.c4d.TEXTURETAG_MATERIAL]
+    assert w1 is not w2
+    obj = _FakeObj(5159, "cube", tags=[dup_a, dup_b])
+    doc = fake_doc_factory(objects=[obj])
+    result = scene_tools._clean_material_tags_core(doc)
+    assert result == {"ok": True, "removed_broken": 0, "removed_dupes": 1}
+    assert dup_a.removed and not dup_b.removed  # LAST wins
+
+
 def test_clean_material_tags_different_material_guids_not_deduped(sentinel_module, fake_doc_factory):
     import importlib
     scene_tools = importlib.import_module("sentinel.ui.scene_tools")
-    mat_a = _FakeMaterial(guid="guid-A")
-    mat_b = _FakeMaterial(guid="guid-B")
+    mat_a = _FakeMaterial(uid="guid-A")
+    mat_b = _FakeMaterial(uid="guid-B")
     tag_a = _FakeTag(sentinel_module, material=mat_a, restriction="")
     tag_b = _FakeTag(sentinel_module, material=mat_b, restriction="")
     obj = _FakeObj(5159, "cube", tags=[tag_a, tag_b])

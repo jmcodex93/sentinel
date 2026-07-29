@@ -6,7 +6,9 @@ The shift itself is c4d-bound but written against duck-typed tracks/curves so
 the pytest fakes exercise the REAL iteration-order logic: shifting keys later
 in time must walk indexes in REVERSE (a moved key would otherwise collide
 with / reorder past its right neighbor inside CCurve); earlier in time walks
-forward. Callers of :func:`shift_object_tracks` own the undo block;
+forward. ALL tracks of an object shift — object-level CTracks AND CTracks on
+its tags (animated tag params / UserData), via the shared
+:func:`_shift_track_list`. Callers of :func:`shift_object_tracks` own the undo block;
 :func:`run_offset` / :func:`run_stagger` are the op-facing wrappers that own
 undo + selection + validation (dialog-free, status dicts only).
 """
@@ -53,35 +55,57 @@ def _add_time(time_value, delta):
     return time_value + delta
 
 
+def _shift_track_list(doc, tracks, frames, delta):
+    """Shift every key of every track in ``tracks`` by ``delta``. Shared by
+    object-level and tag-level CTracks (spec decision 4: ALL tracks shift).
+    Reverse-order-safe: positive shifts walk indexes in REVERSE so a moved
+    key never collides with / reorders past its right neighbor. AddUndo per
+    track, as before. Returns the number of keys shifted."""
+    shifted = 0
+    for track in tracks or []:
+        curve = track.GetCurve()
+        if curve is None:
+            continue
+        count = curve.GetKeyCount()
+        if not count:
+            continue
+        try:
+            doc.AddUndo(c4d.UNDOTYPE_CHANGE, track)
+        except Exception:
+            pass
+        indexes = range(count - 1, -1, -1) if frames > 0 else range(count)
+        for i in indexes:
+            key = curve.GetKey(i)
+            if key is None:
+                continue
+            key.SetTime(curve, _add_time(key.GetTime(), delta))
+            shifted += 1
+    return shifted
+
+
 def shift_object_tracks(doc, objs, frames):
-    """Shift every key of every CTrack of ``objs`` by ``frames`` frames.
+    """Shift every key of every CTrack of ``objs`` — including CTracks living
+    on the objects' TAGS (animated tag params / UserData; a rig desyncs
+    silently if only the object-level tracks move) — by ``frames`` frames.
     Caller owns the undo block. Returns ``{"objects": N, "keys": M}`` where
-    N counts objects that actually had keys."""
+    N counts objects that actually had keys (object- or tag-level)."""
     frames = int(frames)
     fps = doc.GetFps()
     delta = _frames_to_time(frames, fps)
     objects_with_keys = 0
     total_keys = 0
     for obj in objs or []:
-        obj_keys = 0
-        for track in obj.GetCTracks() or []:
-            curve = track.GetCurve()
-            if curve is None:
-                continue
-            count = curve.GetKeyCount()
-            if not count:
-                continue
+        obj_keys = _shift_track_list(doc, obj.GetCTracks() or [], frames, delta)
+        try:
+            tags = obj.GetTags() or []
+        except Exception:
+            tags = []
+        for tag in tags:
             try:
-                doc.AddUndo(c4d.UNDOTYPE_CHANGE, track)
+                tag_tracks = tag.GetCTracks() or []
             except Exception:
-                pass
-            indexes = range(count - 1, -1, -1) if frames > 0 else range(count)
-            for i in indexes:
-                key = curve.GetKey(i)
-                if key is None:
-                    continue
-                key.SetTime(curve, _add_time(key.GetTime(), delta))
-                obj_keys += 1
+                continue
+            obj_keys += _shift_track_list(doc, tag_tracks, frames, delta)
         if obj_keys:
             objects_with_keys += 1
             total_keys += obj_keys

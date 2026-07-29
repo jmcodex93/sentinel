@@ -52,15 +52,29 @@ class _FakeTrack:
         return self.curve
 
 
+class _FakeAnimTag:
+    """A tag carrying its own CTracks (animated tag params / UserData)."""
+
+    def __init__(self, tracks):
+        self._tracks = tracks
+
+    def GetCTracks(self):
+        return list(self._tracks)
+
+
 class _FakeAnimObj:
-    def __init__(self, tracks, down=None, next_=None, parent=None):
+    def __init__(self, tracks, down=None, next_=None, parent=None, tags=None):
         self._tracks = tracks
         self._down = down
         self._next = next_
         self._parent = parent
+        self._tags = list(tags or [])
 
     def GetCTracks(self):
         return list(self._tracks)
+
+    def GetTags(self):
+        return list(self._tags)
 
     def GetDown(self):
         return self._down
@@ -90,6 +104,23 @@ def test_shift_positive_iterates_keys_in_reverse(keyframes, sentinel_module, mon
     assert result == {"objects": 1, "keys": 3}
     assert [k.frame for k in track.curve.keys] == [5, 15, 25]
     assert track.curve.set_order == [2, 1, 0]  # REVERSE for positive shift
+
+
+def test_shift_includes_tag_level_tracks(keyframes, monkeypatch):
+    """Final-review I1: CTracks on the object's TAGS must shift too (spec
+    decision 4: ALL tracks) — object-only shifting silently desyncs rigs."""
+    monkeypatch.setattr(keyframes, "_frames_to_time", lambda frames, fps: frames)
+    monkeypatch.setattr(keyframes, "_add_time", lambda t, delta: t + delta)
+    obj_track = _FakeTrack([0, 10])
+    tag_track = _FakeTrack([5, 15, 25])
+    obj = _FakeAnimObj([obj_track], tags=[_FakeAnimTag([tag_track])])
+    result = keyframes.shift_object_tracks(_FakeDoc(), [obj], 5)
+    assert result == {"objects": 1, "keys": 5}  # counted across BOTH lists
+    assert [k.frame for k in obj_track.curve.keys] == [5, 15]
+    assert [k.frame for k in tag_track.curve.keys] == [10, 20, 30]
+    # reverse-order walk preserved on the tag-level curve as well
+    assert obj_track.curve.set_order == [1, 0]
+    assert tag_track.curve.set_order == [2, 1, 0]
 
 
 def test_shift_negative_iterates_forward(keyframes, monkeypatch):

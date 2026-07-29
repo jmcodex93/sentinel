@@ -1493,14 +1493,20 @@ def _delete_empty_nulls_core(doc):
 
 
 def _material_key(material):
-    """Identity key for a material. Two BaseMaterial *wrappers* in real C4D
-    can point at the same underlying node and differ by id(), so GetGUID()
-    is the correct identity; fall back to id() only if GetGUID is
-    unavailable (e.g. a stub/mock material)."""
+    """Identity key for a material. Materials have NO ``GetGUID()`` — that's
+    BaseObject-only API (same live-caught class as the BaseTag lesson in
+    ``frame_sync._tag_key``). Two BaseMaterial *wrappers* in real C4D can
+    point at the same underlying node and differ by ``id()``, so the correct
+    identity is ``FindUniqueID(MAXON_CREATOR_ID)`` (BaseList2D-level, equal
+    across wrappers of the same material — verified live in C4D 2026.303).
+    Fall back to ``id()`` only when FindUniqueID is unavailable/raises."""
     try:
-        return str(material.GetGUID())
+        uid = material.FindUniqueID(c4d.MAXON_CREATOR_ID)
+        if uid:
+            return bytes(uid).hex()
     except Exception:
-        return id(material)
+        pass
+    return id(material)
 
 
 def _texture_tag_identity(tag):
