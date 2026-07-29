@@ -1432,3 +1432,141 @@ def _apply_abc_retime_tag():
     elif result.get("error") == "apply_failed":
         c4d.gui.MessageDialog("ABC Retime tag could not be applied\n\nPossible reasons:\n- ABC Retime plugin not installed\n- Invalid object type\n\nManual access: Right-click Tags → Extensions → Alembic Retime")
     return result
+
+
+def _iter_objects_bottom_up(first):
+    """Yield the hierarchy depth-first, CHILDREN BEFORE PARENTS, materializing
+    the order up-front so removals during iteration can't skip siblings."""
+    out = []
+
+    def _walk(obj):
+        while obj:
+            child = obj.GetDown()
+            if child:
+                _walk(child)
+            out.append(obj)
+            obj = obj.GetNext()
+
+    _walk(first)
+    return out
+
+
+def _delete_empty_nulls_core(doc):
+    """Delete empty nulls: an Onull with no children and NO tags of any kind
+    (any tag — XPresso/constraint/UserData — saves it). Bottom-up cascade: a
+    null whose descendants were all empty nulls falls too. One undo step.
+    Dialog-free core (v1.30) — status dict only."""
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+    targets_seen = False
+    removed = 0
+    doc.StartUndo()
+    try:
+        for obj in _iter_objects_bottom_up(doc.GetFirstObject()):
+            try:
+                if obj.GetType() != c4d.Onull:
+                    continue
+                if obj.GetDown() is not None or obj.GetFirstTag() is not None:
+                    continue
+            except Exception:
+                continue
+            targets_seen = True
+            try:
+                doc.AddUndo(c4d.UNDOTYPE_DELETEOBJ, obj)
+            except Exception:
+                pass
+            try:
+                obj.Remove()
+            except Exception:
+                continue
+            removed += 1
+    finally:
+        doc.EndUndo()
+        try:
+            c4d.EventAdd()
+        except Exception:
+            pass
+    if not removed and not targets_seen:
+        return {"ok": False, "error": "none_found"}
+    safe_print(f"Sentinel: removed {removed} empty null(s)")
+    return {"ok": True, "removed": removed}
+
+
+def _material_key(material):
+    """Identity key for a material. Two BaseMaterial *wrappers* in real C4D
+    can point at the same underlying node and differ by id(), so GetGUID()
+    is the correct identity; fall back to id() only if GetGUID is
+    unavailable (e.g. a stub/mock material)."""
+    try:
+        return str(material.GetGUID())
+    except Exception:
+        return id(material)
+
+
+def _texture_tag_identity(tag):
+    """(material_key, restriction) key for exact-duplicate detection."""
+    try:
+        material = tag[c4d.TEXTURETAG_MATERIAL]
+    except Exception:
+        material = None
+    try:
+        restriction = tag[c4d.TEXTURETAG_RESTRICTION] or ""
+    except Exception:
+        restriction = ""
+    return material, restriction
+
+
+def _clean_material_tags_core(doc):
+    """Remove broken texture tags (dead/None material) and EXACT duplicates
+    on the same object (same material + same restriction, keep the LAST —
+    the one C4D prioritizes). One undo step. Dialog-free core (v1.30)."""
+    if not doc:
+        return {"ok": False, "error": "no_document"}
+    removed_broken = 0
+    removed_dupes = 0
+    doc.StartUndo()
+    try:
+        for obj in _iter_objects_bottom_up(doc.GetFirstObject()):
+            try:
+                tags = [t for t in (obj.GetTags() or []) if t.GetType() == c4d.Ttexture]
+            except Exception:
+                continue
+            keep_last = {}
+            for tag in tags:
+                material, restriction = _texture_tag_identity(tag)
+                if material is None:
+                    try:
+                        doc.AddUndo(c4d.UNDOTYPE_DELETEOBJ, tag)
+                    except Exception:
+                        pass
+                    try:
+                        tag.Remove()
+                    except Exception:
+                        continue
+                    removed_broken += 1
+                    continue
+                key = (_material_key(material), restriction)
+                if key in keep_last:
+                    prev = keep_last[key]
+                    try:
+                        doc.AddUndo(c4d.UNDOTYPE_DELETEOBJ, prev)
+                    except Exception:
+                        pass
+                    try:
+                        prev.Remove()
+                    except Exception:
+                        keep_last[key] = tag
+                        continue
+                    removed_dupes += 1
+                keep_last[key] = tag
+    finally:
+        doc.EndUndo()
+        try:
+            c4d.EventAdd()
+        except Exception:
+            pass
+    if not removed_broken and not removed_dupes:
+        return {"ok": False, "error": "none_found"}
+    safe_print(
+        f"Sentinel: removed {removed_broken} broken + {removed_dupes} duplicate material tag(s)")
+    return {"ok": True, "removed_broken": removed_broken, "removed_dupes": removed_dupes}

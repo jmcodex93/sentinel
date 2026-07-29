@@ -196,6 +196,8 @@ def _install_fake_c4d():
         "Mbase": 5702,
         "Ttexture": 5616,
         "Xbitmap": 5833,
+        "TEXTURETAG_MATERIAL": 1010,
+        "TEXTURETAG_RESTRICTION": 1011,
         "OBJECT_ON": 2,
         "OBJECT_OFF": 1,
         # Real C4D 2026 values (verified live 2026.301): Manual=0, Current=1, All=2.
