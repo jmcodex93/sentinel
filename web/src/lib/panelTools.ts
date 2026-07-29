@@ -21,6 +21,13 @@ export const TOOL_GROUPS: { title: string; tools: ToolDef[] }[] = [
     ],
   },
   {
+    title: "Cleanup",
+    tools: [
+      { id: "panel/tools/delete_empty_nulls", label: "Delete Empty Nulls" },
+      { id: "panel/tools/clean_material_tags", label: "Clean Material Tags" },
+    ],
+  },
+  {
     title: "Animation",
     tools: [
       { id: "panel/tools/vibrate_null", label: "Vibrate Null" },
@@ -42,6 +49,10 @@ const ERROR_COPY: Record<string, string> = {
   merge_error: "Error loading the template.",
   apply_failed: "ABC Retime tag couldn't be applied (plugin installed? valid object?).",
   bad_target: "Unknown link.",
+  none_found: "Nothing to clean — scene is already tidy.",
+  no_keys: "Selection has no keyframes.",
+  bad_frames: "Frames must be a non-zero integer (±10000).",
+  need_two: "Select two or more objects to stagger.",
 };
 
 /** Tool result → toast. Success uses a count when the op returns one; errors
@@ -69,6 +80,34 @@ export function toolToast(id: string, r: PanelToolResult): { message: string; va
   }
   if (id === "panel/tools/abc_retime") {
     return { message: `ABC Retime: ${r.applied ?? 0} applied, ${r.skipped ?? 0} skipped.`, variant: "success" };
+  }
+  if (id === "panel/tools/delete_empty_nulls" && typeof r.removed === "number") {
+    return { message: `Removed ${r.removed} empty null${r.removed === 1 ? "" : "s"}.`, variant: "success" };
+  }
+  if (id === "panel/tools/clean_material_tags") {
+    const broken = r.removed_broken ?? 0;
+    const dupes = r.removed_dupes ?? 0;
+    const total = broken + dupes;
+    return {
+      message: `Removed ${broken} broken + ${dupes} duplicate tag${total === 1 ? "" : "s"}.`,
+      variant: "success",
+    };
+  }
+  if (id === "panel/tools/keyframe_offset") {
+    const keys = r.keys ?? 0;
+    const objects = r.objects ?? 0;
+    return {
+      message: `Shifted ${keys} key${keys === 1 ? "" : "s"} across ${objects} object${objects === 1 ? "" : "s"} by ${r.frames ?? 0}f.`,
+      variant: "success",
+    };
+  }
+  if (id === "panel/tools/keyframe_stagger") {
+    const objects = r.objects ?? 0;
+    const keys = r.keys ?? 0;
+    return {
+      message: `Staggered ${objects} object${objects === 1 ? "" : "s"} (${r.frames ?? 0}f step, ${keys} key${keys === 1 ? "" : "s"}).`,
+      variant: "success",
+    };
   }
   return { message: "Done.", variant: "success" };
 }

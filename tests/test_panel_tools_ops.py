@@ -304,3 +304,413 @@ class TestParityOps:
                             "GetActiveDocument", lambda: None)
         assert panel_tools_ops._op_open_settings({}) == {
             "ok": False, "error": "no_document"}
+
+
+class _FakeTag:
+    """Minimal texture-tag fake keyed off the fake-c4d constants
+    (``c4d.TEXTURETAG_MATERIAL`` / ``c4d.TEXTURETAG_RESTRICTION``, added in
+    tests/conftest.py as distinct ints) — never strings, so ``__getitem__``
+    honestly exercises the same DescID-style lookup production code does."""
+
+    def __init__(self, sentinel_module, type_id=None, material=None, restriction=""):
+        self._c4d = sentinel_module.c4d
+        self._type = type_id if type_id is not None else self._c4d.Ttexture
+        self._material = material
+        self._restriction = restriction
+        self.removed = False
+
+    def GetType(self):
+        return self._type
+
+    def __getitem__(self, key):
+        if key == self._c4d.TEXTURETAG_MATERIAL:
+            return self._material
+        if key == self._c4d.TEXTURETAG_RESTRICTION:
+            return self._restriction
+        return None
+
+    def Remove(self):
+        self.removed = True
+
+
+class _FakeMaterial:
+    """Fake BaseMaterial exposing ``FindUniqueID(creator_id)`` with stable
+    per-material bytes — NOT ``GetGUID``: real materials don't have it
+    (BaseObject-only API; third recurrence of the mock-shape lesson). Pins
+    ``_material_key`` to the FindUniqueID identity, not ``id()``."""
+
+    def __init__(self, uid):
+        self._uid = uid.encode("utf-8") if isinstance(uid, str) else bytes(uid)
+
+    def FindUniqueID(self, creator_id):
+        return self._uid
+
+
+class _FakeObj:
+    def __init__(self, type_id, name, children=None, tags=None):
+        self._type = type_id
+        self._name = name
+        self._children = list(children or [])
+        self._tags = list(tags or [])
+        self.removed = False
+        for c in self._children:
+            c._parent = self
+
+    def GetType(self):
+        return self._type
+
+    def GetName(self):
+        return self._name
+
+    def GetDown(self):
+        return self._children[0] if self._children else None
+
+    def GetNext(self):
+        parent = getattr(self, "_parent", None)
+        if parent is None:
+            return None
+        siblings = parent._children
+        i = siblings.index(self)
+        return siblings[i + 1] if i + 1 < len(siblings) else None
+
+    def GetFirstTag(self):
+        return self._tags[0] if self._tags else None
+
+    def GetTags(self):
+        return list(self._tags)
+
+    def Remove(self):
+        self.removed = True
+        parent = getattr(self, "_parent", None)
+        if parent is not None and self in parent._children:
+            parent._children.remove(self)
+
+
+class _FakeDocFactory:
+    """Linked-list root wired from a flat objects list, wiring
+    ``_parent``/siblings like ``_FakeObj`` expects. StartUndo/EndUndo/AddUndo
+    are no-ops that record calls (mirrors ``_FakeDoc``/``BaseDocument``
+    conventions used elsewhere in this file / conftest)."""
+
+    def __init__(self, objects):
+        self._objects = list(objects)
+        self.start_undo_count = 0
+        self.end_undo_count = 0
+        self.undo_operations = []
+
+    def GetFirstObject(self):
+        return self._objects[0] if self._objects else None
+
+    def StartUndo(self):
+        self.start_undo_count += 1
+
+    def EndUndo(self):
+        self.end_undo_count += 1
+
+    def AddUndo(self, undo_type, target):
+        self.undo_operations.append((undo_type, target))
+
+
+import pytest as _pytest  # noqa: E402
+
+
+class _FakeRoot:
+    """Synthetic parent for top-level objects so ``_FakeObj.GetNext()`` can
+    walk siblings via ``parent._children`` — matches how a real C4D
+    hierarchy's top level are siblings under an implicit document root."""
+
+    def __init__(self, children):
+        self._children = children
+
+
+@_pytest.fixture
+def fake_doc_factory():
+    def _make(objects):
+        # top-level objects are siblings of each other under a synthetic
+        # root (so GetNext() can walk them), not parentless.
+        root = _FakeRoot(objects)
+        for obj in objects:
+            obj._parent = root
+        return _FakeDocFactory(objects)
+    return _make
+
+
+def test_delete_empty_nulls_cascade_and_tag_guard(sentinel_module, fake_doc_factory):
+    import importlib
+    scene_tools = importlib.import_module("sentinel.ui.scene_tools")
+    c4d = sentinel_module.c4d
+    ONULL = c4d.Onull
+    # tree: keeper(cube) ; empty_leaf(null) ; group(null){inner(null)} -> both fall (cascade)
+    # tagged(null with tag) -> saved ; parent_of_keeper(null){cube} -> saved (has child)
+    empty_leaf = _FakeObj(ONULL, "empty_leaf")
+    inner = _FakeObj(ONULL, "inner")
+    group = _FakeObj(ONULL, "group", children=[inner])
+    tagged = _FakeObj(ONULL, "tagged", tags=[_FakeTag(sentinel_module)])
+    cube = _FakeObj(5159, "cube")
+    parent = _FakeObj(ONULL, "parent", children=[cube])
+    doc = fake_doc_factory(objects=[empty_leaf, group, tagged, parent])
+    result = scene_tools._delete_empty_nulls_core(doc)
+    assert result == {"ok": True, "removed": 3}  # empty_leaf, inner, group
+    assert empty_leaf.removed and inner.removed and group.removed
+    assert not tagged.removed and not parent.removed and not cube.removed
+
+
+def test_delete_empty_nulls_none_found(sentinel_module, fake_doc_factory):
+    import importlib
+    scene_tools = importlib.import_module("sentinel.ui.scene_tools")
+    cube = _FakeObj(5159, "cube")
+    doc = fake_doc_factory(objects=[cube])
+    assert scene_tools._delete_empty_nulls_core(doc) == {"ok": False, "error": "none_found"}
+
+
+def test_delete_empty_nulls_no_document(sentinel_module):
+    import importlib
+    scene_tools = importlib.import_module("sentinel.ui.scene_tools")
+    assert scene_tools._delete_empty_nulls_core(None) == {
+        "ok": False, "error": "no_document"}
+
+
+def test_clean_material_tags_broken_and_exact_dupes(sentinel_module, fake_doc_factory):
+    import importlib
+    scene_tools = importlib.import_module("sentinel.ui.scene_tools")
+    mat = _FakeMaterial(uid="guid-A")
+    broken = _FakeTag(sentinel_module, material=None)
+    dup_a = _FakeTag(sentinel_module, material=mat, restriction="SelA")
+    dup_b = _FakeTag(sentinel_module, material=mat, restriction="SelA")   # exact dupe -> dup_a removed, dup_b (LAST) kept
+    different = _FakeTag(sentinel_module, material=mat, restriction="SelB")  # different restriction -> kept
+    obj = _FakeObj(5159, "cube", tags=[broken, dup_a, dup_b, different])
+    doc = fake_doc_factory(objects=[obj])
+    result = scene_tools._clean_material_tags_core(doc)
+    assert result == {"ok": True, "removed_broken": 1, "removed_dupes": 1}
+    assert broken.removed and dup_a.removed
+    assert not dup_b.removed and not different.removed
+
+
+def test_clean_material_tags_dedupes_across_fresh_wrappers(sentinel_module, fake_doc_factory):
+    """Regression (final-review C1): in real C4D every link read returns a
+    FRESH BaseMaterial wrapper — two reads of the same material are distinct
+    Python objects with distinct id(). The dupe key must still collide via
+    FindUniqueID bytes, or removed_dupes is forever 0."""
+    import importlib
+    scene_tools = importlib.import_module("sentinel.ui.scene_tools")
+
+    class _FreshWrapperTag(_FakeTag):
+        def __getitem__(self, key):
+            if key == self._c4d.TEXTURETAG_MATERIAL:
+                return _FakeMaterial(uid="guid-A")  # NEW wrapper per read
+            return super().__getitem__(key)
+
+    dup_a = _FreshWrapperTag(sentinel_module, restriction="SelA")
+    dup_b = _FreshWrapperTag(sentinel_module, restriction="SelA")
+    # sanity: the two wrapper objects really are distinct per read
+    w1 = dup_a[sentinel_module.c4d.TEXTURETAG_MATERIAL]
+    w2 = dup_a[sentinel_module.c4d.TEXTURETAG_MATERIAL]
+    assert w1 is not w2
+    obj = _FakeObj(5159, "cube", tags=[dup_a, dup_b])
+    doc = fake_doc_factory(objects=[obj])
+    result = scene_tools._clean_material_tags_core(doc)
+    assert result == {"ok": True, "removed_broken": 0, "removed_dupes": 1}
+    assert dup_a.removed and not dup_b.removed  # LAST wins
+
+
+def test_clean_material_tags_different_material_guids_not_deduped(sentinel_module, fake_doc_factory):
+    import importlib
+    scene_tools = importlib.import_module("sentinel.ui.scene_tools")
+    mat_a = _FakeMaterial(uid="guid-A")
+    mat_b = _FakeMaterial(uid="guid-B")
+    tag_a = _FakeTag(sentinel_module, material=mat_a, restriction="")
+    tag_b = _FakeTag(sentinel_module, material=mat_b, restriction="")
+    obj = _FakeObj(5159, "cube", tags=[tag_a, tag_b])
+    doc = fake_doc_factory(objects=[obj])
+    result = scene_tools._clean_material_tags_core(doc)
+    assert result == {"ok": False, "error": "none_found"}
+    assert not tag_a.removed and not tag_b.removed
+
+
+def test_clean_material_tags_no_document(sentinel_module):
+    import importlib
+    scene_tools = importlib.import_module("sentinel.ui.scene_tools")
+    assert scene_tools._clean_material_tags_core(None) == {
+        "ok": False, "error": "no_document"}
+
+
+class TestCleanupKeyframeOps:
+    """panel/tools/delete_empty_nulls, clean_material_tags, keyframe_offset,
+    keyframe_stagger — thin _tool()/forwarding adapters, mirrors
+    TestMergeOps/TestParityOps above."""
+
+    def _forbid_dialog(self, monkeypatch):
+        from sentinel.ui import scene_tools
+
+        def _boom(*a, **k):
+            raise AssertionError("no dialog in op path")
+
+        monkeypatch.setattr(scene_tools.c4d.gui, "MessageDialog", _boom)
+
+    def test_ops_registered(self, sentinel_module):
+        from sentinel.ui import panel_tools_ops
+        for key in ("panel/tools/delete_empty_nulls",
+                    "panel/tools/clean_material_tags",
+                    "panel/tools/keyframe_offset",
+                    "panel/tools/keyframe_stagger"):
+            assert key in panel_tools_ops.PANEL_TOOLS_OPS
+
+    def test_op_delete_empty_nulls_routes_to_core(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        from sentinel.ui import scene_tools
+        self._forbid_dialog(monkeypatch)
+        doc = _FakeDoc()
+        captured = {}
+        sentinel = {"ok": True, "removed": 2}
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+
+        def _fake_core(d):
+            captured["doc"] = d
+            return sentinel
+
+        monkeypatch.setattr(scene_tools, "_delete_empty_nulls_core", _fake_core)
+        result = panel_tools_ops._op_tool_delete_empty_nulls({})
+        assert captured["doc"] is doc
+        assert result is sentinel
+
+    def test_op_clean_material_tags_routes_to_core(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        from sentinel.ui import scene_tools
+        self._forbid_dialog(monkeypatch)
+        doc = _FakeDoc()
+        captured = {}
+        sentinel = {"ok": True, "removed_broken": 1, "removed_dupes": 0}
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+
+        def _fake_core(d):
+            captured["doc"] = d
+            return sentinel
+
+        monkeypatch.setattr(scene_tools, "_clean_material_tags_core", _fake_core)
+        result = panel_tools_ops._op_tool_clean_material_tags({})
+        assert captured["doc"] is doc
+        assert result is sentinel
+
+    def test_op_delete_empty_nulls_no_document(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: None)
+        assert panel_tools_ops._op_tool_delete_empty_nulls({}) == {
+            "ok": False, "error": "no_document"}
+
+    def test_op_clean_material_tags_no_document(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: None)
+        assert panel_tools_ops._op_tool_clean_material_tags({}) == {
+            "ok": False, "error": "no_document"}
+
+    def test_op_keyframe_offset_forwards_frames(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        from sentinel import keyframes
+        self._forbid_dialog(monkeypatch)
+        doc = _FakeDoc()
+        captured = {}
+        sentinel = {"ok": True, "objects": 2, "keys": 5, "frames": 7}
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+
+        def _fake_run_offset(d, frames):
+            captured["doc"] = d
+            captured["frames"] = frames
+            return sentinel
+
+        monkeypatch.setattr(keyframes, "run_offset", _fake_run_offset)
+        result = panel_tools_ops._op_tool_keyframe_offset({"frames": 7})
+        assert captured["doc"] is doc
+        assert captured["frames"] == 7
+        assert result is sentinel
+
+    def test_op_keyframe_stagger_forwards_frames(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        from sentinel import keyframes
+        self._forbid_dialog(monkeypatch)
+        doc = _FakeDoc()
+        captured = {}
+        sentinel = {"ok": True, "objects": 3, "keys": 9, "frames": -4}
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+
+        def _fake_run_stagger(d, frames):
+            captured["doc"] = d
+            captured["frames"] = frames
+            return sentinel
+
+        monkeypatch.setattr(keyframes, "run_stagger", _fake_run_stagger)
+        result = panel_tools_ops._op_tool_keyframe_stagger({"frames": -4})
+        assert captured["doc"] is doc
+        assert captured["frames"] == -4
+        assert result is sentinel
+
+    def test_op_keyframe_offset_no_payload_forwards_none(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        from sentinel import keyframes
+        self._forbid_dialog(monkeypatch)
+        doc = _FakeDoc()
+        captured = {}
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+
+        def _fake_run_offset(d, frames):
+            captured["frames"] = frames
+            return {"ok": False, "error": "bad_frames"}
+
+        monkeypatch.setattr(keyframes, "run_offset", _fake_run_offset)
+        result = panel_tools_ops._op_tool_keyframe_offset(None)
+        assert captured["frames"] is None
+        assert result == {"ok": False, "error": "bad_frames"}
+
+    def test_op_keyframe_ops_forbid_dialog(self, sentinel_module, monkeypatch):
+        """Exercise all 4 new routes with no-document AND happy paths and
+        assert no MessageDialog/QuestionDialog is reachable."""
+        from sentinel.ui import panel_tools_ops
+        from sentinel.ui import scene_tools
+        from sentinel import keyframes
+
+        def _boom_msg(*a, **k):
+            raise AssertionError("no MessageDialog allowed in op path")
+
+        def _boom_question(*a, **k):
+            raise AssertionError("no QuestionDialog allowed in op path")
+
+        monkeypatch.setattr(scene_tools.c4d.gui, "MessageDialog", _boom_msg)
+        monkeypatch.setattr(scene_tools.c4d.gui, "QuestionDialog", _boom_question)
+
+        # no-document path for all 4 routes
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: None)
+        assert panel_tools_ops._op_tool_delete_empty_nulls({}) == {
+            "ok": False, "error": "no_document"}
+        assert panel_tools_ops._op_tool_clean_material_tags({}) == {
+            "ok": False, "error": "no_document"}
+        assert panel_tools_ops._op_tool_keyframe_offset({"frames": 3}) == {
+            "ok": False, "error": "no_document"}
+        assert panel_tools_ops._op_tool_keyframe_stagger({"frames": 3}) == {
+            "ok": False, "error": "no_document"}
+
+        # happy path for all 4 routes, with the real active document
+        doc = _FakeDoc()
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(scene_tools, "_delete_empty_nulls_core",
+                            lambda d: {"ok": True, "removed": 1})
+        monkeypatch.setattr(scene_tools, "_clean_material_tags_core",
+                            lambda d: {"ok": True, "removed_broken": 0, "removed_dupes": 1})
+        monkeypatch.setattr(keyframes, "run_offset",
+                            lambda d, frames: {"ok": True, "objects": 1, "keys": 1, "frames": frames})
+        monkeypatch.setattr(keyframes, "run_stagger",
+                            lambda d, frames: {"ok": True, "objects": 1, "keys": 1, "frames": frames})
+
+        assert panel_tools_ops._op_tool_delete_empty_nulls({})["ok"] is True
+        assert panel_tools_ops._op_tool_clean_material_tags({})["ok"] is True
+        assert panel_tools_ops._op_tool_keyframe_offset({"frames": 5})["ok"] is True
+        assert panel_tools_ops._op_tool_keyframe_stagger({"frames": 5})["ok"] is True

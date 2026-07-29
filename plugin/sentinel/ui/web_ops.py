@@ -269,6 +269,11 @@ def _op_form_settings_state(payload):
     except (TypeError, ValueError):
         compositor = 0
 
+    try:
+        render_notify = bool(int(GlobalSettings.get('render_notify', 1)))
+    except (TypeError, ValueError):
+        render_notify = True
+
     return {
         "fps": {
             "value": int(fps_value),
@@ -282,6 +287,7 @@ def _op_form_settings_state(payload):
         },
         "multipart_default": bool(int(GlobalSettings.get('aov_multipart', 1))),
         "slate": {"value": GlobalSettings.get_snapshot_slate()},
+        "render_notify": render_notify,
         "mv_max_motion": max(mv_max, 0),
         "snapshot_dir": {
             "value": snap_dir_value,
@@ -316,6 +322,8 @@ def _op_form_settings_submit(payload):
             GlobalSettings.set('aov_multipart', updates["aov_multipart"])
         if "snapshot_slate" in updates:
             GlobalSettings.set_snapshot_slate(updates["snapshot_slate"])
+        if "render_notify" in updates:
+            GlobalSettings.set('render_notify', updates["render_notify"])
         if "mv_max_motion" in updates:
             GlobalSettings.set('mv_max_motion', updates["mv_max_motion"])
         if "snapshot_dir" in updates:

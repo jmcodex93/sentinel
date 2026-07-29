@@ -781,6 +781,7 @@ class SentinelSettingsDialog(gui.GeDialog):
     CHK_SLATE = 1011
     LABEL_SNAP_DIR = 1012
     LABEL_SNAP_DIR_HINT = 1013
+    CHK_RENDER_NOTIFY = 1014
 
     # FPS choices in the combo
     FPS_OPTIONS = [24, 25, 30, 60]
@@ -827,6 +828,11 @@ class SentinelSettingsDialog(gui.GeDialog):
         self.AddStaticText(0, c4d.BFH_LEFT, 180, 0, "", 0)
         self.AddStaticText(0, c4d.BFH_SCALEFIT, 0, 0,
                            "↳ project rules key \"slate\" overrides this", 0)
+
+        # Render-complete notification (renderwatch, 30s threshold).
+        self.AddStaticText(0, c4d.BFH_LEFT, 180, 0, "", 0)
+        self.AddCheckbox(self.CHK_RENDER_NOTIFY, c4d.BFH_LEFT, 0, 0,
+                         "Notify when render finishes (>30s)")
 
         # Motion Vectors Max Motion for the AE/RSMB path (0 = auto by render width).
         # Compositor must set RSMB "Max Displace" to the same effective value.
@@ -912,6 +918,13 @@ class SentinelSettingsDialog(gui.GeDialog):
         # Review slate burn-in checkbox
         self.SetBool(self.CHK_SLATE, GlobalSettings.get_snapshot_slate())
 
+        # Render-complete notification checkbox (default ON)
+        try:
+            render_notify = bool(int(GlobalSettings.get('render_notify', 1)))
+        except (TypeError, ValueError):
+            render_notify = True
+        self.SetBool(self.CHK_RENDER_NOTIFY, render_notify)
+
         # MV Max Motion (0 = auto by render width)
         try:
             mv_max = int(GlobalSettings.get('mv_max_motion', 0))
@@ -994,6 +1007,9 @@ class SentinelSettingsDialog(gui.GeDialog):
 
                 # Review slate burn-in
                 GlobalSettings.set_snapshot_slate(self.GetBool(self.CHK_SLATE))
+
+                # Render-complete notification
+                GlobalSettings.set('render_notify', 1 if self.GetBool(self.CHK_RENDER_NOTIFY) else 0)
 
                 # MV Max Motion (0 = auto by render width)
                 mv_max = int(self.GetInt32(self.EDT_MV_MAX_MOTION))

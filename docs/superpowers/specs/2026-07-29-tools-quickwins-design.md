@@ -1,7 +1,7 @@
 # Tools quick-wins — cleanup + keyframe shift + render notification (v1.30)
 
 **Fecha**: 2026-07-29
-**Estado**: aprobado en brainstorm (decisiones del usuario: limpiadores como botones de Tools, no QC; empty null = sin hijos y sin tags, cascada; material tags = rotos + duplicados exactos; keyframes = todas las pistas de selección+hijos; render notify ON con umbral 30s)
+**Estado**: LIVE-VERIFIED y mergeado (C4D 2026.303; pytest 949 + vitest 151; entrega de notificación pivotada en vivo a toast in-C4D + status bar, banner macOS best-effort) (decisiones del usuario: limpiadores como botones de Tools, no QC; empty null = sin hijos y sin tags, cascada; material tags = rotos + duplicados exactos; keyframes = todas las pistas de selección+hijos; render notify ON con umbral 30s)
 **Contexto**: primera fase del arco "expansión de Tools" (investigación: `docs/research/2026-07-28-c4d-community-tools.md`). El arco completo, en orden acordado: **v1.30 quick-wins (este spec) → v1.31 Batch Rename (form con tokens+preview) → v1.32 RS auto-wire desde carpeta (vía Asset Hub) → v1.33 Recall-checkpoint y/o scene-template**. Base: main con v1.29.0 (Frame v2.1) mergeado y live-verified.
 
 ## Decisiones cerradas

@@ -25,6 +25,7 @@ export function SettingsPage() {
   const [compositor, setCompositor] = useState(0);
   const [multipart, setMultipart] = useState(true);
   const [slate, setSlate] = useState(false);
+  const [renderNotify, setRenderNotify] = useState(true);
   const [mvMax, setMvMax] = useState(0);
   const [snapshotDir, setSnapshotDir] = useState("");
   const [historyMax, setHistoryMax] = useState(5);
@@ -41,6 +42,7 @@ export function SettingsPage() {
         setCompositor(d.compositor.value);
         setMultipart(d.multipart_default);
         setSlate(d.slate.value);
+        setRenderNotify(d.render_notify);
         setMvMax(d.mv_max_motion);
         setSnapshotDir(d.snapshot_dir.value);
         setHistoryMax(d.history_max.value);
@@ -67,6 +69,7 @@ export function SettingsPage() {
       compositor,
       multipart_default: multipart,
       slate,
+      render_notify: renderNotify,
       mv_max_motion: mvMax,
       snapshot_dir: snapshotDir,
       history_max: historyMax,
@@ -119,6 +122,15 @@ export function SettingsPage() {
 
         <FieldRow label="Snapshot Slate">
           <Checkbox id="settings-slate" checked={slate} onChange={setSlate} label="Burn in review slate on snapshots" />
+        </FieldRow>
+
+        <FieldRow label="Render Notifications">
+          <Checkbox
+            id="settings-render-notify"
+            checked={renderNotify}
+            onChange={setRenderNotify}
+            label="Notify when render finishes (>30s)"
+          />
         </FieldRow>
 
         <FieldRow label="Max Motion Vector Length" htmlFor="settings-mv-max" hint="0 = no clamp.">

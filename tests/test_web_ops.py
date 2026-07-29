@@ -51,3 +51,50 @@ class TestPaletteRunConfirmGate:
 
         assert response != {"ok": False, "error": "confirm_required"}
         assert response == {"ok": False, "error": "No active document"}
+
+
+class TestSettingsRenderNotify:
+    """``render_notify`` across ``form/settings/state`` / ``form/settings/submit``
+    (v1.30 Task 5). Same lazy-import + fake-c4d harness as the palette gate
+    tests above; ``GlobalSettings`` is monkeypatched so no real
+    ``sentinel_settings.json`` is read or written."""
+
+    def _patch_settings(self, monkeypatch, store, set_calls):
+        from sentinel.common.settings import GlobalSettings
+        import sentinel.ui.flows as flows
+
+        monkeypatch.setattr(
+            GlobalSettings, "get",
+            staticmethod(lambda key, default='': store.get(key, default)))
+        monkeypatch.setattr(
+            GlobalSettings, "set",
+            staticmethod(lambda key, value: set_calls.append((key, value)) or True))
+        # Keep the snapshot-dir auto-detect out of the picture (pure default
+        # locks) — the fake harness has no RenderView cfg to parse anyway.
+        monkeypatch.setattr(flows, "detect_rv_snapshot_dir", lambda: None)
+
+    def test_state_includes_render_notify_default_true(self, sentinel_module, monkeypatch):
+        from sentinel.ui import web_ops
+
+        self._patch_settings(monkeypatch, store={}, set_calls=[])
+        state = web_ops._op_form_settings_state({})
+
+        assert state["render_notify"] is True
+
+    def test_state_reflects_persisted_render_notify_off(self, sentinel_module, monkeypatch):
+        from sentinel.ui import web_ops
+
+        self._patch_settings(monkeypatch, store={"render_notify": 0}, set_calls=[])
+        state = web_ops._op_form_settings_state({})
+
+        assert state["render_notify"] is False
+
+    def test_submit_render_notify_false_persists_zero(self, sentinel_module, monkeypatch):
+        from sentinel.ui import web_ops
+
+        set_calls = []
+        self._patch_settings(monkeypatch, store={}, set_calls=set_calls)
+        response = web_ops._op_form_settings_submit({"render_notify": False})
+
+        assert response == {"ok": True}
+        assert ("render_notify", 0) in set_calls

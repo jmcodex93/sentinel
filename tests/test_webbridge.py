@@ -1368,6 +1368,18 @@ class TestValidateSettingsSubmit:
     def test_empty_payload_yields_no_updates(self):
         assert webbridge.validate_settings_submit({}) == {}
 
+    def test_render_notify_false_maps_to_zero(self):
+        updates = webbridge.validate_settings_submit({"render_notify": False})
+        assert updates == {"render_notify": 0}
+
+    def test_render_notify_true_maps_to_one(self):
+        updates = webbridge.validate_settings_submit({"render_notify": True})
+        assert updates == {"render_notify": 1}
+
+    def test_render_notify_malformed_string_is_omitted(self):
+        updates = webbridge.validate_settings_submit({"render_notify": "definitely"})
+        assert "render_notify" not in updates
+
 
 # ---------------------------------------------------------------------------
 # Gate form — gate_state_payload / gate_can_proceed

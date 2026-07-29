@@ -1142,6 +1142,11 @@ def validate_settings_submit(payload, fps_locked=False, snapshot_dir_locked=Fals
     if "slate" in payload:
         updates["snapshot_slate"] = bool(payload.get("slate"))
 
+    # Strict bool only (the SPA sends JSON true/false) — a malformed value
+    # (string/number/None) is omitted, never coerced truthy and never raises.
+    if "render_notify" in payload and isinstance(payload.get("render_notify"), bool):
+        updates["render_notify"] = 1 if payload.get("render_notify") else 0
+
     mv_max = _coerce_int(payload.get("mv_max_motion"))
     if mv_max is not None:
         updates["mv_max_motion"] = max(mv_max, 0)
