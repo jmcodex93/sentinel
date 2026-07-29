@@ -3,9 +3,10 @@
 
 ``rename_plan`` drives BOTH the SPA preview and the apply op — WYSIWYG by
 construction, not by discipline. Pipeline order is fixed: (1) pattern (when
-non-empty it replaces the whole name; tokens ``$name``/``$parent``/``$type``
-are expanded BEFORE ``$n`` so the counter substitution can't corrupt them),
-(2) literal find/replace (case-insensitive unless ``match_case``; the
+non-empty it replaces the whole name; tokens ``$name``/``$parent``/``$type``/
+``$n`` are expanded in a SINGLE non-overlapping ``re.sub`` pass — item DATA
+substituted for a token (e.g. a name literally containing ``$n``) is never
+re-scanned for further token matches), (2) literal find/replace (case-insensitive unless ``match_case``; the
 replacement goes through a lambda so backslashes stay literal — the v1.5.7
 repathing lesson), (3) prefix/suffix. Collisions (duplicate FINAL names
 within the batch) are flagged, never blocking — C4D allows duplicate names;
@@ -64,13 +65,17 @@ def ops_is_noop(ops):
     return not (ops["pattern"] or ops["find"] or ops["prefix"] or ops["suffix"])
 
 
+_TOKEN_RE = re.compile(r"\$(?:name|parent|type|n)")
+
+
 def _expand_pattern(pattern, item, counter, padding):
-    out = pattern
-    out = out.replace("$name", item.get("name") or "")
-    out = out.replace("$parent", item.get("parent") or "")
-    out = out.replace("$type", item.get("type_name") or "")
-    out = out.replace("$n", str(counter).zfill(padding))
-    return out
+    values = {
+        "$name": item.get("name") or "",
+        "$parent": item.get("parent") or "",
+        "$type": item.get("type_name") or "",
+        "$n": str(counter).zfill(padding),
+    }
+    return _TOKEN_RE.sub(lambda m: values[m.group(0)], pattern)
 
 
 def rename_plan(items, ops):

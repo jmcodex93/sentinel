@@ -26,6 +26,33 @@ def test_token_order_name_before_n(renaming):
     assert plan[0]["new"] == "Cubo_001"
 
 
+def test_item_data_containing_token_syntax_is_never_re_expanded(renaming):
+    # Item data is data, not pattern — a name that literally contains "$n"
+    # must not be re-scanned by the single-pass token expansion.
+    ops = renaming.normalize_ops({"pattern": "$name_$n"})
+    plan = renaming.rename_plan(_items("$n_extra"), ops)
+    assert plan[0]["new"] == "$n_extra_001"
+
+
+def test_parent_data_containing_token_syntax_is_never_re_expanded(renaming):
+    ops = renaming.normalize_ops({"pattern": "$parent/$n"})
+    plan = renaming.rename_plan(
+        [{"name": "x", "parent": "$n_grp", "type_name": "Cube"}], ops)
+    assert plan[0]["new"] == "$n_grp/001"
+
+
+def test_dollar_named_pinned_current_behavior(renaming):
+    # "$named" is not a real token — the regex greedily matches "$name"
+    # first, leaving the literal "d" behind. This is a pinned/documented
+    # quirk of the single-pass expansion, not a designed feature: authors
+    # writing a literal "$named" in a pattern will see it become
+    # "<name>d" rather than staying literal. Flagging here so a future
+    # change to token matching doesn't silently alter this without notice.
+    ops = renaming.normalize_ops({"pattern": "$named"})
+    plan = renaming.rename_plan(_items("Cubo"), ops)
+    assert plan[0]["new"] == "Cubod"
+
+
 def test_parent_and_type_tokens(renaming):
     ops = renaming.normalize_ops({"pattern": "$parent/$type_$n"})
     plan = renaming.rename_plan(
