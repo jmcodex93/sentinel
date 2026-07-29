@@ -82,7 +82,16 @@ def _op_panel_state_stamp(payload):
     doc = documents.GetActiveDocument()
     if not doc:
         return {"error": "no_document"}
-    return {"stamp": _stamp_for(doc)}
+    # Render-finished notice piggybacks the stamp poll (peek, never pop — the
+    # SPA dedupes by id; see renderwatch.latest_notice). Isolated: a notice
+    # failure never breaks change detection.
+    notice = None
+    try:
+        from sentinel import renderwatch
+        notice = renderwatch.latest_notice()
+    except Exception:
+        notice = None
+    return {"stamp": _stamp_for(doc), "notice": notice}
 
 
 # Palette action ids the overview surfaces as "currently runnable quick

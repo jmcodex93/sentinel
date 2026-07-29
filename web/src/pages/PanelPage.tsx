@@ -17,6 +17,7 @@ import {
   fetchPanelQc,
   fetchPanelRender,
   fetchPanelStamp,
+  fetchPanelStampFull,
   isMock,
   postPanelOpenCollect,
   postPanelOpenExternal,
@@ -156,6 +157,7 @@ export function PanelPage() {
 
   const rootRef = useRef<HTMLDivElement>(null);
   const stampRef = useRef<string | null>(null);
+  const lastNoticeIdRef = useRef<number | null>(null);
 
   const load = useCallback((silent: boolean) => {
     if (!silent) setState({ kind: "loading" });
@@ -259,7 +261,14 @@ export function PanelPage() {
     if (isMock()) return;
     const id = window.setInterval(async () => {
       if (document.visibilityState !== "visible") return;
-      const newStamp = await fetchPanelStamp();
+      const { stamp: newStamp, notice } = await fetchPanelStampFull();
+      // Render-finished notice (peek server-side, dedupe by id here): toast
+      // once per notice — the in-C4D primary channel now that macOS banners
+      // proved swallowable by Focus/permissions (live-caught).
+      if (notice && notice.id !== lastNoticeIdRef.current) {
+        lastNoticeIdRef.current = notice.id;
+        toast({ message: notice.text, variant: "success" });
+      }
       if (newStamp === null || stampRef.current === null || newStamp === stampRef.current) return;
       load(true);
       if (section === "qc") loadQc(true);
@@ -270,7 +279,7 @@ export function PanelPage() {
       if (section === "deliver") loadDeliver(true);
     }, POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
-  }, [load, loadQc, loadRender, loadFrame, loadDeliver, section]);
+  }, [load, loadQc, loadRender, loadFrame, loadDeliver, section, toast]);
 
   async function runFix(action: PaletteAction, confirm?: boolean) {
     // qc.fixable (panel/overview) and this actions list (palette/actions) are

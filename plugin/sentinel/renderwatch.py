@@ -65,6 +65,44 @@ def _notify_macos(message, title="Sentinel"):
         pass
 
 
+#: Latest render-finished notice for the IN-C4D delivery paths (panel toast +
+#: status bar). macOS banners are best-effort only — live-caught: Focus modes
+#: / per-responsible-process permissions silently swallow osascript
+#: notifications (exit 0, nothing shown), so the plugin's own surfaces are
+#: the primary channel. Peek-don't-pop: every ``panel/state_stamp`` reader
+#: sees the same notice and the CLIENT dedupes by ``id`` — popping here would
+#: let any concurrent stamp fetch (mutation refetches) swallow the toast.
+NOTICE_MAX_AGE_SECONDS = 180.0
+_notice_seq = 0
+_latest_notice = None  # {"id": int, "text": str, "ts": float}
+
+
+def _record_notice(text, now):
+    global _notice_seq, _latest_notice
+    _notice_seq += 1
+    _latest_notice = {"id": _notice_seq, "text": str(text), "ts": float(now)}
+
+
+def latest_notice(now=None, max_age=NOTICE_MAX_AGE_SECONDS):
+    """Return the latest notice as ``{"id", "text"}`` while it is younger
+    than ``max_age`` seconds, else ``None``. Read-only (peek)."""
+    if _latest_notice is None:
+        return None
+    now = time.monotonic() if now is None else float(now)
+    if now - _latest_notice["ts"] > float(max_age):
+        return None
+    return {"id": _latest_notice["id"], "text": _latest_notice["text"]}
+
+
+def _status_bar(message):
+    if c4d is None:
+        return
+    try:
+        c4d.gui.StatusSetText(str(message))
+    except Exception:
+        pass
+
+
 _watch = RenderWatch()
 
 
@@ -83,6 +121,11 @@ def tick_active_document(now=None):
         except Exception:
             enabled = True
         if enabled:
-            _notify_macos("Render finished — %s" % format_duration(duration))
+            message = "Render finished — %s" % format_duration(duration)
+            # Primary: the plugin's own surfaces (panel toast via the notice,
+            # C4D status bar). Secondary: macOS banner, best-effort only.
+            _record_notice(message, time.monotonic() if now is None else now)
+            _status_bar("Sentinel: %s" % message)
+            _notify_macos(message)
     except Exception:
         pass

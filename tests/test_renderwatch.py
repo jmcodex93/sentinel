@@ -36,3 +36,17 @@ def test_format_duration(renderwatch):
     assert renderwatch.format_duration(45.2) == "45s"
     assert renderwatch.format_duration(754.0) == "12m 34s"
     assert renderwatch.format_duration(3601.0) == "1h 0m 1s"
+
+
+def test_latest_notice_peeks_and_expires(renderwatch):
+    renderwatch._record_notice("Render finished — 45s", now=100.0)
+    first = renderwatch.latest_notice(now=110.0)
+    assert first == {"id": renderwatch._notice_seq, "text": "Render finished — 45s"}
+    # Peek, not pop: a second reader sees the SAME notice/id.
+    assert renderwatch.latest_notice(now=110.0) == first
+    # Expiry after NOTICE_MAX_AGE_SECONDS.
+    assert renderwatch.latest_notice(now=100.0 + renderwatch.NOTICE_MAX_AGE_SECONDS + 1) is None
+    # A new notice gets a NEW id (client dedupes by id).
+    renderwatch._record_notice("Render finished — 2m 0s", now=200.0)
+    second = renderwatch.latest_notice(now=201.0)
+    assert second["id"] == first["id"] + 1

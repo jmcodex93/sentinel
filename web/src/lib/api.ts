@@ -825,11 +825,29 @@ export async function saveHubUiState(state: HubUiState): Promise<void> {
  * stamps to detect change, so "no document" and a network failure are
  * equally "nothing to compare". */
 export async function fetchPanelStamp(): Promise<string | null> {
+  return (await fetchPanelStampFull()).stamp;
+}
+
+/** Full stamp payload: the render-finished notice piggybacks the poll
+ * (peek semantics server-side — the caller dedupes by `notice.id`). */
+export interface PanelStampNotice {
+  id: number;
+  text: string;
+}
+
+export async function fetchPanelStampFull(): Promise<{
+  stamp: string | null;
+  notice: PanelStampNotice | null;
+}> {
   if (isMock()) {
-    return "mock-stamp";
+    return { stamp: "mock-stamp", notice: null };
   }
-  const result = await fetchReport<{ stamp: string }>("/api/panel/state_stamp", {});
-  return result.kind === "ok" ? result.data.stamp : null;
+  const result = await fetchReport<{ stamp: string; notice?: PanelStampNotice | null }>(
+    "/api/panel/state_stamp",
+    {},
+  );
+  if (result.kind !== "ok") return { stamp: null, notice: null };
+  return { stamp: result.data.stamp, notice: result.data.notice ?? null };
 }
 
 /** `GET /api/panel/overview` — see `_op_panel_overview`/`build_panel_overview`
