@@ -147,12 +147,19 @@ export function openpbrUnavailableNote(
 /** The material the writer will ACTUALLY build — what both the payload and
  * the (disabled) selector must show. Derived, never a state mutation on
  * render, so the artist's pick survives if a later preview reports the node
- * present again. */
+ * present again.
+ *
+ * Deliberately asymmetric with `effectiveProjection` (which collapses ANY
+ * unavailable pick to "uv"): this only degrades `"openpbr"` specifically,
+ * mirroring the server's `_matwire_material` (Task 3 review finding) —
+ * `value if value != "openpbr" or openpbr_available() else "standard"`. A
+ * future third `MATERIAL_TYPES` entry must pass through unharmed on a build
+ * lacking the OpenPBR node; only "openpbr" itself is unavailable there. */
 export function effectiveMaterial(
   selected: string,
   unavailableNote: string | null,
 ): string {
-  return unavailableNote === null ? selected : "standard";
+  return selected === "openpbr" && unavailableNote !== null ? "standard" : selected;
 }
 
 /** Destination fragment after a glossiness filename — a MIRROR of the
