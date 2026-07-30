@@ -1379,7 +1379,8 @@ class TestMatwireOpsPolish:
         calls = []
 
         def _fake_create(d, f, tex_set, name, *,  # no leftover_files kwarg
-                         multiply_ao=False, projection="uv"):
+                         multiply_ao=False, projection="uv",
+                         material=matwire_c4d.DEFAULT_MATERIAL):
             calls.append((tex_set["name"], name))
             return {"ok": True, "material_name": name, "error": None}
 
@@ -1417,9 +1418,10 @@ class TestMatwireOpsPolish:
         from sentinel import matwire_c4d
 
         def _fake_create(d, f, tex_set, name, leftover_files=None,
-                         multiply_ao=False, projection="uv"):
+                         multiply_ao=False, projection="uv",
+                         material=matwire_c4d.DEFAULT_MATERIAL):
             calls.append({"set": tex_set["name"], "multiply_ao": multiply_ao,
-                          "projection": projection})
+                          "projection": projection, "material": material})
             return {"ok": True, "material_name": name, "error": None}
 
         monkeypatch.setattr(matwire_c4d, "create_material_for_set", _fake_create)
@@ -1433,8 +1435,11 @@ class TestMatwireOpsPolish:
         calls = []
         self._capture_create(monkeypatch, calls)
         assert ops._op_matwire_create({"folder": folder})["ok"] is True
+        # material defaults to "openpbr" but degrades to "standard" here —
+        # this harness has no maxon module, so openpbr_available() is False
+        # (matches the real degraded-build behaviour, not a test artifact).
         assert calls == [{"set": "plaster", "multiply_ao": False,
-                          "projection": "uv"}]
+                          "projection": "uv", "material": "standard"}]
 
     def test_create_threads_projection_and_multiply_ao(self, sentinel_module,
                                                        monkeypatch, tmp_path):
@@ -1445,7 +1450,7 @@ class TestMatwireOpsPolish:
         ops._op_matwire_create({"folder": folder, "projection": "triplanar",
                                 "multiply_ao": True})
         assert calls == [{"set": "plaster", "multiply_ao": True,
-                          "projection": "triplanar"}]
+                          "projection": "triplanar", "material": "standard"}]
 
     def test_create_leftovers_branch_threads_projection_and_multiply_ao(
             self, sentinel_module, monkeypatch, tmp_path):
@@ -1528,3 +1533,86 @@ class TestMatwireOpsPolish:
         assert _ao_row({"folder": folder})["destination"] == "unconnected"
         assert _ao_row({"folder": folder, "multiply_ao": True})["destination"] \
             == "base_color_multiply"
+
+
+class TestMatwireMaterialType:
+    """v1.34: material type ("openpbr"/"standard") boundary normalization,
+    openpbr_available reporting on preview, and threading to BOTH
+    create_material_for_set call sites (v1.33 lesson, restated by the Task 2
+    review for this new kwarg: the leftovers call site is a SEPARATE call —
+    a kwarg added to only the other site keeps every other test green while
+    half the batch silently gets the default material)."""
+
+    _setup = TestMatwireOps._setup
+    _folder = TestMatwireOps._folder
+    _pack = TestMatwireOpsPolish._pack
+
+    def test_unknown_material_normalizes_to_the_default(self, sentinel_module):
+        from sentinel.ui import panel_tools_ops as ops
+        assert ops._matwire_material({"material": "nonsense"}) == "standard"
+        assert ops._matwire_material({}) == "standard"
+        assert ops._matwire_material({"material": 7}) == "standard"
+
+    def test_known_values_survive_case_and_whitespace(self, sentinel_module,
+                                                       monkeypatch):
+        from sentinel.ui import panel_tools_ops as ops
+        from sentinel import matwire_c4d
+        # openpbr_available forced True so "OPENPBR" survives normalization
+        # instead of degrading — isolates the string-parsing behaviour from
+        # the availability gate, which gets its own test below.
+        monkeypatch.setattr(matwire_c4d, "openpbr_available", lambda: True)
+        assert ops._matwire_material({"material": " Standard "}) == "standard"
+        assert ops._matwire_material({"material": "OPENPBR"}) == "openpbr"
+
+    def test_openpbr_requested_but_unavailable_degrades_to_standard(
+            self, sentinel_module, monkeypatch):
+        """The review-added acceptance item: the SPA disables the selector
+        when the node is missing, but the server must not trust the client
+        — a stale "openpbr" surviving in the payload would otherwise reach
+        the writer and fail ApplyDescription for every set."""
+        from sentinel.ui import panel_tools_ops as ops
+        from sentinel import matwire_c4d
+        monkeypatch.setattr(matwire_c4d, "openpbr_available", lambda: False)
+        assert ops._matwire_material({"material": "openpbr"}) == "standard"
+
+    def test_preview_reports_openpbr_availability(self, sentinel_module,
+                                                   monkeypatch, tmp_path):
+        from sentinel import matwire_c4d
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        folder = self._folder(tmp_path, "p_BaseColor.png")
+        # The sub-view disables the selector from this flag, so it must be a
+        # real probe result and a plain bool — not the AssetDescription the
+        # probe wraps (bool() on one is True either way).
+        monkeypatch.setattr(matwire_c4d, "openpbr_available", lambda: False)
+        payload = ops._op_matwire_preview({"folder": folder})
+        assert payload["openpbr_available"] is False
+        monkeypatch.setattr(matwire_c4d, "openpbr_available", lambda: True)
+        payload = ops._op_matwire_preview({"folder": folder})
+        assert payload["openpbr_available"] is True
+
+    def test_create_threads_material_to_every_call_site(self, sentinel_module,
+                                                         monkeypatch, tmp_path):
+        """v1.33 lesson (restated by review for the `material` kwarg):
+        `import_leftovers` routes through a SECOND create_material_for_set
+        call, and a kwarg added to only one of them keeps every test green
+        while half the batch gets the default."""
+        from sentinel import matwire_c4d
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        # A set whose material is created, plus an unassigned leftover (a
+        # file matching no set's root prefix) — that second file is what
+        # triggers the second create_material_for_set call site.
+        folder = self._pack(tmp_path, "plaster_col.png", "stray_data.png")
+        seen = []
+
+        def _fake_create(doc, folder, tex_set, name, **kw):
+            seen.append(kw.get("material"))
+            return {"ok": True, "material_name": name, "error": None}
+
+        monkeypatch.setattr(matwire_c4d, "create_material_for_set", _fake_create)
+        result = ops._op_matwire_create({"folder": folder, "material": "standard",
+                                         "import_leftovers": True})
+        assert result["ok"] is True
+        assert len(seen) >= 2, \
+            "the leftovers call site did not run — the test proves nothing"
+        assert all(m == "standard" for m in seen), \
+            "a call site dropped the material type"
