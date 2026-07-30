@@ -1,7 +1,7 @@
 # Matwire — OpenPBR como material por defecto (v1.34)
 
 **Fecha**: 2026-07-30
-**Estado**: aprobado en brainstorm, pendiente de plan.
+**Estado**: implementado en rama feat/matwire-openpbr (pytest 1143, vitest 206), pendiente de verificación live.
 **Contexto**: quinta fase del arco matwire (v1.32 base → v1.32.1 pulido → v1.33 UV Context + fallback UniversalXform → **v1.34 este spec**). OpenPBR quedó explícitamente fuera de v1.32.1 y v1.33 con la nota "fase propia: otra tabla de puertos, requiere su spike". Esta fase la ejecuta.
 
 ## Hechos medidos antes de diseñar
