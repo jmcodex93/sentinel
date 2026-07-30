@@ -505,6 +505,16 @@ Sin escribir la identidad ahí, cada material saldría con `Scale = (0,0)`: un
 único téxel estirado. Se escribe explícitamente (1,1)/(0,0)/0, misma regla
 "siempre explícito" que ya gobierna colorspace y flipy.
 
+### Limpieza de un build a medias (medido)
+
+`node.Remove()` dentro de una transacción funciona, y **borrar el grupo se lleva
+su interior**: un grafo de 8 nodos baja a 2, con 0 Value y 0 multiplies
+restantes. Por eso el camino de fallo guarda el handle del GRUPO en la lista de
+creados (los handles de los miembros mueren en el `MoveToGroup`) y limpia de más
+nuevo a más viejo. Y el nodo se registra **antes** de la transacción que puede
+fallar: `ApplyDescription` ya lo ha commiteado, así que registrarlo después
+dejaría un huérfano invisible para la limpieza.
+
 ### No-regresión y eficacia (renders reales, 100×100, RS)
 
 Dos materiales del MISMO set de texturas sobre la MISMA esfera:

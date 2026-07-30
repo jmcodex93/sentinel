@@ -1764,18 +1764,61 @@ class TestUniTransformFallback:
             core + "texturesampler", core + "standardmaterial"], \
             "half-built UniversalXform left in the graph"
 
-    def test_missing_group_api_creates_nothing_at_all(self, matwire_c4d,
-                                                      monkeypatch):
-        """An older build without the group calls must be a clean no-op —
-        checked BEFORE the first apply, so no orphan Value node is left
-        sitting on top of the material."""
+    def test_missing_group_api_creates_nothing_and_is_not_silent(
+            self, matwire_c4d, monkeypatch):
+        """An older build without the group calls must create NOTHING —
+        checked before the first apply, so no orphan Value node is left
+        sitting on top of the material — and must still RAISE, because the
+        caller's log is the only trace the artist gets on a build where the
+        disabled-selector copy has just promised them this control."""
         self._fake_maxon(matwire_c4d, monkeypatch)
         monkeypatch.delattr(matwire_c4d.maxon.GraphModelHelper,
                             "CreateInputPort")
         graph = _FakeUtGraph([matwire_c4d._RS_CORE + "texturesampler"])
-        matwire_c4d._apply_unitransform_plan(
-            graph, matwire_c4d.build_unitransform_plan())
+        with pytest.raises(RuntimeError, match="node-group API"):
+            matwire_c4d._apply_unitransform_plan(
+                graph, matwire_c4d.build_unitransform_plan())
         assert graph.applied == [] and graph.groups == []
+
+    def test_a_failure_between_apply_and_naming_leaves_no_orphan(
+            self, matwire_c4d, monkeypatch):
+        """ApplyDescription COMMITS the node before the writes that can
+        fail. If tracking happened after those writes, a build whose Value
+        node lacks a `datatype` port would strand a nameless node at (0,0)
+        on top of the material — after the layout pass, so nothing would
+        ever move it."""
+        self._fake_maxon(matwire_c4d, monkeypatch)
+        core = matwire_c4d._RS_CORE
+        graph = _FakeUtGraph([core + "texturesampler",
+                              core + "standardmaterial"])
+        monkeypatch.setitem(_FAKE_NODE_PORTS, "net.maxon.node.type",
+                            {"in", "out"})       # no `datatype` port
+        with pytest.raises(Exception):
+            matwire_c4d._apply_unitransform_plan(
+                graph, matwire_c4d.build_unitransform_plan())
+        assert [n.asset_id for n in graph.nodes] == [
+            core + "texturesampler", core + "standardmaterial"], \
+            "nameless Value node stranded in the root graph"
+
+    def test_a_late_failure_removes_the_whole_group(self, matwire_c4d,
+                                                    monkeypatch):
+        """A failure in the OUTPUT loop happens after the group exists and
+        after earlier outputs were already fanned out. Only the group handle
+        is still alive at that point (the members died in the move), so the
+        cleanup must remove the group — otherwise samplers stay wired to the
+        ports of a node nobody can find."""
+        self._fake_maxon(matwire_c4d, monkeypatch)
+        core = matwire_c4d._RS_CORE
+        graph = _FakeUtGraph([core + "texturesampler",
+                              core + "standardmaterial"])
+        plan = matwire_c4d.build_unitransform_plan()
+        plan["outputs"][-1]["source"] = "NoSuchNode"   # fails mid-loop
+        with pytest.raises(RuntimeError):
+            matwire_c4d._apply_unitransform_plan(graph, plan)
+        assert graph.groups == []
+        assert [n.asset_id for n in graph.nodes] == [
+            core + "texturesampler", core + "standardmaterial"], \
+            "group left behind after a late failure"
 
     def test_no_samplers_creates_nothing(self, matwire_c4d, monkeypatch):
         self._fake_maxon(matwire_c4d, monkeypatch)

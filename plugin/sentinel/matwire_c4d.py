@@ -384,6 +384,18 @@ def _ut_same_value(written, read_back):
         return False
 
 
+def _ut_port(ports, port_id, owner):
+    """A port that must exist. maxon's ``FindChild`` answers a missing id
+    with a null node, and ``Connect`` on one can no-op — which would leave a
+    node reading its birth value (zero) while everything downstream looks
+    wired. Refuse instead, so the caller degrades honestly."""
+    port = ports.FindChild(port_id)
+    if port is None or port.IsNullValue():
+        raise RuntimeError("UniversalXform: %s has no port %r"
+                           % (owner, port_id))
+    return port
+
+
 def _ut_fresh_node(graph, kind):
     """The one node of ``kind`` in the root graph that hasn't been named yet
     — i.e. the one the ApplyDescription just before this call created.
@@ -436,8 +448,17 @@ def _apply_unitransform_plan(graph, plan):
             mask=maxon.NODE_KIND.NODE, includeThis=False)
         if "texturesampler" in str(node.GetValue(_ASSETID_ATTR) or "")
     ]
-    if not samplers or not _ut_api_available(graph):
+    if not samplers:
         return
+    if not _ut_api_available(graph):
+        # RAISE, don't return: the caller logs exceptions, and this is the
+        # one outcome the artist is actively told otherwise about (the
+        # disabled-selector copy promises "one control — a UniversalXform
+        # group"). A silent return would make the UI's promise unfalsifiable
+        # and leave nothing to debug from. Nothing has been created yet, so
+        # there is nothing to clean up.
+        raise RuntimeError(
+            "UniversalXform: this build exposes no node-group API")
     made = []
     try:
         _ut_build(graph, plan, samplers, made)
@@ -451,6 +472,9 @@ def _apply_unitransform_plan(graph, plan):
         # Newest first, so the group goes before the handles it swallowed;
         # those are dead after the move and raise on touch, which is why
         # each removal is guarded individually rather than as one batch.
+        # Removing the group takes its whole interior with it — MEASURED,
+        # not assumed (live 2026-07-30: a graph of 8 nodes drops to 2, with
+        # 0 Value nodes and 0 multiplies left).
         for node in reversed(made):
             try:
                 with graph.BeginTransaction() as tr:
@@ -476,6 +500,11 @@ def _ut_build(graph, plan, samplers, made):
     for knob in plan["inputs"]:
         maxon.GraphDescription.ApplyDescription(graph, plan["value_desc"])
         node = _ut_fresh_node(graph, _VALUE_NODE)
+        # Track it BEFORE the transaction that can raise: ApplyDescription
+        # already committed the node, so a failure in the writes below would
+        # otherwise strand it in the root graph where the cleanup can't see
+        # it — the exact debris this whole path exists to avoid.
+        made.append(node)
         with graph.BeginTransaction() as tr:
             if knob["datatype"] is not None:
                 node.GetInputs().FindChild("datatype").SetPortValue(
@@ -483,13 +512,12 @@ def _ut_build(graph, plan, samplers, made):
             node.GetInputs().FindChild("in").SetPortValue(_ut_value(knob))
             node.SetValue(_NAME_ATTR, maxon.String(knob["node"]))
             tr.Commit()
-        made.append(node)
     maxon.GraphDescription.ApplyDescription(graph, plan["mul_desc"])
     mul_node = _ut_fresh_node(graph, "rsmathmulvector")
+    made.append(mul_node)
     with graph.BeginTransaction() as tr:
         mul_node.SetValue(_NAME_ATTR, maxon.String(plan["mul_name"]))
         tr.Commit()
-    made.append(mul_node)
     with graph.BeginTransaction() as tr:
         group = graph.MoveToGroup(maxon.GraphNode(),
                                   maxon.Id(plan["group_id"]), list(made))
@@ -507,18 +535,28 @@ def _ut_build(graph, plan, samplers, made):
                 "UniversalXform: inner node %r lost in the group move" % name)
         return node
 
+    # ONE transaction for the whole wiring, and that span is LOAD-BEARING:
+    # a raise below leaves it uncommitted, so maxon rolls back every port
+    # created and every sampler already fanned out, and the cleanup then
+    # only has to remove the group. Splitting this into two transactions
+    # would commit a half-wired fan-out that the removal can no longer undo.
     with graph.BeginTransaction() as tr:
         group.SetValue(_NAME_ATTR, maxon.String(plan["title"]))
         group.SetValue(_TITLE_ATTR, maxon.String(plan["title"]))
         group.SetValue("net.maxon.node.base.xpos", maxon.Float(plan["column"]))
         group.SetValue("net.maxon.node.base.ypos", maxon.Float(0.0))
         # UniScale (float) x Scale2D (vec2) -> the Scale the samplers see.
+        # Both ends are resolved through _ut_port, which refuses a missing
+        # port instead of letting Connect no-op: an unfed multiply input
+        # sits at its birth value and delivers Scale=0 to every sampler —
+        # the same stretched-texel failure the read-back guard below covers
+        # for the group ports.
         mul = _inner(plan["mul_name"])
         mul_ports = plan["mul_ports"]
-        _inner("UniScale").GetOutputs().FindChild("out").Connect(
-            mul.GetInputs().FindChild(mul_ports["uniscale"]))
-        _inner("Scale2D").GetOutputs().FindChild("out").Connect(
-            mul.GetInputs().FindChild(mul_ports["scale"]))
+        _ut_port(_inner("UniScale").GetOutputs(), "out", "UniScale").Connect(
+            _ut_port(mul.GetInputs(), mul_ports["uniscale"], "multiply"))
+        _ut_port(_inner("Scale2D").GetOutputs(), "out", "Scale2D").Connect(
+            _ut_port(mul.GetInputs(), mul_ports["scale"], "multiply"))
         for row, name in enumerate(sorted(by_name)):
             # The inner nodes are created after the layout pass and would
             # otherwise all sit at (0,0): five overlapping nodes greeting
@@ -559,13 +597,8 @@ def _ut_build(graph, plan, samplers, made):
                       else "out")
             out_port = maxon.GraphModelHelper.CreateOutputPort(
                 group, "ut_out_" + label.lower(), label)
-            source_port = source.GetOutputs().FindChild(out_id)
-            if source_port is None or source_port.IsNullValue():
-                raise RuntimeError(
-                    "UniversalXform: %s has no output %r — the group port "
-                    "would drive the samplers from nothing"
-                    % (spec["source"], out_id))
-            source_port.Connect(out_port)
+            _ut_port(source.GetOutputs(), out_id,
+                     spec["source"]).Connect(out_port)
             for sampler in samplers:
                 out_port.Connect(
                     sampler.GetInputs().FindChild(spec["connect_to"]))
