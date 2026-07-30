@@ -204,3 +204,67 @@ Grupo tex0 con hijos, bool ports (`refl_isglossiness`, `flipy`), enum int (`inpu
 3. El caller (op `matwire_create`) posee `StartUndo/EndUndo` alrededor del LOTE completo; los `AddUndo` por material se anidan dentro → un Cmd+Z revierte el lote entero.
 
 Gotchas en una línea: `#<` para puertos y `/` para hijos de grupo (§1) · colorspaces SIEMPRE explícitos (`RS_INPUT_COLORSPACE_SRGB|RAW`) · nunca `pathlib.as_uri()` · nunca `IsPopulated()`/`bool()` en el probe (§7) · nunca `CallCommand` de arrange · `AddUndo(CHANGE, mat)` SIEMPRE antes del primer toque al grafo (§8b) · `rsmathinv` no confirmado, no usar sin verificar (§2b).
+
+---
+
+## Mini-spike v1.32.1: rscolorsplitter
+
+**Fecha**: 2026-07-30 · **C4D**: 2026.303 (live, MCP `exec_python`) · doc throwaway `SENTINEL_ORM_SPIKE` (killed al final; doc del usuario `matwire_verify` verificado intacto, sus 7 materiales originales).
+
+**Pregunta crítica**: ¿puede GraphDescription expresar UN splitter alimentando DOS puertos destino? **NO** — veredicto: la vía del writer para el splitter es **segundo ApplyDescription aislado + connects imperativos en una transacción** (recetas abajo, todas wired-tested).
+
+### A. Puertos del nodo — confirmados por dump del nodo vivo
+
+Asset `com.redshift3d.redshift4c4d.nodes.core.rscolorsplitter` existe (`FindLatestAsset(...).IsNullValue() == False`). Ports leídos del nodo creado:
+
+```
+inputs:  ['…rscolorsplitter.input']
+outputs: ['…rscolorsplitter.outr', '…outg', '…outb', '…outa']   ← también hay outa
+```
+
+### B. Selección de puerto de salida declarativa — la sintaxis que FUNCIONA es `-> #>` + id COMPLETO
+
+Para conectar un scope hijo por un output que no es el default, la clave lleva sufijo ` -> #>` + id completo del puerto de salida:
+
+```python
+SM + "refl_roughness -> #>" + S + "rscolorsplitter.outg": splitter_scope   # OK — read-back: refl_roughness <- rscolorsplitter.outg
+```
+
+Formas que **FALLAN** (error `is not associated with any IDs`): `-> #<full-id>` sin `>` (se interpreta contra el nodo output), `-> outg` pelado, `->outg` sin espacios, `-> #>outg` corto (el `#>` exige id completo), `-> #outg`.
+
+### C. Compartir el splitter entre DOS puertos — NO expresable declarativamente (3 vías probadas, las 3 fallan)
+
+1. **Dos dicts anidados idénticos** (uno bajo `refl_roughness -> #>outg`, otro bajo `metalness -> #>outb`): census `{rscolorsplitter: 2, texturesampler: 2}` — **duplica** splitter Y sampler.
+2. **El MISMO objeto dict Python en ambas claves**: idéntico resultado — census 2/2 (la identidad de instancia no dedupea).
+3. **`$id`/`$ref`**: `{"$ref": "split1"}` → `Missing node type declaration` (no existe mecanismo de referencia; los ejemplos oficiales del SDK solo usan `$type`).
+
+Bonus descartado: **dos ApplyDescription terminales** (2º apply con `metalness -> #>outb`) — peor aún: duplica hasta el output y el standardmaterial (census `{standardmaterial: 2, output: 2, rscolorsplitter: 2}`). Un apply terminal NO matchea contra el grafo existente. (El caso AO §5 no duplica porque su scope raíz es un sampler aislado, no el terminal.)
+
+### D. Receta imperativa — VERIFIED (la que usa el writer)
+
+```python
+# 1) apply principal SIN splitter; 2) apply aislado splitter+sampler (patrón AO §5):
+maxon.GraphDescription.ApplyDescription(graph, {
+    "$type": "#" + S + "rscolorsplitter",
+    "#<" + S + "rscolorsplitter.input": sampler(orm_path, "RS_INPUT_COLORSPACE_RAW"),
+})
+# 3) localizar splitter + standardmaterial por assetid (GetInnerNodes, §6) y conectar:
+with graph.BeginTransaction() as tr:
+    split_node.GetOutputs().FindChild(S + "rscolorsplitter.outg").Connect(
+        sm_node.GetInputs().FindChild(S + "standardmaterial.refl_roughness"))
+    split_node.GetOutputs().FindChild(S + "rscolorsplitter.outb").Connect(
+        sm_node.GetInputs().FindChild(S + "standardmaterial.metalness"))
+    tr.Commit()
+```
+
+Read-back tras la receta completa (material `spike_imperative`):
+
+```
+census: {standardmaterial: 1, texturesampler: 2, output: 1, rscolorsplitter: 1}   ← UN splitter, cero duplicación
+refl_roughness <- rscolorsplitter.outg
+metalness      <- rscolorsplitter.outb
+splitter.input <- texturesampler.outcolor
+outr outgoing conns: 0                                                            ← AO libre, jamás conectado
+```
+
+**Decisión del writer**: vía imperativa SIEMPRE que el splitter exista (1 o 2 connects — un solo code path, la lista de pares varía); la forma declarativa `-> #>` (§B) queda documentada pero sin uso (solo cubriría el caso de un único output y bifurcaría la receta). Si AMBOS mapas dedicados existen, el splitter no contribuiría nada (outr nunca se conecta) → **no se crea** (skip total, decisión de juicio anotada).

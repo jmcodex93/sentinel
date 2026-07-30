@@ -53,10 +53,14 @@ def _rs_colorspace(channel):
     return _RS_COLORSPACE[channel_colorspace(channel)]
 
 # Column x per node kind (§6 suggested layout); samplers stack on y.
+# rscolorsplitter shares the intermediary column with bump/displacement
+# (rows are keyed by COLUMN, so cohabitation never stacks — see
+# _layout_nodes).
 _LAYOUT_COLS = {
     "texturesampler": -600.0,
     "bumpmap": -300.0,
     "displacement": -300.0,
+    "rscolorsplitter": -300.0,
     "standardmaterial": 0.0,
     "output": 300.0,
 }
@@ -88,6 +92,12 @@ def _sampler(path, colorspace):
     }
 
 
+def _join(folder, rel):
+    """Join a scan-relative path (always ``/``-separated, per the recursive
+    lister contract) onto ``folder`` with the platform separator."""
+    return os.path.join(folder, *rel.split("/"))
+
+
 def build_description(folder, tex_set):
     """(main_desc, ao_desc | None) — pure dict assembly per §2/§2b and the
     Global Constraints wiring rules. The engine already enforces the
@@ -96,7 +106,7 @@ def build_description(folder, tex_set):
     channels = tex_set.get("channels") or {}
 
     def path(channel):
-        return os.path.join(folder, channels[channel])
+        return _join(folder, channels[channel])
 
     sm = "#<" + _RS_CORE + "standardmaterial."
     material = {"$type": "#" + _RS_CORE + "standardmaterial"}
@@ -144,6 +154,79 @@ def build_description(folder, tex_set):
     return desc, ao_desc
 
 
+def build_orm_plan(folder, tex_set):
+    """Pure assembly of the packed_orm splitter branch, or ``None``.
+
+    Per the v1.32.1 mini-spike (spike doc, "Mini-spike v1.32.1"): ONE
+    splitter feeding TWO target ports is NOT expressible declaratively —
+    dict nesting duplicates the node (even the same dict instance) and
+    GraphDescription has no ``$ref`` mechanism — so the plan carries a
+    splitter desc for a second ISOLATED ApplyDescription (AO pattern) plus
+    imperative ``(out_port_id, in_port_id)`` connect pairs for one
+    transaction (``_apply_orm_plan``).
+
+    Dedicated-wins per output: ``outg`` -> refl_roughness only without a
+    dedicated roughness/glossiness map (glossiness occupies refl_roughness
+    via ``refl_isglossiness``); ``outb`` -> metalness only without a
+    dedicated metalness map. ``outr`` (AO) is NEVER connected. If both
+    dedicated maps exist the splitter would contribute nothing — judged:
+    skip creating the dead node entirely, return ``None``."""
+    channels = tex_set.get("channels") or {}
+    if "packed_orm" not in channels:
+        return None
+    split = _RS_CORE + "rscolorsplitter"
+    connects = []
+    if "roughness" not in channels and "glossiness" not in channels:
+        connects.append((split + ".outg",
+                         _RS_CORE + "standardmaterial.refl_roughness"))
+    if "metalness" not in channels:
+        connects.append((split + ".outb",
+                         _RS_CORE + "standardmaterial.metalness"))
+    if not connects:
+        return None
+    return {
+        "splitter_desc": {
+            "$type": "#" + split,
+            "#<" + split + ".input": _sampler(
+                _join(folder, channels["packed_orm"]),
+                _rs_colorspace("packed_orm")),
+        },
+        "connects": connects,
+    }
+
+
+def build_leftover_descriptions(folder, files):
+    """Unconnected RAW samplers for opt-in leftover import — one isolated
+    ApplyDescription scope each (AO pattern, §5). RAW: leftovers are
+    unrecognized files, never color-managed on faith."""
+    return [_sampler(_join(folder, f), _CS_RAW) for f in (files or [])]
+
+
+def _apply_orm_plan(graph, plan):
+    """Materialize a ``build_orm_plan`` result: second isolated
+    ApplyDescription for splitter+sampler, then the connect pairs in ONE
+    transaction (mini-spike v1.32.1 recipe — sharing one splitter across
+    two ports is not expressible declaratively). Node lookup by assetid
+    substring, same discovery walk as ``_layout_nodes``."""
+    maxon.GraphDescription.ApplyDescription(graph, plan["splitter_desc"])
+    split_node = sm_node = None
+    for node in graph.GetViewRoot().GetInnerNodes(
+            mask=maxon.NODE_KIND.NODE, includeThis=False):
+        asset_id = str(node.GetValue(_ASSETID_ATTR) or "")
+        if "rscolorsplitter" in asset_id:
+            split_node = node
+        elif "standardmaterial" in asset_id:
+            sm_node = node
+    if split_node is None or sm_node is None:
+        raise RuntimeError("ORM splitter wiring: node lookup failed")
+    with graph.BeginTransaction() as tr:
+        for out_id, in_id in plan["connects"]:
+            out_port = split_node.GetOutputs().FindChild(out_id)
+            in_port = sm_node.GetInputs().FindChild(in_id)
+            out_port.Connect(in_port)
+        tr.Commit()
+
+
 def _layout_nodes(graph):
     """GraphDescription assigns no positions (§6) — set xpos/ypos explicitly
     so the graph never stacks at (0,0). Nodes located by assetid; rows are
@@ -155,7 +238,11 @@ def _layout_nodes(graph):
         for node in graph.GetViewRoot().GetInnerNodes(
                 mask=maxon.NODE_KIND.NODE, includeThis=False):
             asset_id = str(node.GetValue(_ASSETID_ATTR) or "")
-            kind = asset_id.rsplit(".", 1)[-1]
+            # GetValue returns a maxon Pair whose str() is "(id,)" —
+            # verified live 2026-07-30 (v1.32.1 mini-spike session): without
+            # stripping, every kind read "xxx,)" and _LAYOUT_COLS never
+            # matched (all nodes fell to column 0.0).
+            kind = asset_id.strip("(),").rsplit(".", 1)[-1]
             col = _LAYOUT_COLS.get(kind, 0.0)
             index = rows.get(col, 0)
             rows[col] = index + 1
@@ -165,14 +252,16 @@ def _layout_nodes(graph):
         tr.Commit()
 
 
-def create_material_for_set(doc, folder, tex_set, name):
+def create_material_for_set(doc, folder, tex_set, name, leftover_files=None):
     """Build ONE RS Standard material for ``tex_set`` (engine shape from
-    ``matwire.scan_texture_sets``). ``name`` arrives already deduped. The
-    caller owns the undo block; any failure after insertion removes the
-    material (§8c) and is reported, never raised."""
+    ``matwire.scan_texture_sets``). ``name`` arrives already deduped;
+    ``leftover_files`` (opt-in) ride along as extra unconnected RAW
+    samplers. The caller owns the undo block; any failure after insertion
+    removes the material (§8c) and is reported, never raised."""
     mat = None
     try:
         desc, ao_desc = build_description(folder, tex_set)
+        orm_plan = build_orm_plan(folder, tex_set)
         mat = c4d.BaseMaterial(c4d.Mmaterial)
         mat.SetName(name)
         doc.InsertMaterial(mat)
@@ -181,8 +270,12 @@ def create_material_for_set(doc, folder, tex_set, name):
         graph = maxon.GraphDescription.GetGraph(
             mat, nodeSpaceId=maxon.NodeSpaceIdentifiers.RedshiftMaterial)
         maxon.GraphDescription.ApplyDescription(graph, desc)
+        if orm_plan is not None:
+            _apply_orm_plan(graph, orm_plan)  # mini-spike v1.32.1 recipe
         if ao_desc is not None:
             maxon.GraphDescription.ApplyDescription(graph, ao_desc)  # isolated (§5)
+        for leftover_desc in build_leftover_descriptions(folder, leftover_files):
+            maxon.GraphDescription.ApplyDescription(graph, leftover_desc)
         _layout_nodes(graph)
         return {"ok": True, "material_name": name, "error": None}
     except Exception as exc:

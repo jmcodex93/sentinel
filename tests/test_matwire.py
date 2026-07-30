@@ -467,3 +467,127 @@ class TestBuildDescription:
         assert ao_desc["#<" + RS + "texturesampler.tex0/colorspace"] == \
             matwire_c4d._RS_COLORSPACE[matwire.channel_colorspace("ao")]
         assert matwire.channel_colorspace("ao") == "raw"
+
+
+class TestOrmPlan:
+    """matwire_c4d.build_orm_plan — the packed_orm splitter branch (pure
+    dict/pair assembly). Per the v1.32.1 mini-spike, ONE splitter feeding
+    TWO ports is NOT expressible declaratively (dict nesting duplicates the
+    node, no $ref mechanism), so the plan is a splitter desc for a second
+    isolated ApplyDescription PLUS imperative connect pairs."""
+
+    @pytest.fixture
+    def matwire_c4d(self, sentinel_module):
+        return importlib.import_module("sentinel.matwire_c4d")
+
+    def _plan(self, matwire, matwire_c4d, *names):
+        scan = matwire.scan_texture_sets(list(names))
+        return matwire_c4d.build_orm_plan("/tex", scan["sets"][0])
+
+    def test_orm_alone_connects_both_outputs(self, matwire, matwire_c4d):
+        plan = self._plan(matwire, matwire_c4d, "x_BaseColor.png", "x_ORM.png")
+        RS = matwire_c4d._RS_CORE
+        desc = plan["splitter_desc"]
+        assert desc["$type"] == "#" + RS + "rscolorsplitter"
+        samp = desc["#<" + RS + "rscolorsplitter.input"]
+        assert samp["#<" + RS + "texturesampler.tex0/path"] == os.path.join(
+            "/tex", "x_ORM.png")
+        # RAW via the single colorspace source (channel_colorspace)
+        assert samp["#<" + RS + "texturesampler.tex0/colorspace"] == \
+            matwire_c4d._RS_COLORSPACE[matwire.channel_colorspace("packed_orm")]
+        assert matwire.channel_colorspace("packed_orm") == "raw"
+        assert plan["connects"] == [
+            (RS + "rscolorsplitter.outg", RS + "standardmaterial.refl_roughness"),
+            (RS + "rscolorsplitter.outb", RS + "standardmaterial.metalness"),
+        ]
+        # outr (AO) is NEVER wired
+        assert not any("outr" in out for out, _ in plan["connects"])
+
+    def test_dedicated_roughness_frees_outg(self, matwire, matwire_c4d):
+        plan = self._plan(matwire, matwire_c4d,
+                          "x_Roughness.png", "x_ORM.png")
+        RS = matwire_c4d._RS_CORE
+        assert plan["connects"] == [
+            (RS + "rscolorsplitter.outb", RS + "standardmaterial.metalness")]
+
+    def test_glossiness_counts_as_dedicated_roughness(self, matwire, matwire_c4d):
+        # glossiness occupies refl_roughness (+ refl_isglossiness) — outg
+        # must not fight it.
+        plan = self._plan(matwire, matwire_c4d, "x_Gloss.png", "x_ORM.png")
+        RS = matwire_c4d._RS_CORE
+        assert plan["connects"] == [
+            (RS + "rscolorsplitter.outb", RS + "standardmaterial.metalness")]
+
+    def test_dedicated_metalness_frees_outb(self, matwire, matwire_c4d):
+        plan = self._plan(matwire, matwire_c4d,
+                          "x_Metalness.png", "x_ORM.png")
+        RS = matwire_c4d._RS_CORE
+        assert plan["connects"] == [
+            (RS + "rscolorsplitter.outg", RS + "standardmaterial.refl_roughness")]
+
+    def test_both_dedicated_skips_splitter_entirely(self, matwire, matwire_c4d):
+        # Judged: with both dedicated maps the splitter would contribute
+        # NOTHING (outr never wired) — do not create a dead node.
+        plan = self._plan(matwire, matwire_c4d, "x_Roughness.png",
+                          "x_Metalness.png", "x_ORM.png")
+        assert plan is None
+
+    def test_no_orm_channel_plan_is_none(self, matwire, matwire_c4d):
+        plan = self._plan(matwire, matwire_c4d,
+                          "x_BaseColor.png", "x_Roughness.png")
+        assert plan is None
+
+    def test_orm_does_not_leak_into_build_description(self, matwire, matwire_c4d):
+        # The main description never references the ORM file or splitter —
+        # they live exclusively in the plan (second apply + connects).
+        scan = matwire.scan_texture_sets(["x_BaseColor.png", "x_ORM.png"])
+        desc, ao = matwire_c4d.build_description("/tex", scan["sets"][0])
+        assert "x_ORM.png" not in repr(desc)
+        assert "rscolorsplitter" not in repr(desc)
+        assert ao is None
+
+    def test_relative_subdir_path_joined_with_os_sep(self, matwire, matwire_c4d):
+        # Recursive scans deliver relative paths with "/" — the writer
+        # normalizes them through os.path.join.
+        scan = matwire.scan_texture_sets(["x_ORM.png"])
+        s = scan["sets"][0]
+        s["channels"]["packed_orm"] = "sub/dir/x_ORM.png"
+        plan = matwire_c4d.build_orm_plan("/tex", s)
+        RS = matwire_c4d._RS_CORE
+        assert plan["splitter_desc"]["#<" + RS + "rscolorsplitter.input"][
+            "#<" + RS + "texturesampler.tex0/path"] == os.path.join(
+                "/tex", "sub", "dir", "x_ORM.png")
+
+    def test_splitter_has_a_layout_column(self, matwire_c4d):
+        # Intermediary node between samplers (-600) and material (0):
+        # shares the bump/displacement column (rows are keyed by column,
+        # so cohabitation never stacks).
+        assert matwire_c4d._LAYOUT_COLS["rscolorsplitter"] == \
+            matwire_c4d._LAYOUT_COLS["bumpmap"]
+
+
+class TestLeftoverDescriptions:
+    """matwire_c4d.build_leftover_descriptions — unconnected RAW samplers
+    (AO pattern: each is an isolated second ApplyDescription scope)."""
+
+    @pytest.fixture
+    def matwire_c4d(self, sentinel_module):
+        return importlib.import_module("sentinel.matwire_c4d")
+
+    def test_samplers_raw_and_isolated_shape(self, matwire_c4d):
+        descs = matwire_c4d.build_leftover_descriptions(
+            "/tex", ["readme_preview.png", "sub/thumb.jpg"])
+        RS = matwire_c4d._RS_CORE
+        assert len(descs) == 2
+        for d in descs:
+            assert d["$type"] == "#" + RS + "texturesampler"
+            assert d["#<" + RS + "texturesampler.tex0/colorspace"] == \
+                matwire_c4d._CS_RAW
+        assert descs[0]["#<" + RS + "texturesampler.tex0/path"] == \
+            os.path.join("/tex", "readme_preview.png")
+        assert descs[1]["#<" + RS + "texturesampler.tex0/path"] == \
+            os.path.join("/tex", "sub", "thumb.jpg")
+
+    def test_empty_and_none_inputs(self, matwire_c4d):
+        assert matwire_c4d.build_leftover_descriptions("/tex", []) == []
+        assert matwire_c4d.build_leftover_descriptions("/tex", None) == []
