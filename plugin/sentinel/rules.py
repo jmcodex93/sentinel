@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from sentinel.common.constants import DEFAULT_OBJECT_NAMES, PRESETS, STILLS_PRESET_TOKENS
+from sentinel.matwire import validate_extra_suffixes
 from sentinel.qc.registry import CHECK_REGISTRY
 
 RULES_FILENAME = "sentinel_rules.json"
@@ -38,6 +39,7 @@ DEFAULTS = {
     },
     "check_severity": dict(CHECK_DEFAULT_SEVERITY),
     "checks_enabled": {check_id: True for check_id in CHECK_DEFAULT_SEVERITY},
+    "matwire_suffixes": {},
 }
 
 _RULES_CACHE: dict[str, dict[str, Any]] = {}
@@ -323,6 +325,9 @@ def _validate_key(key: str, value: Any) -> tuple[bool, Any, str | None]:
     if key == "checks_enabled":
         return _validate_checks_enabled(value)
 
+    if key == "matwire_suffixes":
+        return _validate_matwire_suffixes(value)
+
     return False, None, "unknown key"
 
 
@@ -372,6 +377,15 @@ def _validate_checks_enabled(value: Any) -> tuple[bool, Any, str | None]:
     if bad:
         return False, None, f"enabled value must be bool for check id(s): {', '.join(bad)}"
     return True, dict(value), None
+
+
+def _validate_matwire_suffixes(value: Any) -> tuple[bool, Any, str | None]:
+    if not isinstance(value, dict):
+        return False, None, "expected a dict of channel -> list of suffix strings"
+    valid, rejected = validate_extra_suffixes(value)
+    if rejected:
+        return False, None, f"invalid channel(s): {', '.join(sorted(rejected))}"
+    return True, valid, None
 
 
 def _is_number(value: Any) -> bool:
