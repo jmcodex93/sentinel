@@ -1429,6 +1429,9 @@ class _FakeUtPort:
     def GetPortValue(self):
         return self.value
 
+    def IsNullValue(self):
+        return False
+
 
 class _FakeUtPortList:
     def __init__(self, node):
@@ -1438,6 +1441,20 @@ class _FakeUtPortList:
         return self._node.port(port_id)
 
 
+_MUL_ID = "com.redshift3d.redshift4c4d.nodes.core.rsmathmulvector"
+
+#: Ports each faked node type really has. A node with a whitelist returns
+#: None from FindChild for anything else — exactly like maxon — so a wrong
+#: port id in the writer fails the test instead of conjuring a port. Nodes
+#: absent from this table (samplers, the group root) stay permissive: their
+#: ids ARE what the writer is asserting, and the group's ports are created
+#: through the helper.
+_FAKE_NODE_PORTS = {
+    "net.maxon.node.type": {"in", "datatype", "out"},
+    _MUL_ID: {_MUL_ID + ".input1", _MUL_ID + ".input2", _MUL_ID + ".out"},
+}
+
+
 class _FakeUtNode:
     def __init__(self, asset_id):
         self.asset_id = asset_id
@@ -1445,6 +1462,7 @@ class _FakeUtNode:
         self.attrs = {}
         self.inner = []
         self._ports = {}
+        self._allowed = _FAKE_NODE_PORTS.get(asset_id)
 
     def _check(self):
         if not self.alive:
@@ -1453,6 +1471,8 @@ class _FakeUtNode:
 
     def port(self, port_id):
         self._check()
+        if self._allowed is not None and port_id not in self._allowed:
+            return None
         return self._ports.setdefault(port_id, _FakeUtPort(self, port_id))
 
     def GetInputs(self):
@@ -1475,13 +1495,26 @@ class _FakeUtNode:
     def GetInnerNodes(self, mask, includeThis, out):
         out.extend(self.inner)
 
+    def Remove(self):
+        self._check()
+        self.graph.nodes.remove(self)
+        if self in self.graph.groups:
+            self.graph.groups.remove(self)
+
 
 class _FakeUtGraph:
     def __init__(self, asset_ids):
-        self.nodes = [_FakeUtNode(a) for a in asset_ids]
+        self.nodes = []
         self.applied = []
         self.commits = 0
         self.groups = []
+        for asset_id in asset_ids:
+            self._own(_FakeUtNode(asset_id))
+
+    def _own(self, node):
+        node.graph = self
+        self.nodes.append(node)
+        return node
 
     def GetViewRoot(self):
         return self
@@ -1499,12 +1532,13 @@ class _FakeUtGraph:
         for member in members:
             member._check()
             moved = _FakeUtNode(member.asset_id)
+            moved.graph = self
             moved.attrs = dict(member.attrs)
             moved._ports = {k: v for k, v in member._ports.items()}
             group.inner.append(moved)
             member.alive = False
             self.nodes.remove(member)
-        self.nodes.append(group)
+        self._own(group)
         self.groups.append(group)
         return group
 
@@ -1532,8 +1566,7 @@ class TestUniTransformFallback:
             @staticmethod
             def ApplyDescription(graph, desc):
                 graph.applied.append(desc)
-                kind = str(desc["$type"]).lstrip("#")
-                graph.nodes.append(_FakeUtNode(kind))
+                graph._own(_FakeUtNode(str(desc["$type"]).lstrip("#")))
 
         class _Helper:
             @staticmethod
@@ -1641,6 +1674,16 @@ class TestUniTransformFallback:
                 "group knob %s does not drive its value node" % knob["node"]
         for spec in plan["outputs"]:
             out_port = group.port("out:ut_out_" + spec["label"].lower())
+            # The group port must be FED — driving samplers from an unfed
+            # port is the 0-scale material, and it renders identically to a
+            # correct one at identity, so only this assertion catches it.
+            src = by_name[spec["source"]]
+            src_port = (src.port(plan["mul_ports"]["out"])
+                        if spec["source"] == plan["mul_name"]
+                        else src.port("out"))
+            assert out_port.incoming == [src_port], \
+                "group output %s is not fed by %s" % (spec["label"],
+                                                      spec["source"])
             for sampler in samplers:
                 assert sampler.port(spec["connect_to"]).incoming == [out_port], \
                     "sampler missed the shared %s" % spec["label"]
@@ -1691,6 +1734,48 @@ class TestUniTransformFallback:
                 "in:ut_in_" + knob["node"].lower()).GetPortValue() \
                 == expected[knob["node"]], \
                 "%s got another knob's identity value" % knob["node"]
+
+    def test_a_port_that_drops_the_identity_aborts_before_wiring(
+            self, matwire_c4d, monkeypatch):
+        """The failure mode this branch cannot survive: a build where the
+        created group port silently refuses the vec2. Wiring the samplers to
+        it anyway ships Scale=(0,0) — one stretched texel across every
+        material — and renders IDENTICALLY to a correct material at
+        identity, so no pixel check would ever catch it. Abort instead, and
+        leave nothing behind."""
+        self._fake_maxon(matwire_c4d, monkeypatch)
+        core = matwire_c4d._RS_CORE
+        graph = _FakeUtGraph([core + "texturesampler",
+                              core + "standardmaterial"])
+
+        def _deaf(self, value):
+            self.value = None          # the write silently no-ops
+
+        monkeypatch.setattr(_FakeUtPort, "SetPortValue", _deaf)
+        with pytest.raises(RuntimeError, match="identity value"):
+            matwire_c4d._apply_unitransform_plan(
+                graph, matwire_c4d.build_unitransform_plan())
+        sampler = [n for n in graph.nodes
+                   if n.asset_id == core + "texturesampler"][0]
+        assert all(p.incoming == [] for p in sampler._ports.values()), \
+            "samplers wired to a port that dropped its value"
+        assert graph.groups == []
+        assert [n.asset_id for n in graph.nodes] == [
+            core + "texturesampler", core + "standardmaterial"], \
+            "half-built UniversalXform left in the graph"
+
+    def test_missing_group_api_creates_nothing_at_all(self, matwire_c4d,
+                                                      monkeypatch):
+        """An older build without the group calls must be a clean no-op —
+        checked BEFORE the first apply, so no orphan Value node is left
+        sitting on top of the material."""
+        self._fake_maxon(matwire_c4d, monkeypatch)
+        monkeypatch.delattr(matwire_c4d.maxon.GraphModelHelper,
+                            "CreateInputPort")
+        graph = _FakeUtGraph([matwire_c4d._RS_CORE + "texturesampler"])
+        matwire_c4d._apply_unitransform_plan(
+            graph, matwire_c4d.build_unitransform_plan())
+        assert graph.applied == [] and graph.groups == []
 
     def test_no_samplers_creates_nothing(self, matwire_c4d, monkeypatch):
         self._fake_maxon(matwire_c4d, monkeypatch)

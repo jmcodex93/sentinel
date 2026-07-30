@@ -514,6 +514,10 @@ Dos materiales del MISMO set de texturas sobre la MISMA esfera:
 - Subir el Scale del grupo de 1 a 4: **2662/10000 píxeles cambian** y las
   transiciones del damero por fila pasan de **337 a 606** — un solo knob
   retesela los tres samplers.
+- Los otros dos knobs también movidos con píxeles, no por estructura (su
+  identidad es 0, así que un render idéntico sería indistinguible de un cable
+  a ninguna parte): **Offset 0.25 → 2575 px cambian**; **Rotation 45 → 2614 px
+  cambian**.
 
 **Veredicto**: el fallback da el mismo punto único de edición, no altera nada a
 identidad, y no es decorativo. Solo pierde tri-planar (eso sí es propiedad del

@@ -41,6 +41,7 @@ import os
 
 import c4d
 
+from sentinel.common.helpers import safe_print
 from sentinel.matwire import ao_destination, channel_colorspace, orm_contributions
 
 try:
@@ -356,6 +357,33 @@ def _ut_value(knob):
     return maxon.Vector(raw[0], raw[1], 0.0)
 
 
+def _ut_api_available(graph):
+    """Whether this build exposes the group/port calls the UniversalXform
+    needs. Checked BEFORE the first mutation, so a build that simply lacks
+    them is a clean no-op instead of a half-built group left in the graph —
+    the same "count first, apply after" discipline as the UV context, which
+    matters more here because this branch only ever runs where we cannot
+    test."""
+    helper = getattr(maxon, "GraphModelHelper", None)
+    return bool(
+        getattr(graph, "MoveToGroup", None)
+        and getattr(helper, "CreateInputPort", None)
+        and getattr(helper, "CreateOutputPort", None))
+
+
+def _ut_same_value(written, read_back):
+    """Whether a port kept the identity we wrote. vec2 reads back as a
+    Vector64 and floats as Float64, so compare component-wise with a
+    tolerance rather than by type or identity."""
+    try:
+        if hasattr(written, "x"):
+            return all(abs(getattr(written, a) - getattr(read_back, a)) < 1e-6
+                       for a in ("x", "y"))
+        return abs(float(written) - float(read_back)) < 1e-6
+    except Exception:
+        return False
+
+
 def _ut_fresh_node(graph, kind):
     """The one node of ``kind`` in the root graph that hasn't been named yet
     — i.e. the one the ApplyDescription just before this call created.
@@ -408,8 +436,36 @@ def _apply_unitransform_plan(graph, plan):
             mask=maxon.NODE_KIND.NODE, includeThis=False)
         if "texturesampler" in str(node.GetValue(_ASSETID_ATTR) or "")
     ]
-    if not samplers:
+    if not samplers or not _ut_api_available(graph):
         return
+    made = []
+    try:
+        _ut_build(graph, plan, samplers, made)
+    except Exception:
+        # Leave NO debris. Everything up to the group move is already
+        # committed by the time anything downstream can fail, and an orphan
+        # Value node would sit at (0,0) on top of the material — after the
+        # layout pass, so nothing would ever reposition it. Removing it
+        # restores exactly the v1.32.1 graph the caller degrades to.
+        #
+        # Newest first, so the group goes before the handles it swallowed;
+        # those are dead after the move and raise on touch, which is why
+        # each removal is guarded individually rather than as one batch.
+        for node in reversed(made):
+            try:
+                with graph.BeginTransaction() as tr:
+                    node.Remove()
+                    tr.Commit()
+            except Exception:
+                pass
+        raise
+
+
+def _ut_build(graph, plan, samplers, made):
+    """The mutating half of ``_apply_unitransform_plan``; separated so the
+    caller can undo a partial build. EVERY node it creates is appended to
+    ``made`` as soon as it exists — including the group — because a failure
+    after the group move leaves only that handle alive to clean up with."""
     # ONE apply, then IMMEDIATELY name what it made — never a batch of
     # identical applies zipped against the plan by position. Graph
     # enumeration order is NOT guaranteed to be creation order (measured:
@@ -417,7 +473,6 @@ def _apply_unitransform_plan(graph, plan):
     # different orders), and a permutation would quietly write Scale's
     # identity into Rotation. Naming one at a time makes the only node
     # without a name the one just created.
-    made = []
     for knob in plan["inputs"]:
         maxon.GraphDescription.ApplyDescription(graph, plan["value_desc"])
         node = _ut_fresh_node(graph, _VALUE_NODE)
@@ -437,8 +492,9 @@ def _apply_unitransform_plan(graph, plan):
     made.append(mul_node)
     with graph.BeginTransaction() as tr:
         group = graph.MoveToGroup(maxon.GraphNode(),
-                                  maxon.Id(plan["group_id"]), made)
+                                  maxon.Id(plan["group_id"]), list(made))
         tr.Commit()
+    made.append(group)
     # Handles above are dead from here on — re-find by the names just written.
     inner = []
     group.GetInnerNodes(maxon.NODE_KIND.NODE, False, inner)
@@ -463,6 +519,15 @@ def _apply_unitransform_plan(graph, plan):
             mul.GetInputs().FindChild(mul_ports["uniscale"]))
         _inner("Scale2D").GetOutputs().FindChild("out").Connect(
             mul.GetInputs().FindChild(mul_ports["scale"]))
+        for row, name in enumerate(sorted(by_name)):
+            # The inner nodes are created after the layout pass and would
+            # otherwise all sit at (0,0): five overlapping nodes greeting
+            # anyone who opens the group. Same bug class as the v1.32.1
+            # layout root-fix, invisible from outside the group.
+            by_name[name].SetValue("net.maxon.node.base.xpos",
+                                   maxon.Float(0.0))
+            by_name[name].SetValue("net.maxon.node.base.ypos",
+                                   maxon.Float(row * _LAYOUT_ROW_STEP))
         for knob in plan["inputs"]:
             node = _inner(knob["node"])
             in_port = maxon.GraphModelHelper.CreateInputPort(
@@ -474,7 +539,19 @@ def _apply_unitransform_plan(graph, plan):
             # skipping this write would push Scale=(0,0) into every sampler
             # and render one stretched texel. The inner write above stays as
             # the node's own base value.
-            in_port.SetPortValue(_ut_value(knob))
+            written = _ut_value(knob)
+            in_port.SetPortValue(written)
+            # READ IT BACK before anything is wired to it. The datatype of a
+            # port created by CreateInputPort is chosen by the build, and
+            # this branch only runs on builds nobody here can test: if the
+            # write silently no-ops or coerces, the fan-out below would push
+            # Scale=(0,0) into every sampler and the material would ship one
+            # stretched texel while reporting success. Failing here instead
+            # gives the caller the honest v1.32.1 degrade.
+            if not _ut_same_value(written, in_port.GetPortValue()):
+                raise RuntimeError(
+                    "UniversalXform: %s port did not keep its identity value "
+                    "— refusing to drive the samplers from it" % knob["node"])
         for spec in plan["outputs"]:
             label = spec["label"]
             source = _inner(spec["source"])
@@ -482,11 +559,18 @@ def _apply_unitransform_plan(graph, plan):
                       else "out")
             out_port = maxon.GraphModelHelper.CreateOutputPort(
                 group, "ut_out_" + label.lower(), label)
-            source.GetOutputs().FindChild(out_id).Connect(out_port)
+            source_port = source.GetOutputs().FindChild(out_id)
+            if source_port is None or source_port.IsNullValue():
+                raise RuntimeError(
+                    "UniversalXform: %s has no output %r — the group port "
+                    "would drive the samplers from nothing"
+                    % (spec["source"], out_id))
+            source_port.Connect(out_port)
             for sampler in samplers:
                 out_port.Connect(
                     sampler.GetInputs().FindChild(spec["connect_to"]))
         tr.Commit()
+    return group
 
 
 def _sampler(path, colorspace):
@@ -850,24 +934,30 @@ def create_material_for_set(doc, folder, tex_set, name, leftover_files=None,
             _apply_uvcontext_plan(graph, uvctx_plan)
         _layout_and_title_nodes(graph, titles)
         # FALLBACK, and deliberately AFTER the layout pass: on Redshift
-        # builds without the context node, the classic UniTransform group
+        # builds without the context node, the classic UniversalXform group
         # gives the same single point of tiling edit. It positions itself
-        # (an assetid-less group node would land in column 0 on top of the
-        # material if the layout pass saw it), and its three Value nodes
-        # live INSIDE the group, so that pass never walks them.
+        # and its own contents (an assetid-less group node would land in
+        # column 0 on top of the material if the layout pass saw it), and
+        # the four Value nodes plus the multiply live INSIDE the group, so
+        # that pass never walks them.
         #
         # Best-effort by design: this branch only ever executes on Redshift
         # versions we cannot test against, so a failure here must not take
-        # down a material that is otherwise complete and correct. Without
-        # the group the material is exactly what v1.32.1 wrote — tiling is
-        # then adjusted per sampler.
+        # down a material that is otherwise complete and correct. The plan
+        # cleans up after itself, so what the artist gets is exactly the
+        # v1.32.1 graph — tiling is then adjusted per sampler. It is logged,
+        # not swallowed: silence would leave the disabled-selector copy
+        # promising a control that isn't there, with nothing to debug from.
         if uvctx_plan is None:
             ut_plan = build_unitransform_plan()
             if ut_plan is not None:
                 try:
                     _apply_unitransform_plan(graph, ut_plan)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    safe_print(
+                        "UniversalXform fallback skipped for %r (%s); the "
+                        "material is complete but has no shared tiling "
+                        "control" % (name, exc))
         # LAST — the document's only record of this material is the insertion.
         doc.InsertMaterial(mat)
         doc.AddUndo(c4d.UNDOTYPE_NEWOBJ, mat)   # AFTER insert (NEWOBJ contract)
