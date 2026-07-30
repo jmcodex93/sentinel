@@ -44,7 +44,7 @@ Corrección registrada en el mismo spike (objeción del usuario, verificada): el
 ## Errores / no-regresión
 
 - `projection = uv` + `multiply_ao = off` ⇒ render idéntico a v1.32.1 (el contexto en identidad no altera — medido). El grafo gana dos nodos (contexto + color correct) de coste ≈0.
-- Sin el nodo de contexto disponible: el material se construye exactamente como en v1.32.1 y el preview lo dice — nunca una promesa que el writer no cumple.
+- Sin el nodo de contexto disponible: el material cae al **UniversalXform clásico** (ver más abajo) y el preview sigue sin prometer tri-planar — nunca una promesa que el writer no cumple.
 - Contrato de un-undo y orden "grafo antes de insertar": intactos.
 
 ## Verificación
@@ -52,6 +52,45 @@ Corrección registrada en el mismo spike (objeción del usuario, verificada): el
 - pytest: planes puros (contexto con `proj_type`, conexiones esperadas, Color Correct interpuesto, AO layer on/off y su efecto en el sampler suelto, títulos de nodo, columna de layout), contratos de ops (payload nuevo, `uvcontext_available`, re-derivación).
 - vitest: selector + checkbox + copys + fila de AO.
 - Live: geo SIN UVs con `projection = triplanar` → textura proyectada correctamente (render, no eyeball de params); UV Channel en geo con UVs; AO on/off comparado por píxeles; un solo Cmd+Z revierte el lote; nodo de contexto compartido por TODOS los samplers (censo de conexiones).
+
+## Fallback para Redshift < 2026.2 — UniversalXform clásico
+
+Añadido tras el release inicial de la fase, a petición explícita. La versión
+anterior de este spec degradaba al grafo pelado de v1.32.1 (sin control unificado
+de tiling); con parque de máquinas heterogéneo eso deja a media plantilla sin la
+mejora, así que el fallback pasa a ser real.
+
+- **Qué es**: un nodo **grupo "UniversalXform"** con cuatro Value dentro (Scale
+  vec2, UniScale float, Offset vec2, Rotation float) más un `rsmathmulvector`
+  que multiplica UniScale × Scale — un escalado uniforme encima del por-eje —
+  cuyas salidas se abanican a `texturesampler.scale/offset/rotate` de **todos**
+  los samplers. Mismo punto único de edición que el contexto, con primitivas de
+  cualquier versión.
+- **Dónde se decide**: `build_uvcontext_plan()` devuelve `None` ⇒ se construye el
+  grupo. Nunca los dos (encadenarlos multiplicaría, que es justo lo medido).
+- **Divergencia respecto a TexToMatO** (que es la referencia del montaje): se
+  **conservan** los puertos de entrada del grupo, de modo que los cuatro knobs se
+  editan en el propio nodo sin entrar dentro. El interior es el suyo, multiply
+  incluido.
+- **Trampa de corrección**: un Value nace a **cero** y el puerto del grupo también,
+  así que la identidad (1,1)/(0,0)/0 se escribe explícitamente — sin eso, cada
+  material saldría con tiling 0 (un téxel estirado).
+- **Trampa de API**: `MoveToGroup` **invalida los handles movidos**; los nodos
+  interiores se recuperan con `GetInnerNodes` sobre el grupo y se casan por el
+  nombre escrito ANTES de mover. Y el id real de los puertos creados lleva sufijo
+  `@<uuid>`: hay que quedarse el handle devuelto, no buscar por el id que pasaste.
+- **Proyección**: UV-only. Tri-planar es una propiedad del contexto, no del
+  transform; el selector ya se deshabilita cuando el nodo no está.
+- **Best-effort por diseño**: esta rama solo se ejecuta en versiones de Redshift
+  contra las que no podemos testear, así que un fallo suyo **no** tumba un material
+  por lo demás completo — degrada al grafo v1.32.1 en silencio (regla de casa
+  "fallback gracefully").
+- **Medido** (renders reales, `docs/research/2026-07-30-uvcontext-and-graph-cost.md`):
+  a identidad, **10000/10000 píxeles idénticos** frente al grafo pelado; subiendo
+  Scale 1→4, **2662 píxeles cambian** y las transiciones del damero pasan de 337 a
+  606 — el control es real y alcanza a los tres samplers. El multiply se validó
+  con un oráculo fuerte: `UniScale=4 × Scale=(1,1)` sale **pixel-idéntico** a
+  `UniScale=1 × Scale=(4,4)`.
 
 ## Fuera de alcance
 

@@ -445,3 +445,76 @@ Rejilla 5×5 de muestra (`(x,y)` → `WITH_CTX` / `NO_CTX`), recorte:
 ```
 
 **Veredicto**: el contexto por defecto conectado a los 3 samplers **no altera un solo píxel**. La Global Constraint de v1.33 queda medida, no argumentada.
+
+---
+
+## Spike del fallback: UniversalXform clásico (RS < 2026.2)
+
+**Pregunta**: si `uvcontextprojection` no existe, ¿podemos dar el mismo punto
+único de tiling con primitivas que existan en cualquier Redshift? Referencia:
+`AddUniTransforms` de TexToMatO (`Salad/Redshift/redshift_helper.py:1882`).
+
+### Cómo lo monta TexToMatO
+
+Un **grupo** con nodos Value dentro (UniScale float, Scale2D vec2, Offset vec2,
+Rotation float) y un `rsmathmulvector` que multiplica UniScale × Scale2D. Crea
+puertos de entrada y salida en el grupo, conecta interior↔puertos, y **borra los
+puertos de entrada**. Las salidas se abanican a `texturesampler.scale/offset/rotate`
+de cada sampler.
+
+### Medido en vivo (C4D 2026.303, 2026-07-30)
+
+| Hecho | Evidencia |
+|---|---|
+| Nodo Value = `net.maxon.node.type`, puertos `in`/`datatype`/`out` | introspección |
+| `datatype` nace `float`; se reescribe a `vec<2,float>` con `SetPortValue(maxon.Id(...))` | readback |
+| Un solo Value abanica a N samplers | `scale` con 1 conexión en cada sampler |
+| `texturesampler.scale`/`.offset` son vec2; `.rotate` es Float64 | readback de defaults |
+| **`MoveToGroup` INVALIDA los handles movidos** | `ValueError: Node with path type@… doesn't exist any longer` |
+| Los nodos interiores se recuperan con `group.GetInnerNodes(...)` y se casan **por nombre** | por eso TexToMatO los nombra ANTES de mover |
+| `CreateInputPort/CreateOutputPort` funcionan y el puerto de entrada **sostiene un valor editable** que empuja al Value interior | readback (3,3) a través del puerto |
+| El id real del puerto lleva sufijo `@<uuid>` (`ut_in_scale@a_ls90kiOdDu_QPIU2UCYT`) | **no se puede buscar por el id que pasaste** — hay que quedarse el handle devuelto |
+
+### Divergencia deliberada respecto a TexToMatO
+
+**Conservamos los puertos de entrada** (ellos los borran): así los cuatro knobs
+viven en el propio nodo grupo y se editan en el AM sin entrar dentro. El interior
+es el suyo: Scale2D (vec2) x UniScale (float) por un `rsmathmulvector` cuya salida
+es el Scale que ven los samplers, mas Offset y Rotation directos. El grupo se llama
+**UniversalXform**.
+
+**Multiplicador verificado con un oraculo fuerte**: `UniScale=4 x Scale=(1,1)` y
+`UniScale=1 x Scale=(4,4)` renderizan **10000/10000 pixeles identicos** (606
+transiciones de damero ambos) — el multiply compone exacto, no aproxima.
+
+### Tercera trampa: el orden de enumeración NO es el de creación
+
+Medido: tres ejecuciones seguidas de la MISMA función enumeraron los puertos del
+grupo en tres ordenes distintos. Por tanto **nunca** se aplica un lote de descs
+identicos para luego casarlos por posicion contra el plan — una permutacion
+escribiria la identidad del Scale dentro del Rotation, en silencio y solo a
+veces. La receta es: **un apply, y nombrar inmediatamente lo que creo**; el nodo
+recien creado se identifica por AUSENCIA DE NOMBRE (solo puede haber uno
+pendiente). El pytest lo fija enumerando al reves.
+
+### Trampa de corrección (la que decide el diseño)
+
+Un nodo Value **nace a cero**. Al conectar el puerto del grupo al `in` interior,
+el valor vivo pasa a ser el **del puerto del grupo** — que también nace a cero.
+Sin escribir la identidad ahí, cada material saldría con `Scale = (0,0)`: un
+único téxel estirado. Se escribe explícitamente (1,1)/(0,0)/0, misma regla
+"siempre explícito" que ya gobierna colorspace y flipy.
+
+### No-regresión y eficacia (renders reales, 100×100, RS)
+
+Dos materiales del MISMO set de texturas sobre la MISMA esfera:
+
+- **A** = con UniversalXform a identidad · **B** = grafo v1.32.1 pelado
+  → **10000/10000 píxeles idénticos, max abs diff 0**.
+- Subir el Scale del grupo de 1 a 4: **2662/10000 píxeles cambian** y las
+  transiciones del damero por fila pasan de **337 a 606** — un solo knob
+  retesela los tres samplers.
+
+**Veredicto**: el fallback da el mismo punto único de edición, no altera nada a
+identidad, y no es decorativo. Solo pierde tri-planar (eso sí es propiedad del
+contexto), por lo que en esas versiones la proyección queda en UV.

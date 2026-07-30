@@ -255,6 +255,240 @@ def _apply_uvcontext_plan(graph, plan):
         tr.Commit()
 
 
+#: Generic maxon Value node — the building block of the UniTransform group.
+_VALUE_NODE = "net.maxon.node.type"
+_VEC2_TYPE = "net.maxon.parametrictype.vec<2,float>"
+_UT_GROUP_ID = "SentinelUniversalXform"
+_UT_TITLE = "UniversalXform"
+_RS_MULVECTOR = _RS_CORE + "rsmathmulvector"
+_UT_MUL_NAME = "Scale"
+
+#: The Value nodes inside the group: ``(node name, port label, datatype or
+#: None, identity value)``.
+#:
+#: The identity values are NOT decoration — a maxon Value node is born at
+#: **zero**, so an unwritten Scale would drive every sampler to a 0x0 tiling
+#: and the material would render a single stretched texel. Same
+#: "siempre explícito" rule that already governs colorspace and flipy.
+#:
+#: Only the vec2 knobs need a ``datatype`` write: the node's own default is
+#: ``float``, which is exactly what ``UniScale`` and ``rotate`` want
+#: (measured live 2026-07-30: sampler ``scale``/``offset`` are vec2,
+#: ``rotate`` is Float64).
+#:
+#: ``Scale2D`` is the node name and ``Scale`` the label the artist reads —
+#: the same split TexToMatO uses, because the multiply node downstream is
+#: what actually carries the name "Scale".
+_UT_INPUTS = (
+    ("Scale2D", "Scale", _VEC2_TYPE, (1.0, 1.0)),
+    ("UniScale", "UniScale", None, 1.0),
+    ("Offset", "Offset", _VEC2_TYPE, (0.0, 0.0)),
+    ("Rotation", "Rotation", None, 0.0),
+)
+
+#: What each group OUTPUT emits and which sampler port it drives:
+#: ``(label, source node name, sampler port suffix)``. Scale comes from the
+#: multiply (UniScale x Scale2D), the other two straight from their Value.
+_UT_OUTPUTS = (
+    ("Scale", _UT_MUL_NAME, "texturesampler.scale"),
+    ("Offset", "Offset", "texturesampler.offset"),
+    ("Rotation", "Rotation", "texturesampler.rotate"),
+)
+
+
+def build_unitransform_plan():
+    """Plan for the classic **UniversalXform** group — the fallback shared
+    tiling control for Redshift builds WITHOUT ``uvcontextprojection``
+    (pre-2026.2). Pure data, so the shape is pytest-pinnable; the wiring
+    itself is imperative for the same reason as the UV context (one output
+    feeding N ports has no GraphDescription expression).
+
+    Shape: one group node "UniversalXform" holding four Value nodes
+    (Scale2D, UniScale, Offset, Rotation) plus a Vector Mul that multiplies
+    UniScale x Scale2D. Its three outputs fan out to the ``scale`` /
+    ``offset`` / ``rotate`` port of EVERY texturesampler in the material —
+    the same single-point-of-edit the UV context gives, built from
+    primitives that exist in every Redshift version.
+
+    Modelled on TexToMatO's ``AddUniTransforms`` (read 2026-07-30), keeping
+    its UniScale multiply (one field that scales both axes, on top of the
+    per-axis Scale) with one deliberate divergence: **the group's INPUT
+    ports are kept**, where TexToMatO removes them. Keeping them puts the
+    four knobs on the group node itself, so the artist edits them in the
+    Attribute Manager without entering the group. Verified live: writing the
+    group input port drives the inner Value node.
+
+    Returns ``None`` only when maxon is missing (the pytest harness)."""
+    if not MAXON_AVAILABLE:
+        return None
+    return {
+        "value_desc": {"$type": "#" + _VALUE_NODE},
+        "mul_desc": {"$type": "#" + _RS_MULVECTOR},
+        "mul_name": _UT_MUL_NAME,
+        "mul_ports": {
+            "uniscale": _RS_MULVECTOR + ".input1",
+            "scale": _RS_MULVECTOR + ".input2",
+            "out": _RS_MULVECTOR + ".out",
+        },
+        "group_id": _UT_GROUP_ID,
+        "title": _UT_TITLE,
+        "column": _LAYOUT_COLS["uvcontextprojection"],
+        "inputs": [
+            {"node": node, "label": label, "datatype": datatype,
+             "value": value}
+            for node, label, datatype, value in _UT_INPUTS
+        ],
+        "outputs": [
+            {"label": label, "source": source,
+             "connect_to": _RS_CORE + port}
+            for label, source, port in _UT_OUTPUTS
+        ],
+    }
+
+
+def _ut_value(knob):
+    """The maxon value a knob's ``in`` port is written with. vec2 travels as
+    a 3-component Vector with z unused (measured: the port accepts it and
+    reads back as Vector64)."""
+    raw = knob["value"]
+    if knob["datatype"] is None:
+        return maxon.Float(raw)
+    return maxon.Vector(raw[0], raw[1], 0.0)
+
+
+def _ut_fresh_node(graph, kind):
+    """The one node of ``kind`` in the root graph that hasn't been named yet
+    — i.e. the one the ApplyDescription just before this call created.
+
+    Identity by ABSENCE OF NAME, not by position: the caller names each node
+    the moment it exists, so exactly one nameless node of that kind can be
+    outstanding. Anything else means the graph is not what we think it is,
+    and guessing would mis-assign an identity value."""
+    fresh = [
+        node for node in graph.GetViewRoot().GetInnerNodes(
+            mask=maxon.NODE_KIND.NODE, includeThis=False)
+        if kind in str(node.GetValue(_ASSETID_ATTR) or "")
+        and not str(node.GetValue(_NAME_ATTR) or "").strip()
+    ]
+    if len(fresh) != 1:
+        raise RuntimeError(
+            "UniversalXform: expected exactly 1 fresh %s node, found %d"
+            % (kind, len(fresh)))
+    return fresh[0]
+
+
+def _apply_unitransform_plan(graph, plan):
+    """Materialize ``build_unitransform_plan``.
+
+    Sequence (every step measured live, C4D 2026.303, 2026-07-30):
+
+    1. Count samplers FIRST — the orphan rule from ``_apply_uvcontext_plan``:
+       no samplers means the control has nothing to drive, so it is never
+       created rather than created-and-abandoned.
+    2. Apply the Value desc once per input plus the Vector Mul (identical
+       descs create distinct nodes, verified), then set datatype, identity
+       value and name on each.
+    3. ``MoveToGroup`` — **this INVALIDATES the node handles**. The moved
+       nodes live at a new path, and touching the old handle raises "Node
+       with path … doesn't exist any longer" (hit in the spike). The inner
+       nodes are therefore re-found through ``GetInnerNodes`` on the group
+       and matched by the name written in step 2 — which is exactly why
+       step 2 names them BEFORE the move.
+    4. Wire the multiply (UniScale x Scale2D), create the group's in/out
+       ports, and fan the outputs out to every sampler.
+    5. Position the group in the upstream column (this runs AFTER the layout
+       pass, which only walks the ROOT graph and would put an assetid-less
+       group node in column 0 on top of the material).
+
+    Nodes are located by NAME, never by creation order or handle identity:
+    ``GetInnerNodes`` hands back fresh wrapper objects on every call, so any
+    scheme keyed on ``id()`` silently degenerates into "match everything"."""
+    samplers = [
+        node for node in graph.GetViewRoot().GetInnerNodes(
+            mask=maxon.NODE_KIND.NODE, includeThis=False)
+        if "texturesampler" in str(node.GetValue(_ASSETID_ATTR) or "")
+    ]
+    if not samplers:
+        return
+    # ONE apply, then IMMEDIATELY name what it made — never a batch of
+    # identical applies zipped against the plan by position. Graph
+    # enumeration order is NOT guaranteed to be creation order (measured:
+    # three runs of this very function enumerated the group's ports in three
+    # different orders), and a permutation would quietly write Scale's
+    # identity into Rotation. Naming one at a time makes the only node
+    # without a name the one just created.
+    made = []
+    for knob in plan["inputs"]:
+        maxon.GraphDescription.ApplyDescription(graph, plan["value_desc"])
+        node = _ut_fresh_node(graph, _VALUE_NODE)
+        with graph.BeginTransaction() as tr:
+            if knob["datatype"] is not None:
+                node.GetInputs().FindChild("datatype").SetPortValue(
+                    maxon.Id(knob["datatype"]))
+            node.GetInputs().FindChild("in").SetPortValue(_ut_value(knob))
+            node.SetValue(_NAME_ATTR, maxon.String(knob["node"]))
+            tr.Commit()
+        made.append(node)
+    maxon.GraphDescription.ApplyDescription(graph, plan["mul_desc"])
+    mul_node = _ut_fresh_node(graph, "rsmathmulvector")
+    with graph.BeginTransaction() as tr:
+        mul_node.SetValue(_NAME_ATTR, maxon.String(plan["mul_name"]))
+        tr.Commit()
+    made.append(mul_node)
+    with graph.BeginTransaction() as tr:
+        group = graph.MoveToGroup(maxon.GraphNode(),
+                                  maxon.Id(plan["group_id"]), made)
+        tr.Commit()
+    # Handles above are dead from here on — re-find by the names just written.
+    inner = []
+    group.GetInnerNodes(maxon.NODE_KIND.NODE, False, inner)
+    by_name = {str(node.GetValue(_NAME_ATTR)): node for node in inner}
+
+    def _inner(name):
+        node = by_name.get(name)
+        if node is None:
+            raise RuntimeError(
+                "UniversalXform: inner node %r lost in the group move" % name)
+        return node
+
+    with graph.BeginTransaction() as tr:
+        group.SetValue(_NAME_ATTR, maxon.String(plan["title"]))
+        group.SetValue(_TITLE_ATTR, maxon.String(plan["title"]))
+        group.SetValue("net.maxon.node.base.xpos", maxon.Float(plan["column"]))
+        group.SetValue("net.maxon.node.base.ypos", maxon.Float(0.0))
+        # UniScale (float) x Scale2D (vec2) -> the Scale the samplers see.
+        mul = _inner(plan["mul_name"])
+        mul_ports = plan["mul_ports"]
+        _inner("UniScale").GetOutputs().FindChild("out").Connect(
+            mul.GetInputs().FindChild(mul_ports["uniscale"]))
+        _inner("Scale2D").GetOutputs().FindChild("out").Connect(
+            mul.GetInputs().FindChild(mul_ports["scale"]))
+        for knob in plan["inputs"]:
+            node = _inner(knob["node"])
+            in_port = maxon.GraphModelHelper.CreateInputPort(
+                group, "ut_in_" + knob["node"].lower(), knob["label"])
+            in_port.Connect(node.GetInputs().FindChild("in"))
+            # The identity value is written on the GROUP port, not only on
+            # the inner node: once the group port drives the inner ``in``,
+            # the group port is the live value — and it is born at zero, so
+            # skipping this write would push Scale=(0,0) into every sampler
+            # and render one stretched texel. The inner write above stays as
+            # the node's own base value.
+            in_port.SetPortValue(_ut_value(knob))
+        for spec in plan["outputs"]:
+            label = spec["label"]
+            source = _inner(spec["source"])
+            out_id = (mul_ports["out"] if spec["source"] == plan["mul_name"]
+                      else "out")
+            out_port = maxon.GraphModelHelper.CreateOutputPort(
+                group, "ut_out_" + label.lower(), label)
+            source.GetOutputs().FindChild(out_id).Connect(out_port)
+            for sampler in samplers:
+                out_port.Connect(
+                    sampler.GetInputs().FindChild(spec["connect_to"]))
+        tr.Commit()
+
+
 def _sampler(path, colorspace):
     return {
         "$type": "#" + _RS_CORE + "texturesampler",
@@ -582,8 +816,12 @@ def create_material_for_set(doc, folder, tex_set, name, leftover_files=None,
     report.
 
     ``projection`` ("uv" | "triplanar") selects the shared UV context's
-    ``proj_type``; when the context node isn't available in this build the
-    plan is ``None`` and the material is written exactly as v1.32.1."""
+    ``proj_type``. When the context node isn't available in this build the
+    plan is ``None`` and the material falls back to the classic UniTransform
+    group — the same single point of tiling edit, built from primitives that
+    exist in every Redshift version. Projection stays UV-only there: the
+    context is what makes tri-planar a property of the shared control, and
+    the SPA disables the selector accordingly."""
     try:
         desc, ao_desc = build_description(folder, tex_set,
                                           multiply_ao=multiply_ao)
@@ -611,6 +849,25 @@ def create_material_for_set(doc, folder, tex_set, name, leftover_files=None,
         if uvctx_plan is not None:
             _apply_uvcontext_plan(graph, uvctx_plan)
         _layout_and_title_nodes(graph, titles)
+        # FALLBACK, and deliberately AFTER the layout pass: on Redshift
+        # builds without the context node, the classic UniTransform group
+        # gives the same single point of tiling edit. It positions itself
+        # (an assetid-less group node would land in column 0 on top of the
+        # material if the layout pass saw it), and its three Value nodes
+        # live INSIDE the group, so that pass never walks them.
+        #
+        # Best-effort by design: this branch only ever executes on Redshift
+        # versions we cannot test against, so a failure here must not take
+        # down a material that is otherwise complete and correct. Without
+        # the group the material is exactly what v1.32.1 wrote — tiling is
+        # then adjusted per sampler.
+        if uvctx_plan is None:
+            ut_plan = build_unitransform_plan()
+            if ut_plan is not None:
+                try:
+                    _apply_unitransform_plan(graph, ut_plan)
+                except Exception:
+                    pass
         # LAST — the document's only record of this material is the insertion.
         doc.InsertMaterial(mat)
         doc.AddUndo(c4d.UNDOTYPE_NEWOBJ, mat)   # AFTER insert (NEWOBJ contract)

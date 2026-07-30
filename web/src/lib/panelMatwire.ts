@@ -100,7 +100,7 @@ export const PROJECTION_OPTIONS: { value: string; label: string }[] = [
 ];
 
 export const MATWIRE_PROJECTION_UNAVAILABLE_COPY =
-  "This Redshift build has no shared UV context node — materials are wired with each sampler's own UV.";
+  "This Redshift build has no shared UV context node. Tiling still gets one control — a UniversalXform group — but Tri-Planar needs the context.";
 
 /** Inline reason for the disabled Projection selector, or null when the
  * shared context node is available. A preview without the field (pre-v1.33

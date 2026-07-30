@@ -1325,6 +1325,67 @@ class TestUvContextFanOut:
                 assert port.incoming == [], \
                     "non-sampler node wired to the context: " + node.asset_id
 
+    def test_fallback_only_runs_without_the_context(self, matwire_c4d,
+                                                    monkeypatch):
+        """The UniTransform is the FALLBACK: with a context available it must
+        never be built (two shared controls chained on the same samplers
+        would multiply, which is the one thing the spike measured)."""
+        log = []
+        TestCreateMaterialOrdering._install_fakes(
+            TestCreateMaterialOrdering(), matwire_c4d, monkeypatch, log)
+        monkeypatch.setattr(matwire_c4d, "build_unitransform_plan",
+                            lambda: {"knobs": []})
+        monkeypatch.setattr(matwire_c4d, "_apply_unitransform_plan",
+                            lambda graph, plan: log.append("_apply_unitransform"))
+        monkeypatch.setattr(matwire_c4d, "_apply_uvcontext_plan",
+                            lambda graph, plan: log.append("_apply_uvcontext"))
+        tex_set = {"name": "p", "channels": {"basecolor": "c.png"},
+                   "normal_flipy": False}
+
+        monkeypatch.setattr(matwire_c4d, "build_uvcontext_plan",
+                            lambda proj_type: {"desc": {}, "connect_to": "x"})
+        assert matwire_c4d.create_material_for_set(
+            _OrderRecordingDoc(log), "/tex", tex_set, "p")["ok"] is True
+        assert "_apply_uvcontext" in log
+        assert "_apply_unitransform" not in log, \
+            "UniTransform built alongside the context"
+
+        log[:] = []
+        monkeypatch.setattr(matwire_c4d, "build_uvcontext_plan",
+                            lambda proj_type: None)
+        assert matwire_c4d.create_material_for_set(
+            _OrderRecordingDoc(log), "/tex", tex_set, "p")["ok"] is True
+        assert "_apply_unitransform" in log
+        # AFTER the layout pass (an assetid-less group node would otherwise
+        # be positioned in column 0, on top of the material).
+        assert (log.index("_layout_and_title_nodes")
+                < log.index("_apply_unitransform")
+                < log.index("InsertMaterial"))
+
+    def test_fallback_failure_never_kills_the_material(self, matwire_c4d,
+                                                       monkeypatch):
+        """This branch only ever runs on Redshift builds we cannot test
+        against, so it degrades to the v1.32.1 graph instead of losing a
+        material that is otherwise complete."""
+        log = []
+        TestCreateMaterialOrdering._install_fakes(
+            TestCreateMaterialOrdering(), matwire_c4d, monkeypatch, log)
+        monkeypatch.setattr(matwire_c4d, "build_uvcontext_plan",
+                            lambda proj_type: None)
+        monkeypatch.setattr(matwire_c4d, "build_unitransform_plan",
+                            lambda: {"knobs": []})
+
+        def _boom(graph, plan):
+            raise RuntimeError("no group API on this build")
+
+        monkeypatch.setattr(matwire_c4d, "_apply_unitransform_plan", _boom)
+        out = matwire_c4d.create_material_for_set(
+            _OrderRecordingDoc(log), "/tex",
+            {"name": "p", "channels": {"basecolor": "c.png"},
+             "normal_flipy": False}, "p")
+        assert out["ok"] is True and out["error"] is None
+        assert "InsertMaterial" in log, "material lost to a cosmetic failure"
+
     def test_no_samplers_leaves_no_orphan_context(self, matwire_c4d,
                                                   monkeypatch):
         """Unreachable today (every scanned set has files), but applying
@@ -1340,3 +1401,302 @@ class TestUvContextFanOut:
         assert graph.commits == 0
         assert all(n.asset_id != ctx_id for n in graph.nodes), \
             "orphan context node left in the graph"
+
+
+# --- fake graph WITH group support, for the UniTransform fallback ---------
+# It speaks the two live shapes that decide this code: MoveToGroup RETURNS a
+# group and INVALIDATES every moved handle (touching one raises, exactly as
+# C4D does — the spike hit this), and a group's inner nodes are reachable
+# only through GetInnerNodes on the group itself.
+
+class _DeadNodeError(RuntimeError):
+    pass
+
+
+class _FakeUtPort:
+    def __init__(self, owner, port_id):
+        self.owner = owner
+        self.port_id = port_id
+        self.incoming = []
+        self.value = None
+
+    def Connect(self, other):
+        other.incoming.append(self)
+
+    def SetPortValue(self, value):
+        self.value = value
+
+    def GetPortValue(self):
+        return self.value
+
+
+class _FakeUtPortList:
+    def __init__(self, node):
+        self._node = node
+
+    def FindChild(self, port_id):
+        return self._node.port(port_id)
+
+
+class _FakeUtNode:
+    def __init__(self, asset_id):
+        self.asset_id = asset_id
+        self.alive = True
+        self.attrs = {}
+        self.inner = []
+        self._ports = {}
+
+    def _check(self):
+        if not self.alive:
+            raise _DeadNodeError(
+                "Node with path %s doesn't exist any longer." % self.asset_id)
+
+    def port(self, port_id):
+        self._check()
+        return self._ports.setdefault(port_id, _FakeUtPort(self, port_id))
+
+    def GetInputs(self):
+        self._check()
+        return _FakeUtPortList(self)
+
+    def GetOutputs(self):
+        self._check()
+        return _FakeUtPortList(self)
+
+    def SetValue(self, attr, value):
+        self._check()
+        self.attrs[attr] = value
+
+    def GetValue(self, attr):
+        if attr == "net.maxon.node.attribute.assetid":
+            return "(%s,)" % self.asset_id
+        return self.attrs.get(attr)
+
+    def GetInnerNodes(self, mask, includeThis, out):
+        out.extend(self.inner)
+
+
+class _FakeUtGraph:
+    def __init__(self, asset_ids):
+        self.nodes = [_FakeUtNode(a) for a in asset_ids]
+        self.applied = []
+        self.commits = 0
+        self.groups = []
+
+    def GetViewRoot(self):
+        return self
+
+    def GetInnerNodes(self, mask=None, includeThis=False):
+        return list(self.nodes)
+
+    def BeginTransaction(self):
+        return _FakeTransaction(self)
+
+    def MoveToGroup(self, _root, group_id, members):
+        """Real semantics: the members are re-parented, their old handles go
+        dead, and the group gets LIVE inner nodes carrying their state."""
+        group = _FakeUtNode("group:" + str(group_id))
+        for member in members:
+            member._check()
+            moved = _FakeUtNode(member.asset_id)
+            moved.attrs = dict(member.attrs)
+            moved._ports = {k: v for k, v in member._ports.items()}
+            group.inner.append(moved)
+            member.alive = False
+            self.nodes.remove(member)
+        self.nodes.append(group)
+        self.groups.append(group)
+        return group
+
+
+class TestUniTransformFallback:
+    """The pre-2026.2 Redshift fallback: one UniTransform group whose three
+    knobs drive the transform of EVERY sampler."""
+
+    @pytest.fixture
+    def matwire_c4d(self, sentinel_module):
+        return importlib.import_module("sentinel.matwire_c4d")
+
+    def _fake_maxon(self, matwire_c4d, monkeypatch):
+        class _Vec:
+            def __init__(self, x, y, z=0.0):
+                self.x, self.y, self.z = x, y, z
+
+            def __eq__(self, other):
+                return (self.x, self.y, self.z) == (other.x, other.y, other.z)
+
+            def __repr__(self):
+                return "Vec(%s,%s,%s)" % (self.x, self.y, self.z)
+
+        class _GD:
+            @staticmethod
+            def ApplyDescription(graph, desc):
+                graph.applied.append(desc)
+                kind = str(desc["$type"]).lstrip("#")
+                graph.nodes.append(_FakeUtNode(kind))
+
+        class _Helper:
+            @staticmethod
+            def CreateOutputPort(group, port_id, label):
+                return group.port("out:" + port_id)
+
+            @staticmethod
+            def CreateInputPort(group, port_id, label):
+                return group.port("in:" + port_id)
+
+        fake = type("_M", (), {
+            "GraphDescription": _GD,
+            "GraphModelHelper": _Helper,
+            "NODE_KIND": type("_K", (), {"NODE": 1}),
+            "GraphNode": lambda: None,
+            "Id": staticmethod(lambda v: v),
+            "String": staticmethod(lambda v: v),
+            "Float": staticmethod(lambda v: v),
+            "Vector": _Vec,
+        })
+        monkeypatch.setattr(matwire_c4d, "maxon", fake)
+        monkeypatch.setattr(matwire_c4d, "MAXON_AVAILABLE", True)
+        return _Vec
+
+    def test_plan_shape_is_identity_and_upstream(self, matwire_c4d,
+                                                 monkeypatch):
+        self._fake_maxon(matwire_c4d, monkeypatch)
+        plan = matwire_c4d.build_unitransform_plan()
+        core = matwire_c4d._RS_CORE
+        knobs = {k["node"]: k for k in plan["inputs"]}
+        assert set(knobs) == {"Scale2D", "UniScale", "Offset", "Rotation"}
+        # Identity — a Value node is born at ZERO, so an unwritten Scale
+        # would drive every sampler to a 0x0 tiling, and an unwritten
+        # UniScale would multiply the whole thing back to zero.
+        assert knobs["Scale2D"]["value"] == (1.0, 1.0)
+        assert knobs["UniScale"]["value"] == 1.0
+        assert knobs["Offset"]["value"] == (0.0, 0.0)
+        assert knobs["Rotation"]["value"] == 0.0
+        # Only the vec2 knobs retype the node; UniScale and rotate want the
+        # node's native float.
+        assert knobs["Rotation"]["datatype"] is None
+        assert knobs["UniScale"]["datatype"] is None
+        assert knobs["Scale2D"]["datatype"] == knobs["Offset"]["datatype"] \
+            == matwire_c4d._VEC2_TYPE
+        # The knob the artist reads is "Scale"; "Scale2D" is the node behind it.
+        assert knobs["Scale2D"]["label"] == "Scale"
+        outs = {o["label"]: o for o in plan["outputs"]}
+        assert set(outs) == {"Scale", "Offset", "Rotation"}
+        # Scale is emitted by the MULTIPLY (UniScale x Scale2D), not the value.
+        assert outs["Scale"]["source"] == plan["mul_name"]
+        assert outs["Scale"]["connect_to"] == core + "texturesampler.scale"
+        assert outs["Offset"]["connect_to"] == core + "texturesampler.offset"
+        assert outs["Rotation"]["connect_to"] == core + "texturesampler.rotate"
+        assert plan["column"] < matwire_c4d._LAYOUT_COLS["texturesampler"]
+
+    def test_group_drives_every_sampler_with_identity_values(self, matwire_c4d,
+                                                             monkeypatch):
+        vec = self._fake_maxon(matwire_c4d, monkeypatch)
+        core = matwire_c4d._RS_CORE
+        graph = _FakeUtGraph([
+            core + "texturesampler",
+            core + "texturesampler",
+            core + "texturesampler",      # ORM / leftover — included too
+            core + "rscolorsplitter",     # must NOT be driven
+            core + "standardmaterial",
+            _RS_OUTPUT_FOR_TEST,
+        ])
+        plan = matwire_c4d.build_unitransform_plan()
+        matwire_c4d._apply_unitransform_plan(graph, plan)
+
+        assert len(graph.groups) == 1, "exactly one UniversalXform group"
+        group = graph.groups[0]
+        assert str(group.GetValue("net.maxon.node.base.name")) \
+            == "UniversalXform"
+        assert group.GetValue("net.maxon.node.base.xpos") == plan["column"]
+        inner = []
+        group.GetInnerNodes(1, False, inner)
+        by_name = {str(n.GetValue("net.maxon.node.base.name")): n
+                   for n in inner}
+        assert sorted(by_name) == ["Offset", "Rotation", "Scale", "Scale2D",
+                                   "UniScale"], "the multiply must move too"
+
+        # The multiply is fed by BOTH scale knobs, and it is what feeds the
+        # samplers' scale — an unfed input1 would zero the whole tiling.
+        mul = by_name[plan["mul_name"]]
+        ports = plan["mul_ports"]
+        assert mul.port(ports["uniscale"]).incoming == [
+            by_name["UniScale"].port("out")]
+        assert mul.port(ports["scale"]).incoming == [
+            by_name["Scale2D"].port("out")]
+
+        samplers = [n for n in graph.nodes
+                    if n.asset_id == core + "texturesampler"]
+        assert len(samplers) == 3
+        expected = {"Scale2D": vec(1.0, 1.0, 0.0), "UniScale": 1.0,
+                    "Offset": vec(0.0, 0.0, 0.0), "Rotation": 0.0}
+        for knob in plan["inputs"]:
+            in_port = group.port("in:ut_in_" + knob["node"].lower())
+            # the LIVE value lives on the group's input port (it drives the
+            # inner Value node, and is born at zero)
+            assert in_port.GetPortValue() == expected[knob["node"]], \
+                "group knob %s left at its zero birth value" % knob["node"]
+            assert in_port.incoming == [] and \
+                by_name[knob["node"]].port("in").incoming == [in_port], \
+                "group knob %s does not drive its value node" % knob["node"]
+        for spec in plan["outputs"]:
+            out_port = group.port("out:ut_out_" + spec["label"].lower())
+            for sampler in samplers:
+                assert sampler.port(spec["connect_to"]).incoming == [out_port], \
+                    "sampler missed the shared %s" % spec["label"]
+        # nothing but samplers is driven from outside the group
+        for node in graph.nodes:
+            if node.asset_id == core + "texturesampler" or node is group:
+                continue
+            for port in node._ports.values():
+                assert port.incoming == [], "non-sampler wired: " + node.asset_id
+
+    def test_moved_handles_are_never_reused(self, matwire_c4d, monkeypatch):
+        """The spike's live failure, pinned: MoveToGroup invalidates the
+        handles, so the wiring MUST go through the group's inner nodes. The
+        fake raises on a dead handle exactly as C4D does."""
+        self._fake_maxon(matwire_c4d, monkeypatch)
+        core = matwire_c4d._RS_CORE
+        graph = _FakeUtGraph([core + "texturesampler",
+                              core + "standardmaterial"])
+        matwire_c4d._apply_unitransform_plan(
+            graph, matwire_c4d.build_unitransform_plan())
+        assert len(graph.groups) == 1  # no _DeadNodeError escaped
+
+    def test_knob_values_survive_a_shuffled_enumeration(self, matwire_c4d,
+                                                        monkeypatch):
+        """Graph enumeration order is NOT creation order — measured live:
+        three runs enumerated the same group's ports three different ways.
+        Any scheme that zips freshly-applied nodes against the plan BY
+        POSITION would write Scale's identity into Rotation on the run where
+        the order flips. Here the fake enumerates in reverse; the values must
+        still land on the right knobs."""
+        vec = self._fake_maxon(matwire_c4d, monkeypatch)
+        core = matwire_c4d._RS_CORE
+        graph = _FakeUtGraph([core + "texturesampler"])
+        inner_nodes = _FakeUtGraph.GetInnerNodes
+
+        def _reversed(self, mask=None, includeThis=False):
+            return list(reversed(inner_nodes(self, mask, includeThis)))
+
+        monkeypatch.setattr(_FakeUtGraph, "GetInnerNodes", _reversed)
+        plan = matwire_c4d.build_unitransform_plan()
+        matwire_c4d._apply_unitransform_plan(graph, plan)
+
+        group = graph.groups[0]
+        expected = {"Scale2D": vec(1.0, 1.0, 0.0), "UniScale": 1.0,
+                    "Offset": vec(0.0, 0.0, 0.0), "Rotation": 0.0}
+        for knob in plan["inputs"]:
+            assert group.port(
+                "in:ut_in_" + knob["node"].lower()).GetPortValue() \
+                == expected[knob["node"]], \
+                "%s got another knob's identity value" % knob["node"]
+
+    def test_no_samplers_creates_nothing(self, matwire_c4d, monkeypatch):
+        self._fake_maxon(matwire_c4d, monkeypatch)
+        graph = _FakeUtGraph([matwire_c4d._RS_CORE + "standardmaterial",
+                              _RS_OUTPUT_FOR_TEST])
+        matwire_c4d._apply_unitransform_plan(
+            graph, matwire_c4d.build_unitransform_plan())
+        assert graph.applied == [] and graph.groups == [], \
+            "orphan UniTransform left driving nothing"
