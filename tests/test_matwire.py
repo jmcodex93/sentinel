@@ -1414,23 +1414,34 @@ class _DeadNodeError(RuntimeError):
 
 
 class _FakeUtPort:
-    def __init__(self, owner, port_id):
+    """Speaks maxon's shape for a MISSING port: ``FindChild`` answers with a
+    NULL port object, not None, and every operation on it quietly no-ops.
+    That distinction is the whole reason ``_ut_port`` exists — a fake that
+    returned None would raise AttributeError and make an unguarded call site
+    look safe while in production it silently leaves a node at zero."""
+
+    def __init__(self, owner, port_id, null=False):
         self.owner = owner
         self.port_id = port_id
         self.incoming = []
         self.value = None
+        self.null = null
 
     def Connect(self, other):
+        if self.null or other.null:
+            return                       # maxon: silently does nothing
         other.incoming.append(self)
 
     def SetPortValue(self, value):
+        if self.null:
+            return
         self.value = value
 
     def GetPortValue(self):
-        return self.value
+        return None if self.null else self.value
 
     def IsNullValue(self):
-        return False
+        return self.null
 
 
 class _FakeUtPortList:
@@ -1472,7 +1483,7 @@ class _FakeUtNode:
     def port(self, port_id):
         self._check()
         if self._allowed is not None and port_id not in self._allowed:
-            return None
+            return _FakeUtPort(self, port_id, null=True)
         return self._ports.setdefault(port_id, _FakeUtPort(self, port_id))
 
     def GetInputs(self):
@@ -1799,6 +1810,29 @@ class TestUniTransformFallback:
         assert [n.asset_id for n in graph.nodes] == [
             core + "texturesampler", core + "standardmaterial"], \
             "nameless Value node stranded in the root graph"
+
+    def test_a_missing_port_aborts_instead_of_wiring_nothing(
+            self, matwire_c4d, monkeypatch):
+        """maxon answers a missing port with a NULL port, not None, and
+        every call on it no-ops — so an unguarded `FindChild(...).Connect()`
+        completes happily while the knob drives nothing and the samplers get
+        the inner Values' birth zeros. The group port would still read back
+        its identity, so the read-back guard cannot see this: only refusing
+        the null port can. (The fake models the null-port shape; a fake
+        returning None would raise AttributeError and hide the whole class.)
+        """
+        self._fake_maxon(matwire_c4d, monkeypatch)
+        core = matwire_c4d._RS_CORE
+        graph = _FakeUtGraph([core + "texturesampler",
+                              core + "standardmaterial"])
+        monkeypatch.setitem(_FAKE_NODE_PORTS, "net.maxon.node.type",
+                            {"datatype", "out"})        # no `in` port
+        with pytest.raises(RuntimeError, match="has no port"):
+            matwire_c4d._apply_unitransform_plan(
+                graph, matwire_c4d.build_unitransform_plan())
+        assert graph.groups == []
+        assert [n.asset_id for n in graph.nodes] == [
+            core + "texturesampler", core + "standardmaterial"]
 
     def test_a_late_failure_removes_the_whole_group(self, matwire_c4d,
                                                     monkeypatch):

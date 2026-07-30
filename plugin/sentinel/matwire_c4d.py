@@ -389,6 +389,11 @@ def _ut_port(ports, port_id, owner):
     with a null node, and ``Connect`` on one can no-op — which would leave a
     node reading its birth value (zero) while everything downstream looks
     wired. Refuse instead, so the caller degrades honestly."""
+    # NOTE: the write and the Connect on a Value node's ``in`` are both
+    # routed here and are redundant for that one port (the write fires
+    # first). Kept as belt-and-braces: every end of every wire in this
+    # function resolves the same way, so no future edit can reintroduce a
+    # bare FindChild by looking like the code next to it.
     port = ports.FindChild(port_id)
     if port is None or port.IsNullValue():
         raise RuntimeError("UniversalXform: %s has no port %r"
@@ -507,9 +512,10 @@ def _ut_build(graph, plan, samplers, made):
         made.append(node)
         with graph.BeginTransaction() as tr:
             if knob["datatype"] is not None:
-                node.GetInputs().FindChild("datatype").SetPortValue(
-                    maxon.Id(knob["datatype"]))
-            node.GetInputs().FindChild("in").SetPortValue(_ut_value(knob))
+                _ut_port(node.GetInputs(), "datatype",
+                         knob["node"]).SetPortValue(maxon.Id(knob["datatype"]))
+            _ut_port(node.GetInputs(), "in",
+                     knob["node"]).SetPortValue(_ut_value(knob))
             node.SetValue(_NAME_ATTR, maxon.String(knob["node"]))
             tr.Commit()
     maxon.GraphDescription.ApplyDescription(graph, plan["mul_desc"])
@@ -570,7 +576,13 @@ def _ut_build(graph, plan, samplers, made):
             node = _inner(knob["node"])
             in_port = maxon.GraphModelHelper.CreateInputPort(
                 group, "ut_in_" + knob["node"].lower(), knob["label"])
-            in_port.Connect(node.GetInputs().FindChild("in"))
+            # Through _ut_port like every other end: a null node here would
+            # make Connect no-op, the knob would drive nothing, and the
+            # read-back below would still pass (it reads the GROUP port,
+            # which does hold the identity) while the samplers received the
+            # inner Values' birth zeros. The one route to the 0-scale
+            # material that every other guard here would miss.
+            in_port.Connect(_ut_port(node.GetInputs(), "in", knob["node"]))
             # The identity value is written on the GROUP port, not only on
             # the inner node: once the group port drives the inner ``in``,
             # the group port is the live value — and it is born at zero, so
@@ -600,8 +612,8 @@ def _ut_build(graph, plan, samplers, made):
             _ut_port(source.GetOutputs(), out_id,
                      spec["source"]).Connect(out_port)
             for sampler in samplers:
-                out_port.Connect(
-                    sampler.GetInputs().FindChild(spec["connect_to"]))
+                out_port.Connect(_ut_port(sampler.GetInputs(),
+                                          spec["connect_to"], "sampler"))
         tr.Commit()
     return group
 
