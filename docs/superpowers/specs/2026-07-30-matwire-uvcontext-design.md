@@ -39,7 +39,7 @@ Corrección registrada en el mismo spike (objeción del usuario, verificada): el
 
 ### SPA
 
-- Sub-vista: **Projection** (SegmentedControl UV Channel / Triplanar) y **checkbox "Multiply AO into base color"** (off), junto al de leftovers. Si `uvcontext_available` es false, el selector se deshabilita con la razón inline.
+- Sub-vista: **Projection** (SegmentedControl UV Channel / Triplanar) y **checkbox "Multiply dedicated AO map into base color" (*dedicated* deliberado: en packs solo-ORM el AO vive en el canal rojo del splitter y el toggle no haría nada)** (off), junto al de leftovers. Si `uvcontext_available` es false, el selector se deshabilita con la razón inline.
 
 ## Errores / no-regresión
 

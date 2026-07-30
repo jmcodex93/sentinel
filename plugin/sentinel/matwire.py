@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Material-from-folder recognition engine (v1.32) — PURE, no ``import c4d``.
+"""Material-from-folder recognition engine (v1.33) — PURE, no ``import c4d``.
 
 Recognizes PBR texture sets from filenames (suffix tables cross-checked
 against three live market implementations — see

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""RS material writer for matwire (v1.32) — the c4d/maxon adapter.
+"""RS material writer for matwire (v1.33) — the c4d/maxon adapter.
 
 Follows the LIVE-VERIFIED recipe in
 ``docs/research/2026-07-29-matwire-spike.md`` verbatim (C4D 2026.303):

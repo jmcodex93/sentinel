@@ -820,7 +820,7 @@ class TestCreateMaterialOrdering:
                             lambda _type: _FakeMat())
         monkeypatch.setattr(
             matwire_c4d, "_layout_and_title_nodes",
-            lambda graph, titles=None: log.append("_layout_nodes"))
+            lambda graph, titles=None: log.append("_layout_and_title_nodes"))
 
     def test_graph_is_complete_before_insertion(self, matwire_c4d, monkeypatch):
         log = []
@@ -834,7 +834,7 @@ class TestCreateMaterialOrdering:
         # EVERY graph call happens before the document ever sees the material.
         assert log.index("GetGraph") < insert_at
         assert log.index("ApplyDescription") < insert_at
-        assert log.index("_layout_nodes") < insert_at
+        assert log.index("_layout_and_title_nodes") < insert_at
         # ...and the only document record is the insertion's NEWOBJ.
         assert doc.undo_operations == [
             (matwire_c4d.c4d.UNDOTYPE_NEWOBJ, doc.undo_operations[0][1])]
@@ -1169,7 +1169,7 @@ class TestUvContextPlan:
         assert max(i for i, e in enumerate(log)
                    if e == "ApplyDescription") < at
         # ...and the layout/title pass comes after.
-        assert at < log.index("_layout_nodes") < log.index("InsertMaterial")
+        assert at < log.index("_layout_and_title_nodes") < log.index("InsertMaterial")
 
 
 _RS_OUTPUT_FOR_TEST = "com.redshift3d.redshift4c4d.node.output"
