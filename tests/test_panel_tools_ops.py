@@ -1186,17 +1186,12 @@ class TestMatwireOps:
         folder = self._folder(
             tmp_path, "brick_col.png", "plaster_col.png", "wood_col.png")
 
-        removed_mats = {}
-
         def _fake_create(d, f, tex_set, name):
             if tex_set["name"] == "brick":
-                # Mirror matwire_c4d.create_material_for_set's real §8c
-                # cleanup contract: a DELETE undo record MUST balance the
-                # NEWOBJ/CHANGE records taken inside the batch's open undo
-                # bracket before the half-built material is removed.
-                mat = _FakeMatwireMat(name)
-                removed_mats["brick"] = mat
-                d.AddUndo(matwire_c4d.c4d.UNDOTYPE_DELETE, mat)
+                # Mirror the real writer's v1.32.1 failure contract: the
+                # graph is built OFF-document and insertion is the last
+                # step, so a failing set touches the document not at all —
+                # no NEWOBJ, and therefore no balancing DELETE either.
                 return {"ok": False, "material_name": name, "error": "apply_failed"}
             if tex_set["name"] == "plaster":
                 raise RuntimeError("boom")
@@ -1211,5 +1206,205 @@ class TestMatwireOps:
         assert any(row[0] == "plaster" for row in result["errors"])
         assert doc.start_undo_count == 1
         assert doc.end_undo_count == 1
-        assert (matwire_c4d.c4d.UNDOTYPE_DELETE, removed_mats["brick"]) in \
-            doc.undo_operations
+        # A failed set leaves NO undo record at all (nothing to undo/redo).
+        assert doc.undo_operations == []
+
+
+class TestListFolderFiles:
+    """_list_folder_files — the recursive lister shared by BOTH matwire ops
+    (v1.32.1): relative paths with "/" separators, sorted, dot-dirs pruned,
+    depth capped at 5 levels below the root, symlinks never followed."""
+
+    def _lister(self, sentinel_module):
+        from sentinel.ui import panel_tools_ops
+        return panel_tools_ops._list_folder_files
+
+    def test_recursive_relative_slash_sorted(self, sentinel_module, tmp_path):
+        lister = self._lister(sentinel_module)
+        (tmp_path / "b.png").write_bytes(b"x")
+        sub = tmp_path / "4k"
+        sub.mkdir()
+        (sub / "a.png").write_bytes(b"x")
+        assert lister(str(tmp_path)) == ["4k/a.png", "b.png"]
+
+    def test_dot_dirs_pruned_dot_files_kept(self, sentinel_module, tmp_path):
+        """Dot-DIRS (.git and friends) never contribute files; dot-FILES are
+        kept for flat-folder parity with the v1.32 os.listdir behavior
+        (.DS_Store falls out downstream as bad_extension, exactly as before)."""
+        lister = self._lister(sentinel_module)
+        (tmp_path / "a.png").write_bytes(b"x")
+        (tmp_path / ".DS_Store").write_bytes(b"x")
+        hidden = tmp_path / ".git"
+        hidden.mkdir()
+        (hidden / "sneaky.png").write_bytes(b"x")
+        assert lister(str(tmp_path)) == [".DS_Store", "a.png"]
+
+    def test_depth_capped_at_five_levels(self, sentinel_module, tmp_path):
+        lister = self._lister(sentinel_module)
+        deep = tmp_path
+        for name in ("a", "b", "c", "d", "e"):
+            deep = deep / name
+        deep.mkdir(parents=True)
+        (deep / "in.png").write_bytes(b"x")  # depth 5: included
+        beyond = deep / "f"
+        beyond.mkdir()
+        (beyond / "out.png").write_bytes(b"x")  # depth 6: never reached
+        assert lister(str(tmp_path)) == ["a/b/c/d/e/in.png"]
+
+    def test_symlinked_dirs_not_followed(self, sentinel_module, tmp_path):
+        import os as _os
+        lister = self._lister(sentinel_module)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "far.png").write_bytes(b"x")
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "near.png").write_bytes(b"x")
+        _os.symlink(str(outside), str(root / "link"))
+        assert lister(str(root)) == ["near.png"]
+
+
+class TestMatwireOpsPolish:
+    """v1.32.1 additions: recursive preview, ruleset suffixes with
+    warnings, leftover assignment in the preview, and opt-in leftover
+    import in create."""
+
+    _setup = TestMatwireOps._setup
+
+    def _pack(self, tmp_path, *names):
+        pack = tmp_path / "pack"
+        pack.mkdir()
+        for n in names:
+            path = pack / n
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x")
+        return str(pack)
+
+    def test_preview_recurses_into_subfolders(self, sentinel_module, monkeypatch, tmp_path):
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        folder = self._pack(tmp_path, "plaster_col.png", "maps/plaster_rough.png")
+        result = ops._op_matwire_preview({"folder": folder})
+        assert result["ok"] is True
+        rows = {r["channel"]: r["file"] for r in result["sets"][0]["channels"]}
+        assert rows == {"basecolor": "plaster_col.png",
+                        "roughness": "maps/plaster_rough.png"}
+
+    def test_preview_gains_leftovers_and_empty_warnings(self, sentinel_module, monkeypatch, tmp_path):
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        folder = self._pack(tmp_path, "plaster_col.png",
+                            "plaster_custom_mask.png", "stray_data.png")
+        result = ops._op_matwire_preview({"folder": folder})
+        assert result["ok"] is True
+        assert result["suffix_warnings"] == []
+        assert result["leftovers"] == [
+            {"file": "plaster_custom_mask.png", "set": "plaster"},
+            {"file": "stray_data.png", "set": None},
+        ]
+
+    def test_preview_ruleset_suffixes_and_warnings(self, sentinel_module, monkeypatch, tmp_path):
+        """A project matwire_suffixes ruleset extends the tables (custom
+        `difuso` recognized as basecolor); rejected keys surface by name in
+        suffix_warnings without dropping the valid ones."""
+        import sentinel.rules_context as rules_context
+
+        class _Ctx:
+            params = {"matwire_suffixes": {"basecolor": ["difuso"],
+                                           "bogus": ["x"]}}
+
+        monkeypatch.setattr(rules_context, "active_rules_for_doc",
+                            lambda doc: _Ctx())
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        folder = self._pack(tmp_path, "wall_difuso.png", "wall_rough.png")
+        result = ops._op_matwire_preview({"folder": folder})
+        assert result["ok"] is True
+        rows = {r["channel"]: r["file"] for r in result["sets"][0]["channels"]}
+        assert rows["basecolor"] == "wall_difuso.png"
+        assert result["suffix_warnings"] == ["bogus"]
+
+    def test_create_import_leftovers_routes_per_set_and_unassigned(self, sentinel_module, monkeypatch, tmp_path):
+        """import_leftovers=True: per-set leftovers ride create_material_for_set
+        via leftover_files; unassigned ones create the `<root>_leftovers`
+        material from an EMPTY set — all inside the SAME undo pair."""
+        from sentinel import matwire_c4d
+        doc = _FakeMatwireDoc()
+        ops = self._setup(monkeypatch, doc)
+        folder = self._pack(tmp_path, "plaster_col.png",
+                            "plaster_custom_mask.png", "stray_data.png")
+        calls = []
+
+        def _fake_create(d, f, tex_set, name, leftover_files=None):
+            calls.append((tex_set["name"], name, dict(tex_set["channels"]),
+                          leftover_files))
+            return {"ok": True, "material_name": name, "error": None}
+
+        monkeypatch.setattr(matwire_c4d, "create_material_for_set", _fake_create)
+        result = ops._op_matwire_create({"folder": folder,
+                                         "import_leftovers": True})
+        assert result == {"ok": True, "created": 2,
+                          "materials": ["plaster", "pack_leftovers"],
+                          "errors": []}
+        assert calls[0][0] == "plaster"
+        assert calls[0][3] == ["plaster_custom_mask.png"]
+        assert calls[1] == ("pack_leftovers", "pack_leftovers", {},
+                            ["stray_data.png"])
+        assert doc.start_undo_count == 1
+        assert doc.end_undo_count == 1
+
+    def test_create_leftovers_material_name_deduped(self, sentinel_module, monkeypatch, tmp_path):
+        from sentinel import matwire_c4d
+        doc = _FakeMatwireDoc(material_names=["pack_leftovers"])
+        ops = self._setup(monkeypatch, doc)
+        folder = self._pack(tmp_path, "plaster_col.png", "stray_data.png")
+        calls = []
+
+        def _fake_create(d, f, tex_set, name, leftover_files=None):
+            calls.append(name)
+            return {"ok": True, "material_name": name, "error": None}
+
+        monkeypatch.setattr(matwire_c4d, "create_material_for_set", _fake_create)
+        result = ops._op_matwire_create({"folder": folder,
+                                         "import_leftovers": True})
+        assert calls == ["plaster", "pack_leftovers_02"]
+        assert result["materials"] == ["plaster", "pack_leftovers_02"]
+
+    def test_create_default_off_never_passes_leftovers(self, sentinel_module, monkeypatch, tmp_path):
+        """Without import_leftovers the writer is called with the v1.32
+        4-arg signature (a fake WITHOUT the kwarg proves no kwarg rides) and
+        no leftovers material appears — the no-regression pin."""
+        from sentinel import matwire_c4d
+        doc = _FakeMatwireDoc()
+        ops = self._setup(monkeypatch, doc)
+        folder = self._pack(tmp_path, "plaster_col.png", "stray_data.png")
+        calls = []
+
+        def _fake_create(d, f, tex_set, name):  # no leftover_files kwarg
+            calls.append((tex_set["name"], name))
+            return {"ok": True, "material_name": name, "error": None}
+
+        monkeypatch.setattr(matwire_c4d, "create_material_for_set", _fake_create)
+        result = ops._op_matwire_create({"folder": folder})
+        assert result == {"ok": True, "created": 1,
+                          "materials": ["plaster"], "errors": []}
+        assert calls == [("plaster", "plaster")]
+
+    def test_create_excluded_set_leftovers_dropped(self, sentinel_module, monkeypatch, tmp_path):
+        """A leftover assigned to an EXCLUDED set is dropped (its home
+        material was excluded on purpose) — it never leaks into the
+        `<root>_leftovers` material."""
+        from sentinel import matwire_c4d
+        doc = _FakeMatwireDoc()
+        ops = self._setup(monkeypatch, doc)
+        folder = self._pack(tmp_path, "plaster_col.png",
+                            "plaster_custom_mask.png", "wood_col.png")
+        calls = []
+
+        def _fake_create(d, f, tex_set, name, leftover_files=None):
+            calls.append((tex_set["name"], leftover_files))
+            return {"ok": True, "material_name": name, "error": None}
+
+        monkeypatch.setattr(matwire_c4d, "create_material_for_set", _fake_create)
+        result = ops._op_matwire_create({"folder": folder,
+                                         "exclude": ["plaster"],
+                                         "import_leftovers": True})
+        assert result["ok"] is True
+        assert calls == [("wood", None)]

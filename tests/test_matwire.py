@@ -123,9 +123,12 @@ def test_trailing_and_pre_token_resolution_compete(matwire):
 
 
 def test_orm_with_trailing_resolution_token(matwire):
+    # v1.32.1: packed_orm is a REAL channel — res-token ranking applies.
     out = _scan(matwire, "x_ORM_2k.png")
-    reasons = {f: r for f, r in out["ignored"]}
-    assert reasons["x_ORM_2k.png"] == "packed_orm"
+    assert out["ignored"] == []
+    s = out["sets"][0]
+    assert s["name"] == "x"
+    assert s["channels"]["packed_orm"] == "x_ORM_2k.png"
 
 
 def test_spec_gloss_precedence(matwire):
@@ -143,12 +146,14 @@ def test_spec_gloss_precedence(matwire):
 
 
 def test_orm_and_unknown_and_extension(matwire):
+    # v1.32.1: the ORM file joins its set's channels (grouped by root)
+    # instead of landing in global ignored.
     out = _scan(matwire, "x_ORM.png", "x_BaseColor.png", "readme.txt", "x_thumb.png")
     reasons = {f: r for f, r in out["ignored"]}
-    assert reasons["x_ORM.png"] == "packed_orm"
     assert reasons["readme.txt"] == "bad_extension"
     assert reasons["x_thumb.png"] == "no_channel"
-    assert set(out["sets"][0]["channels"]) == {"basecolor"}
+    assert set(out["sets"][0]["channels"]) == {"basecolor", "packed_orm"}
+    assert out["sets"][0]["channels"]["packed_orm"] == "x_ORM.png"
 
 
 def test_duplicate_channel_first_wins(matwire):
@@ -186,6 +191,137 @@ def test_channel_colorspace_single_source(matwire):
 def test_dedupe_names(matwire):
     assert matwire.dedupe_names(["wood", "wood", "Plaster"], ["plaster"]) == [
         "wood", "wood_02", "Plaster_02"]
+
+
+class TestCanonicalChannels:
+    def test_contains_every_table_channel(self, matwire):
+        assert {"packed_orm", "normal_gl", "normal_dx", "normal", "basecolor",
+                "roughness", "metalness", "height", "ao", "opacity",
+                "emission", "specular", "glossiness"} == set(
+            matwire.CANONICAL_CHANNELS)
+
+    def test_packed_orm_colorspace_is_raw(self, matwire):
+        assert matwire.channel_colorspace("packed_orm") == "raw"
+
+
+class TestValidateExtraSuffixes:
+    def test_valid_and_rejected_mix_per_key(self, matwire):
+        valid, rejected = matwire.validate_extra_suffixes({
+            "basecolor": [" Col_Especial ", "ALB"],
+            "nope_channel": ["x"],          # unknown channel key
+            "roughness": "rugosidad",       # not a list
+            "metalness": ["met2", 7],       # non-str item
+            "ao": ["", "  "],               # empty entries dropped -> key dropped
+            "height": ["alto"],
+        })
+        assert valid == {"basecolor": ["col_especial", "alb"],
+                         "height": ["alto"]}
+        assert sorted(rejected) == ["ao", "metalness", "nope_channel",
+                                    "roughness"]
+
+    def test_non_dict_yields_nothing(self, matwire):
+        valid, rejected = matwire.validate_extra_suffixes(None)
+        assert valid == {} and rejected == []
+
+
+class TestExtraSuffixes:
+    def test_extras_extend_embedded_tables(self, matwire):
+        out = matwire.scan_texture_sets(
+            ["muro_col_especial.png", "muro_Roughness.png"],
+            extra_suffixes={"basecolor": ["col_especial"]})
+        s = out["sets"][0]
+        assert s["name"] == "muro"
+        assert s["channels"]["basecolor"] == "muro_col_especial.png"
+        assert s["channels"]["roughness"] == "muro_Roughness.png"
+
+    def test_embedded_synonyms_still_work_with_extras(self, matwire):
+        out = matwire.scan_texture_sets(
+            ["wood_albedo.png"], extra_suffixes={"basecolor": ["col_especial"]})
+        assert out["sets"][0]["channels"]["basecolor"] == "wood_albedo.png"
+
+    def test_without_extras_custom_suffix_stays_unknown(self, matwire):
+        out = matwire.scan_texture_sets(["muro_col_especial.png"])
+        assert out["sets"] == []
+        assert ("muro_col_especial.png", "no_channel") in out["ignored"]
+
+
+class TestPackedOrmChannel:
+    def test_orm_joins_set_with_basecolor_sibling(self, matwire):
+        out = _scan(matwire, "rock_BaseColor.jpg", "rock_ORM.png")
+        s = out["sets"][0]
+        assert set(s["channels"]) == {"basecolor", "packed_orm"}
+        assert out["ignored"] == []
+
+    def test_rootless_orm_groups_under_default_root(self, matwire):
+        out = matwire.scan_texture_sets(["orm.png"], default_root="plaster")
+        s = out["sets"][0]
+        assert s["name"] == "plaster"
+        assert s["channels"]["packed_orm"] == "orm.png"
+
+    def test_second_orm_is_duplicate_channel(self, matwire):
+        out = _scan(matwire, "z_ORM.png", "z_ARM.png", "z_BaseColor.png")
+        s = out["sets"][0]
+        assert s["channels"]["packed_orm"] == "z_ORM.png"
+        assert ("z_ARM.png", "duplicate_channel") in s["ignored"]
+
+    def test_res_token_ranking_applies_to_orm(self, matwire):
+        out = _scan(matwire, "x_ORM_2k.png", "x_ORM.png")
+        s = out["sets"][0]
+        assert s["channels"]["packed_orm"] == "x_ORM.png"
+        assert ("x_ORM_2k.png", "lower_resolution") in s["ignored"]
+
+    def test_orm_never_suppresses_dedicated_maps(self, matwire):
+        # Engine level: packed_orm coexists with dedicated roughness /
+        # metalness (the WRITER applies dedicated-wins per splitter output).
+        out = _scan(matwire, "m_ORM.png", "m_Roughness.png", "m_Metalness.png")
+        s = out["sets"][0]
+        assert set(s["channels"]) == {"packed_orm", "roughness", "metalness"}
+        assert s["ignored"] == []
+
+
+class TestLeftoverHints:
+    def test_no_channel_files_appear_in_leftover_hints(self, matwire):
+        out = _scan(matwire, "x_BaseColor.png", "x_thumb.png",
+                    "Plaster A-preview.png", "readme.txt")
+        assert out["leftover_hints"] == {
+            "x_thumb.png": "x_thumb",
+            "Plaster A-preview.png": "plaster_a_preview",
+        }
+        # ignored keeps the 2-tuple shape everywhere
+        assert ("x_thumb.png", "no_channel") in out["ignored"]
+        assert all(len(row) == 2 for row in out["ignored"])
+
+    def test_clean_scan_has_empty_hints(self, matwire):
+        out = _scan(matwire, "x_BaseColor.png")
+        assert out["leftover_hints"] == {}
+
+
+class TestAssignLeftovers:
+    def test_prefix_match_longest_name_wins(self, matwire):
+        result = matwire.assign_leftovers(
+            {"plaster_a_thumb.png": "plaster_a_thumb",
+             "plaster_readme.png": "plaster_readme",
+             "loose.png": "loose"},
+            ["plaster", "plaster_a", "wood"])
+        assert result == [
+            {"file": "plaster_a_thumb.png", "set": "plaster_a"},
+            {"file": "plaster_readme.png", "set": "plaster"},
+            {"file": "loose.png", "set": None},
+        ]
+
+    def test_exact_hint_equals_name(self, matwire):
+        result = matwire.assign_leftovers({"wood.txt": "wood"}, ["Wood"])
+        assert result == [{"file": "wood.txt", "set": "Wood"}]
+
+    def test_no_partial_word_match(self, matwire):
+        # "woodpecker" must not match set "wood" (separator required).
+        result = matwire.assign_leftovers(
+            {"woodpecker.png": "woodpecker"}, ["wood"])
+        assert result == [{"file": "woodpecker.png", "set": None}]
+
+    def test_empty_inputs(self, matwire):
+        assert matwire.assign_leftovers({}, ["a"]) == []
+        assert matwire.assign_leftovers(None, None) == []
 
 
 class TestPreviewPayload:
@@ -331,3 +467,359 @@ class TestBuildDescription:
         assert ao_desc["#<" + RS + "texturesampler.tex0/colorspace"] == \
             matwire_c4d._RS_COLORSPACE[matwire.channel_colorspace("ao")]
         assert matwire.channel_colorspace("ao") == "raw"
+
+
+class TestOrmPlan:
+    """matwire_c4d.build_orm_plan — the packed_orm splitter branch (pure
+    dict/pair assembly). Per the v1.32.1 mini-spike, ONE splitter feeding
+    TWO ports is NOT expressible declaratively (dict nesting duplicates the
+    node, no $ref mechanism), so the plan is a splitter desc for a second
+    isolated ApplyDescription PLUS imperative connect pairs."""
+
+    @pytest.fixture
+    def matwire_c4d(self, sentinel_module):
+        return importlib.import_module("sentinel.matwire_c4d")
+
+    def _plan(self, matwire, matwire_c4d, *names):
+        scan = matwire.scan_texture_sets(list(names))
+        return matwire_c4d.build_orm_plan("/tex", scan["sets"][0])
+
+    def test_orm_alone_connects_both_outputs(self, matwire, matwire_c4d):
+        plan = self._plan(matwire, matwire_c4d, "x_BaseColor.png", "x_ORM.png")
+        RS = matwire_c4d._RS_CORE
+        desc = plan["splitter_desc"]
+        assert desc["$type"] == "#" + RS + "rscolorsplitter"
+        samp = desc["#<" + RS + "rscolorsplitter.input"]
+        assert samp["#<" + RS + "texturesampler.tex0/path"] == os.path.join(
+            "/tex", "x_ORM.png")
+        # RAW via the single colorspace source (channel_colorspace)
+        assert samp["#<" + RS + "texturesampler.tex0/colorspace"] == \
+            matwire_c4d._RS_COLORSPACE[matwire.channel_colorspace("packed_orm")]
+        assert matwire.channel_colorspace("packed_orm") == "raw"
+        assert plan["connects"] == [
+            (RS + "rscolorsplitter.outg", RS + "standardmaterial.refl_roughness"),
+            (RS + "rscolorsplitter.outb", RS + "standardmaterial.metalness"),
+        ]
+        # outr (AO) is NEVER wired
+        assert not any("outr" in out for out, _ in plan["connects"])
+
+    def test_dedicated_roughness_frees_outg(self, matwire, matwire_c4d):
+        plan = self._plan(matwire, matwire_c4d,
+                          "x_Roughness.png", "x_ORM.png")
+        RS = matwire_c4d._RS_CORE
+        assert plan["connects"] == [
+            (RS + "rscolorsplitter.outb", RS + "standardmaterial.metalness")]
+
+    def test_glossiness_counts_as_dedicated_roughness(self, matwire, matwire_c4d):
+        # glossiness occupies refl_roughness (+ refl_isglossiness) — outg
+        # must not fight it.
+        plan = self._plan(matwire, matwire_c4d, "x_Gloss.png", "x_ORM.png")
+        RS = matwire_c4d._RS_CORE
+        assert plan["connects"] == [
+            (RS + "rscolorsplitter.outb", RS + "standardmaterial.metalness")]
+
+    def test_dedicated_metalness_frees_outb(self, matwire, matwire_c4d):
+        plan = self._plan(matwire, matwire_c4d,
+                          "x_Metalness.png", "x_ORM.png")
+        RS = matwire_c4d._RS_CORE
+        assert plan["connects"] == [
+            (RS + "rscolorsplitter.outg", RS + "standardmaterial.refl_roughness")]
+
+    def test_both_dedicated_emits_unconnected_orm_sampler(self, matwire, matwire_c4d):
+        # Review M1 (v1.32.1): with roughness AND metalness dedicated, the
+        # splitter would contribute nothing (outr/AO never wires) — but the
+        # recognized ORM FILE must stay VISIBLE in the graph (AO/leftover
+        # philosophy: files never vanish silently). The plan degrades to a
+        # bare unconnected RAW sampler with zero connects.
+        plan = self._plan(matwire, matwire_c4d, "x_BaseColor.png", "x_ORM.png",
+                          "x_Roughness.png", "x_Metalness.png")
+        RS = matwire_c4d._RS_CORE
+        assert plan is not None
+        assert plan["connects"] == []
+        desc = plan["splitter_desc"]
+        assert desc["$type"] == "#" + RS + "texturesampler"  # sampler, no splitter
+        assert desc["#<" + RS + "texturesampler.tex0/colorspace"] == \
+            matwire_c4d._RS_COLORSPACE[matwire.channel_colorspace("packed_orm")]
+
+    def test_no_orm_channel_plan_is_none(self, matwire, matwire_c4d):
+        plan = self._plan(matwire, matwire_c4d,
+                          "x_BaseColor.png", "x_Roughness.png")
+        assert plan is None
+
+    def test_orm_does_not_leak_into_build_description(self, matwire, matwire_c4d):
+        # The main description never references the ORM file or splitter —
+        # they live exclusively in the plan (second apply + connects).
+        scan = matwire.scan_texture_sets(["x_BaseColor.png", "x_ORM.png"])
+        desc, ao = matwire_c4d.build_description("/tex", scan["sets"][0])
+        assert "x_ORM.png" not in repr(desc)
+        assert "rscolorsplitter" not in repr(desc)
+        assert ao is None
+
+    def test_relative_subdir_path_joined_with_os_sep(self, matwire, matwire_c4d):
+        # Recursive scans deliver relative paths with "/" — the writer
+        # normalizes them through os.path.join.
+        scan = matwire.scan_texture_sets(["x_ORM.png"])
+        s = scan["sets"][0]
+        s["channels"]["packed_orm"] = "sub/dir/x_ORM.png"
+        plan = matwire_c4d.build_orm_plan("/tex", s)
+        RS = matwire_c4d._RS_CORE
+        assert plan["splitter_desc"]["#<" + RS + "rscolorsplitter.input"][
+            "#<" + RS + "texturesampler.tex0/path"] == os.path.join(
+                "/tex", "sub", "dir", "x_ORM.png")
+
+    def test_splitter_has_a_layout_column(self, matwire_c4d):
+        # Intermediary node between samplers (-600) and material (0):
+        # shares the bump/displacement column (rows are keyed by column,
+        # so cohabitation never stacks).
+        assert matwire_c4d._LAYOUT_COLS["rscolorsplitter"] == \
+            matwire_c4d._LAYOUT_COLS["bumpmap"]
+
+
+class TestLeftoverDescriptions:
+    """matwire_c4d.build_leftover_descriptions — unconnected RAW samplers
+    (AO pattern: each is an isolated second ApplyDescription scope)."""
+
+    @pytest.fixture
+    def matwire_c4d(self, sentinel_module):
+        return importlib.import_module("sentinel.matwire_c4d")
+
+    def test_samplers_raw_and_isolated_shape(self, matwire_c4d):
+        descs = matwire_c4d.build_leftover_descriptions(
+            "/tex", ["readme_preview.png", "sub/thumb.jpg"])
+        RS = matwire_c4d._RS_CORE
+        assert len(descs) == 2
+        for d in descs:
+            assert d["$type"] == "#" + RS + "texturesampler"
+            assert d["#<" + RS + "texturesampler.tex0/colorspace"] == \
+                matwire_c4d._CS_RAW
+        assert descs[0]["#<" + RS + "texturesampler.tex0/path"] == \
+            os.path.join("/tex", "readme_preview.png")
+        assert descs[1]["#<" + RS + "texturesampler.tex0/path"] == \
+            os.path.join("/tex", "sub", "thumb.jpg")
+
+    def test_empty_and_none_inputs(self, matwire_c4d):
+        assert matwire_c4d.build_leftover_descriptions("/tex", []) == []
+        assert matwire_c4d.build_leftover_descriptions("/tex", None) == []
+
+
+class TestDirectoryResolutionRanking:
+    """Review I1: the recursive lister (v1.32.1) delivers multi-res packs as
+    `1K/albedo.png` / `4K/albedo.png` — IDENTICAL filenames, so ranking from
+    the name alone collapsed them into one arbitrary winner. Directory
+    segments now supply the rank when the filename carries no token."""
+
+    def test_subfolder_pack_ranks_by_directory(self, matwire):
+        out = _scan(
+            matwire,
+            "1K/albedo.png", "1K/roughness.png",
+            "4K/albedo.png", "4K/roughness.png")
+        assert len(out["sets"]) == 1
+        s = out["sets"][0]
+        assert s["channels"]["basecolor"] == "4K/albedo.png"
+        assert s["channels"]["roughness"] == "4K/roughness.png"
+        ignored = dict(s["ignored"])
+        # The losers are LOWER RESOLUTION, not indistinguishable duplicates.
+        assert ignored["1K/albedo.png"] == "lower_resolution"
+        assert ignored["1K/roughness.png"] == "lower_resolution"
+
+    def test_deepest_directory_token_wins(self, matwire):
+        out = _scan(matwire, "8K/rock/2K/albedo.png", "8K/rock/4K/albedo.png")
+        s = out["sets"][0]
+        assert s["channels"]["basecolor"] == "8K/rock/4K/albedo.png"
+
+    def test_filename_token_beats_contradicting_directory_token(self, matwire):
+        # `1K/x_BaseColor_8k.png` really is the 8K map: the name wins.
+        out = _scan(matwire,
+                    "1K/x_BaseColor_8k.png", "8K/x_BaseColor_2k.png")
+        s = out["sets"][0]
+        assert s["channels"]["basecolor"] == "1K/x_BaseColor_8k.png"
+        assert ("8K/x_BaseColor_2k.png", "lower_resolution") in s["ignored"]
+
+    def test_untokened_directory_leaves_rank_untouched(self, matwire):
+        # A bare (no-token) file still outranks every explicit px — Shrink
+        # lesson, unchanged by the directory fallback.
+        out = _scan(matwire, "tex/x_BaseColor.png", "4K/x_BaseColor.png")
+        s = out["sets"][0]
+        assert s["channels"]["basecolor"] == "tex/x_BaseColor.png"
+        assert ("4K/x_BaseColor.png", "lower_resolution") in s["ignored"]
+
+    def test_flat_pack_is_byte_identical(self, matwire):
+        # No directory part anywhere: exactly the v1.32 behavior.
+        flat = _scan(matwire, "x_BaseColor.png", "x_Roughness.png",
+                     "x_BaseColor_2k.png")
+        s = flat["sets"][0]
+        assert s["channels"]["basecolor"] == "x_BaseColor.png"
+        assert ("x_BaseColor_2k.png", "lower_resolution") in s["ignored"]
+        assert matwire._dir_px("x_BaseColor.png") is None
+
+    def test_dir_px_helper_edges(self, matwire):
+        assert matwire._dir_px("4K/a.png") == 4096
+        assert matwire._dir_px("back4k/a.png") is None  # embedded, no boundary
+        assert matwire._dir_px("a.png") is None
+        assert matwire._dir_px("") is None
+
+
+class TestOrmContributions:
+    """Review I2: ONE source for what the packed ORM actually feeds — the
+    preview note and the writer's connect pairs read the same function."""
+
+    def test_no_dedicated_maps_feeds_both(self, matwire):
+        assert matwire.orm_contributions(
+            {"packed_orm": "x_ORM.png", "basecolor": "x_col.png"}) == \
+            ["roughness", "metalness"]
+
+    def test_dedicated_roughness_leaves_metalness_only(self, matwire):
+        assert matwire.orm_contributions(
+            {"packed_orm": "x.png", "roughness": "r.png"}) == ["metalness"]
+
+    def test_glossiness_also_occupies_refl_roughness(self, matwire):
+        assert matwire.orm_contributions(
+            {"packed_orm": "x.png", "glossiness": "g.png"}) == ["metalness"]
+
+    def test_dedicated_metalness_leaves_roughness_only(self, matwire):
+        assert matwire.orm_contributions(
+            {"packed_orm": "x.png", "metalness": "m.png"}) == ["roughness"]
+
+    def test_both_dedicated_contributes_nothing(self, matwire):
+        assert matwire.orm_contributions(
+            {"packed_orm": "x.png", "roughness": "r.png",
+             "metalness": "m.png"}) == []
+
+    def test_no_orm_or_empty(self, matwire):
+        assert matwire.orm_contributions({"basecolor": "c.png"}) == []
+        assert matwire.orm_contributions(None) == []
+
+    def test_writer_connects_follow_the_same_source(self, sentinel_module, matwire):
+        matwire_c4d = importlib.import_module("sentinel.matwire_c4d")
+        channels = {"packed_orm": "x_ORM.png", "roughness": "x_r.png"}
+        plan = matwire_c4d.build_orm_plan("/tex", {"channels": channels})
+        assert matwire.orm_contributions(channels) == ["metalness"]
+        assert [out for out, _in in plan["connects"]] == \
+            [matwire_c4d._RS_CORE + "rscolorsplitter.outb"]
+
+    def test_preview_row_carries_contributes(self, matwire):
+        scan = matwire.scan_texture_sets(
+            ["rock_ORM.png", "rock_BaseColor.png", "rock_Metalness.png"])
+        payload = matwire.preview_payload(scan, [])
+        rows = {r["channel"]: r for r in payload["sets"][0]["channels"]}
+        assert rows["packed_orm"]["contributes"] == ["roughness"]
+        # Only the ORM row carries the field — other channels stay clean.
+        assert "contributes" not in rows["basecolor"]
+
+    def test_preview_row_contributes_empty_when_both_dedicated(self, matwire):
+        scan = matwire.scan_texture_sets(
+            ["rock_ORM.png", "rock_Roughness.png", "rock_Metalness.png"])
+        payload = matwire.preview_payload(scan, [])
+        rows = {r["channel"]: r for r in payload["sets"][0]["channels"]}
+        assert rows["packed_orm"]["contributes"] == []
+
+
+class TestKindFromAssetid:
+    """Review M4: the assetid parse that shipped broken since v1.32 (every
+    material stacked in column 0.0) finally has a pin — BOTH read shapes."""
+
+    @pytest.fixture
+    def matwire_c4d(self, sentinel_module):
+        return importlib.import_module("sentinel.matwire_c4d")
+
+    def test_maxon_pair_str_form(self, matwire_c4d):
+        # What node.GetValue(assetid) really returns, str()'d.
+        value = "(com.redshift3d.redshift4c4d.nodes.core.texturesampler,)"
+        assert matwire_c4d._kind_from_assetid(value) == "texturesampler"
+
+    def test_plain_id_string_form(self, matwire_c4d):
+        value = matwire_c4d._RS_CORE + "standardmaterial"
+        assert matwire_c4d._kind_from_assetid(value) == "standardmaterial"
+
+    def test_parsed_kinds_hit_the_layout_columns(self, matwire_c4d):
+        for kind in matwire_c4d._LAYOUT_COLS:
+            pair = "(" + matwire_c4d._RS_CORE + kind + ",)"
+            assert matwire_c4d._kind_from_assetid(pair) == kind
+
+    def test_empty_and_none(self, matwire_c4d):
+        assert matwire_c4d._kind_from_assetid(None) == ""
+        assert matwire_c4d._kind_from_assetid("") == ""
+
+
+class _OrderRecordingDoc:
+    """Doc fake recording the interleaving of insertion vs graph work."""
+
+    def __init__(self, log):
+        self._log = log
+        self.undo_operations = []
+
+    def InsertMaterial(self, mat):
+        self._log.append("InsertMaterial")
+
+    def AddUndo(self, undo_type, target):
+        self._log.append(("AddUndo", undo_type))
+        self.undo_operations.append((undo_type, target))
+
+
+class TestCreateMaterialOrdering:
+    """v1.32.1 live-caught: graph transactions on an ALREADY-INSERTED
+    material each become their own document undo step, so a batch of >1
+    material needed 4+ Cmd+Z. Root fix = build the WHOLE graph on the
+    off-document material and insert LAST. These pin that ordering (and its
+    consequence for the failure path) without a real C4D."""
+
+    @pytest.fixture
+    def matwire_c4d(self, sentinel_module):
+        return importlib.import_module("sentinel.matwire_c4d")
+
+    def _install_fakes(self, matwire_c4d, monkeypatch, log, fail_on=None):
+        class _FakeMat:
+            def SetName(self, name):
+                log.append("SetName")
+
+        class _FakeGraphDescription:
+            @staticmethod
+            def GetGraph(mat, nodeSpaceId=None):
+                log.append("GetGraph")
+                return "graph"
+
+            @staticmethod
+            def ApplyDescription(graph, desc):
+                log.append("ApplyDescription")
+                if fail_on == "apply":
+                    raise RuntimeError("apply boom")
+
+        fake_maxon = type("_M", (), {
+            "GraphDescription": _FakeGraphDescription,
+            "NodeSpaceIdentifiers": type("_N", (), {"RedshiftMaterial": 1}),
+        })
+        monkeypatch.setattr(matwire_c4d, "maxon", fake_maxon)
+        monkeypatch.setattr(matwire_c4d.c4d, "BaseMaterial",
+                            lambda _type: _FakeMat())
+        monkeypatch.setattr(matwire_c4d, "_layout_nodes",
+                            lambda graph: log.append("_layout_nodes"))
+
+    def test_graph_is_complete_before_insertion(self, matwire_c4d, monkeypatch):
+        log = []
+        self._install_fakes(matwire_c4d, monkeypatch, log)
+        doc = _OrderRecordingDoc(log)
+        tex_set = {"name": "plaster", "channels": {"basecolor": "c.png"},
+                   "normal_flipy": False}
+        out = matwire_c4d.create_material_for_set(doc, "/tex", tex_set, "plaster")
+        assert out["ok"] is True
+        insert_at = log.index("InsertMaterial")
+        # EVERY graph call happens before the document ever sees the material.
+        assert log.index("GetGraph") < insert_at
+        assert log.index("ApplyDescription") < insert_at
+        assert log.index("_layout_nodes") < insert_at
+        # ...and the only document record is the insertion's NEWOBJ.
+        assert doc.undo_operations == [
+            (matwire_c4d.c4d.UNDOTYPE_NEWOBJ, doc.undo_operations[0][1])]
+        assert log[insert_at + 1] == ("AddUndo", matwire_c4d.c4d.UNDOTYPE_NEWOBJ)
+
+    def test_failure_never_touches_the_document(self, matwire_c4d, monkeypatch):
+        log = []
+        self._install_fakes(matwire_c4d, monkeypatch, log, fail_on="apply")
+        doc = _OrderRecordingDoc(log)
+        tex_set = {"name": "plaster", "channels": {"basecolor": "c.png"},
+                   "normal_flipy": False}
+        out = matwire_c4d.create_material_for_set(doc, "/tex", tex_set, "plaster")
+        assert out["ok"] is False and "apply boom" in out["error"]
+        # No insertion, hence no NEWOBJ and no balancing DELETE to take.
+        assert "InsertMaterial" not in log
+        assert doc.undo_operations == []

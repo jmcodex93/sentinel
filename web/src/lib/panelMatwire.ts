@@ -1,4 +1,4 @@
-import type { MatwireCreateResult } from "../types";
+import type { MatwireCreateResult, MatwireLeftoverRow } from "../types";
 
 /** Human labels for the engine's ignored-file reasons — pinned COMPLETE
  * against every reason plugin/sentinel/matwire.py can emit (the
@@ -8,7 +8,6 @@ import type { MatwireCreateResult } from "../types";
 export const IGNORED_REASON_LABELS: Record<string, string> = {
   lower_resolution: "lower resolution",
   duplicate_channel: "duplicate channel",
-  packed_orm: "packed ORM/ARM (v2)",
   pbr_wins: "PBR maps take precedence",
   dx_superseded: "GL normal preferred",
   no_channel: "unrecognized",
@@ -17,6 +16,76 @@ export const IGNORED_REASON_LABELS: Record<string, string> = {
 
 export function ignoredReasonLabel(reason: string): string {
   return IGNORED_REASON_LABELS[reason] ?? reason;
+}
+
+/** Display label for a channel row — engine keys pass through except the
+ * packed map, which reads as what it is (v1.32.1). */
+export function channelLabel(channel: string): string {
+  return channel === "packed_orm" ? "ORM/ARM (packed)" : channel;
+}
+
+/** Suffix note for the packed ORM/ARM channel row — what the splitter
+ * ACTUALLY feeds in this set. The list is server-derived
+ * (`matwire.orm_contributions`, the same source as the writer's connect
+ * pairs), so the note can't promise wiring the writer won't make: with
+ * dedicated roughness AND metalness maps present the ORM degrades to a
+ * bare unconnected sampler, and the row must say so (review I2). Returns
+ * null for rows that carry no `contributes` (every non-ORM channel). */
+export function packedOrmNote(contributes: string[] | undefined): string | null {
+  if (!contributes) return null;
+  if (contributes.length === 0) return "→ unconnected (dedicated maps win)";
+  return `→ ${contributes.join(" + ")}`;
+}
+
+/** Truthful Create-button count (review M1): the server also creates the
+ * catch-all `<root>_leftovers` material when leftover import is ON and at
+ * least one unrecognized file matched no set — the button used to promise
+ * only `included.length`. Zero included sets stays zero: the op returns
+ * `no_sets` before creating anything, leftovers included. */
+export function createMaterialCount(
+  includedCount: number,
+  importLeftovers: boolean,
+  leftovers: MatwireLeftoverRow[],
+): number {
+  if (includedCount === 0) return 0;
+  const hasUnassigned = importLeftovers && leftovers.some((row) => row.set === null);
+  return includedCount + (hasUnassigned ? 1 : 0);
+}
+
+/** Checkbox copy for the opt-in leftover import — pinned in the vitest so
+ * the guard and the message can't drift apart. */
+export const MATWIRE_IMPORT_LEFTOVERS_LABEL = "Import unrecognized files";
+
+/** Destination fragment rendered after a leftover filename: its assigned
+ * set's material, or the catch-all `<root>_leftovers` material when no set
+ * name prefixes the file (the server names it — the client only says
+ * where the file is headed). */
+export function leftoverDestination(set: string | null): string {
+  return set === null ? "→ leftovers material" : `→ ${set}`;
+}
+
+/** Display label for a leftover row against the LOCAL `excluded` selection
+ * state — not just the preview's raw assignment. A leftover assigned to a
+ * set the artist has since excluded from Create is DROPPED by the server
+ * (matwire_create only imports leftovers whose set exists in the create),
+ * so showing its stale "→ <set>" arrow would tell the artist one outcome
+ * while they get another. Unassigned leftovers (`set === null`) always go
+ * to the catch-all `<root>_leftovers` material regardless of exclusions. */
+export function leftoverDestinationLabel(
+  row: MatwireLeftoverRow,
+  excludedSet: Set<string>,
+): string {
+  if (row.set !== null && excludedSet.has(row.set)) {
+    return "dropped (set excluded)";
+  }
+  return leftoverDestination(row.set);
+}
+
+/** Inline note for ruleset `matwire_suffixes` keys the engine rejected —
+ * null when the ruleset is clean (the normal case renders nothing). */
+export function suffixWarningsNote(warnings: string[] | undefined): string | null {
+  if (!warnings || warnings.length === 0) return null;
+  return `Ruleset matwire_suffixes: invalid key(s) ignored — ${warnings.join(", ")}`;
 }
 
 /** Create result → toast. Per-set failures still succeed as a batch

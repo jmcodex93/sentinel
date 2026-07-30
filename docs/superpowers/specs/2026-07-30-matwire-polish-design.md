@@ -1,7 +1,7 @@
 # Matwire polish — recursivo + ORM/ARM + sufijos por ruleset + leftover (v1.32.1)
 
 **Fecha**: 2026-07-30
-**Estado**: aprobado en brainstorm (decisiones del usuario tras comparativa con TexToMatO en vivo: las 4 mejoras seleccionadas; merge de v1.32 primero, pulido como fase corta encima)
+**Estado**: LIVE-VERIFIED y mergeado (C4D 2026.303; pytest 1077 + vitest 188; bug live del usuario corregido en la raíz: el grafo se construye ANTES de insertar el material → un Cmd+Z revierte el lote entero)
 **Contexto**: pulido de v1.32.0 (mergeado y live-verified) tras auditar el control que ofrece TexToMatO (capturas del usuario, plugin de su propiedad — estudiar-sí/copiar-no). Criterio Sentinel mantenido: **convención con opinión > knobs** — TexToMatO compensa con knobs lo que no tiene de preview; nosotros ya enseñamos el resultado antes de crear. Descartados explícitamente: toggle manual de Flip Y (nuestra auto-detección GL/DX lo cubre), toggle de case-sensitivity, Color Correct/Scale-Rot-Offset por defecto (bloat de grafo). Fases propias futuras (NO este release): OpenPBR, Triplanar/UV Context, Sprite opacity, import-from-base.
 
 ## Decisiones cerradas
@@ -33,3 +33,10 @@
 ## Fuera de alcance
 
 - OpenPBR, Triplanar/UV Context, Sprite opacity, import-from-base, mapeo R/G/B configurable, Color Correct/transform nodes.
+- **`suffix_warnings` solo en el preview** (juicio fijado, review M2): `matwire_create` no repite el aviso de claves `matwire_suffixes` rechazadas — el artista lo tiene delante en la misma pantalla desde la que crea, y duplicarlo en el toast del create sería ruido, no información nueva.
+- **`assign_leftovers` ignora la subcarpeta** (juicio fijado, review M5): la asignación de leftovers casa por STEM del archivo (prefijo-más-largo contra los nombres de set), así que `4K/notas.png` se asigna igual que `notas.png` en la raíz. Con el escaneo recursivo la carpeta podría desempatar, pero el nombre es la señal que el artista controla y la que ya gobierna la agrupación de sets — desempatar por carpeta introduciría una segunda regla de identidad para el mismo problema.
+
+## Ajustes del review final de rama (v1.32.1)
+
+- **I1 — ranking de resolución por directorio**: el escaneo recursivo × agrupación por basename hacía que un pack multi-res anidado (`1K/albedo.png` + `4K/albedo.png`, exactamente el layout que motiva la feature) colapsara en un set cuyo ganador lo decidía `sorted()` (arbitrario). Cuando el NOMBRE del archivo no trae token de resolución, el rank sale ahora de los segmentos de DIRECTORIO de su ruta relativa (`_dir_px`; gana el segmento más profundo con token). El token del nombre mantiene prioridad y una carpeta plana se comporta byte-idéntico.
+- **I2 — la fila ORM dice qué aporta**: `orm_contributions` (motor puro) es la ÚNICA fuente de la regla dedicado-gana; la consumen tanto el preview (campo `contributes` en la fila `packed_orm` → `→ roughness + metalness` / `→ metalness` / `→ unconnected (dedicated maps win)`) como los connects del writer, así que la fila no puede prometer un cableado que el writer no hará.

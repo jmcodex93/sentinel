@@ -1,13 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { IGNORED_REASON_LABELS, ignoredReasonLabel, matwireToast } from "./panelMatwire";
+import {
+  IGNORED_REASON_LABELS,
+  MATWIRE_IMPORT_LEFTOVERS_LABEL,
+  channelLabel,
+  createMaterialCount,
+  ignoredReasonLabel,
+  leftoverDestination,
+  leftoverDestinationLabel,
+  matwireToast,
+  packedOrmNote,
+  suffixWarningsNote,
+} from "./panelMatwire";
 
 /** AUTHORITATIVE ignored-reason list, pinned against the engine
  * (plugin/sentinel/matwire.py — every literal appended to `ignored` /
  * `set_ignored`). If the engine grows a reason, this test is the tripwire
- * forcing a label before the SPA ships an unlabeled raw slug. */
+ * forcing a label before the SPA ships an unlabeled raw slug.
+ * v1.32.1: `packed_orm` left the list — ORM/ARM is a real channel now,
+ * not an ignore reason. */
 const ENGINE_REASONS = [
   "bad_extension",
-  "packed_orm",
   "no_channel",
   "duplicate_channel",
   "lower_resolution",
@@ -28,7 +40,6 @@ describe("IGNORED_REASON_LABELS", () => {
 
   it("uses the brief's exact copy for the spelled-out reasons", () => {
     expect(IGNORED_REASON_LABELS.lower_resolution).toBe("lower resolution");
-    expect(IGNORED_REASON_LABELS.packed_orm).toBe("packed ORM/ARM (v2)");
     expect(IGNORED_REASON_LABELS.pbr_wins).toBe("PBR maps take precedence");
     expect(IGNORED_REASON_LABELS.dx_superseded).toBe("GL normal preferred");
     expect(IGNORED_REASON_LABELS.no_channel).toBe("unrecognized");
@@ -87,5 +98,123 @@ describe("matwireToast", () => {
     const t = matwireToast({ ok: false, error: "no_document" });
     expect(t.message).toBe("Couldn't create materials.");
     expect(t.variant).toBe("warn");
+  });
+});
+
+describe("channelLabel", () => {
+  it("labels packed_orm as 'ORM/ARM (packed)'", () => {
+    expect(channelLabel("packed_orm")).toBe("ORM/ARM (packed)");
+  });
+
+  it("passes every other channel through untouched", () => {
+    expect(channelLabel("basecolor")).toBe("basecolor");
+    expect(channelLabel("roughness")).toBe("roughness");
+  });
+});
+
+describe("leftoverDestination", () => {
+  it("names the assigned set", () => {
+    expect(leftoverDestination("plaster")).toBe("→ plaster");
+  });
+
+  it("unassigned goes to the leftovers material", () => {
+    expect(leftoverDestination(null)).toBe("→ leftovers material");
+  });
+});
+
+describe("leftoverDestinationLabel", () => {
+  it("assigned + set still included shows the arrow destination", () => {
+    const label = leftoverDestinationLabel(
+      { file: "plaster_extra.png", set: "plaster" },
+      new Set(),
+    );
+    expect(label).toBe("→ plaster");
+  });
+
+  it("assigned + set excluded shows the dropped label, not a stale arrow", () => {
+    const label = leftoverDestinationLabel(
+      { file: "plaster_extra.png", set: "plaster" },
+      new Set(["plaster"]),
+    );
+    expect(label).toBe("dropped (set excluded)");
+  });
+
+  it("unassigned always goes to the leftovers material, regardless of exclusions", () => {
+    const label = leftoverDestinationLabel(
+      { file: "unknown.png", set: null },
+      new Set(["plaster"]),
+    );
+    expect(label).toBe("→ leftovers material");
+  });
+});
+
+describe("suffixWarningsNote", () => {
+  it("is null when there are no warnings", () => {
+    expect(suffixWarningsNote([])).toBeNull();
+    expect(suffixWarningsNote(undefined)).toBeNull();
+  });
+
+  it("names the rejected ruleset keys", () => {
+    expect(suffixWarningsNote(["bogus", "nope"])).toBe(
+      "Ruleset matwire_suffixes: invalid key(s) ignored — bogus, nope",
+    );
+  });
+});
+
+describe("leftover import checkbox copy", () => {
+  it("is pinned to the brief's exact label", () => {
+    expect(MATWIRE_IMPORT_LEFTOVERS_LABEL).toBe("Import unrecognized files");
+  });
+});
+
+describe("packedOrmNote", () => {
+  it("lists both fed inputs when no dedicated map competes", () => {
+    expect(packedOrmNote(["roughness", "metalness"])).toBe("→ roughness + metalness");
+  });
+
+  it("lists the single surviving input when one dedicated map wins", () => {
+    expect(packedOrmNote(["metalness"])).toBe("→ metalness");
+    expect(packedOrmNote(["roughness"])).toBe("→ roughness");
+  });
+
+  it("says the ORM ends up unconnected when dedicated maps win both", () => {
+    // The writer degrades the splitter to a bare sampler here — the preview
+    // must not read like a normal wired channel (review I2).
+    expect(packedOrmNote([])).toBe("→ unconnected (dedicated maps win)");
+  });
+
+  it("renders nothing for rows without the field (every non-ORM channel)", () => {
+    expect(packedOrmNote(undefined)).toBeNull();
+  });
+});
+
+describe("createMaterialCount", () => {
+  const unassigned = [{ file: "notes.png", set: null }];
+  const assigned = [{ file: "plaster_thumb.png", set: "plaster" }];
+
+  it("is just the included sets when leftover import is off", () => {
+    expect(createMaterialCount(3, false, unassigned)).toBe(3);
+  });
+
+  it("adds the catch-all material when an unassigned leftover would be imported", () => {
+    expect(createMaterialCount(3, true, unassigned)).toBe(4);
+  });
+
+  it("adds nothing when every leftover already has a home set", () => {
+    expect(createMaterialCount(3, true, assigned)).toBe(3);
+    expect(createMaterialCount(3, true, [])).toBe(3);
+  });
+
+  it("counts the catch-all once regardless of how many leftovers are unassigned", () => {
+    expect(
+      createMaterialCount(1, true, [
+        { file: "a.png", set: null },
+        { file: "b.png", set: null },
+      ]),
+    ).toBe(2);
+  });
+
+  it("stays at zero with no included sets (the op returns no_sets first)", () => {
+    expect(createMaterialCount(0, true, unassigned)).toBe(0);
   });
 });

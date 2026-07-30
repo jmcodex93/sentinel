@@ -1381,6 +1381,8 @@ export async function fetchMatwirePreview(folder: string): Promise<MatwirePrevie
       ],
       ignored: [["readme.txt", "bad_extension"]],
       names: ["rock_cliff"],
+      suffix_warnings: [],
+      leftovers: [{ file: "rock_cliff_extra.png", set: "rock_cliff" }],
     };
   }
   return postForm<MatwirePreviewResult>("/api/panel/tools/matwire_preview", { folder });
@@ -1389,17 +1391,21 @@ export async function fetchMatwirePreview(folder: string): Promise<MatwirePrevie
 /** `POST /api/panel/tools/matwire_create` — re-scans `folder` server-side,
  * wires one RS material per included set in a single undo. `exclude` =
  * set names to skip; `names` = per-set edited material names (server falls
- * back to the set name and dedupes). No live RS in `?mock=1` → informative
- * failure (same convention as `postRenameApply`). */
+ * back to the set name and dedupes). `importLeftovers` (default-off UI
+ * checkbox) opts unrecognized files into the import — per-set samplers or
+ * the `<root>_leftovers` material, server-side. No live RS in `?mock=1` →
+ * informative failure (same convention as `postRenameApply`). */
 export async function postMatwireCreate(
   folder: string,
   exclude: string[],
   names: Record<string, string>,
+  importLeftovers: boolean,
 ): Promise<MatwireCreateResult> {
   if (isMock()) return { ok: false, error: "mock" };
   return postForm<MatwireCreateResult>("/api/panel/tools/matwire_create", {
     folder,
     exclude,
     names,
+    import_leftovers: importLeftovers,
   });
 }

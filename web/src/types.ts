@@ -1233,10 +1233,16 @@ export interface RenameApplyResult {
 /** One channel row of a recognized texture set — see
  * `matwire.preview_payload` (colorspace comes from the engine's single
  * `channel_colorspace` table: "srgb" | "raw"). */
+/** `contributes` is present ONLY on the `packed_orm` row (v1.32.1, review
+ * I2): the standard-material inputs the packed ORM actually feeds in THIS
+ * set, server-derived from `matwire.orm_contributions` — the same function
+ * the writer's connect pairs come from. `[]` means the ORM lands as a bare
+ * unconnected sampler because dedicated maps won both outputs. */
 export interface MatwireChannelRow {
   channel: string;
   file: string;
   colorspace: string;
+  contributes?: string[];
 }
 
 /** One recognized texture set. `ignored` rows are `[filename, reason]`
@@ -1249,17 +1255,30 @@ export interface MatwireSet {
   ignored: [string, string][];
 }
 
+/** One unrecognized (`no_channel`) file with its prefix-matched destination
+ * set — `set: null` means it would land in the catch-all
+ * `<root>_leftovers` material when leftover import is on. Shape mirrors
+ * `matwire.assign_leftovers`. */
+export interface MatwireLeftoverRow {
+  file: string;
+  set: string | null;
+}
+
 /** `panel/tools/matwire_preview` response — see `_op_matwire_preview` in
  * panel_tools_ops.py. `names` is position-aligned with `sets`: the default
  * material name per set, already deduped against the Material Manager.
  * No row cap (unlike rename_preview) — a texture folder is small. `error`
  * is one of `no_document` / `redshift_unavailable` / `bad_folder` /
- * `no_sets`. */
+ * `no_sets`. v1.32.1: `suffix_warnings` = ruleset `matwire_suffixes` keys
+ * the engine rejected (empty list normally); `leftovers` = unrecognized
+ * files with their would-be destinations. */
 export interface MatwirePreviewResult {
   ok: boolean;
   sets?: MatwireSet[];
   ignored?: [string, string][];
   names?: string[];
+  suffix_warnings?: string[];
+  leftovers?: MatwireLeftoverRow[];
   error?: string;
 }
 

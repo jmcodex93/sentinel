@@ -4,14 +4,26 @@
 Follows the LIVE-VERIFIED recipe in
 ``docs/research/2026-07-29-matwire-spike.md`` verbatim (C4D 2026.303):
 
-- Material creation goes through the **material-handle** path (§8):
-  ``BaseMaterial(Mmaterial)`` + ``InsertMaterial`` + ``AddUndo(NEWOBJ)`` +
-  ``AddUndo(CHANGE)`` anchor (MANDATORY — without it the maxon Apply
-  transaction is its own undo step) + ``GetGraph(mat, ...)``. Never
-  ``GetGraph(name=...)`` (no handle → no undo anchor, no cleanup).
-- Wiring is pure GraphDescription dict syntax (§1/§2): ``"#<id"`` marks an
+- Material creation goes through the **material-handle** path (§8), but
+  with the v1.32.1 **build-before-insert** correction (live-caught, see the
+  "Corrección v1.32.1" section of the spike doc): the whole node graph is
+  built on a NOT-YET-INSERTED ``BaseMaterial(Mmaterial)`` via
+  ``GetGraph(mat, ...)`` — which works fine off-document — and only then
+  ``InsertMaterial`` + ``AddUndo(NEWOBJ)``. Graph transactions run on a
+  material the document has never seen, so they generate NO document undo
+  steps: the batch's bracket only ever records N insertions and ONE Cmd+Z
+  reverts the whole batch. (The old ``AddUndo(CHANGE)`` anchor made exactly
+  ONE material's transaction join — batches of >1 needed 4+ undos.) Never
+  ``GetGraph(name=...)`` (no handle → no graph to build on).
+- Wiring is GraphDescription dict syntax (§1/§2): ``"#<id"`` marks an
   input port, ``/child`` a group-port child (tex0). Paths are **plain str**
   (§4 — never ``pathlib.as_uri()``); colorspaces always explicit.
+  **One documented exception** (mini-spike v1.32.1): the ORM/ARM splitter
+  feeds TWO target ports from ONE node, which the dict syntax cannot
+  express (nesting duplicates the node — even the same dict instance — and
+  there is no ``$ref``). That branch alone is imperative: an isolated
+  ApplyDescription for splitter+sampler (AO pattern) followed by explicit
+  ``Connect()`` calls in one transaction — see ``_apply_orm_plan``.
 - AO sampler is a second, isolated ApplyDescription (§5).
 - Node positions via a ``SetValue`` transaction with ``maxon.Float`` (§6);
   never the arrange ``CallCommand``.
@@ -19,15 +31,17 @@ Follows the LIVE-VERIFIED recipe in
   ``bool()``/``IsPopulated()``).
 
 The CALLER (op ``matwire_create``) owns ``StartUndo``/``EndUndo`` around
-the whole batch; a failed set removes its material (``mat.Remove()``, §8c)
-and reports the error without aborting the batch.
+the whole batch; a failed set is reported without aborting the batch — and
+since insertion is the LAST step, a failure means the material never
+reached the document, so there is nothing to clean up (no ``mat.Remove()``,
+no balancing ``AddUndo(DELETE)``).
 """
 
 import os
 
 import c4d
 
-from sentinel.matwire import channel_colorspace
+from sentinel.matwire import channel_colorspace, orm_contributions
 
 try:
     import maxon
@@ -53,10 +67,14 @@ def _rs_colorspace(channel):
     return _RS_COLORSPACE[channel_colorspace(channel)]
 
 # Column x per node kind (§6 suggested layout); samplers stack on y.
+# rscolorsplitter shares the intermediary column with bump/displacement
+# (rows are keyed by COLUMN, so cohabitation never stacks — see
+# _layout_nodes).
 _LAYOUT_COLS = {
     "texturesampler": -600.0,
     "bumpmap": -300.0,
     "displacement": -300.0,
+    "rscolorsplitter": -300.0,
     "standardmaterial": 0.0,
     "output": 300.0,
 }
@@ -88,6 +106,12 @@ def _sampler(path, colorspace):
     }
 
 
+def _join(folder, rel):
+    """Join a scan-relative path (always ``/``-separated, per the recursive
+    lister contract) onto ``folder`` with the platform separator."""
+    return os.path.join(folder, *rel.split("/"))
+
+
 def build_description(folder, tex_set):
     """(main_desc, ao_desc | None) — pure dict assembly per §2/§2b and the
     Global Constraints wiring rules. The engine already enforces the
@@ -96,7 +120,7 @@ def build_description(folder, tex_set):
     channels = tex_set.get("channels") or {}
 
     def path(channel):
-        return os.path.join(folder, channels[channel])
+        return _join(folder, channels[channel])
 
     sm = "#<" + _RS_CORE + "standardmaterial."
     material = {"$type": "#" + _RS_CORE + "standardmaterial"}
@@ -144,6 +168,110 @@ def build_description(folder, tex_set):
     return desc, ao_desc
 
 
+def build_orm_plan(folder, tex_set):
+    """Pure assembly of the packed_orm splitter branch, or ``None``.
+
+    Per the v1.32.1 mini-spike (spike doc, "Mini-spike v1.32.1"): ONE
+    splitter feeding TWO target ports is NOT expressible declaratively —
+    dict nesting duplicates the node (even the same dict instance) and
+    GraphDescription has no ``$ref`` mechanism — so the plan carries a
+    splitter desc for a second ISOLATED ApplyDescription (AO pattern) plus
+    imperative ``(out_port_id, in_port_id)`` connect pairs for one
+    transaction (``_apply_orm_plan``).
+
+    Dedicated-wins per output: ``outg`` -> refl_roughness only without a
+    dedicated roughness/glossiness map (glossiness occupies refl_roughness
+    via ``refl_isglossiness``); ``outb`` -> metalness only without a
+    dedicated metalness map. ``outr`` (AO) is NEVER connected. That RULE
+    lives once, in ``matwire.orm_contributions`` — the same function the
+    preview's ``contributes`` note reads, so the row the artist sees and
+    the wiring they get can't drift (review I2). If both dedicated maps
+    exist the splitter contributes nothing: the ORM file still lands as a
+    visible unconnected sampler (M1)."""
+    channels = tex_set.get("channels") or {}
+    if "packed_orm" not in channels:
+        return None
+    split = _RS_CORE + "rscolorsplitter"
+    contributes = orm_contributions(channels)
+    connects = []
+    if "roughness" in contributes:
+        connects.append((split + ".outg",
+                         _RS_CORE + "standardmaterial.refl_roughness"))
+    if "metalness" in contributes:
+        connects.append((split + ".outb",
+                         _RS_CORE + "standardmaterial.metalness"))
+    if not connects:
+        # Both target channels covered by dedicated maps: the splitter would
+        # contribute NOTHING (outr/AO never wires) — but the ORM FILE must
+        # still be visible in the graph (same philosophy as AO/leftovers:
+        # recognized files never vanish silently; review M1, v1.32.1).
+        return {
+            "splitter_desc": _sampler(
+                _join(folder, channels["packed_orm"]),
+                _rs_colorspace("packed_orm")),
+            "connects": [],
+        }
+    return {
+        "splitter_desc": {
+            "$type": "#" + split,
+            "#<" + split + ".input": _sampler(
+                _join(folder, channels["packed_orm"]),
+                _rs_colorspace("packed_orm")),
+        },
+        "connects": connects,
+    }
+
+
+def build_leftover_descriptions(folder, files):
+    """Unconnected RAW samplers for opt-in leftover import — one isolated
+    ApplyDescription scope each (AO pattern, §5). RAW: leftovers are
+    unrecognized files, never color-managed on faith."""
+    return [_sampler(_join(folder, f), _CS_RAW) for f in (files or [])]
+
+
+def _apply_orm_plan(graph, plan):
+    """Materialize a ``build_orm_plan`` result: second isolated
+    ApplyDescription for splitter+sampler, then the connect pairs in ONE
+    transaction (mini-spike v1.32.1 recipe — sharing one splitter across
+    two ports is not expressible declaratively). Node lookup by assetid
+    substring, same discovery walk as ``_layout_nodes``."""
+    maxon.GraphDescription.ApplyDescription(graph, plan["splitter_desc"])
+    if not plan["connects"]:
+        # Both-dedicated case (review M1): the desc above was a bare
+        # unconnected ORM sampler — nothing to wire, and the splitter
+        # lookup below would rightly fail.
+        return
+    split_node = sm_node = None
+    for node in graph.GetViewRoot().GetInnerNodes(
+            mask=maxon.NODE_KIND.NODE, includeThis=False):
+        asset_id = str(node.GetValue(_ASSETID_ATTR) or "")
+        if "rscolorsplitter" in asset_id:
+            split_node = node
+        elif "standardmaterial" in asset_id:
+            sm_node = node
+    if split_node is None or sm_node is None:
+        raise RuntimeError("ORM splitter wiring: node lookup failed")
+    with graph.BeginTransaction() as tr:
+        for out_id, in_id in plan["connects"]:
+            out_port = split_node.GetOutputs().FindChild(out_id)
+            in_port = sm_node.GetInputs().FindChild(in_id)
+            out_port.Connect(in_port)
+        tr.Commit()
+
+
+def _kind_from_assetid(value):
+    """Node KIND (last dotted segment) from a raw ``assetid`` attribute read
+    — pure, so it can be pytest-pinned without a graph.
+
+    ``node.GetValue(assetid)`` returns a maxon **Pair** whose ``str()`` is
+    ``"(com...texturesampler,)"`` — verified live 2026-07-30 (v1.32.1
+    mini-spike). Without stripping the parens/comma every kind read
+    ``"texturesampler,)"``, ``_LAYOUT_COLS`` never matched, and every
+    material created since v1.32 stacked in column 0.0. A plain id string
+    (``"com...texturesampler"``) passes through unchanged."""
+    return str(value or "").strip("(),").rsplit(".", 1)[-1]
+
+
 def _layout_nodes(graph):
     """GraphDescription assigns no positions (§6) — set xpos/ypos explicitly
     so the graph never stacks at (0,0). Nodes located by assetid; rows are
@@ -154,8 +282,7 @@ def _layout_nodes(graph):
     with graph.BeginTransaction() as tr:
         for node in graph.GetViewRoot().GetInnerNodes(
                 mask=maxon.NODE_KIND.NODE, includeThis=False):
-            asset_id = str(node.GetValue(_ASSETID_ATTR) or "")
-            kind = asset_id.rsplit(".", 1)[-1]
+            kind = _kind_from_assetid(node.GetValue(_ASSETID_ATTR))
             col = _LAYOUT_COLS.get(kind, 0.0)
             index = rows.get(col, 0)
             rows[col] = index + 1
@@ -165,36 +292,40 @@ def _layout_nodes(graph):
         tr.Commit()
 
 
-def create_material_for_set(doc, folder, tex_set, name):
+def create_material_for_set(doc, folder, tex_set, name, leftover_files=None):
     """Build ONE RS Standard material for ``tex_set`` (engine shape from
-    ``matwire.scan_texture_sets``). ``name`` arrives already deduped. The
-    caller owns the undo block; any failure after insertion removes the
-    material (§8c) and is reported, never raised."""
-    mat = None
+    ``matwire.scan_texture_sets``). ``name`` arrives already deduped;
+    ``leftover_files`` (opt-in) ride along as extra unconnected RAW
+    samplers. The caller owns the undo block.
+
+    ORDERING IS THE CONTRACT (v1.32.1, live-caught): the ENTIRE graph is
+    built on the off-document material and ``InsertMaterial`` is the LAST
+    step. Graph transactions on an ALREADY-INSERTED material each generate
+    their own document undo step (that is why a 2-material batch needed 4+
+    Cmd+Z); off-document they generate none, so the batch bracket records
+    only N insertions → ONE Cmd+Z reverts everything. Consequence for the
+    failure path: anything that raises happens BEFORE insertion, the
+    document never saw the material and no undo record exists for it — so
+    there is nothing to remove and no DELETE record to balance. Just
+    report."""
     try:
         desc, ao_desc = build_description(folder, tex_set)
+        orm_plan = build_orm_plan(folder, tex_set)
         mat = c4d.BaseMaterial(c4d.Mmaterial)
         mat.SetName(name)
-        doc.InsertMaterial(mat)
-        doc.AddUndo(c4d.UNDOTYPE_NEWOBJ, mat)   # AFTER insert (NEWOBJ contract)
-        doc.AddUndo(c4d.UNDOTYPE_CHANGE, mat)   # anchor BEFORE touching the graph (§8b)
         graph = maxon.GraphDescription.GetGraph(
             mat, nodeSpaceId=maxon.NodeSpaceIdentifiers.RedshiftMaterial)
         maxon.GraphDescription.ApplyDescription(graph, desc)
+        if orm_plan is not None:
+            _apply_orm_plan(graph, orm_plan)  # mini-spike v1.32.1 recipe
         if ao_desc is not None:
             maxon.GraphDescription.ApplyDescription(graph, ao_desc)  # isolated (§5)
+        for leftover_desc in build_leftover_descriptions(folder, leftover_files):
+            maxon.GraphDescription.ApplyDescription(graph, leftover_desc)
         _layout_nodes(graph)
+        # LAST — the document's only record of this material is the insertion.
+        doc.InsertMaterial(mat)
+        doc.AddUndo(c4d.UNDOTYPE_NEWOBJ, mat)   # AFTER insert (NEWOBJ contract)
         return {"ok": True, "material_name": name, "error": None}
     except Exception as exc:
-        if mat is not None:
-            try:
-                # NEWOBJ/CHANGE were already recorded inside the batch's open
-                # undo bracket above — a bare Remove() here would leave that
-                # bracket unbalanced (redo could resurrect the half-built
-                # material). Balance it with a DELETE record first, matching
-                # the repo convention (fixes.py:258, scene_tools.py:1475).
-                doc.AddUndo(c4d.UNDOTYPE_DELETE, mat)
-                mat.Remove()
-            except Exception:
-                pass
         return {"ok": False, "material_name": name, "error": str(exc)}

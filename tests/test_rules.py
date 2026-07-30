@@ -385,3 +385,67 @@ def test_effective_params_feed_registry_consumer_from_project_machine_defaults(t
     assert consumed["presets"] == ["render", "custom"]
     assert consumed["names"] == ["locator"]
     assert consumed["safe_area_9x16"] == rules.DEFAULTS["safe_area_insets"]["9x16"]
+
+
+def test_matwire_suffixes_default_is_empty_dict():
+    assert rules.DEFAULTS["matwire_suffixes"] == {}
+
+
+def test_valid_matwire_suffixes_accepted_and_normalized(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(
+        scene_dir,
+        {"matwire_suffixes": {"basecolor": [" Diff ", "DIFFUSE"]}},
+    )
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert context.params["matwire_suffixes"] == {"basecolor": ["diff", "diffuse"]}
+    assert context.field_sources["matwire_suffixes"] == "project"
+    assert context.warnings == []
+
+
+def test_matwire_suffixes_bad_channel_rejects_entire_key_but_rest_of_file_applies(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(
+        scene_dir,
+        {
+            "standard_fps": 24,
+            "matwire_suffixes": {"not_a_channel": ["diff"]},
+        },
+    )
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert context.params["standard_fps"] == 24
+    assert context.params["matwire_suffixes"] == rules.DEFAULTS["matwire_suffixes"]
+    assert any(
+        "matwire_suffixes" in warning and "not_a_channel" in warning
+        for warning in context.warnings
+    )
+
+
+def test_matwire_suffixes_non_dict_is_rejected_but_rest_of_file_applies(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(
+        scene_dir,
+        {
+            "standard_fps": 24,
+            "matwire_suffixes": ["diff", "albedo"],
+        },
+    )
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert context.params["standard_fps"] == 24
+    assert context.params["matwire_suffixes"] == rules.DEFAULTS["matwire_suffixes"]
+    assert any(
+        "matwire_suffixes" in warning and "expected a dict" in warning
+        for warning in context.warnings
+    )

@@ -204,3 +204,120 @@ Grupo tex0 con hijos, bool ports (`refl_isglossiness`, `flipy`), enum int (`inpu
 3. El caller (op `matwire_create`) posee `StartUndo/EndUndo` alrededor del LOTE completo; los `AddUndo` por material se anidan dentro → un Cmd+Z revierte el lote entero.
 
 Gotchas en una línea: `#<` para puertos y `/` para hijos de grupo (§1) · colorspaces SIEMPRE explícitos (`RS_INPUT_COLORSPACE_SRGB|RAW`) · nunca `pathlib.as_uri()` · nunca `IsPopulated()`/`bool()` en el probe (§7) · nunca `CallCommand` de arrange · `AddUndo(CHANGE, mat)` SIEMPRE antes del primer toque al grafo (§8b) · `rsmathinv` no confirmado, no usar sin verificar (§2b).
+
+---
+
+## Mini-spike v1.32.1: rscolorsplitter
+
+**Fecha**: 2026-07-30 · **C4D**: 2026.303 (live, MCP `exec_python`) · doc throwaway `SENTINEL_ORM_SPIKE` (killed al final; doc del usuario `matwire_verify` verificado intacto, sus 7 materiales originales).
+
+**Pregunta crítica**: ¿puede GraphDescription expresar UN splitter alimentando DOS puertos destino? **NO** — veredicto: la vía del writer para el splitter es **segundo ApplyDescription aislado + connects imperativos en una transacción** (recetas abajo, todas wired-tested).
+
+### A. Puertos del nodo — confirmados por dump del nodo vivo
+
+Asset `com.redshift3d.redshift4c4d.nodes.core.rscolorsplitter` existe (`FindLatestAsset(...).IsNullValue() == False`). Ports leídos del nodo creado:
+
+```
+inputs:  ['…rscolorsplitter.input']
+outputs: ['…rscolorsplitter.outr', '…outg', '…outb', '…outa']   ← también hay outa
+```
+
+### B. Selección de puerto de salida declarativa — la sintaxis que FUNCIONA es `-> #>` + id COMPLETO
+
+Para conectar un scope hijo por un output que no es el default, la clave lleva sufijo ` -> #>` + id completo del puerto de salida:
+
+```python
+SM + "refl_roughness -> #>" + S + "rscolorsplitter.outg": splitter_scope   # OK — read-back: refl_roughness <- rscolorsplitter.outg
+```
+
+Formas que **FALLAN** (error `is not associated with any IDs`): `-> #<full-id>` sin `>` (se interpreta contra el nodo output), `-> outg` pelado, `->outg` sin espacios, `-> #>outg` corto (el `#>` exige id completo), `-> #outg`.
+
+### C. Compartir el splitter entre DOS puertos — NO expresable declarativamente (3 vías probadas, las 3 fallan)
+
+1. **Dos dicts anidados idénticos** (uno bajo `refl_roughness -> #>outg`, otro bajo `metalness -> #>outb`): census `{rscolorsplitter: 2, texturesampler: 2}` — **duplica** splitter Y sampler.
+2. **El MISMO objeto dict Python en ambas claves**: idéntico resultado — census 2/2 (la identidad de instancia no dedupea).
+3. **`$id`/`$ref`**: `{"$ref": "split1"}` → `Missing node type declaration` (no existe mecanismo de referencia; los ejemplos oficiales del SDK solo usan `$type`).
+
+Bonus descartado: **dos ApplyDescription terminales** (2º apply con `metalness -> #>outb`) — peor aún: duplica hasta el output y el standardmaterial (census `{standardmaterial: 2, output: 2, rscolorsplitter: 2}`). Un apply terminal NO matchea contra el grafo existente. (El caso AO §5 no duplica porque su scope raíz es un sampler aislado, no el terminal.)
+
+### D. Receta imperativa — VERIFIED (la que usa el writer)
+
+```python
+# 1) apply principal SIN splitter; 2) apply aislado splitter+sampler (patrón AO §5):
+maxon.GraphDescription.ApplyDescription(graph, {
+    "$type": "#" + S + "rscolorsplitter",
+    "#<" + S + "rscolorsplitter.input": sampler(orm_path, "RS_INPUT_COLORSPACE_RAW"),
+})
+# 3) localizar splitter + standardmaterial por assetid (GetInnerNodes, §6) y conectar:
+with graph.BeginTransaction() as tr:
+    split_node.GetOutputs().FindChild(S + "rscolorsplitter.outg").Connect(
+        sm_node.GetInputs().FindChild(S + "standardmaterial.refl_roughness"))
+    split_node.GetOutputs().FindChild(S + "rscolorsplitter.outb").Connect(
+        sm_node.GetInputs().FindChild(S + "standardmaterial.metalness"))
+    tr.Commit()
+```
+
+Read-back tras la receta completa (material `spike_imperative`):
+
+```
+census: {standardmaterial: 1, texturesampler: 2, output: 1, rscolorsplitter: 1}   ← UN splitter, cero duplicación
+refl_roughness <- rscolorsplitter.outg
+metalness      <- rscolorsplitter.outb
+splitter.input <- texturesampler.outcolor
+outr outgoing conns: 0                                                            ← AO libre, jamás conectado
+```
+
+**Decisión del writer**: vía imperativa SIEMPRE que el splitter exista (1 o 2 connects — un solo code path, la lista de pares varía); la forma declarativa `-> #>` (§B) queda documentada pero sin uso (solo cubriría el caso de un único output y bifurcaría la receta). Si AMBOS mapas dedicados existen, el splitter no contribuiría nada (outr nunca se conecta) → **no se crea** (skip total, decisión de juicio anotada).
+
+**Honestidad (review M2)**: el Cmd+Z del recipe imperativo (transacción de Connects bajo el anchor CHANGE) NO se ejercitó en este mini-spike — queda en la checklist live de v1.32.1 junto con la verificación visual del layout en columnas (el bug del Pair en `_layout_nodes` significa que el layout de v1.32 nunca se vio funcionando). **Ajuste post-review (M1)**: con roughness+metalness dedicados el plan ya no se omite — degrada a un sampler ORM suelto sin conectar (filosofía AO/leftover: los archivos reconocidos nunca desaparecen en silencio); `_apply_orm_plan` retorna antes del lookup cuando `connects` está vacío.
+
+---
+
+## Corrección v1.32.1 (live, lote > 1 material)
+
+**⚠️ LA RECETA DE UNDO DEL §8 (y del punto 2.a/2.f/3 de "Receta para `matwire_c4d.py`") ES INCORRECTA PARA LOTES.** Lo que sigue la reemplaza. No re-derives la anterior.
+
+**Fecha**: 2026-07-30 · **C4D**: 2026.303 (live, MCP `exec_python`) · reportado por el usuario en producción.
+
+**Síntoma**: crear 2 materiales pedía **4+ Cmd+Z** y aun así no dejaba la escena limpia. El contrato "un Cmd+Z revierte el lote" estaba roto.
+
+**Causa raíz**: las transacciones maxon que corren sobre un material **YA INSERTADO** en el documento (`ApplyDescription`, la transacción de `Connect` del ORM, la transacción de `SetValue` del layout) generan **cada una su propio paso de undo de documento**. El ancla `AddUndo(UNDOTYPE_CHANGE, mat)` del §8b solo hacía que se uniera la transacción de **UN** material — por eso el spike de un solo material (§8b) pasó y el bug se coló hasta producción. Es la limitación real del ancla, no una regresión del writer.
+
+**Fix**: construir **TODO el grafo sobre un `BaseMaterial` AÚN NO INSERTADO** y insertar al final. `maxon.GraphDescription.GetGraph(mat, nodeSpaceId=…)` funciona perfectamente sobre un material fuera del documento (verificado). Así el documento solo ve N inserciones dentro del `StartUndo`/`EndUndo` del lote → **UN** paso de undo.
+
+```python
+doc.StartUndo()                                   # el caller, alrededor del LOTE
+for name, desc in jobs:
+    mat = c4d.BaseMaterial(c4d.Mmaterial)
+    mat.SetName(name)
+    graph = maxon.GraphDescription.GetGraph(       # OK fuera del documento
+        mat, nodeSpaceId=maxon.NodeSpaceIdentifiers.RedshiftMaterial)
+    maxon.GraphDescription.ApplyDescription(graph, desc)
+    ...  # ORM connects, AO, leftovers, layout — TODO aquí, sin doc
+    doc.InsertMaterial(mat)                        # ÚLTIMO paso
+    doc.AddUndo(c4d.UNDOTYPE_NEWOBJ, mat)          # DESPUÉS de insertar
+doc.EndUndo()
+```
+
+Prueba live del coordinador (2 materiales, doc throwaway):
+
+```
+mats: ['spikeB','spikeA'];  undo #1 -> 0 materiales   (UN paso, ambos fuera)
+```
+
+Verificación del writer real (op `panel/tools/matwire_create`, 2 sets, doc throwaway con `SetDocumentPath` al folder del ruleset):
+
+```
+op_result: {'ok': True, 'created': 2, 'materials': ['plaster','wood'], 'errors': []}
+census:    plaster {output, standardmaterial, bumpmap, texturesampler x3}   cols 300/0/-300/-600
+           wood    {output, standardmaterial, texturesampler x2}            cols 300/0/-600
+conns:     plaster base_color=1, refl_roughness=1, bump_input=1
+           wood    base_color=1, refl_roughness=1, bump_input=0
+undo_steps_to_zero: 1   (0 materiales restantes)
+```
+
+**Corolarios que cambian el §8:**
+
+- El ancla `AddUndo(c4d.UNDOTYPE_CHANGE, mat)` **ya no se usa** — su único propósito era hacer que la transacción se uniera, y build-before-insert lo vuelve innecesario. Mantenerlo sería ruido.
+- El **cleanup por fallo (§8c) desaparece**: como la inserción es el ÚLTIMO paso, cualquier excepción ocurre con el material FUERA del documento — no hay nada que quitar, ni registro `NEWOBJ` que balancear con un `UNDOTYPE_DELETE`. El writer solo reporta el error y el lote sigue. (`mat.Remove()` sigue siendo válido como API; simplemente ya no hay caso donde haga falta aquí.)
+- Lo demás del §8 sigue en pie: `BaseMaterial(c4d.Mmaterial)` (type 5703), handle-sí / `GetGraph(name=…)`-no, `AddUndo(NEWOBJ)` DESPUÉS de insertar.
