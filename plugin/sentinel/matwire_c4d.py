@@ -42,7 +42,8 @@ import os
 import c4d
 
 from sentinel.common.helpers import safe_print
-from sentinel.matwire import ao_destination, channel_colorspace, orm_contributions
+from sentinel.matwire import (ao_destination, channel_colorspace,
+                              gloss_destination, orm_contributions)
 
 try:
     import maxon
@@ -57,6 +58,70 @@ _CS_SRGB = "RS_INPUT_COLORSPACE_SRGB"
 _CS_RAW = "RS_INPUT_COLORSPACE_RAW"
 _ASSETID_ATTR = "net.maxon.node.attribute.assetid"
 _RS_UVCTX = _RS_CORE + "uvcontextprojection"
+
+# Port ids measured live in the Task 1 spike (docs/research/
+# 2026-07-30-openpbr-spike.md): rsmathinv is born with math_op = 20, and
+# 20 was confirmed by render oracle to be `1 - x`. Written explicitly on
+# every use — never left to the node default (colorspace/flipy principle).
+_RS_INVERT = _RS_CORE + "rsmathinv"
+_RS_INVERT_INPUT = _RS_INVERT + ".input"
+_RS_INVERT_MATH_OP = _RS_INVERT + ".math_op"
+_RS_INVERT_OP_INVERT = 20          # measured: 1 - x
+
+#: Material type -> BRDF node id. OpenPBR first: it is the DEFAULT.
+BRDF_NODES = {
+    "openpbr": _RS_CORE + "openpbrmaterial",
+    "standard": _RS_CORE + "standardmaterial",
+}
+MATERIAL_TYPES = tuple(BRDF_NODES)
+DEFAULT_MATERIAL = "openpbr"
+
+#: Channel -> BRDF input port, per material type. The Standard column was
+#: read from the v1.33 writer (where these ids were inline); the OpenPBR
+#: column from the live node, cross-checked against TexToMatO
+#: (Salad/Redshift/redshift_helper.py:406-445 — facts taken, no code).
+BRDF_PORTS = {
+    "openpbr": {
+        "basecolor": "base_color",
+        "roughness": "specular_roughness",
+        "metalness": "base_metalness",
+        "specular": "specular_color",
+        "opacity": "geometry_opacity",
+        "bump": "geometry_normal",
+        "emission_color": "emission_color",
+        "emission_amount": "emission_luminance",
+    },
+    "standard": {
+        "basecolor": "base_color",
+        "roughness": "refl_roughness",
+        "metalness": "metalness",
+        "specular": "refl_color",
+        "opacity": "opacity_color",
+        "bump": "bump_input",
+        "emission_color": "emission_color",
+        "emission_amount": "emission_weight",
+    },
+}
+
+#: The emission amount each BRDF needs for a VISIBLE emission. Both ports
+#: are born at 0 (measured), so this is always written — the v1.32
+#: differential correction, now per type. The two numbers are NOT
+#: interchangeable: Standard's is a 0-1 weight, OpenPBR's is a luminance
+#: (nits, not a weight — equivalence with Standard is not scene-independent).
+#: 1000 is the HDR reference white; it renders clearly visible, the goal
+#: inherited from v1.32 (emission must never ship invisible). Measured in
+#: the Task 1 spike (docs/research/2026-07-30-openpbr-spike.md).
+BRDF_EMISSION_AMOUNT = {"standard": 1.0, "openpbr": 1000.0}
+
+
+def _brdf(material):
+    """(node id, port table, normalized key) for a material type,
+    defaulting on anything unknown. The ops layer normalizes at the
+    boundary, so this default is belt-and-braces rather than the
+    contract."""
+    key = material if material in BRDF_NODES else DEFAULT_MATERIAL
+    return BRDF_NODES[key], BRDF_PORTS[key], key
+
 
 #: Projection selector value -> the node's ``proj_type`` enum (measured
 #: live, spike 2026-07-30: 1 = UV Channel, 2 = Tri-Planar). The strings are
@@ -85,7 +150,9 @@ _LAYOUT_COLS = {
     "displacement": -300.0,
     "rscolorsplitter": -300.0,
     "rscolorlayer": -300.0,
+    "rsmathinv": -300.0,            # glossiness -> roughness invert (OpenPBR)
     "standardmaterial": 0.0,
+    "openpbrmaterial": 0.0,
     "output": 300.0,
 }
 _LAYOUT_ROW_STEP = 220.0
@@ -107,6 +174,7 @@ NODE_TITLES = {
     "rscolorsplitter": "ORM Split",
     "bumpmap": "Bump",
     "displacement": "Displacement",
+    "rsmathinv": "Gloss → Roughness",
 }
 
 #: Semantic titles for the SAMPLERS, keyed by the channel they carry.
@@ -155,6 +223,24 @@ def uvcontext_available():
         desc = repo.FindLatestAsset(
             maxon.AssetTypes.NodeTemplate(),
             maxon.Id(_RS_UVCTX),
+            maxon.Id(), maxon.ASSET_FIND_MODE.LATEST)
+        return not desc.IsNullValue()
+    except Exception:
+        return False
+
+
+def openpbr_available():
+    """Probe the OpenPBR BRDF node. Same ``IsNullValue()`` idiom as
+    ``redshift_available``/``uvcontext_available`` — a bogus id still
+    returns a truthy AssetDescription, so ``bool()`` is not a probe.
+    Confirmed live 2026-07-30: the node probes True in C4D 2026.303."""
+    if not MAXON_AVAILABLE:
+        return False
+    try:
+        repo = maxon.AssetInterface.GetUserPrefsRepository()
+        desc = repo.FindLatestAsset(
+            maxon.AssetTypes.NodeTemplate(),
+            maxon.Id(BRDF_NODES["openpbr"]),
             maxon.Id(), maxon.ASSET_FIND_MODE.LATEST)
         return not desc.IsNullValue()
     except Exception:
@@ -632,11 +718,19 @@ def _join(folder, rel):
     return os.path.join(folder, *rel.split("/"))
 
 
-def build_description(folder, tex_set, multiply_ao=False):
+def build_description(folder, tex_set, multiply_ao=False,
+                      material=DEFAULT_MATERIAL):
     """(main_desc, ao_desc | None) — pure dict assembly per §2/§2b and the
     Global Constraints wiring rules. The engine already enforces the
     channel precedences (glossiness never coexists with roughness/metalness,
     normal is a single resolved key), so each key is written at most once.
+
+    ``material`` ("openpbr" | "standard", default OpenPBR — v1.34) selects
+    the BRDF node and its port table via ``_brdf``; unknown values default
+    rather than raise (the ops layer normalizes at the boundary). OpenPBR
+    has no ``specular_isglossiness`` port (measured live), so a glossiness
+    map there is inverted through an ``rsmathinv`` node instead of the
+    native bool — see ``gloss_destination``.
 
     v1.33 adds two nodes on the basecolor branch:
 
@@ -669,11 +763,12 @@ def build_description(folder, tex_set, multiply_ao=False):
     def path(channel):
         return _join(folder, channels[channel])
 
-    sm = "#<" + _RS_CORE + "standardmaterial."
+    node_id, ports, material = _brdf(material)
+    sm = "#<" + node_id + "."
     cc = _RS_CORE + "rscolorcorrection"
     layer = _RS_CORE + "rscolorlayer"
     ao_dest = ao_destination(channels, multiply_ao)
-    material = {"$type": "#" + _RS_CORE + "standardmaterial"}
+    brdf = {"$type": "#" + node_id}
     if "basecolor" in channels:
         base_branch = {
             "$type": "#" + cc,
@@ -692,11 +787,11 @@ def build_description(folder, tex_set, multiply_ao=False):
                 "#<" + layer + ".layer1_enable": True,
                 "#<" + layer + ".layer1_blend_mode": 4,  # Multiply (measured)
             }
-        material[sm + "base_color"] = base_branch
+        brdf[sm + ports["basecolor"]] = base_branch
     if "roughness" in channels:
-        material[sm + "refl_roughness"] = _sampler(path("roughness"), _rs_colorspace("roughness"))
+        brdf[sm + ports["roughness"]] = _sampler(path("roughness"), _rs_colorspace("roughness"))
     if "metalness" in channels:
-        material[sm + "metalness"] = _sampler(path("metalness"), _rs_colorspace("metalness"))
+        brdf[sm + ports["metalness"]] = _sampler(path("metalness"), _rs_colorspace("metalness"))
     if "normal" in channels:
         bump = {
             "$type": "#" + _RS_CORE + "bumpmap",
@@ -711,20 +806,38 @@ def build_description(folder, tex_set, multiply_ao=False):
             # El write explícito se queda como endurecimiento.)
             "#<" + _RS_CORE + "bumpmap.flipy": bool(tex_set.get("normal_flipy")),
         }
-        material[sm + "bump_input"] = bump
+        brdf[sm + ports["bump"]] = bump
     if "opacity" in channels:
-        material[sm + "opacity_color"] = _sampler(path("opacity"), _rs_colorspace("opacity"))
+        brdf[sm + ports["opacity"]] = _sampler(path("opacity"), _rs_colorspace("opacity"))
     if "emission" in channels:
-        material[sm + "emission_color"] = _sampler(path("emission"), _rs_colorspace("emission"))
-        material[sm + "emission_weight"] = 1.0  # literal + sampler, same scope (§2b)
+        brdf[sm + ports["emission_color"]] = _sampler(path("emission"), _rs_colorspace("emission"))
+        # ALWAYS written: both amount ports are born at 0 (measured), so
+        # leaving it default ships invisible emission — the v1.32
+        # differential correction, now per BRDF (the two values are NOT
+        # interchangeable: weight vs luminance).
+        brdf[sm + ports["emission_amount"]] = BRDF_EMISSION_AMOUNT[material]
     if "specular" in channels:
-        material[sm + "refl_color"] = _sampler(path("specular"), _rs_colorspace("specular"))
-    if "glossiness" in channels:
-        material[sm + "refl_roughness"] = _sampler(path("glossiness"), _rs_colorspace("glossiness"))
-        material[sm + "refl_isglossiness"] = True  # no invert node
+        brdf[sm + ports["specular"]] = _sampler(path("specular"), _rs_colorspace("specular"))
+    gloss_dest = gloss_destination(channels, material)
+    if gloss_dest is not None:
+        gloss = _sampler(path("glossiness"), _rs_colorspace("glossiness"))
+        if gloss_dest == "roughness_inverted":
+            # OpenPBR has no isglossiness port (measured), so the map is
+            # inverted into roughness. This is the node v1.32 catalogued
+            # and deliberately left unused — the native bool made it bloat
+            # THERE; here it is the only correct wiring. math_op = 20 is
+            # the measured invert operation (1 - x) — written explicitly,
+            # never inherited from the node's default (Task 1 spike,
+            # docs/research/2026-07-30-openpbr-spike.md).
+            gloss = {"$type": "#" + _RS_INVERT,
+                     "#<" + _RS_INVERT_INPUT: gloss,
+                     "#<" + _RS_INVERT_MATH_OP: _RS_INVERT_OP_INVERT}
+        brdf[sm + ports["roughness"]] = gloss
+        if gloss_dest == "roughness_isglossiness":
+            brdf[sm + "refl_isglossiness"] = True  # Standard only
     desc = {
         "$type": "#" + _RS_OUTPUT,
-        "#<" + _RS_OUTPUT + ".surface": material,
+        "#<" + _RS_OUTPUT + ".surface": brdf,
     }
     if "height" in channels:
         desc["#<" + _RS_OUTPUT + ".displacement"] = {
@@ -737,7 +850,7 @@ def build_description(folder, tex_set, multiply_ao=False):
     return desc, ao_desc
 
 
-def build_orm_plan(folder, tex_set):
+def build_orm_plan(folder, tex_set, material=DEFAULT_MATERIAL):
     """Pure assembly of the packed_orm splitter branch, or ``None``.
 
     Per the v1.32.1 mini-spike (spike doc, "Mini-spike v1.32.1"): ONE
@@ -760,15 +873,15 @@ def build_orm_plan(folder, tex_set):
     channels = tex_set.get("channels") or {}
     if "packed_orm" not in channels:
         return None
+    node_id, ports, _ = _brdf(material)
     split = _RS_CORE + "rscolorsplitter"
     contributes = orm_contributions(channels)
     connects = []
     if "roughness" in contributes:
-        connects.append((split + ".outg",
-                         _RS_CORE + "standardmaterial.refl_roughness"))
+        connects.append((split + ".outg", node_id + "." + ports["roughness"]))
     if "metalness" in contributes:
-        connects.append((split + ".outb",
-                         _RS_CORE + "standardmaterial.metalness"))
+        connects.append((split + ".outb", node_id + "." + ports["metalness"]))
+    brdf_kind = node_id.rsplit(".", 1)[-1]   # "openpbrmaterial" | "standardmaterial"
     if not connects:
         # Both target channels covered by dedicated maps: the splitter would
         # contribute NOTHING (outr/AO never wires) — but the ORM FILE must
@@ -779,6 +892,7 @@ def build_orm_plan(folder, tex_set):
                 _join(folder, channels["packed_orm"]),
                 _rs_colorspace("packed_orm")),
             "connects": [],
+            "brdf_kind": brdf_kind,
         }
     return {
         "splitter_desc": {
@@ -788,6 +902,7 @@ def build_orm_plan(folder, tex_set):
                 _rs_colorspace("packed_orm")),
         },
         "connects": connects,
+        "brdf_kind": brdf_kind,
     }
 
 
@@ -816,7 +931,7 @@ def _apply_orm_plan(graph, plan):
         asset_id = str(node.GetValue(_ASSETID_ATTR) or "")
         if "rscolorsplitter" in asset_id:
             split_node = node
-        elif "standardmaterial" in asset_id:
+        elif plan["brdf_kind"] in asset_id:
             sm_node = node
     if split_node is None or sm_node is None:
         raise RuntimeError("ORM splitter wiring: node lookup failed")
@@ -927,8 +1042,9 @@ def _layout_and_title_nodes(graph, titles=None):
 
 
 def create_material_for_set(doc, folder, tex_set, name, leftover_files=None,
-                            multiply_ao=False, projection="uv"):
-    """Build ONE RS Standard material for ``tex_set`` (engine shape from
+                            multiply_ao=False, projection="uv",
+                            material=DEFAULT_MATERIAL):
+    """Build ONE RS material for ``tex_set`` (engine shape from
     ``matwire.scan_texture_sets``). ``name`` arrives already deduped;
     ``leftover_files`` (opt-in) ride along as extra unconnected RAW
     samplers. The caller owns the undo block.
@@ -950,11 +1066,15 @@ def create_material_for_set(doc, folder, tex_set, name, leftover_files=None,
     group — the same single point of tiling edit, built from primitives that
     exist in every Redshift version. Projection stays UV-only there: the
     context is what makes tri-planar a property of the shared control, and
-    the SPA disables the selector accordingly."""
+    the SPA disables the selector accordingly. ``material`` ("openpbr" |
+    "standard", default OpenPBR — v1.34) selects the BRDF via ``_brdf``,
+    threaded into both ``build_description`` and ``build_orm_plan`` so the
+    ORM splitter targets whichever BRDF is actually in the graph."""
     try:
         desc, ao_desc = build_description(folder, tex_set,
-                                          multiply_ao=multiply_ao)
-        orm_plan = build_orm_plan(folder, tex_set)
+                                          multiply_ao=multiply_ao,
+                                          material=material)
+        orm_plan = build_orm_plan(folder, tex_set, material=material)
         uvctx_plan = build_uvcontext_plan(
             PROJECTION_TYPES.get(projection, PROJECTION_TYPES["uv"]))
         titles = build_node_titles(folder, tex_set, leftover_files)

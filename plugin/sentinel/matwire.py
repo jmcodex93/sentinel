@@ -234,6 +234,23 @@ def ao_destination(channels, multiply_ao):
     return "unconnected"
 
 
+def gloss_destination(channels, material):
+    """Where a set's GLOSSINESS map lands — the single source for both the
+    writer's graph and the preview's row (same discipline as
+    ``ao_destination``/``orm_contributions``).
+
+    ``None`` when the set has no glossiness. On Standard the map goes
+    straight to the roughness port and the native ``refl_isglossiness``
+    bool flips the interpretation — no extra node. OpenPBR has NO such port
+    (measured live: ``specular_isglossiness`` is absent), so the only
+    correct wiring interposes an invert node."""
+    channels = channels or {}
+    if "glossiness" not in channels:
+        return None
+    return ("roughness_isglossiness" if material == "standard"
+            else "roughness_inverted")
+
+
 def scan_texture_sets(filenames, default_root="material", extra_suffixes=None):
     """``default_root`` names the set for ROOTLESS files ("albedo.png") —
     the caller passes the folder's basename so bare-channel packs group

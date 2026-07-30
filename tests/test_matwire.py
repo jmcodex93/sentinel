@@ -403,7 +403,8 @@ class TestBuildDescription:
 
     def test_full_set_desc_shape(self, matwire, matwire_c4d):
         tex_set = self._tex_set(matwire)
-        desc, ao_desc = matwire_c4d.build_description("/tex", tex_set)
+        desc, ao_desc = matwire_c4d.build_description("/tex", tex_set,
+                                                       material="standard")
 
         RS = matwire_c4d._RS_CORE
         sm = "#<" + RS + "standardmaterial."
@@ -466,7 +467,8 @@ class TestBuildDescription:
         # false; the suspected live bug was a maxon.Bool truthiness read
         # artifact in the verification harness.
         scan = matwire.scan_texture_sets(["a_BaseColor.png", "a_Normal_GL.png"])
-        desc, _ao = matwire_c4d.build_description("/f", scan["sets"][0])
+        desc, _ao = matwire_c4d.build_description("/f", scan["sets"][0],
+                                                   material="standard")
         RS = matwire_c4d._RS_CORE
         material = desc["#<" + matwire_c4d._RS_OUTPUT + ".surface"]
         bump = material["#<" + RS + "standardmaterial.bump_input"]
@@ -476,7 +478,8 @@ class TestBuildDescription:
         scan = matwire.scan_texture_sets(
             ["metal_BaseColor.jpg", "metal_Gloss.jpg", "metal_AO.png"])
         tex_set = scan["sets"][0]
-        desc, ao_desc = matwire_c4d.build_description("/tex", tex_set)
+        desc, ao_desc = matwire_c4d.build_description("/tex", tex_set,
+                                                       material="standard")
 
         RS = matwire_c4d._RS_CORE
         sm = "#<" + RS + "standardmaterial."
@@ -507,9 +510,10 @@ class TestOrmPlan:
     def matwire_c4d(self, sentinel_module):
         return importlib.import_module("sentinel.matwire_c4d")
 
-    def _plan(self, matwire, matwire_c4d, *names):
+    def _plan(self, matwire, matwire_c4d, *names, material="standard"):
         scan = matwire.scan_texture_sets(list(names))
-        return matwire_c4d.build_orm_plan("/tex", scan["sets"][0])
+        return matwire_c4d.build_orm_plan("/tex", scan["sets"][0],
+                                          material=material)
 
     def test_orm_alone_connects_both_outputs(self, matwire, matwire_c4d):
         plan = self._plan(matwire, matwire_c4d, "x_BaseColor.png", "x_ORM.png")
@@ -900,7 +904,8 @@ class TestColorCorrectAndAoMultiply:
 
     def test_color_correct_always_interposed(self, matwire, matwire_c4d):
         scan = matwire.scan_texture_sets(["p_BaseColor.png", "p_Roughness.png"])
-        desc, _ao = matwire_c4d.build_description("/tex", scan["sets"][0])
+        desc, _ao = matwire_c4d.build_description("/tex", scan["sets"][0],
+                                                  material="standard")
         RS = matwire_c4d._RS_CORE
         material = desc["#<" + matwire_c4d._RS_OUTPUT + ".surface"]
         cc = material["#<" + RS + "standardmaterial.base_color"]
@@ -928,14 +933,14 @@ class TestColorCorrectAndAoMultiply:
         RS = matwire_c4d._RS_CORE
         # OFF: AO stays a loose sampler (v1.32 behavior)
         desc_off, ao_off = matwire_c4d.build_description(
-            "/tex", tex_set, multiply_ao=False)
+            "/tex", tex_set, multiply_ao=False, material="standard")
         assert ao_off is not None
         assert desc_off["#<" + matwire_c4d._RS_OUTPUT + ".surface"][
             "#<" + RS + "standardmaterial.base_color"]["$type"] == \
             "#" + RS + "rscolorcorrection"
         # ON: color layer between the corrected color and base_color; no loose AO
         desc_on, ao_on = matwire_c4d.build_description(
-            "/tex", tex_set, multiply_ao=True)
+            "/tex", tex_set, multiply_ao=True, material="standard")
         assert ao_on is None
         layer = desc_on["#<" + matwire_c4d._RS_OUTPUT + ".surface"][
             "#<" + RS + "standardmaterial.base_color"]
@@ -1869,3 +1874,123 @@ class TestUniTransformFallback:
             graph, matwire_c4d.build_unitransform_plan())
         assert graph.applied == [] and graph.groups == [], \
             "orphan UniTransform left driving nothing"
+
+
+class TestGlossDestination:
+    """Single source for the preview row and the writer — the row can never
+    promise a wiring the writer won't make (ao_destination discipline)."""
+
+    def test_no_glossiness_channel_has_no_destination(self, matwire):
+        assert matwire.gloss_destination({"roughness": "r.png"}, "openpbr") is None
+
+    def test_standard_uses_the_native_bool(self, matwire):
+        assert matwire.gloss_destination({"glossiness": "g.png"}, "standard") \
+            == "roughness_isglossiness"
+
+    def test_openpbr_needs_an_invert_node(self, matwire):
+        # OpenPBR has no specular_isglossiness port (measured live), so the
+        # only correct wiring is an interposed invert.
+        assert matwire.gloss_destination({"glossiness": "g.png"}, "openpbr") \
+            == "roughness_inverted"
+
+
+def _flat_keys(node):
+    keys = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            keys.append(key)
+            keys.extend(_flat_keys(value))
+    return keys
+
+
+class TestMaterialTypes:
+    """OpenPBR is the default; Standard stays reachable and unchanged."""
+
+    @pytest.fixture
+    def matwire_c4d(self, sentinel_module):
+        return importlib.import_module("sentinel.matwire_c4d")
+
+    def test_default_is_openpbr(self, matwire_c4d):
+        assert matwire_c4d.DEFAULT_MATERIAL == "openpbr"
+        assert matwire_c4d.MATERIAL_TYPES[0] == "openpbr"
+        assert set(matwire_c4d.MATERIAL_TYPES) == {"openpbr", "standard"}
+
+    def test_openpbr_ports_replace_the_standard_ones(self, matwire_c4d):
+        tex_set = {"name": "p", "normal_flipy": False, "channels": {
+            "basecolor": "c.png", "roughness": "r.png", "metalness": "m.png",
+            "opacity": "o.png", "normal": "n.png"}}
+        desc, _ = matwire_c4d.build_description("/t", tex_set,
+                                                material="openpbr")
+        keys = _flat_keys(desc)
+        joined = " ".join(keys)
+        assert "openpbrmaterial" in joined
+        assert "standardmaterial" not in joined, \
+            "a Standard port id leaked into the OpenPBR graph"
+        for port in ("specular_roughness", "base_metalness",
+                     "geometry_opacity", "geometry_normal", "base_color"):
+            assert any(k.endswith("openpbrmaterial." + port) for k in keys), \
+                "missing OpenPBR port " + port
+
+    def test_standard_graph_is_unchanged(self, matwire_c4d):
+        """No-regression: asking for Standard yields the v1.33 wiring."""
+        tex_set = {"name": "p", "normal_flipy": False, "channels": {
+            "basecolor": "c.png", "roughness": "r.png", "metalness": "m.png"}}
+        desc, _ = matwire_c4d.build_description("/t", tex_set,
+                                                material="standard")
+        joined = " ".join(_flat_keys(desc))
+        assert "standardmaterial.refl_roughness" in joined
+        assert "standardmaterial.metalness" in joined
+        assert "openpbr" not in joined
+
+    def test_glossiness_openpbr_goes_through_an_invert(self, matwire_c4d):
+        tex_set = {"name": "p", "normal_flipy": False,
+                   "channels": {"glossiness": "g.png"}}
+        desc, _ = matwire_c4d.build_description("/t", tex_set,
+                                                material="openpbr")
+        keys = _flat_keys(desc)
+        assert any("rsmathinv" in k for k in keys), \
+            "OpenPBR gloss must be inverted — it has no isglossiness port"
+        assert not any(k.endswith("refl_isglossiness") for k in keys)
+        assert any(k.endswith("openpbrmaterial.specular_roughness")
+                   for k in keys)
+        assert any(k.endswith("rsmathinv.math_op") for k in keys), \
+            "invert math_op must be written explicitly, never left to the " \
+            "node's default (measured: default is 20 = 1 - x, but nothing " \
+            "in the graph should rest on that)"
+
+    def test_glossiness_standard_uses_the_bool_and_no_invert(self,
+                                                             matwire_c4d):
+        tex_set = {"name": "p", "normal_flipy": False,
+                   "channels": {"glossiness": "g.png"}}
+        desc, _ = matwire_c4d.build_description("/t", tex_set,
+                                                material="standard")
+        keys = _flat_keys(desc)
+        assert any(k.endswith("refl_isglossiness") for k in keys)
+        assert not any("rsmathinv" in k for k in keys), \
+            "the native bool makes the invert node pure bloat"
+
+    def test_emission_amount_is_per_type(self, matwire_c4d):
+        tex_set = {"name": "p", "normal_flipy": False,
+                   "channels": {"emission": "e.png"}}
+        for material, port in (("standard", "emission_weight"),
+                               ("openpbr", "emission_luminance")):
+            desc, _ = matwire_c4d.build_description("/t", tex_set,
+                                                    material=material)
+            keys = _flat_keys(desc)
+            assert any(k.endswith(port) for k in keys), \
+                "%s must write %s" % (material, port)
+            # The amount is ALWAYS written: both ports are born at 0
+            # (measured), so an unwritten one ships invisible emission.
+            assert matwire_c4d.BRDF_EMISSION_AMOUNT[material] > 0
+
+    def test_orm_splitter_targets_the_active_brdf(self, matwire_c4d):
+        tex_set = {"name": "p", "normal_flipy": False,
+                   "channels": {"packed_orm": "orm.png"}}
+        plan = matwire_c4d.build_orm_plan("/t", tex_set, material="openpbr")
+        targets = [in_id for _, in_id in plan["connects"]]
+        assert targets, "the splitter must contribute on a bare ORM set"
+        for target in targets:
+            assert "openpbrmaterial" in target, \
+                "splitter still wired to standardmaterial: " + target
+        assert any(t.endswith("specular_roughness") for t in targets)
+        assert any(t.endswith("base_metalness") for t in targets)
