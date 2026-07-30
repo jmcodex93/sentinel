@@ -166,6 +166,24 @@ def build_uvcontext_plan(proj_type):
     - **``uv_tiling = 0`` is written EXPLICITLY.** Its value 1 is *hexagonal*
       tiling, not "tiling on" — the spike rendered hexagons to find that
       out. Never left to the node default (colorspace/flipy principle).
+    - **The context's own transform params are NOT written either, and
+      that neutrality is DEFAULT-CONDITIONED — measured, not assumed.**
+      A context node created with EXACTLY the two keys below (nothing
+      else) reads back, live in C4D 2026.303 (2026-07-30, research doc
+      "Defaults del contexto (v1.33, cierre de no-regresión)"):
+      ``uv_tiles_u = 1.0``, ``uv_tiles_v = 1.0``, ``uv_uniform_tiles =
+      True``, ``uv_offset = (0, 0)`` (compares equal to an explicitly
+      written ``maxon.Vector(0,0,0)``), ``uv_rotate = 0.0``,
+      ``wrap_u/wrap_v = 0``, ``flip_u/flip_v = False``. That is the
+      identity transform, so the Global Constraint (``projection="uv"``
+      renders identically to v1.32.1) holds on the DEFAULTED node — and
+      it was verified end-to-end through this very writer: two materials
+      from the same texture set, one with the context and one with the
+      probe forced False, rendered 200x200 in Redshift → **40000/40000
+      pixels identical, max abs diff 0**. Same yield as the Color Correct
+      above: the default state IS the measured one, and writing "neutral"
+      constants would only pre-dirty the node the artist is meant to
+      grab. If a param here is ever written, RE-MEASURE both claims.
     - **The samplers' own ``scale``/``offset``/``rotate`` are NOT written**
       anywhere. They MULTIPLY with the context (measured: sampler scale 4 ×
       context tiles 2 = 8 tiles), so writing both would give the artist two
@@ -200,21 +218,28 @@ def _apply_uvcontext_plan(graph, plan):
     assetid on the live graph, so the ORM sampler and the unconnected
     leftovers get the context too — otherwise the shared control would
     silently skip exactly the textures the artist is most likely to be
-    fixing up."""
-    maxon.GraphDescription.ApplyDescription(graph, plan["desc"])
-    ctx_node = None
-    samplers = []
-    for node in graph.GetViewRoot().GetInnerNodes(
-            mask=maxon.NODE_KIND.NODE, includeThis=False):
-        asset_id = str(node.GetValue(_ASSETID_ATTR) or "")
-        if "uvcontextprojection" in asset_id:
-            ctx_node = node
-        elif "texturesampler" in asset_id:
-            samplers.append(node)
-    if ctx_node is None:
-        raise RuntimeError("UV context wiring: context node lookup failed")
+    fixing up.
+
+    COUNT FIRST, APPLY AFTER: a set with zero samplers can't happen today
+    (every set the scanner yields has at least one file), but applying the
+    desc before knowing that would leave an ORPHAN context node dangling
+    in the graph. Checking first means the node is never created rather
+    than created-then-abandoned."""
+    samplers = [
+        node for node in graph.GetViewRoot().GetInnerNodes(
+            mask=maxon.NODE_KIND.NODE, includeThis=False)
+        if "texturesampler" in str(node.GetValue(_ASSETID_ATTR) or "")
+    ]
     if not samplers:
         return
+    maxon.GraphDescription.ApplyDescription(graph, plan["desc"])
+    ctx_node = None
+    for node in graph.GetViewRoot().GetInnerNodes(
+            mask=maxon.NODE_KIND.NODE, includeThis=False):
+        if "uvcontextprojection" in str(node.GetValue(_ASSETID_ATTR) or ""):
+            ctx_node = node
+    if ctx_node is None:
+        raise RuntimeError("UV context wiring: context node lookup failed")
     out_id = _RS_UVCTX + ".outcontext"
     with graph.BeginTransaction() as tr:
         out_port = ctx_node.GetOutputs().FindChild(out_id)

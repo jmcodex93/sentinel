@@ -1148,3 +1148,160 @@ class TestUvContextPlan:
                    if e == "ApplyDescription") < at
         # ...and the layout/title pass comes after.
         assert at < log.index("_layout_nodes") < log.index("InsertMaterial")
+
+
+_RS_OUTPUT_FOR_TEST = "com.redshift3d.redshift4c4d.node.output"
+
+
+# --- fake graph for the UV-context fan-out (mirrors the live shapes) -------
+# GetValue(assetid) returns a maxon Pair whose str() is "(com...kind,)" —
+# the exact shape that broke _kind_from_assetid live, so the fake speaks it.
+
+class _FakeGraphPort:
+    def __init__(self, node, port_id):
+        self.node = node
+        self.port_id = port_id
+        self.incoming = []
+
+    def Connect(self, other):
+        other.incoming.append(self)
+
+
+class _FakeGraphPortList:
+    def __init__(self, node):
+        self._node = node
+
+    def FindChild(self, port_id):
+        return self._node.port(port_id)
+
+
+class _FakeGraphNode:
+    def __init__(self, asset_id):
+        self.asset_id = asset_id
+        self._ports = {}
+
+    def port(self, port_id):
+        return self._ports.setdefault(port_id, _FakeGraphPort(self, port_id))
+
+    def GetValue(self, attr):
+        return "(%s,)" % self.asset_id
+
+    def GetInputs(self):
+        return _FakeGraphPortList(self)
+
+    def GetOutputs(self):
+        return _FakeGraphPortList(self)
+
+
+class _FakeTransaction:
+    def __init__(self, graph):
+        self._graph = graph
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def Commit(self):
+        self._graph.commits += 1
+
+
+class _FakeGraph:
+    def __init__(self, asset_ids):
+        self.nodes = [_FakeGraphNode(a) for a in asset_ids]
+        self.applied = []
+        self.commits = 0
+
+    def GetViewRoot(self):
+        return self
+
+    def GetInnerNodes(self, mask=None, includeThis=False):
+        return list(self.nodes)
+
+    def BeginTransaction(self):
+        return _FakeTransaction(self)
+
+
+class TestUvContextFanOut:
+    """The central v1.33 claim — ONE context feeds EVERY texturesampler —
+    pinned without a live C4D. The fake speaks the real shapes: assetid
+    reads as a Pair-str, ports are found by full id, Connect records the
+    edge."""
+
+    @pytest.fixture
+    def matwire_c4d(self, sentinel_module):
+        return importlib.import_module("sentinel.matwire_c4d")
+
+    def _fake_maxon(self, matwire_c4d, monkeypatch, ctx_id):
+        class _GD:
+            @staticmethod
+            def ApplyDescription(graph, desc):
+                graph.applied.append(desc)
+                graph.nodes.append(_FakeGraphNode(ctx_id))
+
+        fake = type("_M", (), {
+            "GraphDescription": _GD,
+            "NODE_KIND": type("_K", (), {"NODE": 1}),
+        })
+        monkeypatch.setattr(matwire_c4d, "maxon", fake)
+
+    def test_every_sampler_is_connected_and_only_samplers(self, matwire_c4d,
+                                                          monkeypatch):
+        core = matwire_c4d._RS_CORE
+        ctx_id = matwire_c4d._RS_UVCTX
+        self._fake_maxon(matwire_c4d, monkeypatch, ctx_id)
+        graph = _FakeGraph([
+            core + "texturesampler",          # basecolor
+            core + "texturesampler",          # roughness
+            core + "texturesampler",          # ORM (splitter-fed)
+            core + "texturesampler",          # loose leftover
+            core + "rscolorsplitter",         # must NOT be connected
+            core + "standardmaterial",
+            _RS_OUTPUT_FOR_TEST,
+        ])
+        plan = {"desc": {"$type": "#" + ctx_id},
+                "connect_to": core + "texturesampler.uv_context"}
+        matwire_c4d._apply_uvcontext_plan(graph, plan)
+
+        assert graph.applied == [plan["desc"]], "context desc applied once"
+        assert graph.commits == 1, "the fan-out is ONE transaction"
+        ctx_nodes = [n for n in graph.nodes if n.asset_id == ctx_id]
+        assert len(ctx_nodes) == 1
+        ctx = ctx_nodes[0]
+        out_port = ctx.port(ctx_id + ".outcontext")
+
+        samplers = [n for n in graph.nodes
+                    if n.asset_id == core + "texturesampler"]
+        assert len(samplers) == 4
+        # (a) EVERY sampler got the context on its uv_context port
+        for sampler in samplers:
+            incoming = sampler.port(plan["connect_to"]).incoming
+            assert incoming == [out_port], \
+                "sampler missed the shared context"
+        # (b) the context node itself is excluded (never wired into itself)
+        for port in ctx._ports.values():
+            assert port.incoming == []
+        # (c) the splitter (and every non-sampler) is excluded
+        for node in graph.nodes:
+            if node.asset_id == core + "texturesampler":
+                continue
+            for port in node._ports.values():
+                assert port.incoming == [], \
+                    "non-sampler node wired to the context: " + node.asset_id
+
+    def test_no_samplers_leaves_no_orphan_context(self, matwire_c4d,
+                                                  monkeypatch):
+        """Unreachable today (every scanned set has files), but applying
+        first and returning later would leave a dangling context node."""
+        core = matwire_c4d._RS_CORE
+        ctx_id = matwire_c4d._RS_UVCTX
+        self._fake_maxon(matwire_c4d, monkeypatch, ctx_id)
+        graph = _FakeGraph([core + "standardmaterial", _RS_OUTPUT_FOR_TEST])
+        plan = {"desc": {"$type": "#" + ctx_id},
+                "connect_to": core + "texturesampler.uv_context"}
+        matwire_c4d._apply_uvcontext_plan(graph, plan)
+        assert graph.applied == [], "context desc must not be applied"
+        assert graph.commits == 0
+        assert all(n.asset_id != ctx_id for n in graph.nodes), \
+            "orphan context node left in the graph"

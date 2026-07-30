@@ -373,3 +373,75 @@ objs   : ['EFFECTORS',' ','BACKGROUND','OBJECTS','SPACE',' ','CAMERAS','LIGHTS']
 ```
 
 Nada del spike sobrevive en el documento del usuario.
+
+---
+
+## Defaults del contexto (v1.33, cierre de no-regresión)
+
+**Fecha**: 2026-07-30 · **C4D**: 2026.303 (live, MCP `exec_python`) · doc throwaway `SENTINEL_UVCTX_NOREG` (creado, medido y `KillDocument`; `Untitled 1` del usuario reactivado e intacto — verificado: `open_docs_after = ['Untitled 1']`).
+
+**Por qué**: §A.2 midió la identidad del contexto sobre un nodo con `uv_tiles=(1,1)` y `uv_uniform_tiles=False` **ESCRITOS**. El writer de producción (`build_uvcontext_plan`) escribe SOLO `proj_type` + `uv_tiling`, así que "un contexto identidad no altera el render" nunca se había medido sobre el nodo **por defecto** — que es exactamente el que se envía.
+
+### 1. Read-back con SOLO lo que el writer emite
+
+Desc aplicada (literalmente la que devuelve `build_uvcontext_plan(1)`):
+
+```python
+{'$type': '#...nodes.core.uvcontextprojection',
+ '#<...uvcontextprojection.proj_type': 1,
+ '#<...uvcontextprojection.uv_tiling': 0}
+```
+
+Valores leídos del nodo vivo (`GetInputs().FindChild(id).GetPortValue()`):
+
+| puerto | tipo | valor por defecto |
+|---|---|---|
+| `proj_type` | Int32 | `1` (escrito) |
+| `uv_tiling` | Int32 | `0` (escrito) |
+| `uv_tiles_u` | Float64 | **`1`** |
+| `uv_tiles_v` | Float64 | **`1`** |
+| `uv_uniform_tiles` | Bool | **`true`** |
+| `uv_offset` | vec<2,float64> | **`(0, 0)`** |
+| `uv_rotate` | Float64 | **`0`** |
+| `uv_pivot` | vec<2,float64> | (no escrito, sin efecto con tiles 1/1 y rotate 0) |
+| `wrap_u` / `wrap_v` | Int64 | `0` / `0` |
+| `flip_u` / `flip_v` | Bool | `false` / `false` |
+| `coord_offset` / `coord_rotate` | Vector64 | `(0,0,0)` / `(0,0,0)` |
+
+**Trampa de lectura de los vec2**: un puerto vec2 **no escrito** devuelve un `maxon.UnknownDataType` cuyo `str()` es el NOMBRE DEL TIPO (`net.maxon.parametrictype.vec<2,float64>`), no los componentes — no es indexable ni tiene `GetX/GetY`. Leerlo "a ojo" no dice nada. El oráculo que sí funciona es la **comparación**: `valor_por_defecto == maxon.Vector(0.0, 0.0, 0.0)` → `True`, y contra `maxon.Vector(0.25, 0.5, 0.0)` → `False` (y ese sí str()ea `X:0.25, Y:0.5, Z:0.0`). Es decir: el default de `uv_offset` **es** (0,0).
+
+**Veredicto**: los defaults SON la identidad (tiles 1/1, offset 0, rotate 0, sin flip, sin wrap). No hace falta escribirlos → v1.33 no los escribe, y la identidad queda registrada como **condicionada al default** en el docstring de `build_uvcontext_plan` (mismo patrón que el Color Correct de Task 1: si algún día se escribe un param aquí, hay que RE-MEDIR).
+
+### 2. Global Constraint medido END-TO-END, a través del writer de producción
+
+No se midió el nodo aislado sino **la restricción real**: `projection="uv"` debe renderizar IDÉNTICO a v1.32.1.
+
+- Escena: esfera r=380 (64 seg) + luz omni + cámara; Redshift (`RDATA_RENDERENGINE = 1036219`, videopost RS presente); 200×200.
+- Texturas generadas al vuelo (`p_BaseColor.png` damero coloreado, `p_Roughness.png` gradiente, `p_Normal.png`), pasadas por `matwire.scan_texture_sets` → set real con `['basecolor','normal','roughness']`.
+- **Ambos materiales por `create_material_for_set` (el writer de producción, sin atajos)**:
+  - `WITH_CTX`: `projection="uv"` → grafo con **1 contexto + 3 samplers**.
+  - `NO_CTX`: sonda `uvcontext_available` forzada a `False` → `build_uvcontext_plan` devuelve `None` → grafo **v1.32.1 exacto**: **0 contextos + 3 samplers**.
+- Render de los dos (mismo doc, misma luz, mismo tag; solo cambia el material) y comparación de **los 40000 píxeles**.
+
+| métrica | valor |
+|---|---|
+| píxeles comparados | **40000** |
+| **max abs diff (RGB)** | **0** |
+| píxeles distintos | **0** |
+| media abs diff | **0.0** |
+| píxeles no-negros (sanity: la imagen no está vacía) | 10586 |
+
+Rejilla 5×5 de muestra (`(x,y)` → `WITH_CTX` / `NO_CTX`), recorte:
+
+```
+(60,60)   [81,46,16]   / [81,46,16]
+(100,60)  [115,129,43] / [115,129,43]
+(140,60)  [78,191,51]  / [78,191,51]
+(60,100)  [46,37,22]   / [46,37,22]
+(100,100) [92,96,50]   / [92,96,50]
+(140,100) [113,148,65] / [113,148,65]
+(100,140) [45,43,33]   / [45,43,33]
+(140,140) [96,79,51]   / [96,79,51]
+```
+
+**Veredicto**: el contexto por defecto conectado a los 3 samplers **no altera un solo píxel**. La Global Constraint de v1.33 queda medida, no argumentada.
