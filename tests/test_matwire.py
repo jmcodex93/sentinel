@@ -1,4 +1,5 @@
 import importlib
+import os
 
 import pytest
 
@@ -220,3 +221,100 @@ class TestPreviewPayload:
             ["y_col.png", "y_diffuse.png"])
         payload = matwire.preview_payload(scan, [])
         assert ["y_diffuse.png", "duplicate_channel"] in payload["sets"][0]["ignored"]
+
+
+class TestBuildDescription:
+    """matwire_c4d.build_description (pure dict assembly, no c4d calls) —
+    pins the writer's GraphDescription against spike drift. Colorspaces
+    must come from matwire.channel_colorspace (the single source), never
+    a second per-branch literal table."""
+
+    @pytest.fixture
+    def matwire_c4d(self, sentinel_module):
+        return importlib.import_module("sentinel.matwire_c4d")
+
+    def _tex_set(self, matwire, **extra):
+        scan = matwire.scan_texture_sets([
+            "plaster_BaseColor.jpg", "plaster_Roughness.jpg",
+            "plaster_NormalDX.png", "plaster_Height.exr",
+            "plaster_Emission.jpg",
+        ])
+        s = scan["sets"][0]
+        s.update(extra)
+        return s
+
+    def test_full_set_desc_shape(self, matwire, matwire_c4d):
+        tex_set = self._tex_set(matwire)
+        desc, ao_desc = matwire_c4d.build_description("/tex", tex_set)
+
+        RS = matwire_c4d._RS_CORE
+        sm = "#<" + RS + "standardmaterial."
+        material = desc["#<" + matwire_c4d._RS_OUTPUT + ".surface"]
+        assert material["$type"] == "#" + RS + "standardmaterial"
+
+        # base_color: srgb, per channel_colorspace("basecolor") == "srgb"
+        base = material[sm + "base_color"]
+        assert base["#<" + RS + "texturesampler.tex0/path"] == os.path.join(
+            "/tex", "plaster_BaseColor.jpg")
+        assert base["#<" + RS + "texturesampler.tex0/colorspace"] == \
+            matwire_c4d._RS_COLORSPACE[matwire.channel_colorspace("basecolor")]
+        assert matwire.channel_colorspace("basecolor") == "srgb"
+
+        # roughness: raw
+        rough = material[sm + "refl_roughness"]
+        assert rough["#<" + RS + "texturesampler.tex0/colorspace"] == \
+            matwire_c4d._RS_COLORSPACE[matwire.channel_colorspace("roughness")]
+        assert matwire.channel_colorspace("roughness") == "raw"
+
+        # normal: bump chain, raw, inputtype 1 (tangent-space), flipy set
+        # only for DX-only sets (this set is Normal_DX-only -> flipy True)
+        bump = material[sm + "bump_input"]
+        assert bump["$type"] == "#" + RS + "bumpmap"
+        assert bump["#<" + RS + "bumpmap.inputtype"] == 1
+        assert bump["#<" + RS + "bumpmap.flipy"] is True
+        normal_sampler = bump["#<" + RS + "bumpmap.input"]
+        assert normal_sampler["#<" + RS + "texturesampler.tex0/colorspace"] == \
+            matwire_c4d._RS_COLORSPACE[matwire.channel_colorspace("normal")]
+        assert matwire.channel_colorspace("normal") == "raw"
+
+        # height -> output displacement, raw
+        disp = desc["#<" + matwire_c4d._RS_OUTPUT + ".displacement"]
+        assert disp["$type"] == "#" + RS + "displacement"
+        disp_sampler = disp["#<" + RS + "displacement.texmap"]
+        assert disp_sampler["#<" + RS + "texturesampler.tex0/path"] == \
+            os.path.join("/tex", "plaster_Height.exr")
+        assert disp_sampler["#<" + RS + "texturesampler.tex0/colorspace"] == \
+            matwire_c4d._RS_COLORSPACE[matwire.channel_colorspace("height")]
+        assert matwire.channel_colorspace("height") == "raw"
+
+        # emission: srgb color + literal weight 1.0
+        assert material[sm + "emission_color"][
+            "#<" + RS + "texturesampler.tex0/colorspace"] == \
+            matwire_c4d._RS_COLORSPACE[matwire.channel_colorspace("emission")]
+        assert matwire.channel_colorspace("emission") == "srgb"
+        assert material[sm + "emission_weight"] == 1.0
+
+        assert ao_desc is None
+
+    def test_gloss_only_set_no_roughness_key_collision(self, matwire, matwire_c4d):
+        scan = matwire.scan_texture_sets(
+            ["metal_BaseColor.jpg", "metal_Gloss.jpg", "metal_AO.png"])
+        tex_set = scan["sets"][0]
+        desc, ao_desc = matwire_c4d.build_description("/tex", tex_set)
+
+        RS = matwire_c4d._RS_CORE
+        sm = "#<" + RS + "standardmaterial."
+        material = desc["#<" + matwire_c4d._RS_OUTPUT + ".surface"]
+
+        gloss = material[sm + "refl_roughness"]
+        assert gloss["#<" + RS + "texturesampler.tex0/path"] == \
+            os.path.join("/tex", "metal_Gloss.jpg")
+        assert gloss["#<" + RS + "texturesampler.tex0/colorspace"] == \
+            matwire_c4d._RS_COLORSPACE[matwire.channel_colorspace("glossiness")]
+        assert matwire.channel_colorspace("glossiness") == "raw"
+        assert material[sm + "refl_isglossiness"] is True
+
+        # AO is a separate isolated sampler (§5), always raw.
+        assert ao_desc["#<" + RS + "texturesampler.tex0/colorspace"] == \
+            matwire_c4d._RS_COLORSPACE[matwire.channel_colorspace("ao")]
+        assert matwire.channel_colorspace("ao") == "raw"

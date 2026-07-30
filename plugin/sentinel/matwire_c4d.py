@@ -27,6 +27,8 @@ import os
 
 import c4d
 
+from sentinel.matwire import channel_colorspace
+
 try:
     import maxon
     MAXON_AVAILABLE = True
@@ -39,6 +41,16 @@ _RS_OUTPUT = "com.redshift3d.redshift4c4d.node.output"
 _CS_SRGB = "RS_INPUT_COLORSPACE_SRGB"
 _CS_RAW = "RS_INPUT_COLORSPACE_RAW"
 _ASSETID_ATTR = "net.maxon.node.attribute.assetid"
+
+# Format translation ONLY: engine answer ("srgb"/"raw") -> RS constant.
+# The DECISION of which channel is which colorspace lives in
+# matwire.channel_colorspace (single source, matwire.py docstring) — this
+# is not a second table of that decision.
+_RS_COLORSPACE = {"srgb": _CS_SRGB, "raw": _CS_RAW}
+
+
+def _rs_colorspace(channel):
+    return _RS_COLORSPACE[channel_colorspace(channel)]
 
 # Column x per node kind (§6 suggested layout); samplers stack on y.
 _LAYOUT_COLS = {
@@ -89,29 +101,29 @@ def build_description(folder, tex_set):
     sm = "#<" + _RS_CORE + "standardmaterial."
     material = {"$type": "#" + _RS_CORE + "standardmaterial"}
     if "basecolor" in channels:
-        material[sm + "base_color"] = _sampler(path("basecolor"), _CS_SRGB)
+        material[sm + "base_color"] = _sampler(path("basecolor"), _rs_colorspace("basecolor"))
     if "roughness" in channels:
-        material[sm + "refl_roughness"] = _sampler(path("roughness"), _CS_RAW)
+        material[sm + "refl_roughness"] = _sampler(path("roughness"), _rs_colorspace("roughness"))
     if "metalness" in channels:
-        material[sm + "metalness"] = _sampler(path("metalness"), _CS_RAW)
+        material[sm + "metalness"] = _sampler(path("metalness"), _rs_colorspace("metalness"))
     if "normal" in channels:
         bump = {
             "$type": "#" + _RS_CORE + "bumpmap",
             "#<" + _RS_CORE + "bumpmap.inputtype": 1,  # Tangent-Space Normal
-            "#<" + _RS_CORE + "bumpmap.input": _sampler(path("normal"), _CS_RAW),
+            "#<" + _RS_CORE + "bumpmap.input": _sampler(path("normal"), _rs_colorspace("normal")),
         }
         if tex_set.get("normal_flipy"):
             bump["#<" + _RS_CORE + "bumpmap.flipy"] = True  # DX-only set
         material[sm + "bump_input"] = bump
     if "opacity" in channels:
-        material[sm + "opacity_color"] = _sampler(path("opacity"), _CS_RAW)
+        material[sm + "opacity_color"] = _sampler(path("opacity"), _rs_colorspace("opacity"))
     if "emission" in channels:
-        material[sm + "emission_color"] = _sampler(path("emission"), _CS_SRGB)
+        material[sm + "emission_color"] = _sampler(path("emission"), _rs_colorspace("emission"))
         material[sm + "emission_weight"] = 1.0  # literal + sampler, same scope (§2b)
     if "specular" in channels:
-        material[sm + "refl_color"] = _sampler(path("specular"), _CS_RAW)
+        material[sm + "refl_color"] = _sampler(path("specular"), _rs_colorspace("specular"))
     if "glossiness" in channels:
-        material[sm + "refl_roughness"] = _sampler(path("glossiness"), _CS_RAW)
+        material[sm + "refl_roughness"] = _sampler(path("glossiness"), _rs_colorspace("glossiness"))
         material[sm + "refl_isglossiness"] = True  # no invert node
     desc = {
         "$type": "#" + _RS_OUTPUT,
@@ -120,9 +132,9 @@ def build_description(folder, tex_set):
     if "height" in channels:
         desc["#<" + _RS_OUTPUT + ".displacement"] = {
             "$type": "#" + _RS_CORE + "displacement",
-            "#<" + _RS_CORE + "displacement.texmap": _sampler(path("height"), _CS_RAW),
+            "#<" + _RS_CORE + "displacement.texmap": _sampler(path("height"), _rs_colorspace("height")),
         }
-    ao_desc = _sampler(path("ao"), _CS_RAW) if "ao" in channels else None
+    ao_desc = _sampler(path("ao"), _rs_colorspace("ao")) if "ao" in channels else None
     return desc, ao_desc
 
 
