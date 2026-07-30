@@ -1,7 +1,7 @@
 # Matwire polish — recursivo + ORM/ARM + sufijos por ruleset + leftover (v1.32.1)
 
 **Fecha**: 2026-07-30
-**Estado**: implementado en rama `feat/matwire-polish` (Tasks 1-5 completos, pytest 1056 + vitest 179 verdes, PLUGIN_VERSION 1.32.1) — **pendiente verificación live** (matriz corta de este doc + Cmd+Z del recipe imperativo del splitter + layout en columnas visto por primera vez) y merge a `main`.
+**Estado**: LIVE-VERIFIED y mergeado (C4D 2026.303; pytest 1077 + vitest 188; bug live del usuario corregido en la raíz: el grafo se construye ANTES de insertar el material → un Cmd+Z revierte el lote entero)
 **Contexto**: pulido de v1.32.0 (mergeado y live-verified) tras auditar el control que ofrece TexToMatO (capturas del usuario, plugin de su propiedad — estudiar-sí/copiar-no). Criterio Sentinel mantenido: **convención con opinión > knobs** — TexToMatO compensa con knobs lo que no tiene de preview; nosotros ya enseñamos el resultado antes de crear. Descartados explícitamente: toggle manual de Flip Y (nuestra auto-detección GL/DX lo cubre), toggle de case-sensitivity, Color Correct/Scale-Rot-Offset por defecto (bloat de grafo). Fases propias futuras (NO este release): OpenPBR, Triplanar/UV Context, Sprite opacity, import-from-base.
 
 ## Decisiones cerradas
