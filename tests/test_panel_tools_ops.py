@@ -1636,3 +1636,29 @@ class TestMatwireMaterialType:
             "the leftovers call site did not run — the test proves nothing"
         assert all(m == "standard" for m in seen), \
             "a call site dropped the material type"
+
+    def test_create_omitting_material_key_defaults_to_openpbr_at_the_op(
+            self, sentinel_module, monkeypatch, tmp_path):
+        """The end-to-end pin that the release default is OpenPBR AT THE OP
+        BOUNDARY (review follow-up): every other create-path test either
+        stubs openpbr_available False or sends an explicit "material" key,
+        so none of them can tell whether `_op_matwire_create` actually uses
+        `_matwire_material`'s result rather than some other/hardcoded value
+        — a mutation replacing `material = _matwire_material(payload)` with
+        `material = "standard"` left the whole suite green before this
+        test existed."""
+        from sentinel import matwire_c4d
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        folder = self._folder(tmp_path, "plaster_col.png")
+        monkeypatch.setattr(matwire_c4d, "openpbr_available", lambda: True)
+        seen = []
+
+        def _fake_create(doc, folder, tex_set, name, **kw):
+            seen.append(kw.get("material"))
+            return {"ok": True, "material_name": name, "error": None}
+
+        monkeypatch.setattr(matwire_c4d, "create_material_for_set", _fake_create)
+        # No "material" key at all — the op must derive it itself.
+        result = ops._op_matwire_create({"folder": folder})
+        assert result["ok"] is True
+        assert seen == ["openpbr"]
