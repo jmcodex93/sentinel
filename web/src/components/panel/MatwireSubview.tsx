@@ -19,6 +19,7 @@ import {
   matwireToast,
   packedOrmNote,
   projectionUnavailableNote,
+  effectiveProjection,
   suffixWarningsNote,
 } from "../../lib/panelMatwire";
 import { useToast } from "../../lib/toast";
@@ -200,6 +201,10 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
   const projectionNote = preview?.ok
     ? projectionUnavailableNote(preview.uvcontext_available)
     : null;
+  // What the material is ACTUALLY wired with: with the note up, the pick
+  // degrades to UV for BOTH the payload and the shown value, so the
+  // disabled control can never say Tri-Planar while the writer does UV.
+  const wiredProjection = effectiveProjection(projection, projectionNote);
   const emptyReason = preview && !preview.ok
     ? (PREVIEW_EMPTY_COPY[preview.error ?? ""] ?? "Preview unavailable.")
     : null;
@@ -216,7 +221,7 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
     setApplying(true);
     try {
       const result = await postMatwireCreate(
-        folder, [...excluded], names, importLeftovers, projection, multiplyAo);
+        folder, [...excluded], names, importLeftovers, wiredProjection, multiplyAo);
       toast(matwireToast(result));
       // Refetch: the new materials change the dedupe of default names.
       if (result.ok) await loadPreview(folder);
@@ -363,7 +368,7 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
                 </span>
                 <SegmentedControl
                   options={PROJECTION_OPTIONS}
-                  value={projection}
+                  value={wiredProjection}
                   onChange={setProjection}
                   disabled={projectionNote !== null}
                 />

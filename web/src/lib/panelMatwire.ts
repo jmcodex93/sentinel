@@ -110,6 +110,20 @@ export function projectionUnavailableNote(available: boolean | undefined): strin
   return available === false ? MATWIRE_PROJECTION_UNAVAILABLE_COPY : null;
 }
 
+/** The projection the material will ACTUALLY be wired with — what both the
+ * create payload and the (disabled) selector must show. Without this a
+ * Tri-Planar picked before the preview reported the node missing would stay
+ * in state, ride along in the payload and keep the disabled control lit,
+ * contradicting the degradation note right under it. Derived, never a
+ * state mutation on render: the artist's pick survives if a later preview
+ * reports the node present again. */
+export function effectiveProjection(
+  selected: string,
+  unavailableNote: string | null,
+): string {
+  return unavailableNote === null ? selected : "uv";
+}
+
 /** Destination fragment rendered after a leftover filename: its assigned
  * set's material, or the catch-all `<root>_leftovers` material when no set
  * name prefixes the file (the server names it — the client only says

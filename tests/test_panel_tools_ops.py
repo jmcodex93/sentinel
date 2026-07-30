@@ -1447,6 +1447,29 @@ class TestMatwireOpsPolish:
         assert calls == [{"set": "plaster", "multiply_ao": True,
                           "projection": "triplanar"}]
 
+    def test_create_leftovers_branch_threads_projection_and_multiply_ao(
+            self, sentinel_module, monkeypatch, tmp_path):
+        """The `import_leftovers=True` branch is a SECOND call site with its
+        own kwargs — without this the wiring options could be dropped there
+        and every other test would still pass (the leftovers fakes swallow
+        **kw, the threading tests only walk the else branch). An artist who
+        ticks "Import unrecognized files" must still get what the UI shows."""
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        folder = self._pack(tmp_path, "plaster_col.png", "stray_data.png")
+        calls = []
+        self._capture_create(monkeypatch, calls)
+        result = ops._op_matwire_create({"folder": folder,
+                                         "import_leftovers": True,
+                                         "projection": "triplanar",
+                                         "multiply_ao": True})
+        assert result["ok"] is True
+        # Both the real set AND the catch-all leftovers material go through
+        # the leftovers branch — every one of them carries the options.
+        assert len(calls) == 2
+        for call in calls:
+            assert call["multiply_ao"] is True, call
+            assert call["projection"] == "triplanar", call
+
     def test_create_normalizes_unknown_projection_to_uv(self, sentinel_module,
                                                         monkeypatch, tmp_path):
         """Validation lives HERE, not in the writer: the writer degrades a

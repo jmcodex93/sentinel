@@ -15,6 +15,7 @@ import {
   matwireToast,
   packedOrmNote,
   projectionUnavailableNote,
+  effectiveProjection,
   suffixWarningsNote,
 } from "./panelMatwire";
 
@@ -297,5 +298,18 @@ describe("projectionUnavailableNote", () => {
     // with a warning about a node that is probably there — treat missing as
     // available, the same shape-tolerant default the other rows use.
     expect(projectionUnavailableNote(undefined)).toBeNull();
+  });
+});
+
+describe("effectiveProjection", () => {
+  it("degrades a stale Tri-Planar pick to UV while the note is up", () => {
+    // The payload must not contradict the degradation the UI just stated —
+    // and the disabled control must not keep showing Tri-Planar either.
+    expect(effectiveProjection("triplanar", MATWIRE_PROJECTION_UNAVAILABLE_COPY)).toBe("uv");
+  });
+
+  it("passes the artist's pick through when the context node is available", () => {
+    expect(effectiveProjection("triplanar", null)).toBe("triplanar");
+    expect(effectiveProjection("uv", null)).toBe("uv");
   });
 });
