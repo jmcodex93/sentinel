@@ -305,3 +305,230 @@ ramp_interp 1 · old_min 0 · old_max 1 · new_min 0 · new_max 1 · inputsource
 Los EXTREMOS sí son identidad (0→0, 1→1), pero la interpolación entre ellos es **`smoothknot`**, no lineal — de ahí la firma de la desviación medida (0 en los extremos, máxima en la zona media: `mean 0.89/255, max 47/255`), que es exactamente el perfil de una curva suave frente a la recta.
 
 **Consecuencia de diseño**: un ramp *puede* ser identidad exacta, pero solo si el writer escribe `interpolation = linear` en ambos knots EXPLÍCITAMENTE — el mismo principio "nunca dependas de los defaults del nodo" que ya rige colorspaces y `flipy`. Lo que NO cambia es el coste medido (+3 % a 1280²), así que la decisión de no incluirlo por defecto sigue en pie, pero por su coste, no por alterar la imagen.
+
+---
+
+## Confirmación de puertos v1.33
+
+**Fecha**: 2026-07-30 · **C4D**: 2026.303 live (MCP `exec_python`) · doc throwaway `SENTINEL_UVCTX_PORTS` (creado, usado, `KillDocument`, `Untitled 1` reactivado y verificado intacto). Introspección **bloqueante previa a escribir el writer** de la Task 2: ningún id del writer se toma de la documentación ni de este doc por memoria — todos se releen del nodo vivo.
+
+Material off-document (`BaseMaterial(Mmaterial)` + `GetGraph`, sin insertar), grafo = output → standardmaterial con **dos** `texturesampler` (base_color y refl_roughness) + un `uvcontextprojection` aplicado en un scope aislado con `proj_type=1`, `uv_tiling=0`.
+
+```
+samplers=2 ctx=True
+
+CTX_OUT = ['com.redshift3d.redshift4c4d.nodes.core.uvcontextprojection.outcontext']
+CTX_IN (43 puertos; los relevantes):
+  …uvcontextprojection.proj_type
+  …uvcontextprojection.uv_tiling
+  …uvcontextprojection.uv_tiles_u
+  …uvcontextprojection.uv_tiles_v
+  …uvcontextprojection.uv_uniform_tiles
+  …uvcontextprojection.uv_offset
+  …uvcontextprojection.uv_rotate
+
+S_IN (relevantes) = ['…texturesampler.scale', '…texturesampler.offset',
+                     '…texturesampler.rotate', '…texturesampler.uv_context']
+S_OUT = ['…texturesampler.outcolor']
+```
+
+**Read-back de lo escrito por GraphDescription** (los dos valores que el writer fija):
+
+```
+proj_type readback = '1'
+uv_tiling readback = '0'      ← el writer DEBE escribir 0; 1 = hex tiling (§A.1)
+```
+
+**vec2 con `maxon.Vector`** (reconfirmado en este build, dentro de una transacción — `SetPortValue` fuera de transacción lanza `RuntimeError: No current transaction`):
+
+```
+uv_offset (tipo leído) : net.maxon.parametrictype.vec<2,float64>
+maxon.Vector(0.25, 0.5, 0.0) → OK, readback 'X:0.25, Y:0.5, Z:0.0'
+(0.25, 0.5) [tuple]          → ValueError: A Maxon Datatype should be provided,
+                               <class 'tuple'> is not convertible
+```
+
+**Fan-out imperativo** (`outcontext` → `uv_context` de TODOS los samplers, una transacción):
+
+```
+fanout: sampler uv_context inbound conns = 2 over 2 samplers
+```
+
+**Probe de disponibilidad** (mismo idioma `FindLatestAsset(...).IsNullValue()` de `redshift_available`):
+
+```
+uvcontextprojection -> available=True
+texturesampler      -> available=True
+com.bogus.nope      -> available=False    ← control negativo
+```
+
+**Limpieza verificada**:
+
+```
+docs   : ['Untitled 1']
+active : 'Untitled 1'
+mats   : ['plaster_','wall','metal','plaster','wood_B','wood_A','old','UWS GRID','GREY MAT',
+          'chrome_shiny002_MAT','metal_painted_grey002_MAT','paper_cardboard_macbeth002_MAT']
+objs   : ['EFFECTORS',' ','BACKGROUND','OBJECTS','SPACE',' ','CAMERAS','LIGHTS']
+```
+
+Nada del spike sobrevive en el documento del usuario.
+
+---
+
+## Defaults del contexto (v1.33, cierre de no-regresión)
+
+**Fecha**: 2026-07-30 · **C4D**: 2026.303 (live, MCP `exec_python`) · doc throwaway `SENTINEL_UVCTX_NOREG` (creado, medido y `KillDocument`; `Untitled 1` del usuario reactivado e intacto — verificado: `open_docs_after = ['Untitled 1']`).
+
+**Por qué**: §A.2 midió la identidad del contexto sobre un nodo con `uv_tiles=(1,1)` y `uv_uniform_tiles=False` **ESCRITOS**. El writer de producción (`build_uvcontext_plan`) escribe SOLO `proj_type` + `uv_tiling`, así que "un contexto identidad no altera el render" nunca se había medido sobre el nodo **por defecto** — que es exactamente el que se envía.
+
+### 1. Read-back con SOLO lo que el writer emite
+
+Desc aplicada (literalmente la que devuelve `build_uvcontext_plan(1)`):
+
+```python
+{'$type': '#...nodes.core.uvcontextprojection',
+ '#<...uvcontextprojection.proj_type': 1,
+ '#<...uvcontextprojection.uv_tiling': 0}
+```
+
+Valores leídos del nodo vivo (`GetInputs().FindChild(id).GetPortValue()`):
+
+| puerto | tipo | valor por defecto |
+|---|---|---|
+| `proj_type` | Int32 | `1` (escrito) |
+| `uv_tiling` | Int32 | `0` (escrito) |
+| `uv_tiles_u` | Float64 | **`1`** |
+| `uv_tiles_v` | Float64 | **`1`** |
+| `uv_uniform_tiles` | Bool | **`true`** |
+| `uv_offset` | vec<2,float64> | **`(0, 0)`** |
+| `uv_rotate` | Float64 | **`0`** |
+| `uv_pivot` | vec<2,float64> | (no escrito, sin efecto con tiles 1/1 y rotate 0) |
+| `wrap_u` / `wrap_v` | Int64 | `0` / `0` |
+| `flip_u` / `flip_v` | Bool | `false` / `false` |
+| `coord_offset` / `coord_rotate` | Vector64 | `(0,0,0)` / `(0,0,0)` |
+
+**Trampa de lectura de los vec2**: un puerto vec2 **no escrito** devuelve un `maxon.UnknownDataType` cuyo `str()` es el NOMBRE DEL TIPO (`net.maxon.parametrictype.vec<2,float64>`), no los componentes — no es indexable ni tiene `GetX/GetY`. Leerlo "a ojo" no dice nada. El oráculo que sí funciona es la **comparación**: `valor_por_defecto == maxon.Vector(0.0, 0.0, 0.0)` → `True`, y contra `maxon.Vector(0.25, 0.5, 0.0)` → `False` (y ese sí str()ea `X:0.25, Y:0.5, Z:0.0`). Es decir: el default de `uv_offset` **es** (0,0).
+
+**Veredicto**: los defaults SON la identidad (tiles 1/1, offset 0, rotate 0, sin flip, sin wrap). No hace falta escribirlos → v1.33 no los escribe, y la identidad queda registrada como **condicionada al default** en el docstring de `build_uvcontext_plan` (mismo patrón que el Color Correct de Task 1: si algún día se escribe un param aquí, hay que RE-MEDIR).
+
+### 2. Global Constraint medido END-TO-END, a través del writer de producción
+
+No se midió el nodo aislado sino **la restricción real**: `projection="uv"` debe renderizar IDÉNTICO a v1.32.1.
+
+- Escena: esfera r=380 (64 seg) + luz omni + cámara; Redshift (`RDATA_RENDERENGINE = 1036219`, videopost RS presente); 200×200.
+- Texturas generadas al vuelo (`p_BaseColor.png` damero coloreado, `p_Roughness.png` gradiente, `p_Normal.png`), pasadas por `matwire.scan_texture_sets` → set real con `['basecolor','normal','roughness']`.
+- **Ambos materiales por `create_material_for_set` (el writer de producción, sin atajos)**:
+  - `WITH_CTX`: `projection="uv"` → grafo con **1 contexto + 3 samplers**.
+  - `NO_CTX`: sonda `uvcontext_available` forzada a `False` → `build_uvcontext_plan` devuelve `None` → grafo **v1.32.1 exacto**: **0 contextos + 3 samplers**.
+- Render de los dos (mismo doc, misma luz, mismo tag; solo cambia el material) y comparación de **los 40000 píxeles**.
+
+| métrica | valor |
+|---|---|
+| píxeles comparados | **40000** |
+| **max abs diff (RGB)** | **0** |
+| píxeles distintos | **0** |
+| media abs diff | **0.0** |
+| píxeles no-negros (sanity: la imagen no está vacía) | 10586 |
+
+Rejilla 5×5 de muestra (`(x,y)` → `WITH_CTX` / `NO_CTX`), recorte:
+
+```
+(60,60)   [81,46,16]   / [81,46,16]
+(100,60)  [115,129,43] / [115,129,43]
+(140,60)  [78,191,51]  / [78,191,51]
+(60,100)  [46,37,22]   / [46,37,22]
+(100,100) [92,96,50]   / [92,96,50]
+(140,100) [113,148,65] / [113,148,65]
+(100,140) [45,43,33]   / [45,43,33]
+(140,140) [96,79,51]   / [96,79,51]
+```
+
+**Veredicto**: el contexto por defecto conectado a los 3 samplers **no altera un solo píxel**. La Global Constraint de v1.33 queda medida, no argumentada.
+
+---
+
+## Spike del fallback: UniversalXform clásico (RS < 2026.2)
+
+**Pregunta**: si `uvcontextprojection` no existe, ¿podemos dar el mismo punto
+único de tiling con primitivas que existan en cualquier Redshift? Referencia:
+`AddUniTransforms` de TexToMatO (`Salad/Redshift/redshift_helper.py:1882`).
+
+### Cómo lo monta TexToMatO
+
+Un **grupo** con nodos Value dentro (UniScale float, Scale2D vec2, Offset vec2,
+Rotation float) y un `rsmathmulvector` que multiplica UniScale × Scale2D. Crea
+puertos de entrada y salida en el grupo, conecta interior↔puertos, y **borra los
+puertos de entrada**. Las salidas se abanican a `texturesampler.scale/offset/rotate`
+de cada sampler.
+
+### Medido en vivo (C4D 2026.303, 2026-07-30)
+
+| Hecho | Evidencia |
+|---|---|
+| Nodo Value = `net.maxon.node.type`, puertos `in`/`datatype`/`out` | introspección |
+| `datatype` nace `float`; se reescribe a `vec<2,float>` con `SetPortValue(maxon.Id(...))` | readback |
+| Un solo Value abanica a N samplers | `scale` con 1 conexión en cada sampler |
+| `texturesampler.scale`/`.offset` son vec2; `.rotate` es Float64 | readback de defaults |
+| **`MoveToGroup` INVALIDA los handles movidos** | `ValueError: Node with path type@… doesn't exist any longer` |
+| Los nodos interiores se recuperan con `group.GetInnerNodes(...)` y se casan **por nombre** | por eso TexToMatO los nombra ANTES de mover |
+| `CreateInputPort/CreateOutputPort` funcionan y el puerto de entrada **sostiene un valor editable** que empuja al Value interior | readback (3,3) a través del puerto |
+| El id real del puerto lleva sufijo `@<uuid>` (`ut_in_scale@a_ls90kiOdDu_QPIU2UCYT`) | **no se puede buscar por el id que pasaste** — hay que quedarse el handle devuelto |
+
+### Divergencia deliberada respecto a TexToMatO
+
+**Conservamos los puertos de entrada** (ellos los borran): así los cuatro knobs
+viven en el propio nodo grupo y se editan en el AM sin entrar dentro. El interior
+es el suyo: Scale2D (vec2) x UniScale (float) por un `rsmathmulvector` cuya salida
+es el Scale que ven los samplers, mas Offset y Rotation directos. El grupo se llama
+**UniversalXform**.
+
+**Multiplicador verificado con un oraculo fuerte**: `UniScale=4 x Scale=(1,1)` y
+`UniScale=1 x Scale=(4,4)` renderizan **10000/10000 pixeles identicos** (606
+transiciones de damero ambos) — el multiply compone exacto, no aproxima.
+
+### Tercera trampa: el orden de enumeración NO es el de creación
+
+Medido: tres ejecuciones seguidas de la MISMA función enumeraron los puertos del
+grupo en tres ordenes distintos. Por tanto **nunca** se aplica un lote de descs
+identicos para luego casarlos por posicion contra el plan — una permutacion
+escribiria la identidad del Scale dentro del Rotation, en silencio y solo a
+veces. La receta es: **un apply, y nombrar inmediatamente lo que creo**; el nodo
+recien creado se identifica por AUSENCIA DE NOMBRE (solo puede haber uno
+pendiente). El pytest lo fija enumerando al reves.
+
+### Trampa de corrección (la que decide el diseño)
+
+Un nodo Value **nace a cero**. Al conectar el puerto del grupo al `in` interior,
+el valor vivo pasa a ser el **del puerto del grupo** — que también nace a cero.
+Sin escribir la identidad ahí, cada material saldría con `Scale = (0,0)`: un
+único téxel estirado. Se escribe explícitamente (1,1)/(0,0)/0, misma regla
+"siempre explícito" que ya gobierna colorspace y flipy.
+
+### Limpieza de un build a medias (medido)
+
+`node.Remove()` dentro de una transacción funciona, y **borrar el grupo se lleva
+su interior**: un grafo de 8 nodos baja a 2, con 0 Value y 0 multiplies
+restantes. Por eso el camino de fallo guarda el handle del GRUPO en la lista de
+creados (los handles de los miembros mueren en el `MoveToGroup`) y limpia de más
+nuevo a más viejo. Y el nodo se registra **antes** de la transacción que puede
+fallar: `ApplyDescription` ya lo ha commiteado, así que registrarlo después
+dejaría un huérfano invisible para la limpieza.
+
+### No-regresión y eficacia (renders reales, 100×100, RS)
+
+Dos materiales del MISMO set de texturas sobre la MISMA esfera:
+
+- **A** = con UniversalXform a identidad · **B** = grafo v1.32.1 pelado
+  → **10000/10000 píxeles idénticos, max abs diff 0**.
+- Subir el Scale del grupo de 1 a 4: **2662/10000 píxeles cambian** y las
+  transiciones del damero por fila pasan de **337 a 606** — un solo knob
+  retesela los tres samplers.
+- Los otros dos knobs también movidos con píxeles, no por estructura (su
+  identidad es 0, así que un render idéntico sería indistinguible de un cable
+  a ninguna parte): **Offset 0.25 → 2575 px cambian**; **Rotation 45 → 2614 px
+  cambian**.
+
+**Veredicto**: el fallback da el mismo punto único de edición, no altera nada a
+identidad, y no es decorativo. Solo pierde tri-planar (eso sí es propiedad del
+contexto), por lo que en esas versiones la proyección queda en UV.

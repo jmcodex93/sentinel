@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Material-from-folder recognition engine (v1.32) — PURE, no ``import c4d``.
+"""Material-from-folder recognition engine (v1.33) — PURE, no ``import c4d``.
 
 Recognizes PBR texture sets from filenames (suffix tables cross-checked
 against three live market implementations — see
@@ -214,6 +214,26 @@ def orm_contributions(channels):
     return out
 
 
+def ao_destination(channels, multiply_ao):
+    """Where a set's AO map ACTUALLY lands — the single source for both the
+    writer's graph and the preview's AO row (same discipline as
+    ``orm_contributions``, review I2): the row the artist reads can never
+    promise a wiring the writer won't make.
+
+    ``None`` when the set has no AO at all. ``"base_color_multiply"`` when
+    the opt-in ``multiply_ao`` is on AND the set has a basecolor to multiply
+    INTO (an AO-only set has no target: it would leave a dangling color
+    layer, so the AO stays loose). Otherwise ``"unconnected"`` — the v1.32
+    behavior: a visible, unwired sampler (recognized files never vanish
+    silently)."""
+    channels = channels or {}
+    if "ao" not in channels:
+        return None
+    if multiply_ao and "basecolor" in channels:
+        return "base_color_multiply"
+    return "unconnected"
+
+
 def scan_texture_sets(filenames, default_root="material", extra_suffixes=None):
     """``default_root`` names the set for ROOTLESS files ("albedo.png") —
     the caller passes the folder's basename so bare-channel packs group
@@ -331,7 +351,7 @@ def assign_leftovers(hints, set_names):
     return out
 
 
-def preview_payload(scan_result, existing_names):
+def preview_payload(scan_result, existing_names, multiply_ao=False):
     """Shape a ``scan_texture_sets`` result for the SPA preview: channel
     rows annotated with their colorspace (single source:
     ``channel_colorspace``), tuples flattened to JSON-friendly lists, and
@@ -342,7 +362,13 @@ def preview_payload(scan_result, existing_names):
     — the SAME function the writer's connect pairs come from): without it
     the row looked like any other wired channel while the writer could be
     degrading it to a bare unconnected sampler, i.e. the preview lied
-    exactly where "preview before create" earns its keep (review I2)."""
+    exactly where "preview before create" earns its keep (review I2).
+
+    Same discipline for the AO row (v1.33): it carries ``destination`` from
+    ``ao_destination`` — the SAME function the writer's graph decision comes
+    from — evaluated against the CURRENT ``multiply_ao`` (the sub-view's
+    checkbox), so the row can never advertise a multiply the writer would
+    skip (e.g. an AO-only set, which has no base color to multiply into)."""
     sets = []
     for tex_set in scan_result.get("sets") or []:
         channels = []
@@ -351,6 +377,9 @@ def preview_payload(scan_result, existing_names):
                    "colorspace": channel_colorspace(channel)}
             if channel == "packed_orm":
                 row["contributes"] = orm_contributions(tex_set["channels"])
+            if channel == "ao":
+                row["destination"] = ao_destination(tex_set["channels"],
+                                                    multiply_ao)
             channels.append(row)
         sets.append({
             "name": tex_set["name"],

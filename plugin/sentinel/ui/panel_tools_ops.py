@@ -295,14 +295,39 @@ def _matwire_request(payload):
             "default_root": default_root, "suffix_warnings": warnings}
 
 
+def _matwire_projection(payload):
+    """VALIDATE AT THE BOUNDARY (v1.33): the writer degrades an unknown
+    projection to UV silently (``PROJECTION_TYPES.get(..., uv)``), so a typo
+    coming from the client would render as "Tri-Planar requested, UV
+    delivered". Normalizing here — case/whitespace tolerated, anything the
+    writer's table doesn't know becomes ``"uv"``, never a raise — keeps what
+    reaches the writer always a known value. ``PROJECTION_TYPES`` is the
+    single source of the accepted strings."""
+    from sentinel import matwire_c4d
+    raw = (payload or {}).get("projection")
+    if not isinstance(raw, str):
+        return "uv"
+    value = raw.strip().lower()
+    return value if value in matwire_c4d.PROJECTION_TYPES else "uv"
+
+
 def _op_matwire_preview(payload):
     from sentinel import matwire
+    from sentinel import matwire_c4d
     result = _matwire_request(payload)
     if "error" in result:
         return result
     existing = _existing_material_names(result["doc"])
-    out = matwire.preview_payload(result["scan"], existing)
+    # multiply_ao rides the preview so the AO row's destination reflects the
+    # CURRENT checkbox (matwire.ao_destination is the single source shared
+    # with the writer).
+    out = matwire.preview_payload(result["scan"], existing,
+                                  multiply_ao=bool((payload or {}).get("multiply_ao")))
     out["ok"] = True
+    # Honest degradation (spec): with no shared UV context node in this build
+    # the Projection selector has nothing to drive, and the sub-view says so
+    # instead of offering a control that silently does nothing.
+    out["uvcontext_available"] = bool(matwire_c4d.uvcontext_available())
     out["suffix_warnings"] = result["suffix_warnings"]
     out["leftovers"] = matwire.assign_leftovers(
         result["scan"].get("leftover_hints"),
@@ -328,6 +353,8 @@ def _op_matwire_create(payload):
     if not included:
         return {"ok": False, "error": "no_sets"}
     import_leftovers = bool(payload.get("import_leftovers"))
+    multiply_ao = bool(payload.get("multiply_ao"))
+    projection = _matwire_projection(payload)  # normalized, never raises
     per_set = {}
     unassigned = []
     if import_leftovers:
@@ -361,13 +388,19 @@ def _op_matwire_create(payload):
     try:
         for tex_set, name, extra_files in jobs:
             try:
+                # projection/multiply_ao ride ALWAYS and already normalized —
+                # the op decides them, never the writer's defaults.
+                # leftover_files stays conditional (the v1.32 call shape is
+                # the no-regression path when the import is off).
                 if import_leftovers:
                     created = matwire_c4d.create_material_for_set(
                         doc, folder, tex_set, name,
-                        leftover_files=extra_files)
-                else:  # v1.32 call shape — the no-regression path
+                        leftover_files=extra_files,
+                        multiply_ao=multiply_ao, projection=projection)
+                else:
                     created = matwire_c4d.create_material_for_set(
-                        doc, folder, tex_set, name)
+                        doc, folder, tex_set, name,
+                        multiply_ao=multiply_ao, projection=projection)
             except Exception as exc:  # writer contract is no-raise; belt+braces
                 errors.append([tex_set["name"], str(exc)])
                 continue
