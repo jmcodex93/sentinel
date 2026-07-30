@@ -1,13 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { IGNORED_REASON_LABELS, ignoredReasonLabel, matwireToast } from "./panelMatwire";
+import {
+  IGNORED_REASON_LABELS,
+  MATWIRE_IMPORT_LEFTOVERS_LABEL,
+  channelLabel,
+  ignoredReasonLabel,
+  leftoverDestination,
+  matwireToast,
+  suffixWarningsNote,
+} from "./panelMatwire";
 
 /** AUTHORITATIVE ignored-reason list, pinned against the engine
  * (plugin/sentinel/matwire.py — every literal appended to `ignored` /
  * `set_ignored`). If the engine grows a reason, this test is the tripwire
- * forcing a label before the SPA ships an unlabeled raw slug. */
+ * forcing a label before the SPA ships an unlabeled raw slug.
+ * v1.32.1: `packed_orm` left the list — ORM/ARM is a real channel now,
+ * not an ignore reason. */
 const ENGINE_REASONS = [
   "bad_extension",
-  "packed_orm",
   "no_channel",
   "duplicate_channel",
   "lower_resolution",
@@ -28,7 +37,6 @@ describe("IGNORED_REASON_LABELS", () => {
 
   it("uses the brief's exact copy for the spelled-out reasons", () => {
     expect(IGNORED_REASON_LABELS.lower_resolution).toBe("lower resolution");
-    expect(IGNORED_REASON_LABELS.packed_orm).toBe("packed ORM/ARM (v2)");
     expect(IGNORED_REASON_LABELS.pbr_wins).toBe("PBR maps take precedence");
     expect(IGNORED_REASON_LABELS.dx_superseded).toBe("GL normal preferred");
     expect(IGNORED_REASON_LABELS.no_channel).toBe("unrecognized");
@@ -87,5 +95,45 @@ describe("matwireToast", () => {
     const t = matwireToast({ ok: false, error: "no_document" });
     expect(t.message).toBe("Couldn't create materials.");
     expect(t.variant).toBe("warn");
+  });
+});
+
+describe("channelLabel", () => {
+  it("labels packed_orm as 'ORM/ARM (packed)'", () => {
+    expect(channelLabel("packed_orm")).toBe("ORM/ARM (packed)");
+  });
+
+  it("passes every other channel through untouched", () => {
+    expect(channelLabel("basecolor")).toBe("basecolor");
+    expect(channelLabel("roughness")).toBe("roughness");
+  });
+});
+
+describe("leftoverDestination", () => {
+  it("names the assigned set", () => {
+    expect(leftoverDestination("plaster")).toBe("→ plaster");
+  });
+
+  it("unassigned goes to the leftovers material", () => {
+    expect(leftoverDestination(null)).toBe("→ leftovers material");
+  });
+});
+
+describe("suffixWarningsNote", () => {
+  it("is null when there are no warnings", () => {
+    expect(suffixWarningsNote([])).toBeNull();
+    expect(suffixWarningsNote(undefined)).toBeNull();
+  });
+
+  it("names the rejected ruleset keys", () => {
+    expect(suffixWarningsNote(["bogus", "nope"])).toBe(
+      "Ruleset matwire_suffixes: invalid key(s) ignored — bogus, nope",
+    );
+  });
+});
+
+describe("leftover import checkbox copy", () => {
+  it("is pinned to the brief's exact label", () => {
+    expect(MATWIRE_IMPORT_LEFTOVERS_LABEL).toBe("Import unrecognized files");
   });
 });

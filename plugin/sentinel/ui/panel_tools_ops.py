@@ -230,10 +230,40 @@ def _existing_material_names(doc):
     return names
 
 
+#: Recursion cap for the matwire folder walk — levels BELOW the root.
+_MATWIRE_WALK_DEPTH = 5
+
+
+def _list_folder_files(folder):
+    """Recursive file lister shared by BOTH matwire ops (v1.32.1): paths
+    RELATIVE to ``folder`` with "/" separators (the writer re-joins them
+    per-platform via ``matwire_c4d._join``), walk capped at 5 levels below
+    the root, dot-DIRS pruned, symlinks never followed, sorted for
+    determinism. Dot-FILES are kept — flat-folder parity with the v1.32
+    ``os.listdir`` behavior (.DS_Store still falls out downstream as
+    ``bad_extension``, exactly as before)."""
+    root = os.path.normpath(str(folder))
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        rel_dir = os.path.relpath(dirpath, root)
+        depth = 0 if rel_dir == os.curdir else rel_dir.count(os.sep) + 1
+        if depth >= _MATWIRE_WALK_DEPTH:
+            dirnames[:] = []  # cap: never descend past level 5
+        else:
+            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for name in filenames:
+            rel = name if rel_dir == os.curdir else os.path.join(rel_dir, name)
+            out.append(rel.replace(os.sep, "/"))
+    return sorted(out)
+
+
 def _matwire_request(payload):
     """Shared front half for the matwire ops: re-derives the scan from the
     FOLDER on every call (v1.31 rename-ops pattern — client rows are never
-    trusted). Returns ``{doc, folder, scan}`` or an error dict."""
+    trusted). Resolves the project ruleset's ``matwire_suffixes`` (lazy
+    rules_context import, frame_tag style — defensive: any resolution
+    failure degrades to no extras). Returns ``{doc, folder, scan,
+    default_root, suffix_warnings}`` or an error dict."""
     from sentinel import matwire
     from sentinel import matwire_c4d
     doc = c4d.documents.GetActiveDocument()
@@ -245,14 +275,24 @@ def _matwire_request(payload):
     if not folder or not os.path.isdir(folder):
         return {"ok": False, "error": "bad_folder"}
     try:
-        files = sorted(os.listdir(folder))  # non-recursive v1, deterministic
+        files = _list_folder_files(folder)
     except OSError:
         return {"ok": False, "error": "bad_folder"}
     default_root = os.path.basename(folder.rstrip(os.sep)) or "material"
-    scan = matwire.scan_texture_sets(files, default_root=default_root)
+    extra, warnings = {}, []
+    try:
+        from sentinel.rules_context import active_rules_for_doc
+        raw = (active_rules_for_doc(doc).params or {}).get("matwire_suffixes")
+    except Exception:
+        raw = None
+    if raw:
+        extra, warnings = matwire.validate_extra_suffixes(raw)
+    scan = matwire.scan_texture_sets(files, default_root=default_root,
+                                     extra_suffixes=extra or None)
     if not scan["sets"]:
         return {"ok": False, "error": "no_sets"}
-    return {"doc": doc, "folder": folder, "scan": scan}
+    return {"doc": doc, "folder": folder, "scan": scan,
+            "default_root": default_root, "suffix_warnings": warnings}
 
 
 def _op_matwire_preview(payload):
@@ -263,6 +303,10 @@ def _op_matwire_preview(payload):
     existing = _existing_material_names(result["doc"])
     out = matwire.preview_payload(result["scan"], existing)
     out["ok"] = True
+    out["suffix_warnings"] = result["suffix_warnings"]
+    out["leftovers"] = matwire.assign_leftovers(
+        result["scan"].get("leftover_hints"),
+        [s["name"] for s in result["scan"]["sets"]])
     return out
 
 
@@ -282,16 +326,47 @@ def _op_matwire_create(payload):
     included = [s for s in scan["sets"] if s["name"] not in exclude]
     if not included:
         return {"ok": False, "error": "no_sets"}
+    import_leftovers = bool(payload.get("import_leftovers"))
+    per_set = {}
+    unassigned = []
+    if import_leftovers:
+        # Assignment runs against ALL set names (mirrors the preview): a
+        # leftover whose home set is EXCLUDED is dropped with it — it never
+        # leaks into the catch-all material.
+        for row in matwire.assign_leftovers(
+                scan.get("leftover_hints"),
+                [s["name"] for s in scan["sets"]]):
+            if row["set"] is None:
+                unassigned.append(row["file"])
+            else:
+                per_set.setdefault(row["set"], []).append(row["file"])
     requested = [str(names_map.get(s["name"]) or s["name"]) for s in included]
+    leftover_base = None
+    if import_leftovers and unassigned:
+        leftover_base = result["default_root"] + "_leftovers"
+        requested.append(leftover_base)  # dedupes with the batch + manager
     final_names = matwire.dedupe_names(requested, _existing_material_names(doc))
+    jobs = [(tex_set, name, per_set.get(tex_set["name"]))
+            for tex_set, name in zip(included, final_names)]
+    if leftover_base is not None:
+        # Unassigned leftovers become ONE material from an EMPTY set — the
+        # same creation path as any set (zero special cases in the writer).
+        jobs.append(({"name": leftover_base, "channels": {},
+                      "normal_flipy": False, "ignored": []},
+                     final_names[-1], unassigned))
     materials = []
     errors = []
     doc.StartUndo()
     try:
-        for tex_set, name in zip(included, final_names):
+        for tex_set, name, extra_files in jobs:
             try:
-                created = matwire_c4d.create_material_for_set(
-                    doc, folder, tex_set, name)
+                if import_leftovers:
+                    created = matwire_c4d.create_material_for_set(
+                        doc, folder, tex_set, name,
+                        leftover_files=extra_files)
+                else:  # v1.32 call shape — the no-regression path
+                    created = matwire_c4d.create_material_for_set(
+                        doc, folder, tex_set, name)
             except Exception as exc:  # writer contract is no-raise; belt+braces
                 errors.append([tex_set["name"], str(exc)])
                 continue

@@ -5,9 +5,16 @@ import { TextInput } from "../form/TextInput";
 import { SectionGroup } from "../SectionGroup";
 import { fetchMatwirePreview, postHubPickPath, postMatwireCreate } from "../../lib/api";
 import { restoreFocus } from "../../lib/focus";
-import { ignoredReasonLabel, matwireToast } from "../../lib/panelMatwire";
+import {
+  MATWIRE_IMPORT_LEFTOVERS_LABEL,
+  channelLabel,
+  ignoredReasonLabel,
+  leftoverDestination,
+  matwireToast,
+  suffixWarningsNote,
+} from "../../lib/panelMatwire";
 import { useToast } from "../../lib/toast";
-import type { MatwirePreviewResult } from "../../types";
+import type { MatwireLeftoverRow, MatwirePreviewResult } from "../../types";
 
 /** Inline (muted, non-toast) copy for a preview that can't be computed —
  * normal states of pointing at the wrong folder, not failures, so they
@@ -67,6 +74,40 @@ function IgnoredFold({ rows, title }: { rows: [string, string][]; title: string 
   );
 }
 
+/** Folded `▸ N unrecognized file(s)` list with each leftover's destination
+ * (its prefix-matched set, or the catch-all leftovers material) — the
+ * IgnoredFold pattern, but with a destination instead of a reason. */
+function LeftoversFold({ rows }: { rows: MatwireLeftoverRow[] }) {
+  const [open, setOpen] = useState(false);
+  if (rows.length === 0) return null;
+  return (
+    <div>
+      <button
+        type="button"
+        className="text-caption cursor-pointer"
+        style={{ color: "var(--color-ink-secondary)" }}
+        onClick={() => setOpen((prev) => !prev)}
+      >
+        {open ? "▾" : "▸"} {rows.length} unrecognized file(s)
+      </button>
+      {open && (
+        <div className="mt-1 flex flex-col gap-0.5 pl-4">
+          {rows.map((row, index) => (
+            <div key={index} className="text-caption flex items-baseline gap-2">
+              <span className="min-w-0 truncate" style={{ color: "var(--color-ink-secondary)" }}>
+                {row.file}
+              </span>
+              <span className="shrink-0" style={{ color: "var(--color-muted)" }}>
+                {leftoverDestination(row.set)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Material from Folder sub-view (v1.32) — self-contained like the
  * RenameSubview: owns its preview fetch and its create. The preview is
  * ALWAYS the server's scan (`matwire_preview` — no client-side recognition
@@ -80,6 +121,7 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
   const [preview, setPreview] = useState<MatwirePreviewResult | null>(null);
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [names, setNames] = useState<Record<string, string>>({});
+  const [importLeftovers, setImportLeftovers] = useState(false);
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
 
@@ -126,6 +168,8 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
 
   const sets = preview?.ok ? (preview.sets ?? []) : [];
   const included = sets.filter((s) => !excluded.has(s.name));
+  const leftovers = preview?.ok ? (preview.leftovers ?? []) : [];
+  const warningsNote = preview?.ok ? suffixWarningsNote(preview.suffix_warnings) : null;
   const emptyReason = preview && !preview.ok
     ? (PREVIEW_EMPTY_COPY[preview.error ?? ""] ?? "Preview unavailable.")
     : null;
@@ -138,7 +182,7 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
     if (included.length === 0) return;
     setApplying(true);
     try {
-      const result = await postMatwireCreate(folder, [...excluded], names);
+      const result = await postMatwireCreate(folder, [...excluded], names, importLeftovers);
       toast(matwireToast(result));
       // Refetch: the new materials change the dedupe of default names.
       if (result.ok) await loadPreview(folder);
@@ -200,6 +244,11 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
           </p>
         ) : (
           <div className="flex flex-col gap-2">
+            {warningsNote && (
+              <p className="text-caption" style={{ color: "var(--color-status-warn)" }}>
+                {warningsNote}
+              </p>
+            )}
             {sets.map((texSet) => {
               const isIncluded = !excluded.has(texSet.name);
               return (
@@ -230,8 +279,8 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
                   <div className="mt-1.5 flex flex-col gap-0.5 pl-6">
                     {texSet.channels.map((row) => (
                       <div key={row.channel} className="text-caption flex items-baseline gap-2">
-                        <span className="w-20 shrink-0" style={{ color: "var(--color-ink)" }}>
-                          {row.channel}
+                        <span className="w-32 shrink-0" style={{ color: "var(--color-ink)" }}>
+                          {channelLabel(row.channel)}
                         </span>
                         <span
                           className="min-w-0 flex-1 truncate"
@@ -248,6 +297,16 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
               );
             })}
             <IgnoredFold rows={preview?.ignored ?? []} title="file(s) not recognized" />
+            {leftovers.length > 0 && (
+              <div className="mt-1 flex flex-col gap-1">
+                <Checkbox
+                  checked={importLeftovers}
+                  onChange={setImportLeftovers}
+                  label={MATWIRE_IMPORT_LEFTOVERS_LABEL}
+                />
+                <LeftoversFold rows={leftovers} />
+              </div>
+            )}
           </div>
         )}
         <div className="mt-3">
