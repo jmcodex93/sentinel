@@ -1460,9 +1460,16 @@ _MUL_ID = "com.redshift3d.redshift4c4d.nodes.core.rsmathmulvector"
 #: absent from this table (samplers, the group root) stay permissive: their
 #: ids ARE what the writer is asserting, and the group's ports are created
 #: through the helper.
+_SAMPLER_ID = "com.redshift3d.redshift4c4d.nodes.core.texturesampler"
 _FAKE_NODE_PORTS = {
     "net.maxon.node.type": {"in", "datatype", "out"},
     _MUL_ID: {_MUL_ID + ".input1", _MUL_ID + ".input2", _MUL_ID + ".out"},
+    # The sampler is listed so the fan-out's port ids are checked against a
+    # fixed set instead of against themselves: without it a sampler node
+    # conjures a port for any id, and a typo in `connect_to` would be
+    # invisible here and a silent no-op in production.
+    _SAMPLER_ID: {_SAMPLER_ID + ".scale", _SAMPLER_ID + ".offset",
+                  _SAMPLER_ID + ".rotate", _SAMPLER_ID + ".uv_context"},
 }
 
 
