@@ -5,6 +5,7 @@ import {
   channelLabel,
   ignoredReasonLabel,
   leftoverDestination,
+  leftoverDestinationLabel,
   matwireToast,
   suffixWarningsNote,
 } from "./panelMatwire";
@@ -116,6 +117,32 @@ describe("leftoverDestination", () => {
 
   it("unassigned goes to the leftovers material", () => {
     expect(leftoverDestination(null)).toBe("→ leftovers material");
+  });
+});
+
+describe("leftoverDestinationLabel", () => {
+  it("assigned + set still included shows the arrow destination", () => {
+    const label = leftoverDestinationLabel(
+      { file: "plaster_extra.png", set: "plaster" },
+      new Set(),
+    );
+    expect(label).toBe("→ plaster");
+  });
+
+  it("assigned + set excluded shows the dropped label, not a stale arrow", () => {
+    const label = leftoverDestinationLabel(
+      { file: "plaster_extra.png", set: "plaster" },
+      new Set(["plaster"]),
+    );
+    expect(label).toBe("dropped (set excluded)");
+  });
+
+  it("unassigned always goes to the leftovers material, regardless of exclusions", () => {
+    const label = leftoverDestinationLabel(
+      { file: "unknown.png", set: null },
+      new Set(["plaster"]),
+    );
+    expect(label).toBe("→ leftovers material");
   });
 });
 

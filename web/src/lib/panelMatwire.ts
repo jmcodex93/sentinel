@@ -1,4 +1,4 @@
-import type { MatwireCreateResult } from "../types";
+import type { MatwireCreateResult, MatwireLeftoverRow } from "../types";
 
 /** Human labels for the engine's ignored-file reasons — pinned COMPLETE
  * against every reason plugin/sentinel/matwire.py can emit (the
@@ -34,6 +34,23 @@ export const MATWIRE_IMPORT_LEFTOVERS_LABEL = "Import unrecognized files";
  * where the file is headed). */
 export function leftoverDestination(set: string | null): string {
   return set === null ? "→ leftovers material" : `→ ${set}`;
+}
+
+/** Display label for a leftover row against the LOCAL `excluded` selection
+ * state — not just the preview's raw assignment. A leftover assigned to a
+ * set the artist has since excluded from Create is DROPPED by the server
+ * (matwire_create only imports leftovers whose set exists in the create),
+ * so showing its stale "→ <set>" arrow would tell the artist one outcome
+ * while they get another. Unassigned leftovers (`set === null`) always go
+ * to the catch-all `<root>_leftovers` material regardless of exclusions. */
+export function leftoverDestinationLabel(
+  row: MatwireLeftoverRow,
+  excludedSet: Set<string>,
+): string {
+  if (row.set !== null && excludedSet.has(row.set)) {
+    return "dropped (set excluded)";
+  }
+  return leftoverDestination(row.set);
 }
 
 /** Inline note for ruleset `matwire_suffixes` keys the engine rejected —

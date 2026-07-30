@@ -9,7 +9,7 @@ import {
   MATWIRE_IMPORT_LEFTOVERS_LABEL,
   channelLabel,
   ignoredReasonLabel,
-  leftoverDestination,
+  leftoverDestinationLabel,
   matwireToast,
   suffixWarningsNote,
 } from "../../lib/panelMatwire";
@@ -76,8 +76,18 @@ function IgnoredFold({ rows, title }: { rows: [string, string][]; title: string 
 
 /** Folded `▸ N unrecognized file(s)` list with each leftover's destination
  * (its prefix-matched set, or the catch-all leftovers material) — the
- * IgnoredFold pattern, but with a destination instead of a reason. */
-function LeftoversFold({ rows }: { rows: MatwireLeftoverRow[] }) {
+ * IgnoredFold pattern, but with a destination instead of a reason. The
+ * destination is derived against the LIVE `excluded` selection (not the
+ * preview's stale assignment): a leftover whose set has since been
+ * excluded from Create is dropped by the server, and the label must say
+ * so rather than showing an arrow to a set that won't exist. */
+function LeftoversFold({
+  rows,
+  excluded,
+}: {
+  rows: MatwireLeftoverRow[];
+  excluded: Set<string>;
+}) {
   const [open, setOpen] = useState(false);
   if (rows.length === 0) return null;
   return (
@@ -98,7 +108,7 @@ function LeftoversFold({ rows }: { rows: MatwireLeftoverRow[] }) {
                 {row.file}
               </span>
               <span className="shrink-0" style={{ color: "var(--color-muted)" }}>
-                {leftoverDestination(row.set)}
+                {leftoverDestinationLabel(row, excluded)}
               </span>
             </div>
           ))}
@@ -304,7 +314,7 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
                   onChange={setImportLeftovers}
                   label={MATWIRE_IMPORT_LEFTOVERS_LABEL}
                 />
-                <LeftoversFold rows={leftovers} />
+                <LeftoversFold rows={leftovers} excluded={excluded} />
               </div>
             )}
           </div>
