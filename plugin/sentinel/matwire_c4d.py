@@ -69,7 +69,7 @@ def _rs_colorspace(channel):
 # Column x per node kind (§6 suggested layout); samplers stack on y.
 # rscolorsplitter shares the intermediary column with bump/displacement
 # (rows are keyed by COLUMN, so cohabitation never stacks — see
-# _layout_nodes).
+# _layout_and_title_nodes).
 _LAYOUT_COLS = {
     "texturesampler": -600.0,
     "rscolorcorrection": -450.0,   # one stage BEFORE the AO layer it feeds
@@ -153,6 +153,14 @@ def build_description(folder, tex_set, multiply_ao=False):
       sampler and ``base_color``. Measured cost ≈0 and measured identity
       (spike 2026-07-30 §B.2, ``T_CC``: max diff 0 over hundreds of
       samples), and it is exactly where the artist ends up reaching.
+      NOTE (review): that identity is DEFAULT-conditioned — the spike
+      measured the node with NO params written, so this branch writes
+      none. Writing "neutral" constants would be guessing values whose
+      neutrality was never measured (and would pre-dirty the very node
+      the artist is meant to grab). This is the one place where "never
+      depend on node defaults" yields: the default state IS the measured
+      one. If a param is ever written here, the identity claim above must
+      be re-measured.
     - an **opt-in ``rscolorlayer``** (``multiply_ao``) multiplying the AO
       over the corrected color: base layer = the correction, layer 1 = the
       AO sampler, ``layer1_blend_mode = 4`` (**Multiply** — enum measured;
@@ -304,7 +312,7 @@ def _apply_orm_plan(graph, plan):
     ApplyDescription for splitter+sampler, then the connect pairs in ONE
     transaction (mini-spike v1.32.1 recipe — sharing one splitter across
     two ports is not expressible declaratively). Node lookup by assetid
-    substring, same discovery walk as ``_layout_nodes``."""
+    substring, same discovery walk as ``_layout_and_title_nodes``."""
     maxon.GraphDescription.ApplyDescription(graph, plan["splitter_desc"])
     if not plan["connects"]:
         # Both-dedicated case (review M1): the desc above was a bare
