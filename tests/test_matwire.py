@@ -739,3 +739,87 @@ class TestKindFromAssetid:
     def test_empty_and_none(self, matwire_c4d):
         assert matwire_c4d._kind_from_assetid(None) == ""
         assert matwire_c4d._kind_from_assetid("") == ""
+
+
+class _OrderRecordingDoc:
+    """Doc fake recording the interleaving of insertion vs graph work."""
+
+    def __init__(self, log):
+        self._log = log
+        self.undo_operations = []
+
+    def InsertMaterial(self, mat):
+        self._log.append("InsertMaterial")
+
+    def AddUndo(self, undo_type, target):
+        self._log.append(("AddUndo", undo_type))
+        self.undo_operations.append((undo_type, target))
+
+
+class TestCreateMaterialOrdering:
+    """v1.32.1 live-caught: graph transactions on an ALREADY-INSERTED
+    material each become their own document undo step, so a batch of >1
+    material needed 4+ Cmd+Z. Root fix = build the WHOLE graph on the
+    off-document material and insert LAST. These pin that ordering (and its
+    consequence for the failure path) without a real C4D."""
+
+    @pytest.fixture
+    def matwire_c4d(self, sentinel_module):
+        return importlib.import_module("sentinel.matwire_c4d")
+
+    def _install_fakes(self, matwire_c4d, monkeypatch, log, fail_on=None):
+        class _FakeMat:
+            def SetName(self, name):
+                log.append("SetName")
+
+        class _FakeGraphDescription:
+            @staticmethod
+            def GetGraph(mat, nodeSpaceId=None):
+                log.append("GetGraph")
+                return "graph"
+
+            @staticmethod
+            def ApplyDescription(graph, desc):
+                log.append("ApplyDescription")
+                if fail_on == "apply":
+                    raise RuntimeError("apply boom")
+
+        fake_maxon = type("_M", (), {
+            "GraphDescription": _FakeGraphDescription,
+            "NodeSpaceIdentifiers": type("_N", (), {"RedshiftMaterial": 1}),
+        })
+        monkeypatch.setattr(matwire_c4d, "maxon", fake_maxon)
+        monkeypatch.setattr(matwire_c4d.c4d, "BaseMaterial",
+                            lambda _type: _FakeMat())
+        monkeypatch.setattr(matwire_c4d, "_layout_nodes",
+                            lambda graph: log.append("_layout_nodes"))
+
+    def test_graph_is_complete_before_insertion(self, matwire_c4d, monkeypatch):
+        log = []
+        self._install_fakes(matwire_c4d, monkeypatch, log)
+        doc = _OrderRecordingDoc(log)
+        tex_set = {"name": "plaster", "channels": {"basecolor": "c.png"},
+                   "normal_flipy": False}
+        out = matwire_c4d.create_material_for_set(doc, "/tex", tex_set, "plaster")
+        assert out["ok"] is True
+        insert_at = log.index("InsertMaterial")
+        # EVERY graph call happens before the document ever sees the material.
+        assert log.index("GetGraph") < insert_at
+        assert log.index("ApplyDescription") < insert_at
+        assert log.index("_layout_nodes") < insert_at
+        # ...and the only document record is the insertion's NEWOBJ.
+        assert doc.undo_operations == [
+            (matwire_c4d.c4d.UNDOTYPE_NEWOBJ, doc.undo_operations[0][1])]
+        assert log[insert_at + 1] == ("AddUndo", matwire_c4d.c4d.UNDOTYPE_NEWOBJ)
+
+    def test_failure_never_touches_the_document(self, matwire_c4d, monkeypatch):
+        log = []
+        self._install_fakes(matwire_c4d, monkeypatch, log, fail_on="apply")
+        doc = _OrderRecordingDoc(log)
+        tex_set = {"name": "plaster", "channels": {"basecolor": "c.png"},
+                   "normal_flipy": False}
+        out = matwire_c4d.create_material_for_set(doc, "/tex", tex_set, "plaster")
+        assert out["ok"] is False and "apply boom" in out["error"]
+        # No insertion, hence no NEWOBJ and no balancing DELETE to take.
+        assert "InsertMaterial" not in log
+        assert doc.undo_operations == []

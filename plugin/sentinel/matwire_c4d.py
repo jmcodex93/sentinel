@@ -4,11 +4,17 @@
 Follows the LIVE-VERIFIED recipe in
 ``docs/research/2026-07-29-matwire-spike.md`` verbatim (C4D 2026.303):
 
-- Material creation goes through the **material-handle** path (§8):
-  ``BaseMaterial(Mmaterial)`` + ``InsertMaterial`` + ``AddUndo(NEWOBJ)`` +
-  ``AddUndo(CHANGE)`` anchor (MANDATORY — without it the maxon Apply
-  transaction is its own undo step) + ``GetGraph(mat, ...)``. Never
-  ``GetGraph(name=...)`` (no handle → no undo anchor, no cleanup).
+- Material creation goes through the **material-handle** path (§8), but
+  with the v1.32.1 **build-before-insert** correction (live-caught, see the
+  "Corrección v1.32.1" section of the spike doc): the whole node graph is
+  built on a NOT-YET-INSERTED ``BaseMaterial(Mmaterial)`` via
+  ``GetGraph(mat, ...)`` — which works fine off-document — and only then
+  ``InsertMaterial`` + ``AddUndo(NEWOBJ)``. Graph transactions run on a
+  material the document has never seen, so they generate NO document undo
+  steps: the batch's bracket only ever records N insertions and ONE Cmd+Z
+  reverts the whole batch. (The old ``AddUndo(CHANGE)`` anchor made exactly
+  ONE material's transaction join — batches of >1 needed 4+ undos.) Never
+  ``GetGraph(name=...)`` (no handle → no graph to build on).
 - Wiring is GraphDescription dict syntax (§1/§2): ``"#<id"`` marks an
   input port, ``/child`` a group-port child (tex0). Paths are **plain str**
   (§4 — never ``pathlib.as_uri()``); colorspaces always explicit.
@@ -25,8 +31,10 @@ Follows the LIVE-VERIFIED recipe in
   ``bool()``/``IsPopulated()``).
 
 The CALLER (op ``matwire_create``) owns ``StartUndo``/``EndUndo`` around
-the whole batch; a failed set removes its material (``mat.Remove()``, §8c)
-and reports the error without aborting the batch.
+the whole batch; a failed set is reported without aborting the batch — and
+since insertion is the LAST step, a failure means the material never
+reached the document, so there is nothing to clean up (no ``mat.Remove()``,
+no balancing ``AddUndo(DELETE)``).
 """
 
 import os
@@ -288,17 +296,23 @@ def create_material_for_set(doc, folder, tex_set, name, leftover_files=None):
     """Build ONE RS Standard material for ``tex_set`` (engine shape from
     ``matwire.scan_texture_sets``). ``name`` arrives already deduped;
     ``leftover_files`` (opt-in) ride along as extra unconnected RAW
-    samplers. The caller owns the undo block; any failure after insertion
-    removes the material (§8c) and is reported, never raised."""
-    mat = None
+    samplers. The caller owns the undo block.
+
+    ORDERING IS THE CONTRACT (v1.32.1, live-caught): the ENTIRE graph is
+    built on the off-document material and ``InsertMaterial`` is the LAST
+    step. Graph transactions on an ALREADY-INSERTED material each generate
+    their own document undo step (that is why a 2-material batch needed 4+
+    Cmd+Z); off-document they generate none, so the batch bracket records
+    only N insertions → ONE Cmd+Z reverts everything. Consequence for the
+    failure path: anything that raises happens BEFORE insertion, the
+    document never saw the material and no undo record exists for it — so
+    there is nothing to remove and no DELETE record to balance. Just
+    report."""
     try:
         desc, ao_desc = build_description(folder, tex_set)
         orm_plan = build_orm_plan(folder, tex_set)
         mat = c4d.BaseMaterial(c4d.Mmaterial)
         mat.SetName(name)
-        doc.InsertMaterial(mat)
-        doc.AddUndo(c4d.UNDOTYPE_NEWOBJ, mat)   # AFTER insert (NEWOBJ contract)
-        doc.AddUndo(c4d.UNDOTYPE_CHANGE, mat)   # anchor BEFORE touching the graph (§8b)
         graph = maxon.GraphDescription.GetGraph(
             mat, nodeSpaceId=maxon.NodeSpaceIdentifiers.RedshiftMaterial)
         maxon.GraphDescription.ApplyDescription(graph, desc)
@@ -309,17 +323,9 @@ def create_material_for_set(doc, folder, tex_set, name, leftover_files=None):
         for leftover_desc in build_leftover_descriptions(folder, leftover_files):
             maxon.GraphDescription.ApplyDescription(graph, leftover_desc)
         _layout_nodes(graph)
+        # LAST — the document's only record of this material is the insertion.
+        doc.InsertMaterial(mat)
+        doc.AddUndo(c4d.UNDOTYPE_NEWOBJ, mat)   # AFTER insert (NEWOBJ contract)
         return {"ok": True, "material_name": name, "error": None}
     except Exception as exc:
-        if mat is not None:
-            try:
-                # NEWOBJ/CHANGE were already recorded inside the batch's open
-                # undo bracket above — a bare Remove() here would leave that
-                # bracket unbalanced (redo could resurrect the half-built
-                # material). Balance it with a DELETE record first, matching
-                # the repo convention (fixes.py:258, scene_tools.py:1475).
-                doc.AddUndo(c4d.UNDOTYPE_DELETE, mat)
-                mat.Remove()
-            except Exception:
-                pass
         return {"ok": False, "material_name": name, "error": str(exc)}

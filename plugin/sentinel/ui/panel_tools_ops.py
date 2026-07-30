@@ -311,9 +311,10 @@ def _op_matwire_preview(payload):
 
 
 def _op_matwire_create(payload):
-    """Wire every included set inside ONE StartUndo/EndUndo (per-material
-    AddUndo anchors nest inside — one Cmd+Z reverts the batch). Per-set
-    failures are collected, never abort the batch."""
+    """Wire every included set inside ONE StartUndo/EndUndo. The writer
+    builds each graph OFF-document and inserts last (v1.32.1), so the only
+    records inside the bracket are the N insertions — one Cmd+Z reverts the
+    whole batch. Per-set failures are collected, never abort the batch."""
     from sentinel import matwire
     from sentinel import matwire_c4d
     result = _matwire_request(payload)

@@ -270,3 +270,54 @@ outr outgoing conns: 0                                                          
 **Decisión del writer**: vía imperativa SIEMPRE que el splitter exista (1 o 2 connects — un solo code path, la lista de pares varía); la forma declarativa `-> #>` (§B) queda documentada pero sin uso (solo cubriría el caso de un único output y bifurcaría la receta). Si AMBOS mapas dedicados existen, el splitter no contribuiría nada (outr nunca se conecta) → **no se crea** (skip total, decisión de juicio anotada).
 
 **Honestidad (review M2)**: el Cmd+Z del recipe imperativo (transacción de Connects bajo el anchor CHANGE) NO se ejercitó en este mini-spike — queda en la checklist live de v1.32.1 junto con la verificación visual del layout en columnas (el bug del Pair en `_layout_nodes` significa que el layout de v1.32 nunca se vio funcionando). **Ajuste post-review (M1)**: con roughness+metalness dedicados el plan ya no se omite — degrada a un sampler ORM suelto sin conectar (filosofía AO/leftover: los archivos reconocidos nunca desaparecen en silencio); `_apply_orm_plan` retorna antes del lookup cuando `connects` está vacío.
+
+---
+
+## Corrección v1.32.1 (live, lote > 1 material)
+
+**⚠️ LA RECETA DE UNDO DEL §8 (y del punto 2.a/2.f/3 de "Receta para `matwire_c4d.py`") ES INCORRECTA PARA LOTES.** Lo que sigue la reemplaza. No re-derives la anterior.
+
+**Fecha**: 2026-07-30 · **C4D**: 2026.303 (live, MCP `exec_python`) · reportado por el usuario en producción.
+
+**Síntoma**: crear 2 materiales pedía **4+ Cmd+Z** y aun así no dejaba la escena limpia. El contrato "un Cmd+Z revierte el lote" estaba roto.
+
+**Causa raíz**: las transacciones maxon que corren sobre un material **YA INSERTADO** en el documento (`ApplyDescription`, la transacción de `Connect` del ORM, la transacción de `SetValue` del layout) generan **cada una su propio paso de undo de documento**. El ancla `AddUndo(UNDOTYPE_CHANGE, mat)` del §8b solo hacía que se uniera la transacción de **UN** material — por eso el spike de un solo material (§8b) pasó y el bug se coló hasta producción. Es la limitación real del ancla, no una regresión del writer.
+
+**Fix**: construir **TODO el grafo sobre un `BaseMaterial` AÚN NO INSERTADO** y insertar al final. `maxon.GraphDescription.GetGraph(mat, nodeSpaceId=…)` funciona perfectamente sobre un material fuera del documento (verificado). Así el documento solo ve N inserciones dentro del `StartUndo`/`EndUndo` del lote → **UN** paso de undo.
+
+```python
+doc.StartUndo()                                   # el caller, alrededor del LOTE
+for name, desc in jobs:
+    mat = c4d.BaseMaterial(c4d.Mmaterial)
+    mat.SetName(name)
+    graph = maxon.GraphDescription.GetGraph(       # OK fuera del documento
+        mat, nodeSpaceId=maxon.NodeSpaceIdentifiers.RedshiftMaterial)
+    maxon.GraphDescription.ApplyDescription(graph, desc)
+    ...  # ORM connects, AO, leftovers, layout — TODO aquí, sin doc
+    doc.InsertMaterial(mat)                        # ÚLTIMO paso
+    doc.AddUndo(c4d.UNDOTYPE_NEWOBJ, mat)          # DESPUÉS de insertar
+doc.EndUndo()
+```
+
+Prueba live del coordinador (2 materiales, doc throwaway):
+
+```
+mats: ['spikeB','spikeA'];  undo #1 -> 0 materiales   (UN paso, ambos fuera)
+```
+
+Verificación del writer real (op `panel/tools/matwire_create`, 2 sets, doc throwaway con `SetDocumentPath` al folder del ruleset):
+
+```
+op_result: {'ok': True, 'created': 2, 'materials': ['plaster','wood'], 'errors': []}
+census:    plaster {output, standardmaterial, bumpmap, texturesampler x3}   cols 300/0/-300/-600
+           wood    {output, standardmaterial, texturesampler x2}            cols 300/0/-600
+conns:     plaster base_color=1, refl_roughness=1, bump_input=1
+           wood    base_color=1, refl_roughness=1, bump_input=0
+undo_steps_to_zero: 1   (0 materiales restantes)
+```
+
+**Corolarios que cambian el §8:**
+
+- El ancla `AddUndo(c4d.UNDOTYPE_CHANGE, mat)` **ya no se usa** — su único propósito era hacer que la transacción se uniera, y build-before-insert lo vuelve innecesario. Mantenerlo sería ruido.
+- El **cleanup por fallo (§8c) desaparece**: como la inserción es el ÚLTIMO paso, cualquier excepción ocurre con el material FUERA del documento — no hay nada que quitar, ni registro `NEWOBJ` que balancear con un `UNDOTYPE_DELETE`. El writer solo reporta el error y el lote sigue. (`mat.Remove()` sigue siendo válido como API; simplemente ya no hay caso donde haga falta aquí.)
+- Lo demás del §8 sigue en pie: `BaseMaterial(c4d.Mmaterial)` (type 5703), handle-sí / `GetGraph(name=…)`-no, `AddUndo(NEWOBJ)` DESPUÉS de insertar.
