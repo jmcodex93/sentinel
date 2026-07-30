@@ -41,7 +41,7 @@ import os
 
 import c4d
 
-from sentinel.matwire import channel_colorspace, orm_contributions
+from sentinel.matwire import ao_destination, channel_colorspace, orm_contributions
 
 try:
     import maxon
@@ -72,13 +72,42 @@ def _rs_colorspace(channel):
 # _layout_nodes).
 _LAYOUT_COLS = {
     "texturesampler": -600.0,
+    "rscolorcorrection": -450.0,   # one stage BEFORE the AO layer it feeds
     "bumpmap": -300.0,
     "displacement": -300.0,
     "rscolorsplitter": -300.0,
+    "rscolorlayer": -300.0,
     "standardmaterial": 0.0,
     "output": 300.0,
 }
 _LAYOUT_ROW_STEP = 220.0
+
+_TITLE_ATTR = "net.maxon.node.attribute.title"
+
+#: Semantic titles by node KIND (v1.33). The material and the output keep
+#: their native identity — renaming them would only hide what they are.
+NODE_TITLES = {
+    "rscolorcorrection": "Color Correct",
+    "rscolorlayer": "AO Multiply",
+    "rscolorsplitter": "ORM Split",
+    "bumpmap": "Bump",
+    "displacement": "Displacement",
+}
+
+#: Semantic titles for the SAMPLERS, keyed by the channel they carry.
+_CHANNEL_TITLES = {
+    "basecolor": "Base Color",
+    "roughness": "Roughness",
+    "metalness": "Metalness",
+    "normal": "Normal",
+    "height": "Height",
+    "ao": "AO",
+    "packed_orm": "ORM",
+    "opacity": "Opacity",
+    "emission": "Emission",
+    "specular": "Specular",
+    "glossiness": "Glossiness",
+}
 
 
 def redshift_available():
@@ -112,20 +141,59 @@ def _join(folder, rel):
     return os.path.join(folder, *rel.split("/"))
 
 
-def build_description(folder, tex_set):
+def build_description(folder, tex_set, multiply_ao=False):
     """(main_desc, ao_desc | None) — pure dict assembly per §2/§2b and the
     Global Constraints wiring rules. The engine already enforces the
     channel precedences (glossiness never coexists with roughness/metalness,
-    normal is a single resolved key), so each key is written at most once."""
+    normal is a single resolved key), so each key is written at most once.
+
+    v1.33 adds two nodes on the basecolor branch:
+
+    - an **identity ``rscolorcorrection`` ALWAYS** between the basecolor
+      sampler and ``base_color``. Measured cost ≈0 and measured identity
+      (spike 2026-07-30 §B.2, ``T_CC``: max diff 0 over hundreds of
+      samples), and it is exactly where the artist ends up reaching.
+    - an **opt-in ``rscolorlayer``** (``multiply_ao``) multiplying the AO
+      over the corrected color: base layer = the correction, layer 1 = the
+      AO sampler, ``layer1_blend_mode = 4`` (**Multiply** — enum measured;
+      2 is NOT multiply and produced a radically different image). Then the
+      AO is no longer emitted as a loose sampler (``ao_desc is None``).
+
+    WHERE the AO goes is decided ONCE, by ``matwire.ao_destination`` — the
+    same function the preview's AO row reads, so the row can't promise a
+    wiring this writer won't make. In particular an AO-only set (no
+    basecolor) has nothing to multiply into: no layer is built and the AO
+    stays loose. ``multiply_ao=False`` (the default) leaves every existing
+    caller byte-identical apart from the correction."""
     channels = tex_set.get("channels") or {}
 
     def path(channel):
         return _join(folder, channels[channel])
 
     sm = "#<" + _RS_CORE + "standardmaterial."
+    cc = _RS_CORE + "rscolorcorrection"
+    layer = _RS_CORE + "rscolorlayer"
+    ao_dest = ao_destination(channels, multiply_ao)
     material = {"$type": "#" + _RS_CORE + "standardmaterial"}
     if "basecolor" in channels:
-        material[sm + "base_color"] = _sampler(path("basecolor"), _rs_colorspace("basecolor"))
+        base_branch = {
+            "$type": "#" + cc,
+            "#<" + cc + ".input": _sampler(
+                path("basecolor"), _rs_colorspace("basecolor")),
+        }
+        if ao_dest == "base_color_multiply":
+            base_branch = {
+                "$type": "#" + layer,
+                "#<" + layer + ".base_color": base_branch,
+                "#<" + layer + ".layer1_color": _sampler(
+                    path("ao"), _rs_colorspace("ao")),
+                # ALWAYS explicit — never depend on node defaults
+                # (colorspace/flipy principle). The live default IS True,
+                # but nothing in the graph should rest on that.
+                "#<" + layer + ".layer1_enable": True,
+                "#<" + layer + ".layer1_blend_mode": 4,  # Multiply (measured)
+            }
+        material[sm + "base_color"] = base_branch
     if "roughness" in channels:
         material[sm + "refl_roughness"] = _sampler(path("roughness"), _rs_colorspace("roughness"))
     if "metalness" in channels:
@@ -164,7 +232,9 @@ def build_description(folder, tex_set):
             "$type": "#" + _RS_CORE + "displacement",
             "#<" + _RS_CORE + "displacement.texmap": _sampler(path("height"), _rs_colorspace("height")),
         }
-    ao_desc = _sampler(path("ao"), _rs_colorspace("ao")) if "ao" in channels else None
+    # Loose sampler ONLY when the AO isn't wired into the color layer.
+    ao_desc = (_sampler(path("ao"), _rs_colorspace("ao"))
+               if ao_dest == "unconnected" else None)
     return desc, ao_desc
 
 
@@ -272,12 +342,70 @@ def _kind_from_assetid(value):
     return str(value or "").strip("(),").rsplit(".", 1)[-1]
 
 
-def _layout_nodes(graph):
-    """GraphDescription assigns no positions (§6) — set xpos/ypos explicitly
-    so the graph never stacks at (0,0). Nodes located by assetid; rows are
-    keyed by COLUMN (x value), not kind — bumpmap and displacement share
-    column -300.0, so keying by kind would stack them at the same (x,y)
-    whenever a set has both normal and height."""
+def build_node_titles(folder, tex_set, leftover_files=None):
+    """``{absolute texture path: sampler title}`` — pure, so the titling
+    decision is pytest-pinnable without a graph.
+
+    Samplers are titled by their CHANNEL ("Base Color", "Roughness", …),
+    NOT by their filename: the file path is already displayed on the node,
+    and real pack filenames are long, resolution-tokened and near-identical
+    across a set ("plaster_A_8k_BaseColor.jpg") — the channel is the one
+    thing that says what the node DOES in this graph. Leftovers have no
+    channel, so they keep their basename (which is exactly the information
+    the artist needs to decide what to do with them)."""
+    titles = {}
+    for channel, rel in (tex_set.get("channels") or {}).items():
+        title = _CHANNEL_TITLES.get(channel)
+        if title:
+            titles[_join(folder, rel)] = title
+    for rel in leftover_files or []:
+        full = _join(folder, rel)
+        titles[full] = os.path.basename(full)
+    return titles
+
+
+def _node_title(kind, sampler_path, titles):
+    """The ONE title decision the layout pass applies (``None`` = leave the
+    node's native name). Samplers resolve through the channel map, falling
+    back to the basename; every other kind through ``NODE_TITLES``."""
+    if kind == "texturesampler":
+        if sampler_path in (titles or {}):
+            return titles[sampler_path]
+        return os.path.basename(sampler_path) or None
+    return NODE_TITLES.get(kind)
+
+
+def _sampler_path(node):
+    """The ``tex0/path`` value of a live sampler node, or "" — the join key
+    between the graph and ``build_node_titles``. Child ports are addressed
+    by their SHORT id ("path") under the group port, and the value str()s to
+    the plain path (both verified live, C4D 2026.303, 2026-07-30)."""
+    try:
+        tex0 = node.GetInputs().FindChild(_RS_CORE + "texturesampler.tex0")
+        if tex0 is None or tex0.IsNullValue():
+            return ""
+        child = tex0.FindChild("path")
+        if child is None or child.IsNullValue():
+            return ""
+        return str(child.GetPortValue() or "")
+    except Exception:
+        return ""
+
+
+def _layout_and_title_nodes(graph, titles=None):
+    """Position AND name every node — one transaction, since both are plain
+    node-attribute writes on the same walk.
+
+    Positions: GraphDescription assigns none (§6), so xpos/ypos are set
+    explicitly or the graph stacks at (0,0). Nodes located by assetid; rows
+    are keyed by COLUMN (x value), not kind — bumpmap, displacement,
+    rscolorsplitter and rscolorlayer share column -300.0, so keying by kind
+    would stack cohabitants at the same (x,y).
+
+    Titles: ``net.maxon.node.attribute.title`` (write+read-back verified
+    live 2026-07-30) via ``_node_title`` — semantic labels so the artist
+    reads "Base Color → Color Correct → AO Multiply" instead of four
+    identical "Texture" nodes."""
     rows = {}
     with graph.BeginTransaction() as tr:
         for node in graph.GetViewRoot().GetInnerNodes(
@@ -289,10 +417,17 @@ def _layout_nodes(graph):
             node.SetValue("net.maxon.node.base.xpos", maxon.Float(col))
             node.SetValue("net.maxon.node.base.ypos",
                           maxon.Float(index * _LAYOUT_ROW_STEP))
+            title = _node_title(
+                kind,
+                _sampler_path(node) if kind == "texturesampler" else "",
+                titles or {})
+            if title:
+                node.SetValue(_TITLE_ATTR, maxon.String(title))
         tr.Commit()
 
 
-def create_material_for_set(doc, folder, tex_set, name, leftover_files=None):
+def create_material_for_set(doc, folder, tex_set, name, leftover_files=None,
+                            multiply_ao=False):
     """Build ONE RS Standard material for ``tex_set`` (engine shape from
     ``matwire.scan_texture_sets``). ``name`` arrives already deduped;
     ``leftover_files`` (opt-in) ride along as extra unconnected RAW
@@ -309,8 +444,10 @@ def create_material_for_set(doc, folder, tex_set, name, leftover_files=None):
     there is nothing to remove and no DELETE record to balance. Just
     report."""
     try:
-        desc, ao_desc = build_description(folder, tex_set)
+        desc, ao_desc = build_description(folder, tex_set,
+                                          multiply_ao=multiply_ao)
         orm_plan = build_orm_plan(folder, tex_set)
+        titles = build_node_titles(folder, tex_set, leftover_files)
         mat = c4d.BaseMaterial(c4d.Mmaterial)
         mat.SetName(name)
         graph = maxon.GraphDescription.GetGraph(
@@ -322,7 +459,7 @@ def create_material_for_set(doc, folder, tex_set, name, leftover_files=None):
             maxon.GraphDescription.ApplyDescription(graph, ao_desc)  # isolated (§5)
         for leftover_desc in build_leftover_descriptions(folder, leftover_files):
             maxon.GraphDescription.ApplyDescription(graph, leftover_desc)
-        _layout_nodes(graph)
+        _layout_and_title_nodes(graph, titles)
         # LAST — the document's only record of this material is the insertion.
         doc.InsertMaterial(mat)
         doc.AddUndo(c4d.UNDOTYPE_NEWOBJ, mat)   # AFTER insert (NEWOBJ contract)

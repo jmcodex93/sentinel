@@ -388,8 +388,13 @@ class TestBuildDescription:
         material = desc["#<" + matwire_c4d._RS_OUTPUT + ".surface"]
         assert material["$type"] == "#" + RS + "standardmaterial"
 
-        # base_color: srgb, per channel_colorspace("basecolor") == "srgb"
-        base = material[sm + "base_color"]
+        # base_color: srgb, per channel_colorspace("basecolor") == "srgb".
+        # v1.33 CONTRACT CHANGE: an identity Color Correct is ALWAYS
+        # interposed (spec 2026-07-30), so the sampler now hangs off
+        # rscolorcorrection.input instead of standardmaterial.base_color.
+        correction = material[sm + "base_color"]
+        assert correction["$type"] == "#" + RS + "rscolorcorrection"
+        base = correction["#<" + RS + "rscolorcorrection.input"]
         assert base["#<" + RS + "texturesampler.tex0/path"] == os.path.join(
             "/tex", "plaster_BaseColor.jpg")
         assert base["#<" + RS + "texturesampler.tex0/colorspace"] == \
@@ -791,8 +796,9 @@ class TestCreateMaterialOrdering:
         monkeypatch.setattr(matwire_c4d, "maxon", fake_maxon)
         monkeypatch.setattr(matwire_c4d.c4d, "BaseMaterial",
                             lambda _type: _FakeMat())
-        monkeypatch.setattr(matwire_c4d, "_layout_nodes",
-                            lambda graph: log.append("_layout_nodes"))
+        monkeypatch.setattr(
+            matwire_c4d, "_layout_and_title_nodes",
+            lambda graph, titles=None: log.append("_layout_nodes"))
 
     def test_graph_is_complete_before_insertion(self, matwire_c4d, monkeypatch):
         log = []
@@ -823,3 +829,183 @@ class TestCreateMaterialOrdering:
         # No insertion, hence no NEWOBJ and no balancing DELETE to take.
         assert "InsertMaterial" not in log
         assert doc.undo_operations == []
+
+
+class TestAoDestination:
+    """matwire.ao_destination — the SINGLE source for "where does the AO
+    go" (same discipline as orm_contributions): the writer builds the graph
+    from it and the preview annotates the AO row from it, so the row the
+    artist reads can never promise a wiring the writer won't make."""
+
+    def test_ao_destination_single_source(self, matwire):
+        ch_ao = {"basecolor": "b.png", "ao": "a.png"}
+        assert matwire.ao_destination(ch_ao, True) == "base_color_multiply"
+        assert matwire.ao_destination(ch_ao, False) == "unconnected"
+        assert matwire.ao_destination({"basecolor": "b.png"}, True) is None
+
+    def test_ao_without_basecolor_has_nothing_to_multiply_into(self, matwire):
+        assert matwire.ao_destination({"ao": "a.png"}, True) == "unconnected"
+        assert matwire.ao_destination({"ao": "a.png"}, False) == "unconnected"
+
+    def test_empty_channels(self, matwire):
+        assert matwire.ao_destination({}, True) is None
+        assert matwire.ao_destination(None, True) is None
+
+    def test_writer_follows_the_same_source(self, sentinel_module, matwire):
+        # The writer's loose-AO decision IS ao_destination — not a parallel
+        # rule that could drift (review I2 pattern).
+        matwire_c4d = importlib.import_module("sentinel.matwire_c4d")
+        tex_set = {"name": "p", "normal_flipy": False,
+                   "channels": {"basecolor": "b.png", "ao": "a.png"}}
+        _desc, ao = matwire_c4d.build_description("/tex", tex_set,
+                                                  multiply_ao=True)
+        assert matwire.ao_destination(tex_set["channels"], True) == \
+            "base_color_multiply"
+        assert ao is None
+
+
+class TestColorCorrectAndAoMultiply:
+    """v1.33: identity Color Correct always on basecolor (cost ≈0, measured
+    identity — spike 2026-07-30 §B.2 T_CC) and the opt-in AO multiply via
+    rscolorlayer with layer1_blend_mode = 4 (Multiply — enum measured, 2 is
+    NOT). Child-port ids introspected live in C4D 2026.303 before use:
+    rscolorcorrection.input / rscolorlayer.base_color / .layer1_color /
+    .layer1_enable / .layer1_blend_mode."""
+
+    @pytest.fixture
+    def matwire_c4d(self, sentinel_module):
+        return importlib.import_module("sentinel.matwire_c4d")
+
+    def test_color_correct_always_interposed(self, matwire, matwire_c4d):
+        scan = matwire.scan_texture_sets(["p_BaseColor.png", "p_Roughness.png"])
+        desc, _ao = matwire_c4d.build_description("/tex", scan["sets"][0])
+        RS = matwire_c4d._RS_CORE
+        material = desc["#<" + matwire_c4d._RS_OUTPUT + ".surface"]
+        cc = material["#<" + RS + "standardmaterial.base_color"]
+        assert cc["$type"] == "#" + RS + "rscolorcorrection"
+        inner = cc["#<" + RS + "rscolorcorrection.input"]
+        assert inner["$type"] == "#" + RS + "texturesampler"
+        assert inner["#<" + RS + "texturesampler.tex0/path"].endswith(
+            "p_BaseColor.png")
+        # colorspace stays explicit and comes from the single source
+        assert inner["#<" + RS + "texturesampler.tex0/colorspace"] == \
+            matwire_c4d._RS_COLORSPACE[matwire.channel_colorspace("basecolor")]
+        # roughness untouched by the correction
+        assert material["#<" + RS + "standardmaterial.refl_roughness"]["$type"] == \
+            "#" + RS + "texturesampler"
+
+    def test_no_basecolor_no_correction_node(self, matwire, matwire_c4d):
+        scan = matwire.scan_texture_sets(["p_Roughness.png"])
+        desc, _ao = matwire_c4d.build_description("/tex", scan["sets"][0])
+        assert "rscolorcorrection" not in repr(desc)
+
+    def test_ao_multiply_wires_layer_and_drops_loose_sampler(
+            self, matwire, matwire_c4d):
+        scan = matwire.scan_texture_sets(["p_BaseColor.png", "p_AO.png"])
+        tex_set = scan["sets"][0]
+        RS = matwire_c4d._RS_CORE
+        # OFF: AO stays a loose sampler (v1.32 behavior)
+        desc_off, ao_off = matwire_c4d.build_description(
+            "/tex", tex_set, multiply_ao=False)
+        assert ao_off is not None
+        assert desc_off["#<" + matwire_c4d._RS_OUTPUT + ".surface"][
+            "#<" + RS + "standardmaterial.base_color"]["$type"] == \
+            "#" + RS + "rscolorcorrection"
+        # ON: color layer between the corrected color and base_color; no loose AO
+        desc_on, ao_on = matwire_c4d.build_description(
+            "/tex", tex_set, multiply_ao=True)
+        assert ao_on is None
+        layer = desc_on["#<" + matwire_c4d._RS_OUTPUT + ".surface"][
+            "#<" + RS + "standardmaterial.base_color"]
+        assert layer["$type"] == "#" + RS + "rscolorlayer"
+        assert layer["#<" + RS + "rscolorlayer.layer1_blend_mode"] == 4  # Multiply
+        # never depend on node defaults (colorspace/flipy principle)
+        assert layer["#<" + RS + "rscolorlayer.layer1_enable"] is True
+        base = layer["#<" + RS + "rscolorlayer.base_color"]
+        assert base["$type"] == "#" + RS + "rscolorcorrection"  # correction first
+        assert base["#<" + RS + "rscolorcorrection.input"][
+            "#<" + RS + "texturesampler.tex0/path"].endswith("p_BaseColor.png")
+        lay1 = layer["#<" + RS + "rscolorlayer.layer1_color"]
+        assert lay1["#<" + RS + "texturesampler.tex0/path"].endswith("p_AO.png")
+        assert lay1["#<" + RS + "texturesampler.tex0/colorspace"] == \
+            matwire_c4d._RS_COLORSPACE[matwire.channel_colorspace("ao")]
+
+    def test_ao_multiply_without_basecolor_is_noop(self, matwire, matwire_c4d):
+        # An AO-only set has nothing to multiply INTO: the layer must not
+        # appear and the AO stays loose (never a dangling color layer).
+        scan = matwire.scan_texture_sets(["p_AO.png", "p_Roughness.png"])
+        desc, ao = matwire_c4d.build_description(
+            "/tex", scan["sets"][0], multiply_ao=True)
+        RS = matwire_c4d._RS_CORE
+        material = desc["#<" + matwire_c4d._RS_OUTPUT + ".surface"]
+        assert "#<" + RS + "standardmaterial.base_color" not in material
+        assert "rscolorlayer" not in repr(desc)
+        assert ao is not None
+
+    def test_default_keeps_existing_callers_off(self, matwire, matwire_c4d):
+        # multiply_ao defaults to False: same graph as an explicit False.
+        scan = matwire.scan_texture_sets(["p_BaseColor.png", "p_AO.png"])
+        tex_set = scan["sets"][0]
+        assert matwire_c4d.build_description("/tex", tex_set) == \
+            matwire_c4d.build_description("/tex", tex_set, multiply_ao=False)
+
+    def test_intermediary_layout_columns(self, matwire_c4d):
+        # Both new nodes sit between the samplers (-600) and the material
+        # (0); rows are keyed by COLUMN, so sharing one never stacks.
+        cols = matwire_c4d._LAYOUT_COLS
+        assert cols["texturesampler"] < cols["rscolorcorrection"] < \
+            cols["rscolorlayer"] <= cols["bumpmap"] < cols["standardmaterial"]
+
+
+class TestNodeTitles:
+    """v1.33 semantic titles (net.maxon.node.attribute.title — write+read
+    verified live 2026-07-30). Samplers are titled by CHANNEL, not filename;
+    leftovers (which have no channel) fall back to their basename."""
+
+    @pytest.fixture
+    def matwire_c4d(self, sentinel_module):
+        return importlib.import_module("sentinel.matwire_c4d")
+
+    def test_kind_titles_cover_the_utility_nodes(self, matwire_c4d):
+        titles = matwire_c4d.NODE_TITLES
+        assert titles["rscolorcorrection"] == "Color Correct"
+        assert titles["rscolorlayer"] == "AO Multiply"
+        assert titles["bumpmap"] == "Bump"
+        assert titles["displacement"] == "Displacement"
+        # the material/output keep their native identity
+        assert "standardmaterial" not in titles
+        assert "output" not in titles
+
+    def test_sampler_titles_by_channel(self, matwire, matwire_c4d):
+        scan = matwire.scan_texture_sets([
+            "p_BaseColor.png", "p_Roughness.png", "p_NormalDX.png",
+            "p_Height.exr", "p_AO.png", "p_ORM.png", "p_Opacity.png",
+            "p_Emission.png"])
+        titles = matwire_c4d.build_node_titles("/tex", scan["sets"][0])
+        assert titles[os.path.join("/tex", "p_BaseColor.png")] == "Base Color"
+        assert titles[os.path.join("/tex", "p_Roughness.png")] == "Roughness"
+        assert titles[os.path.join("/tex", "p_NormalDX.png")] == "Normal"
+        assert titles[os.path.join("/tex", "p_Height.exr")] == "Height"
+        assert titles[os.path.join("/tex", "p_AO.png")] == "AO"
+        assert titles[os.path.join("/tex", "p_ORM.png")] == "ORM"
+        assert titles[os.path.join("/tex", "p_Opacity.png")] == "Opacity"
+        assert titles[os.path.join("/tex", "p_Emission.png")] == "Emission"
+
+    def test_leftovers_titled_by_basename(self, matwire, matwire_c4d):
+        scan = matwire.scan_texture_sets(["p_BaseColor.png"])
+        titles = matwire_c4d.build_node_titles(
+            "/tex", scan["sets"][0], ["sub/readme_preview.png"])
+        assert titles[os.path.join("/tex", "sub", "readme_preview.png")] == \
+            "readme_preview.png"
+
+    def test_title_lookup_prefers_the_channel_map(self, matwire_c4d):
+        # _node_title is the single decision point the layout pass uses.
+        titles = {"/tex/a.png": "Base Color"}
+        assert matwire_c4d._node_title("texturesampler", "/tex/a.png", titles) == \
+            "Base Color"
+        # unknown sampler path (never happens for our own graph) -> basename
+        assert matwire_c4d._node_title("texturesampler", "/tex/z.png", titles) == \
+            "z.png"
+        assert matwire_c4d._node_title("rscolorcorrection", "", titles) == \
+            "Color Correct"
+        assert matwire_c4d._node_title("standardmaterial", "", titles) is None

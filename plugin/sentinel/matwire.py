@@ -214,6 +214,26 @@ def orm_contributions(channels):
     return out
 
 
+def ao_destination(channels, multiply_ao):
+    """Where a set's AO map ACTUALLY lands — the single source for both the
+    writer's graph and the preview's AO row (same discipline as
+    ``orm_contributions``, review I2): the row the artist reads can never
+    promise a wiring the writer won't make.
+
+    ``None`` when the set has no AO at all. ``"base_color_multiply"`` when
+    the opt-in ``multiply_ao`` is on AND the set has a basecolor to multiply
+    INTO (an AO-only set has no target: it would leave a dangling color
+    layer, so the AO stays loose). Otherwise ``"unconnected"`` — the v1.32
+    behavior: a visible, unwired sampler (recognized files never vanish
+    silently)."""
+    channels = channels or {}
+    if "ao" not in channels:
+        return None
+    if multiply_ao and "basecolor" in channels:
+        return "base_color_multiply"
+    return "unconnected"
+
+
 def scan_texture_sets(filenames, default_root="material", extra_suffixes=None):
     """``default_root`` names the set for ROOTLESS files ("albedo.png") —
     the caller passes the folder's basename so bare-channel packs group
