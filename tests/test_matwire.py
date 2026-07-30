@@ -1206,6 +1206,13 @@ class _FakeGraphPort:
     def Connect(self, other):
         other.incoming.append(self)
 
+    def IsNullValue(self):
+        # This family manufactures any port on demand (see
+        # _FakeGraphNode.port) — it never models a MISSING port, so a port
+        # object from here is never null. Needed now that _apply_orm_plan
+        # routes its connect through _ut_port, which calls this.
+        return False
+
 
 class _FakeGraphPortList:
     def __init__(self, node):
@@ -2146,3 +2153,55 @@ class TestApplyOrmPlanTargetsLiveNode:
         assert meta_in.incoming == [
             split_node.port(core + "rscolorsplitter.outb")]
         assert graph.commits == 1
+
+
+class TestApplyOrmPlanMissingPortRaises:
+    """Finding 1 of the final v1.34 whole-branch review: the ORM connect in
+    ``_apply_orm_plan`` is the release's ONLY imperative wire — every other
+    OpenPBR port id rides ``GraphDescription.ApplyDescription``, which fails
+    LOUD on a bad id. ``TestApplyOrmPlanTargetsLiveNode`` cannot catch a bad
+    port id here: its ``_FakeGraphNode.port`` is ``self._ports.setdefault``,
+    which manufactures ANY port on demand, so it proves the plan's ids are
+    threaded through but never that they actually exist on the live node.
+
+    Reuses the ``_FakeUtGraph``/``_FakeUtNode`` family (built for
+    ``TestUniTransformFallback``) instead of inventing a new fake: it
+    already speaks maxon's real null-port shape — ``FindChild`` on an id
+    outside a node's whitelist answers a NULL port object, and ``Connect``
+    on one silently no-ops, never raising on its own."""
+
+    @pytest.fixture
+    def matwire_c4d(self, sentinel_module):
+        return importlib.import_module("sentinel.matwire_c4d")
+
+    def _fake_maxon(self, matwire_c4d, monkeypatch):
+        class _GD:
+            @staticmethod
+            def ApplyDescription(graph, desc):
+                graph.applied.append(desc)
+                graph._own(_FakeUtNode(str(desc["$type"]).lstrip("#")))
+
+        fake = type("_M", (), {
+            "GraphDescription": _GD,
+            "NODE_KIND": type("_K", (), {"NODE": 1}),
+        })
+        monkeypatch.setattr(matwire_c4d, "maxon", fake)
+
+    def test_missing_target_port_raises_instead_of_silent_no_op(
+            self, matwire, matwire_c4d, monkeypatch):
+        self._fake_maxon(matwire_c4d, monkeypatch)
+        core = matwire_c4d._RS_CORE
+        scan = matwire.scan_texture_sets(["x_ORM.png"])
+        plan = matwire_c4d.build_orm_plan("/tex", scan["sets"][0],
+                                          material="openpbr")
+        graph = _FakeUtGraph([core + "openpbrmaterial"])
+        # This build's openpbrmaterial node is missing specular_roughness —
+        # exactly the scenario the finding describes: a port id that turns
+        # out not to be the literal input id on some Redshift build. A bare
+        # FindChild would hand back a null port and Connect() on it would
+        # no-op without complaint, leaving the plan reporting ok:True with
+        # roughness silently unwired.
+        brdf_node = graph.nodes[0]
+        brdf_node._allowed = {core + "openpbrmaterial.base_metalness"}
+        with pytest.raises(RuntimeError, match="has no port"):
+            matwire_c4d._apply_orm_plan(graph, plan)

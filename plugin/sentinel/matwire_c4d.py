@@ -474,7 +474,12 @@ def _ut_port(ports, port_id, owner):
     """A port that must exist. maxon's ``FindChild`` answers a missing id
     with a null node, and ``Connect`` on one can no-op — which would leave a
     node reading its birth value (zero) while everything downstream looks
-    wired. Refuse instead, so the caller degrades honestly."""
+    wired. Refuse instead, so the caller degrades honestly.
+
+    Shared by the UniversalXform fallback AND ``_apply_orm_plan`` (the
+    release's only other imperative wire) — ``owner`` is caller-supplied so
+    the error names the real thing that's missing a port, not a fixed
+    subsystem."""
     # NOTE: the write and the Connect on a Value node's ``in`` are both
     # routed here and are redundant for that one port (the write fires
     # first). Kept as belt-and-braces: every end of every wire in this
@@ -482,8 +487,7 @@ def _ut_port(ports, port_id, owner):
     # bare FindChild by looking like the code next to it.
     port = ports.FindChild(port_id)
     if port is None or port.IsNullValue():
-        raise RuntimeError("UniversalXform: %s has no port %r"
-                           % (owner, port_id))
+        raise RuntimeError("%s has no port %r" % (owner, port_id))
     return port
 
 
@@ -861,11 +865,13 @@ def build_orm_plan(folder, tex_set, material=DEFAULT_MATERIAL):
     imperative ``(out_port_id, in_port_id)`` connect pairs for one
     transaction (``_apply_orm_plan``).
 
-    Dedicated-wins per output: ``outg`` -> refl_roughness only without a
-    dedicated roughness/glossiness map (glossiness occupies refl_roughness
-    via ``refl_isglossiness``); ``outb`` -> metalness only without a
-    dedicated metalness map. ``outr`` (AO) is NEVER connected. That RULE
-    lives once, in ``matwire.orm_contributions`` — the same function the
+    Dedicated-wins per output: ``outg`` -> the roughness port only without a
+    dedicated roughness/glossiness map (the roughness port is already taken
+    when one exists — natively via Standard's ``refl_isglossiness`` bool, or
+    via the interposed ``rsmathinv`` under OpenPBR); ``outb`` -> the
+    metalness port only without a dedicated metalness map. ``outr`` (AO) is
+    NEVER connected. That RULE lives once, in ``matwire.orm_contributions``
+    — the same function the
     preview's ``contributes`` note reads, so the row the artist sees and
     the wiring they get can't drift (review I2). If both dedicated maps
     exist the splitter contributes nothing: the ORM file still lands as a
@@ -937,8 +943,20 @@ def _apply_orm_plan(graph, plan):
         raise RuntimeError("ORM splitter wiring: node lookup failed")
     with graph.BeginTransaction() as tr:
         for out_id, in_id in plan["connects"]:
-            out_port = split_node.GetOutputs().FindChild(out_id)
-            in_port = sm_node.GetInputs().FindChild(in_id)
+            # This is the release's ONLY fail-silent wire. Every other
+            # OpenPBR port id rides GraphDescription.ApplyDescription, which
+            # fails LOUD on a bad id — that loudness is the whole premise of
+            # the server-side degradation. This connect is imperative
+            # (mini-spike v1.32.1: one splitter into two ports isn't
+            # declarative), and maxon answers a missing port id with a null
+            # node whose Connect() silently no-ops (measured; see
+            # ``_ut_port``'s docstring). Route both ends through it so a
+            # wrong id — e.g. if ``base_metalness``/``specular_roughness``
+            # ever aren't the literal input id on some Redshift build —
+            # raises instead of returning ok:True with the splitter wired to
+            # nothing and the preview row lying "-> roughness + metalness".
+            out_port = _ut_port(split_node.GetOutputs(), out_id, "ORM splitter")
+            in_port = _ut_port(sm_node.GetInputs(), in_id, plan["brdf_kind"])
             out_port.Connect(in_port)
         tr.Commit()
 
