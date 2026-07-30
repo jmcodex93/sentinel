@@ -7,6 +7,7 @@ import { SectionGroup } from "../SectionGroup";
 import { fetchMatwirePreview, postHubPickPath, postMatwireCreate } from "../../lib/api";
 import { restoreFocus } from "../../lib/focus";
 import {
+  MATERIAL_OPTIONS,
   MATWIRE_IMPORT_LEFTOVERS_LABEL,
   MATWIRE_MULTIPLY_AO_LABEL,
   PROJECTION_OPTIONS,
@@ -14,9 +15,12 @@ import {
   aoDestinationLabel,
   channelLabel,
   createMaterialCount,
+  effectiveMaterial,
+  glossDestinationLabel,
   ignoredReasonLabel,
   leftoverDestinationLabel,
   matwireToast,
+  openpbrUnavailableNote,
   packedOrmNote,
   projectionUnavailableNote,
   effectiveProjection,
@@ -144,6 +148,8 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
   // v1.33 wiring options — both default to the v1.32.1-equivalent material.
   const [projection, setProjection] = useState("uv");
   const [multiplyAo, setMultiplyAo] = useState(false);
+  // v1.34: material type, OpenPBR default.
+  const [material, setMaterial] = useState("openpbr");
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
 
@@ -205,6 +211,15 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
   // degrades to UV for BOTH the payload and the shown value, so the
   // disabled control can never say Tri-Planar while the writer does UV.
   const wiredProjection = effectiveProjection(projection, projectionNote);
+  // Non-null => this RS build has no OpenPBR node: the Material selector is
+  // disabled and says why (the writer degrades to Standard Surface).
+  const openpbrNote = preview?.ok
+    ? openpbrUnavailableNote(preview.openpbr_available)
+    : null;
+  // What the material ACTUALLY gets built as — same degradation contract as
+  // wiredProjection: the disabled control can never say OpenPBR while the
+  // writer builds Standard.
+  const wiredMaterial = effectiveMaterial(material, openpbrNote);
   const emptyReason = preview && !preview.ok
     ? (PREVIEW_EMPTY_COPY[preview.error ?? ""] ?? "Preview unavailable.")
     : null;
@@ -221,7 +236,8 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
     setApplying(true);
     try {
       const result = await postMatwireCreate(
-        folder, [...excluded], names, importLeftovers, wiredProjection, multiplyAo);
+        folder, [...excluded], names, importLeftovers, wiredProjection, multiplyAo,
+        wiredMaterial);
       toast(matwireToast(result));
       // Refetch: the new materials change the dedupe of default names.
       if (result.ok) await loadPreview(folder);
@@ -335,6 +351,17 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
                       // maps ends up unconnected, and the preview must not
                       // read like a normal wired channel (review I2).
                       const ormNote = packedOrmNote(row.contributes);
+                      // The glossiness row says what it actually gets wired
+                      // as — mirrored from the engine's gloss_destination so
+                      // it relabels the instant the Material selector flips,
+                      // without a re-scan.
+                      const glossNote =
+                        row.channel === "glossiness"
+                          ? glossDestinationLabel(
+                              texSet.channels.map((c) => c.channel),
+                              wiredMaterial,
+                            )
+                          : null;
                       return (
                         <div key={row.channel} className="text-caption flex items-baseline gap-2">
                           <span className="w-32 shrink-0" style={{ color: "var(--color-ink)" }}>
@@ -346,9 +373,9 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
                           >
                             {row.file}
                           </span>
-                          {(ormNote || aoNote) && (
+                          {(ormNote || aoNote || glossNote) && (
                             <span className="shrink-0" style={{ color: "var(--color-muted)" }}>
-                              {ormNote ?? aoNote}
+                              {ormNote ?? aoNote ?? glossNote}
                             </span>
                           )}
                           <ColorspaceChip colorspace={row.colorspace} />
@@ -362,6 +389,24 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
             })}
             <IgnoredFold rows={preview?.ignored ?? []} title="file(s) not recognized" />
             <div className="mt-1 flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <span className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
+                  Material
+                </span>
+                <SegmentedControl
+                  options={MATERIAL_OPTIONS}
+                  value={wiredMaterial}
+                  onChange={setMaterial}
+                  disabled={openpbrNote !== null}
+                />
+              </div>
+              {/* Honest degradation: a disabled control with no reason reads
+                  as a bug — the server tells us the node is missing. */}
+              {openpbrNote && (
+                <p className="text-caption" style={{ color: "var(--color-muted)" }}>
+                  {openpbrNote}
+                </p>
+              )}
               <div className="flex items-center gap-2">
                 <span className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
                   Projection

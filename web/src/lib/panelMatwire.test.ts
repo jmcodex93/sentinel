@@ -17,6 +17,11 @@ import {
   projectionUnavailableNote,
   effectiveProjection,
   suffixWarningsNote,
+  MATERIAL_OPTIONS,
+  MATWIRE_OPENPBR_UNAVAILABLE_COPY,
+  openpbrUnavailableNote,
+  effectiveMaterial,
+  glossDestinationLabel,
 } from "./panelMatwire";
 
 /** AUTHORITATIVE ignored-reason list, pinned against the engine
@@ -311,5 +316,41 @@ describe("effectiveProjection", () => {
   it("passes the artist's pick through when the context node is available", () => {
     expect(effectiveProjection("triplanar", null)).toBe("triplanar");
     expect(effectiveProjection("uv", null)).toBe("uv");
+  });
+});
+
+describe("material type", () => {
+  it("offers OpenPBR first — it is the default", () => {
+    expect(MATERIAL_OPTIONS[0].value).toBe("openpbr");
+    expect(MATERIAL_OPTIONS.map((o) => o.value).sort()).toEqual([
+      "openpbr", "standard",
+    ]);
+  });
+
+  it("notes the degradation only when the node is missing", () => {
+    expect(openpbrUnavailableNote(true)).toBeNull();
+    expect(openpbrUnavailableNote(undefined)).toBeNull();
+    expect(openpbrUnavailableNote(false)).toBe(
+      MATWIRE_OPENPBR_UNAVAILABLE_COPY,
+    );
+  });
+
+  it("never sends a material the writer will not build", () => {
+    // v1.33 effectiveProjection lesson: an OpenPBR chosen before the
+    // preview reported the node missing must not keep riding the payload
+    // or lighting a disabled control — but the choice itself survives.
+    expect(effectiveMaterial("openpbr", null)).toBe("openpbr");
+    expect(effectiveMaterial("openpbr", "missing")).toBe("standard");
+    expect(effectiveMaterial("standard", null)).toBe("standard");
+  });
+
+  it("labels the gloss row by what actually gets wired", () => {
+    expect(glossDestinationLabel(["glossiness"], "openpbr")).toBe(
+      "→ specular roughness (inverted)",
+    );
+    expect(glossDestinationLabel(["glossiness"], "standard")).toBe(
+      "→ roughness (glossiness mode)",
+    );
+    expect(glossDestinationLabel(["roughness"], "openpbr")).toBeNull();
   });
 });
