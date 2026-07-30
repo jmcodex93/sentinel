@@ -123,9 +123,12 @@ def test_trailing_and_pre_token_resolution_compete(matwire):
 
 
 def test_orm_with_trailing_resolution_token(matwire):
+    # v1.32.1: packed_orm is a REAL channel — res-token ranking applies.
     out = _scan(matwire, "x_ORM_2k.png")
-    reasons = {f: r for f, r in out["ignored"]}
-    assert reasons["x_ORM_2k.png"] == "packed_orm"
+    assert out["ignored"] == []
+    s = out["sets"][0]
+    assert s["name"] == "x"
+    assert s["channels"]["packed_orm"] == "x_ORM_2k.png"
 
 
 def test_spec_gloss_precedence(matwire):
@@ -143,12 +146,14 @@ def test_spec_gloss_precedence(matwire):
 
 
 def test_orm_and_unknown_and_extension(matwire):
+    # v1.32.1: the ORM file joins its set's channels (grouped by root)
+    # instead of landing in global ignored.
     out = _scan(matwire, "x_ORM.png", "x_BaseColor.png", "readme.txt", "x_thumb.png")
     reasons = {f: r for f, r in out["ignored"]}
-    assert reasons["x_ORM.png"] == "packed_orm"
     assert reasons["readme.txt"] == "bad_extension"
     assert reasons["x_thumb.png"] == "no_channel"
-    assert set(out["sets"][0]["channels"]) == {"basecolor"}
+    assert set(out["sets"][0]["channels"]) == {"basecolor", "packed_orm"}
+    assert out["sets"][0]["channels"]["packed_orm"] == "x_ORM.png"
 
 
 def test_duplicate_channel_first_wins(matwire):
@@ -186,6 +191,137 @@ def test_channel_colorspace_single_source(matwire):
 def test_dedupe_names(matwire):
     assert matwire.dedupe_names(["wood", "wood", "Plaster"], ["plaster"]) == [
         "wood", "wood_02", "Plaster_02"]
+
+
+class TestCanonicalChannels:
+    def test_contains_every_table_channel(self, matwire):
+        assert {"packed_orm", "normal_gl", "normal_dx", "normal", "basecolor",
+                "roughness", "metalness", "height", "ao", "opacity",
+                "emission", "specular", "glossiness"} == set(
+            matwire.CANONICAL_CHANNELS)
+
+    def test_packed_orm_colorspace_is_raw(self, matwire):
+        assert matwire.channel_colorspace("packed_orm") == "raw"
+
+
+class TestValidateExtraSuffixes:
+    def test_valid_and_rejected_mix_per_key(self, matwire):
+        valid, rejected = matwire.validate_extra_suffixes({
+            "basecolor": [" Col_Especial ", "ALB"],
+            "nope_channel": ["x"],          # unknown channel key
+            "roughness": "rugosidad",       # not a list
+            "metalness": ["met2", 7],       # non-str item
+            "ao": ["", "  "],               # empty entries dropped -> key dropped
+            "height": ["alto"],
+        })
+        assert valid == {"basecolor": ["col_especial", "alb"],
+                         "height": ["alto"]}
+        assert sorted(rejected) == ["ao", "metalness", "nope_channel",
+                                    "roughness"]
+
+    def test_non_dict_yields_nothing(self, matwire):
+        valid, rejected = matwire.validate_extra_suffixes(None)
+        assert valid == {} and rejected == []
+
+
+class TestExtraSuffixes:
+    def test_extras_extend_embedded_tables(self, matwire):
+        out = matwire.scan_texture_sets(
+            ["muro_col_especial.png", "muro_Roughness.png"],
+            extra_suffixes={"basecolor": ["col_especial"]})
+        s = out["sets"][0]
+        assert s["name"] == "muro"
+        assert s["channels"]["basecolor"] == "muro_col_especial.png"
+        assert s["channels"]["roughness"] == "muro_Roughness.png"
+
+    def test_embedded_synonyms_still_work_with_extras(self, matwire):
+        out = matwire.scan_texture_sets(
+            ["wood_albedo.png"], extra_suffixes={"basecolor": ["col_especial"]})
+        assert out["sets"][0]["channels"]["basecolor"] == "wood_albedo.png"
+
+    def test_without_extras_custom_suffix_stays_unknown(self, matwire):
+        out = matwire.scan_texture_sets(["muro_col_especial.png"])
+        assert out["sets"] == []
+        assert ("muro_col_especial.png", "no_channel") in out["ignored"]
+
+
+class TestPackedOrmChannel:
+    def test_orm_joins_set_with_basecolor_sibling(self, matwire):
+        out = _scan(matwire, "rock_BaseColor.jpg", "rock_ORM.png")
+        s = out["sets"][0]
+        assert set(s["channels"]) == {"basecolor", "packed_orm"}
+        assert out["ignored"] == []
+
+    def test_rootless_orm_groups_under_default_root(self, matwire):
+        out = matwire.scan_texture_sets(["orm.png"], default_root="plaster")
+        s = out["sets"][0]
+        assert s["name"] == "plaster"
+        assert s["channels"]["packed_orm"] == "orm.png"
+
+    def test_second_orm_is_duplicate_channel(self, matwire):
+        out = _scan(matwire, "z_ORM.png", "z_ARM.png", "z_BaseColor.png")
+        s = out["sets"][0]
+        assert s["channels"]["packed_orm"] == "z_ORM.png"
+        assert ("z_ARM.png", "duplicate_channel") in s["ignored"]
+
+    def test_res_token_ranking_applies_to_orm(self, matwire):
+        out = _scan(matwire, "x_ORM_2k.png", "x_ORM.png")
+        s = out["sets"][0]
+        assert s["channels"]["packed_orm"] == "x_ORM.png"
+        assert ("x_ORM_2k.png", "lower_resolution") in s["ignored"]
+
+    def test_orm_never_suppresses_dedicated_maps(self, matwire):
+        # Engine level: packed_orm coexists with dedicated roughness /
+        # metalness (the WRITER applies dedicated-wins per splitter output).
+        out = _scan(matwire, "m_ORM.png", "m_Roughness.png", "m_Metalness.png")
+        s = out["sets"][0]
+        assert set(s["channels"]) == {"packed_orm", "roughness", "metalness"}
+        assert s["ignored"] == []
+
+
+class TestLeftoverHints:
+    def test_no_channel_files_appear_in_leftover_hints(self, matwire):
+        out = _scan(matwire, "x_BaseColor.png", "x_thumb.png",
+                    "Plaster A-preview.png", "readme.txt")
+        assert out["leftover_hints"] == {
+            "x_thumb.png": "x_thumb",
+            "Plaster A-preview.png": "plaster_a_preview",
+        }
+        # ignored keeps the 2-tuple shape everywhere
+        assert ("x_thumb.png", "no_channel") in out["ignored"]
+        assert all(len(row) == 2 for row in out["ignored"])
+
+    def test_clean_scan_has_empty_hints(self, matwire):
+        out = _scan(matwire, "x_BaseColor.png")
+        assert out["leftover_hints"] == {}
+
+
+class TestAssignLeftovers:
+    def test_prefix_match_longest_name_wins(self, matwire):
+        result = matwire.assign_leftovers(
+            {"plaster_a_thumb.png": "plaster_a_thumb",
+             "plaster_readme.png": "plaster_readme",
+             "loose.png": "loose"},
+            ["plaster", "plaster_a", "wood"])
+        assert result == [
+            {"file": "plaster_a_thumb.png", "set": "plaster_a"},
+            {"file": "plaster_readme.png", "set": "plaster"},
+            {"file": "loose.png", "set": None},
+        ]
+
+    def test_exact_hint_equals_name(self, matwire):
+        result = matwire.assign_leftovers({"wood.txt": "wood"}, ["Wood"])
+        assert result == [{"file": "wood.txt", "set": "Wood"}]
+
+    def test_no_partial_word_match(self, matwire):
+        # "woodpecker" must not match set "wood" (separator required).
+        result = matwire.assign_leftovers(
+            {"woodpecker.png": "woodpecker"}, ["wood"])
+        assert result == [{"file": "woodpecker.png", "set": None}]
+
+    def test_empty_inputs(self, matwire):
+        assert matwire.assign_leftovers({}, ["a"]) == []
+        assert matwire.assign_leftovers(None, None) == []
 
 
 class TestPreviewPayload:

@@ -41,18 +41,60 @@ _CHANNEL_VARIANTS = (
     ("glossiness", ("glossiness", "gloss")),
 )
 
+#: Every channel key the tables know — the valid key set for
+#: project-ruleset ``matwire_suffixes`` extensions (v1.32.1).
+CANONICAL_CHANNELS = frozenset(channel for channel, _ in _CHANNEL_VARIANTS)
+
 _SRGB_CHANNELS = frozenset({"basecolor", "emission"})
+
 
 # Separator REQUIRED before the variant (self-caught plan bug: an optional
 # separator lets glued stems false-positive — "protocol" would end-match
 # "col" → basecolor). A file named exactly like a variant ("albedo.png",
 # root empty) is legal: rootless files group under ``default_root``.
-_CHANNEL_RES = [
-    (channel, re.compile(
-        r"^(?P<root>.*?)(?:^|_)(?:" + "|".join(re.escape(v) for v in variants)
-        + r")(?:_?map)?$", re.IGNORECASE))
-    for channel, variants in _CHANNEL_VARIANTS
-]
+def _compile_channel_res(extra_suffixes=None):
+    extra = extra_suffixes or {}
+    table = []
+    for channel, variants in _CHANNEL_VARIANTS:
+        merged = tuple(variants) + tuple(extra.get(channel) or ())
+        table.append((channel, re.compile(
+            r"^(?P<root>.*?)(?:^|_)(?:"
+            + "|".join(re.escape(v) for v in merged)
+            + r")(?:_?map)?$", re.IGNORECASE)))
+    return table
+
+
+# Module-cached compiled defaults — the hot path (no extras) never
+# recompiles; a merged copy is built per call only when extras are present.
+_CHANNEL_RES = _compile_channel_res()
+
+
+def validate_extra_suffixes(raw):
+    """``(valid, rejected)`` for a ruleset ``matwire_suffixes`` dict.
+    Unknown channel keys and non-str-list values are rejected BY KEY NAME
+    (the rest applies — per-key ruleset style); suffixes are normalized
+    lowercase/stripped and empty entries dropped (a key left with no
+    usable suffixes is rejected). Non-dict input yields ``({}, [])`` —
+    the type-level rejection is the rules layer's job."""
+    valid = {}
+    rejected = []
+    if not isinstance(raw, dict):
+        return valid, rejected
+    for key, value in raw.items():
+        key_name = str(key)
+        if key_name not in CANONICAL_CHANNELS:
+            rejected.append(key_name)
+            continue
+        if not isinstance(value, (list, tuple)) or not all(
+                isinstance(item, str) for item in value):
+            rejected.append(key_name)
+            continue
+        suffixes = [item.strip().lower() for item in value if item.strip()]
+        if not suffixes:
+            rejected.append(key_name)
+            continue
+        valid[key_name] = suffixes
+    return valid, rejected
 
 
 def channel_colorspace(channel):
@@ -67,11 +109,11 @@ def _normalize(stem):
     return re.sub(r"[\s\-.]+", "_", stem.strip())
 
 
-def _match_channel(norm_stem):
-    """(channel, root) for the FIRST (most specific) matching channel.
-    ``root`` may be "" (a file named exactly "albedo.png") — the caller
-    groups those under ``default_root``."""
-    for channel, rx in _CHANNEL_RES:
+def _match_channel(norm_stem, table):
+    """(channel, root) for the FIRST (most specific) matching channel in
+    ``table``. ``root`` may be "" (a file named exactly "albedo.png") —
+    the caller groups those under ``default_root``."""
+    for channel, rx in table:
         m = rx.match(norm_stem)
         if m:
             return channel, m.group("root").rstrip("_")
@@ -118,18 +160,28 @@ def _strip_trailing_res(norm_stem):
     return prefix.rstrip("_-. "), px
 
 
-def scan_texture_sets(filenames, default_root="material"):
+def scan_texture_sets(filenames, default_root="material", extra_suffixes=None):
     """``default_root`` names the set for ROOTLESS files ("albedo.png") —
     the caller passes the folder's basename so bare-channel packs group
     naturally.
 
+    ``extra_suffixes`` (validated ``{channel: [suffix, ...]}``) EXTENDS
+    the embedded variant lists for matching — never replaces them.
+
     Set identity is CASE-INSENSITIVE (``root_key.lower()``) so
     ``Rock_Cliff_BaseColor.jpg`` and ``rock_cliff_AO.jpg`` land in one
-    set — the DISPLAY name keeps the first-seen casing."""
+    set — the DISPLAY name keeps the first-seen casing.
+
+    ``leftover_hints`` maps each ``no_channel`` file to its normalized
+    stem (lowercase, separators collapsed to ``_``) — the ops layer
+    prefix-matches those against set names (``assign_leftovers``)."""
+    table = (_compile_channel_res(extra_suffixes) if extra_suffixes
+             else _CHANNEL_RES)
     sets = {}
     order = []
     display_names = {}
     ignored = []
+    leftover_hints = {}
 
     for filename in filenames or []:
         base = os.path.basename(str(filename))
@@ -138,12 +190,10 @@ def scan_texture_sets(filenames, default_root="material"):
             ignored.append((filename, "bad_extension"))
             continue
         norm_stem, trailing_px = _strip_trailing_res(_normalize(stem))
-        channel, root = _match_channel(norm_stem)
-        if channel == "packed_orm":
-            ignored.append((filename, "packed_orm"))
-            continue
+        channel, root = _match_channel(norm_stem, table)
         if channel is None:
             ignored.append((filename, "no_channel"))
+            leftover_hints[filename] = _normalize(stem).lower()
             continue
         root_key, root_px = _root_and_px(root)
         if not root_key:
@@ -199,7 +249,28 @@ def scan_texture_sets(filenames, default_root="material"):
             "ignored": set_ignored,
         })
 
-    return {"sets": out_sets, "ignored": ignored}
+    return {"sets": out_sets, "ignored": ignored,
+            "leftover_hints": leftover_hints}
+
+
+def assign_leftovers(hints, set_names):
+    """Pure prefix-match assignment of ``no_channel`` leftovers to sets
+    (Task 4 ops consume it). A hint matches a set when the set's
+    lowercased name — exactly, or followed by a ``_`` separator (hints
+    already have separators collapsed to ``_``) — prefixes the hint;
+    the LONGEST matching name wins; no match → ``None``."""
+    out = []
+    names = [str(n) for n in set_names or []]
+    for filename, hint in (hints or {}).items():
+        h = str(hint).lower()
+        best = None
+        for name in names:
+            low = name.lower()
+            if (h == low or h.startswith(low + "_")) and (
+                    best is None or len(name) > len(best)):
+                best = name
+        out.append({"file": filename, "set": best})
+    return out
 
 
 def preview_payload(scan_result, existing_names):
