@@ -1,7 +1,7 @@
 # Matwire — UV Context compartido, Color Correct y AO opcional (v1.33)
 
 **Fecha**: 2026-07-30
-**Estado**: aprobado en brainstorm (decisiones del usuario: solo *Projection* expuesto en la sub-vista; Color Correct siempre; AO como checkbox de la sub-vista; un solo grafo, sin presets)
+**Estado**: implementado en rama `feat/matwire-uvcontext` (pytest 1110, vitest 201), pendiente de verificación live. Decisiones del brainstorm: solo *Projection* expuesto en la sub-vista; Color Correct siempre; AO como checkbox de la sub-vista; un solo grafo, sin presets.
 **Contexto**: cuarta fase del arco matwire (v1.32 base → v1.32.1 pulido → **v1.33 este spec**). Nace de comparar el grafo de TexToMatO con el nuestro y de un **spike live que midió las dos preguntas abiertas** (`docs/research/2026-07-30-uvcontext-and-graph-cost.md`):
 
 1. **Un control de transform compartido NO choca con el UV Context de Redshift** — se multiplican (medido: sampler 4× + contexto 2× = 8 teselas). Pero el camino correcto no es el "UniTransform" de TexToMatO (un grupo con N×3 cables), sino **UN `uvcontextprojection` compartido** por el `uv_context` de todos los samplers: un nodo, un punto de edición, y triplanar como parámetro.
