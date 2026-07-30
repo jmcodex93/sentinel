@@ -268,3 +268,5 @@ outr outgoing conns: 0                                                          
 ```
 
 **Decisión del writer**: vía imperativa SIEMPRE que el splitter exista (1 o 2 connects — un solo code path, la lista de pares varía); la forma declarativa `-> #>` (§B) queda documentada pero sin uso (solo cubriría el caso de un único output y bifurcaría la receta). Si AMBOS mapas dedicados existen, el splitter no contribuiría nada (outr nunca se conecta) → **no se crea** (skip total, decisión de juicio anotada).
+
+**Honestidad (review M2)**: el Cmd+Z del recipe imperativo (transacción de Connects bajo el anchor CHANGE) NO se ejercitó en este mini-spike — queda en la checklist live de v1.32.1 junto con la verificación visual del layout en columnas (el bug del Pair en `_layout_nodes` significa que el layout de v1.32 nunca se vio funcionando). **Ajuste post-review (M1)**: con roughness+metalness dedicados el plan ya no se omite — degrada a un sampler ORM suelto sin conectar (filosofía AO/leftover: los archivos reconocidos nunca desaparecen en silencio); `_apply_orm_plan` retorna antes del lookup cuando `connects` está vacío.

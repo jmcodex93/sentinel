@@ -183,7 +183,16 @@ def build_orm_plan(folder, tex_set):
         connects.append((split + ".outb",
                          _RS_CORE + "standardmaterial.metalness"))
     if not connects:
-        return None
+        # Both target channels covered by dedicated maps: the splitter would
+        # contribute NOTHING (outr/AO never wires) — but the ORM FILE must
+        # still be visible in the graph (same philosophy as AO/leftovers:
+        # recognized files never vanish silently; review M1, v1.32.1).
+        return {
+            "splitter_desc": _sampler(
+                _join(folder, channels["packed_orm"]),
+                _rs_colorspace("packed_orm")),
+            "connects": [],
+        }
     return {
         "splitter_desc": {
             "$type": "#" + split,
@@ -209,6 +218,11 @@ def _apply_orm_plan(graph, plan):
     two ports is not expressible declaratively). Node lookup by assetid
     substring, same discovery walk as ``_layout_nodes``."""
     maxon.GraphDescription.ApplyDescription(graph, plan["splitter_desc"])
+    if not plan["connects"]:
+        # Both-dedicated case (review M1): the desc above was a bare
+        # unconnected ORM sampler — nothing to wire, and the splitter
+        # lookup below would rightly fail.
+        return
     split_node = sm_node = None
     for node in graph.GetViewRoot().GetInnerNodes(
             mask=maxon.NODE_KIND.NODE, includeThis=False):

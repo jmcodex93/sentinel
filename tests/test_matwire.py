@@ -525,12 +525,21 @@ class TestOrmPlan:
         assert plan["connects"] == [
             (RS + "rscolorsplitter.outg", RS + "standardmaterial.refl_roughness")]
 
-    def test_both_dedicated_skips_splitter_entirely(self, matwire, matwire_c4d):
-        # Judged: with both dedicated maps the splitter would contribute
-        # NOTHING (outr never wired) — do not create a dead node.
-        plan = self._plan(matwire, matwire_c4d, "x_Roughness.png",
-                          "x_Metalness.png", "x_ORM.png")
-        assert plan is None
+    def test_both_dedicated_emits_unconnected_orm_sampler(self, matwire, matwire_c4d):
+        # Review M1 (v1.32.1): with roughness AND metalness dedicated, the
+        # splitter would contribute nothing (outr/AO never wires) — but the
+        # recognized ORM FILE must stay VISIBLE in the graph (AO/leftover
+        # philosophy: files never vanish silently). The plan degrades to a
+        # bare unconnected RAW sampler with zero connects.
+        plan = self._plan(matwire, matwire_c4d, "x_BaseColor.png", "x_ORM.png",
+                          "x_Roughness.png", "x_Metalness.png")
+        RS = matwire_c4d._RS_CORE
+        assert plan is not None
+        assert plan["connects"] == []
+        desc = plan["splitter_desc"]
+        assert desc["$type"] == "#" + RS + "texturesampler"  # sampler, no splitter
+        assert desc["#<" + RS + "texturesampler.tex0/colorspace"] == \
+            matwire_c4d._RS_COLORSPACE[matwire.channel_colorspace("packed_orm")]
 
     def test_no_orm_channel_plan_is_none(self, matwire, matwire_c4d):
         plan = self._plan(matwire, matwire_c4d,
