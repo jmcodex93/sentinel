@@ -289,3 +289,19 @@ objs   : ['EFFECTORS',' ','BACKGROUND','OBJECTS','SPACE',' ','CAMERAS','LIGHTS']
 Ningún material ni objeto del spike (`MIN`, `ART`, `T_*`, `A_SCALE4`, `SPHERE`, `CAM`, `LT`, …) sobrevive en el documento del usuario. Las imágenes y texturas de evidencia quedan en `/tmp/sentinel_uvctx/` (fuera del proyecto).
 
 **Nota de método para futuros spikes**: el transporte MCP corta la llamada a los **60 s** aunque se pase `timeout_ms` mayor (una tanda de 10 renders a 1280² se perdió así, y C4D quedó ocupado ~90 s). Trocear siempre en ops de ≤ 2 renders pesados.
+
+---
+
+## Corrección (misma sesión): POR QUÉ el `rsramp` por defecto no es identidad
+
+La Conclusión B afirmaba que "el ramp altera la imagen" sin explicar la causa, lo que sugería —incorrectamente— que un scalar ramp fuese intrínsecamente no-identidad. El usuario objetó que **una rampa lineal 0→1 debe ser identidad por definición**. Tiene razón; la causa real es el DEFAULT de Redshift, leída de los knots del propio nodo:
+
+```
+knot _0 : position 0, color (0,0,0), interpolation 'smoothknot'
+knot _1 : position 1, color (1,1,1), interpolation 'smoothknot'
+ramp_interp 1 · old_min 0 · old_max 1 · new_min 0 · new_max 1 · inputsource 2
+```
+
+Los EXTREMOS sí son identidad (0→0, 1→1), pero la interpolación entre ellos es **`smoothknot`**, no lineal — de ahí la firma de la desviación medida (0 en los extremos, máxima en la zona media: `mean 0.89/255, max 47/255`), que es exactamente el perfil de una curva suave frente a la recta.
+
+**Consecuencia de diseño**: un ramp *puede* ser identidad exacta, pero solo si el writer escribe `interpolation = linear` en ambos knots EXPLÍCITAMENTE — el mismo principio "nunca dependas de los defaults del nodo" que ya rige colorspaces y `flipy`. Lo que NO cambia es el coste medido (+3 % a 1280²), así que la decisión de no incluirlo por defecto sigue en pie, pero por su coste, no por alterar la imagen.
