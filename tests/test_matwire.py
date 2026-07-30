@@ -1958,6 +1958,26 @@ class TestMaterialTypes:
             "node's default (measured: default is 20 = 1 - x, but nothing " \
             "in the graph should rest on that)"
 
+        # Full shape, not just presence: the invert node itself must carry
+        # the glossiness SAMPLER on its input port (literal ".input" — not
+        # whatever `_RS_INVERT_INPUT` happens to say, so a corrupted port id
+        # constant is caught here too) and math_op must equal the MEASURED
+        # value 20 (1 - x), not merely be present. This is the only test
+        # that opens the invert node's dict rather than grepping for it.
+        RS = matwire_c4d._RS_CORE
+        surface = desc["#<" + matwire_c4d._RS_OUTPUT + ".surface"]
+        invert = surface["#<" + RS + "openpbrmaterial.specular_roughness"]
+        assert invert["$type"] == "#" + RS + "rsmathinv"
+        sampler = invert["#<" + RS + "rsmathinv.input"]
+        assert sampler["$type"] == "#" + RS + "texturesampler", \
+            "invert's input port must carry the glossiness sampler, not " \
+            "be left empty or wired to something else"
+        assert sampler["#<" + RS + "texturesampler.tex0/path"].endswith(
+            "g.png")
+        assert invert["#<" + RS + "rsmathinv.math_op"] == 20, \
+            "math_op must be the MEASURED invert operation (1 - x); " \
+            "silently changing it changes the render, not just the graph"
+
     def test_glossiness_standard_uses_the_bool_and_no_invert(self,
                                                              matwire_c4d):
         tex_set = {"name": "p", "normal_flipy": False,
@@ -1972,6 +1992,13 @@ class TestMaterialTypes:
     def test_emission_amount_is_per_type(self, matwire_c4d):
         tex_set = {"name": "p", "normal_flipy": False,
                    "channels": {"emission": "e.png"}}
+        # Exact measured values (Task 1 spike, docs/research/
+        # 2026-07-30-openpbr-spike.md §2) — a bare `> 0` check would pass a
+        # silently wrong edit (e.g. 0.001, which renders invisible in
+        # practice). OpenPBR's 1000 is specifically the HDR reference
+        # white, not an arbitrary positive number, and is NOT interchangeable
+        # with Standard's 1.0 weight (nits vs. a 0-1 weight).
+        expected = {"standard": 1.0, "openpbr": 1000.0}
         for material, port in (("standard", "emission_weight"),
                                ("openpbr", "emission_luminance")):
             desc, _ = matwire_c4d.build_description("/t", tex_set,
@@ -1981,7 +2008,14 @@ class TestMaterialTypes:
                 "%s must write %s" % (material, port)
             # The amount is ALWAYS written: both ports are born at 0
             # (measured), so an unwritten one ships invisible emission.
-            assert matwire_c4d.BRDF_EMISSION_AMOUNT[material] > 0
+            assert matwire_c4d.BRDF_EMISSION_AMOUNT[material] == \
+                expected[material]
+            surface = desc["#<" + matwire_c4d._RS_OUTPUT + ".surface"]
+            node_id = matwire_c4d.BRDF_NODES[material]
+            assert surface["#<" + node_id + "." + port] == \
+                expected[material], \
+                "the literal written into the graph must match the " \
+                "measured constant, not just be > 0"
 
     def test_orm_splitter_targets_the_active_brdf(self, matwire_c4d):
         tex_set = {"name": "p", "normal_flipy": False,
@@ -1994,3 +2028,121 @@ class TestMaterialTypes:
                 "splitter still wired to standardmaterial: " + target
         assert any(t.endswith("specular_roughness") for t in targets)
         assert any(t.endswith("base_metalness") for t in targets)
+
+
+class TestDefaultMaterialPropagation:
+    """"OpenPBR is the default" is the headline constraint of the whole
+    release. Each of the three public signatures that carry a `material`
+    parameter must actually default to it — this pins the DEFAULT itself,
+    not just behavior when "openpbr" is passed explicitly (which the rest
+    of TestMaterialTypes already covers)."""
+
+    @pytest.fixture
+    def matwire_c4d(self, sentinel_module):
+        return importlib.import_module("sentinel.matwire_c4d")
+
+    def test_build_description_defaults_to_openpbr(self, matwire_c4d):
+        tex_set = {"name": "p", "normal_flipy": False,
+                   "channels": {"basecolor": "c.png"}}
+        desc, _ = matwire_c4d.build_description("/t", tex_set)   # no kwarg
+        keys = _flat_keys(desc)
+        assert any(k.endswith("openpbrmaterial.base_color") for k in keys), \
+            "build_description() with no material kwarg must build OpenPBR"
+        assert not any("standardmaterial" in k for k in keys)
+
+    def test_build_orm_plan_defaults_to_openpbr(self, matwire_c4d):
+        tex_set = {"name": "p", "normal_flipy": False,
+                   "channels": {"packed_orm": "orm.png"}}
+        plan = matwire_c4d.build_orm_plan("/t", tex_set)          # no kwarg
+        assert plan["brdf_kind"] == "openpbrmaterial", \
+            "build_orm_plan() with no material kwarg must target OpenPBR"
+
+    def test_create_material_for_set_defaults_to_openpbr(self, matwire_c4d,
+                                                          monkeypatch):
+        """create_material_for_set forwards its own `material` default into
+        both builders — spied here instead of inspecting the finished graph,
+        since the c4d/maxon side is already faked by
+        TestCreateMaterialOrdering's harness."""
+        log = []
+        TestCreateMaterialOrdering._install_fakes(
+            TestCreateMaterialOrdering(), matwire_c4d, monkeypatch, log)
+        captured = {}
+
+        def _spy_build_description(folder, tex_set, multiply_ao=False,
+                                   material=None):
+            captured["build_description"] = material
+            return {"$type": "#x"}, None
+
+        def _spy_build_orm_plan(folder, tex_set, material=None):
+            captured["build_orm_plan"] = material
+            return None
+
+        monkeypatch.setattr(matwire_c4d, "build_description",
+                            _spy_build_description)
+        monkeypatch.setattr(matwire_c4d, "build_orm_plan",
+                            _spy_build_orm_plan)
+        doc = _OrderRecordingDoc(log)
+        tex_set = {"name": "p", "channels": {"basecolor": "c.png"},
+                   "normal_flipy": False}
+        out = matwire_c4d.create_material_for_set(doc, "/tex", tex_set, "p")
+        assert out["ok"] is True
+        assert captured["build_description"] == "openpbr", \
+            "create_material_for_set() with no material kwarg must pass " \
+            "'openpbr' to build_description"
+        assert captured["build_orm_plan"] == "openpbr", \
+            "create_material_for_set() with no material kwarg must pass " \
+            "'openpbr' to build_orm_plan"
+
+
+class TestApplyOrmPlanTargetsLiveNode:
+    """build_orm_plan only proves the PLAN carries the right port ids;
+    _apply_orm_plan is a SEPARATE function with its own node-lookup walk
+    (`elif plan["brdf_kind"] in asset_id`) — the brief singled this out as
+    the failure mode that "would take the whole material down" on OpenPBR
+    (a hardcoded "standardmaterial" substring never matches an
+    openpbrmaterial node, so the lookup silently fails to find it and the
+    apply raises). Reuses the _FakeGraph/_FakeGraphNode shapes from
+    TestUvContextFanOut (same ApplyDescription + BeginTransaction/Commit
+    contract) rather than inventing a new fake."""
+
+    @pytest.fixture
+    def matwire_c4d(self, sentinel_module):
+        return importlib.import_module("sentinel.matwire_c4d")
+
+    def _fake_maxon(self, matwire_c4d, monkeypatch):
+        class _GD:
+            @staticmethod
+            def ApplyDescription(graph, desc):
+                graph.applied.append(desc)
+                graph.nodes.append(
+                    _FakeGraphNode(str(desc["$type"]).lstrip("#")))
+
+        fake = type("_M", (), {
+            "GraphDescription": _GD,
+            "NODE_KIND": type("_K", (), {"NODE": 1}),
+        })
+        monkeypatch.setattr(matwire_c4d, "maxon", fake)
+
+    def test_wires_the_openpbr_node_the_graph_actually_has(
+            self, matwire, matwire_c4d, monkeypatch):
+        self._fake_maxon(matwire_c4d, monkeypatch)
+        core = matwire_c4d._RS_CORE
+        scan = matwire.scan_texture_sets(["x_ORM.png"])
+        plan = matwire_c4d.build_orm_plan("/tex", scan["sets"][0],
+                                          material="openpbr")
+        # The live graph has an OpenPBR node — NOT a standardmaterial one.
+        # A lookup hardcoded to "standardmaterial" finds nothing here.
+        graph = _FakeGraph([core + "openpbrmaterial", _RS_OUTPUT_FOR_TEST])
+        matwire_c4d._apply_orm_plan(graph, plan)
+
+        brdf_node = next(n for n in graph.nodes
+                         if n.asset_id == core + "openpbrmaterial")
+        split_node = next(n for n in graph.nodes
+                          if n.asset_id == core + "rscolorsplitter")
+        rough_in = brdf_node.port(core + "openpbrmaterial.specular_roughness")
+        meta_in = brdf_node.port(core + "openpbrmaterial.base_metalness")
+        assert rough_in.incoming == [
+            split_node.port(core + "rscolorsplitter.outg")]
+        assert meta_in.incoming == [
+            split_node.port(core + "rscolorsplitter.outb")]
+        assert graph.commits == 1
