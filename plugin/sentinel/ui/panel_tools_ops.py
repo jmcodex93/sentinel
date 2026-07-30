@@ -337,9 +337,12 @@ def _matwire_material(payload):
                  else matwire_c4d.DEFAULT_MATERIAL)
     # openpbr only if this build actually has the node — the SPA disables
     # the selector, but the server cannot trust that: a stale "openpbr"
-    # would reach the writer and fail EVERY set at ApplyDescription.
-    return ("openpbr" if value == "openpbr" and matwire_c4d.openpbr_available()
-            else "standard")
+    # would reach the writer and fail EVERY set at ApplyDescription. Any
+    # OTHER normalized value (review fix: not hardcoded "standard" — a
+    # future third BRDF added to MATERIAL_TYPES must pass through here
+    # unharmed, or this guard silently downgrades it the same way it exists
+    # to prevent).
+    return value if value != "openpbr" or matwire_c4d.openpbr_available() else "standard"
 
 
 def _op_matwire_preview(payload):

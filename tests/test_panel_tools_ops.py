@@ -1430,23 +1430,30 @@ class TestMatwireOpsPolish:
                                                        monkeypatch, tmp_path):
         """An empty payload must reach the writer as the v1.32.1-equivalent
         material: UV projection, AO left loose."""
+        from sentinel import matwire_c4d
         ops = self._setup(monkeypatch, _FakeMatwireDoc())
         folder = self._folder(tmp_path, "plaster_col.png")
         calls = []
         self._capture_create(monkeypatch, calls)
+        # material defaults to "openpbr" but degrades to "standard" without
+        # the node — stated explicitly (review Minor 3) rather than relying
+        # on this harness's real openpbr_available() happening to be False.
+        monkeypatch.setattr(matwire_c4d, "openpbr_available", lambda: False)
         assert ops._op_matwire_create({"folder": folder})["ok"] is True
-        # material defaults to "openpbr" but degrades to "standard" here —
-        # this harness has no maxon module, so openpbr_available() is False
-        # (matches the real degraded-build behaviour, not a test artifact).
         assert calls == [{"set": "plaster", "multiply_ao": False,
                           "projection": "uv", "material": "standard"}]
 
     def test_create_threads_projection_and_multiply_ao(self, sentinel_module,
                                                        monkeypatch, tmp_path):
+        from sentinel import matwire_c4d
         ops = self._setup(monkeypatch, _FakeMatwireDoc())
         folder = self._folder(tmp_path, "plaster_col.png")
         calls = []
         self._capture_create(monkeypatch, calls)
+        # Stated explicitly (review Minor 3): the default material's
+        # degradation to "standard" below depends on this, not on the
+        # harness's incidental lack of a `maxon` module.
+        monkeypatch.setattr(matwire_c4d, "openpbr_available", lambda: False)
         ops._op_matwire_create({"folder": folder, "projection": "triplanar",
                                 "multiply_ao": True})
         assert calls == [{"set": "plaster", "multiply_ao": True,
@@ -1547,11 +1554,19 @@ class TestMatwireMaterialType:
     _folder = TestMatwireOps._folder
     _pack = TestMatwireOpsPolish._pack
 
-    def test_unknown_material_normalizes_to_the_default(self, sentinel_module):
+    def test_unknown_material_normalizes_to_the_default(self, sentinel_module,
+                                                         monkeypatch):
         from sentinel.ui import panel_tools_ops as ops
-        assert ops._matwire_material({"material": "nonsense"}) == "standard"
-        assert ops._matwire_material({}) == "standard"
-        assert ops._matwire_material({"material": 7}) == "standard"
+        from sentinel import matwire_c4d
+        # openpbr_available forced True (review Important 2): without this
+        # every input degrades to "standard" regardless of the membership
+        # check, so the test can't tell a working normalizer from a broken
+        # one — the reviewer proved this by deleting the membership check
+        # entirely and getting a green suite.
+        monkeypatch.setattr(matwire_c4d, "openpbr_available", lambda: True)
+        assert ops._matwire_material({"material": "nonsense"}) == "openpbr"
+        assert ops._matwire_material({}) == "openpbr"
+        assert ops._matwire_material({"material": 7}) == "openpbr"
 
     def test_known_values_survive_case_and_whitespace(self, sentinel_module,
                                                        monkeypatch):
@@ -1580,13 +1595,18 @@ class TestMatwireMaterialType:
         from sentinel import matwire_c4d
         ops = self._setup(monkeypatch, _FakeMatwireDoc())
         folder = self._folder(tmp_path, "p_BaseColor.png")
-        # The sub-view disables the selector from this flag, so it must be a
-        # real probe result and a plain bool — not the AssetDescription the
-        # probe wraps (bool() on one is True either way).
         monkeypatch.setattr(matwire_c4d, "openpbr_available", lambda: False)
         payload = ops._op_matwire_preview({"folder": folder})
         assert payload["openpbr_available"] is False
-        monkeypatch.setattr(matwire_c4d, "openpbr_available", lambda: True)
+        # The sub-view disables the selector from this flag, so it must be a
+        # plain bool the JSON layer can serialize — not the truthy
+        # AssetDescription the real probe wraps (bool() on one is True
+        # either way, same non-probe idiom as uvcontext_available/
+        # redshift_available). Stubbing an arbitrary truthy object (never
+        # a bare True) is what actually exercises the `bool(...)` cast at
+        # the call site — a `False`/`True` stub can't tell the cast apart
+        # from a no-op pass-through (review Minor 4).
+        monkeypatch.setattr(matwire_c4d, "openpbr_available", lambda: object())
         payload = ops._op_matwire_preview({"folder": folder})
         assert payload["openpbr_available"] is True
 
