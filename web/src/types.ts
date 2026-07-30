@@ -1233,10 +1233,16 @@ export interface RenameApplyResult {
 /** One channel row of a recognized texture set — see
  * `matwire.preview_payload` (colorspace comes from the engine's single
  * `channel_colorspace` table: "srgb" | "raw"). */
+/** `contributes` is present ONLY on the `packed_orm` row (v1.32.1, review
+ * I2): the standard-material inputs the packed ORM actually feeds in THIS
+ * set, server-derived from `matwire.orm_contributions` — the same function
+ * the writer's connect pairs come from. `[]` means the ORM lands as a bare
+ * unconnected sampler because dedicated maps won both outputs. */
 export interface MatwireChannelRow {
   channel: string;
   file: string;
   colorspace: string;
+  contributes?: string[];
 }
 
 /** One recognized texture set. `ignored` rows are `[filename, reason]`

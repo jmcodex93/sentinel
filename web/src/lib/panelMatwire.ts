@@ -24,6 +24,34 @@ export function channelLabel(channel: string): string {
   return channel === "packed_orm" ? "ORM/ARM (packed)" : channel;
 }
 
+/** Suffix note for the packed ORM/ARM channel row — what the splitter
+ * ACTUALLY feeds in this set. The list is server-derived
+ * (`matwire.orm_contributions`, the same source as the writer's connect
+ * pairs), so the note can't promise wiring the writer won't make: with
+ * dedicated roughness AND metalness maps present the ORM degrades to a
+ * bare unconnected sampler, and the row must say so (review I2). Returns
+ * null for rows that carry no `contributes` (every non-ORM channel). */
+export function packedOrmNote(contributes: string[] | undefined): string | null {
+  if (!contributes) return null;
+  if (contributes.length === 0) return "→ unconnected (dedicated maps win)";
+  return `→ ${contributes.join(" + ")}`;
+}
+
+/** Truthful Create-button count (review M1): the server also creates the
+ * catch-all `<root>_leftovers` material when leftover import is ON and at
+ * least one unrecognized file matched no set — the button used to promise
+ * only `included.length`. Zero included sets stays zero: the op returns
+ * `no_sets` before creating anything, leftovers included. */
+export function createMaterialCount(
+  includedCount: number,
+  importLeftovers: boolean,
+  leftovers: MatwireLeftoverRow[],
+): number {
+  if (includedCount === 0) return 0;
+  const hasUnassigned = importLeftovers && leftovers.some((row) => row.set === null);
+  return includedCount + (hasUnassigned ? 1 : 0);
+}
+
 /** Checkbox copy for the opt-in leftover import — pinned in the vitest so
  * the guard and the message can't drift apart. */
 export const MATWIRE_IMPORT_LEFTOVERS_LABEL = "Import unrecognized files";

@@ -3,10 +3,12 @@ import {
   IGNORED_REASON_LABELS,
   MATWIRE_IMPORT_LEFTOVERS_LABEL,
   channelLabel,
+  createMaterialCount,
   ignoredReasonLabel,
   leftoverDestination,
   leftoverDestinationLabel,
   matwireToast,
+  packedOrmNote,
   suffixWarningsNote,
 } from "./panelMatwire";
 
@@ -162,5 +164,57 @@ describe("suffixWarningsNote", () => {
 describe("leftover import checkbox copy", () => {
   it("is pinned to the brief's exact label", () => {
     expect(MATWIRE_IMPORT_LEFTOVERS_LABEL).toBe("Import unrecognized files");
+  });
+});
+
+describe("packedOrmNote", () => {
+  it("lists both fed inputs when no dedicated map competes", () => {
+    expect(packedOrmNote(["roughness", "metalness"])).toBe("→ roughness + metalness");
+  });
+
+  it("lists the single surviving input when one dedicated map wins", () => {
+    expect(packedOrmNote(["metalness"])).toBe("→ metalness");
+    expect(packedOrmNote(["roughness"])).toBe("→ roughness");
+  });
+
+  it("says the ORM ends up unconnected when dedicated maps win both", () => {
+    // The writer degrades the splitter to a bare sampler here — the preview
+    // must not read like a normal wired channel (review I2).
+    expect(packedOrmNote([])).toBe("→ unconnected (dedicated maps win)");
+  });
+
+  it("renders nothing for rows without the field (every non-ORM channel)", () => {
+    expect(packedOrmNote(undefined)).toBeNull();
+  });
+});
+
+describe("createMaterialCount", () => {
+  const unassigned = [{ file: "notes.png", set: null }];
+  const assigned = [{ file: "plaster_thumb.png", set: "plaster" }];
+
+  it("is just the included sets when leftover import is off", () => {
+    expect(createMaterialCount(3, false, unassigned)).toBe(3);
+  });
+
+  it("adds the catch-all material when an unassigned leftover would be imported", () => {
+    expect(createMaterialCount(3, true, unassigned)).toBe(4);
+  });
+
+  it("adds nothing when every leftover already has a home set", () => {
+    expect(createMaterialCount(3, true, assigned)).toBe(3);
+    expect(createMaterialCount(3, true, [])).toBe(3);
+  });
+
+  it("counts the catch-all once regardless of how many leftovers are unassigned", () => {
+    expect(
+      createMaterialCount(1, true, [
+        { file: "a.png", set: null },
+        { file: "b.png", set: null },
+      ]),
+    ).toBe(2);
+  });
+
+  it("stays at zero with no included sets (the op returns no_sets first)", () => {
+    expect(createMaterialCount(0, true, unassigned)).toBe(0);
   });
 });

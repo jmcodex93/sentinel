@@ -8,9 +8,11 @@ import { restoreFocus } from "../../lib/focus";
 import {
   MATWIRE_IMPORT_LEFTOVERS_LABEL,
   channelLabel,
+  createMaterialCount,
   ignoredReasonLabel,
   leftoverDestinationLabel,
   matwireToast,
+  packedOrmNote,
   suffixWarningsNote,
 } from "../../lib/panelMatwire";
 import { useToast } from "../../lib/toast";
@@ -184,6 +186,9 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
     ? (PREVIEW_EMPTY_COPY[preview.error ?? ""] ?? "Preview unavailable.")
     : null;
   const canCreate = !applying && included.length > 0;
+  // The button counts the catch-all `<root>_leftovers` material too when the
+  // server would create it (review M1) — the promise must match the outcome.
+  const createCount = createMaterialCount(included.length, importLeftovers, leftovers);
 
   const handleCreate = async () => {
     // Belt + braces: the button is disabled at zero included sets, so the
@@ -287,20 +292,32 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
                     </div>
                   </div>
                   <div className="mt-1.5 flex flex-col gap-0.5 pl-6">
-                    {texSet.channels.map((row) => (
-                      <div key={row.channel} className="text-caption flex items-baseline gap-2">
-                        <span className="w-32 shrink-0" style={{ color: "var(--color-ink)" }}>
-                          {channelLabel(row.channel)}
-                        </span>
-                        <span
-                          className="min-w-0 flex-1 truncate"
-                          style={{ color: "var(--color-ink-secondary)" }}
-                        >
-                          {row.file}
-                        </span>
-                        <ColorspaceChip colorspace={row.colorspace} />
-                      </div>
-                    ))}
+                    {texSet.channels.map((row) => {
+                      // ORM/ARM rows say what they actually feed HERE — a
+                      // packed map whose outputs are both taken by dedicated
+                      // maps ends up unconnected, and the preview must not
+                      // read like a normal wired channel (review I2).
+                      const ormNote = packedOrmNote(row.contributes);
+                      return (
+                        <div key={row.channel} className="text-caption flex items-baseline gap-2">
+                          <span className="w-32 shrink-0" style={{ color: "var(--color-ink)" }}>
+                            {channelLabel(row.channel)}
+                          </span>
+                          <span
+                            className="min-w-0 flex-1 truncate"
+                            style={{ color: "var(--color-ink-secondary)" }}
+                          >
+                            {row.file}
+                          </span>
+                          {ormNote && (
+                            <span className="shrink-0" style={{ color: "var(--color-muted)" }}>
+                              {ormNote}
+                            </span>
+                          )}
+                          <ColorspaceChip colorspace={row.colorspace} />
+                        </div>
+                      );
+                    })}
                     <IgnoredFold rows={texSet.ignored} title="file(s) skipped" />
                   </div>
                 </div>
@@ -321,7 +338,7 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
         )}
         <div className="mt-3">
           <Button variant="primary" disabled={!canCreate} onClick={handleCreate}>
-            Create {included.length} material{included.length === 1 ? "" : "s"}
+            Create {createCount} material{createCount === 1 ? "" : "s"}
           </Button>
         </div>
       </SectionGroup>
