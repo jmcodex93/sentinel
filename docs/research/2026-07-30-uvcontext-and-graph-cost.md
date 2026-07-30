@@ -305,3 +305,71 @@ ramp_interp 1 · old_min 0 · old_max 1 · new_min 0 · new_max 1 · inputsource
 Los EXTREMOS sí son identidad (0→0, 1→1), pero la interpolación entre ellos es **`smoothknot`**, no lineal — de ahí la firma de la desviación medida (0 en los extremos, máxima en la zona media: `mean 0.89/255, max 47/255`), que es exactamente el perfil de una curva suave frente a la recta.
 
 **Consecuencia de diseño**: un ramp *puede* ser identidad exacta, pero solo si el writer escribe `interpolation = linear` en ambos knots EXPLÍCITAMENTE — el mismo principio "nunca dependas de los defaults del nodo" que ya rige colorspaces y `flipy`. Lo que NO cambia es el coste medido (+3 % a 1280²), así que la decisión de no incluirlo por defecto sigue en pie, pero por su coste, no por alterar la imagen.
+
+---
+
+## Confirmación de puertos v1.33
+
+**Fecha**: 2026-07-30 · **C4D**: 2026.303 live (MCP `exec_python`) · doc throwaway `SENTINEL_UVCTX_PORTS` (creado, usado, `KillDocument`, `Untitled 1` reactivado y verificado intacto). Introspección **bloqueante previa a escribir el writer** de la Task 2: ningún id del writer se toma de la documentación ni de este doc por memoria — todos se releen del nodo vivo.
+
+Material off-document (`BaseMaterial(Mmaterial)` + `GetGraph`, sin insertar), grafo = output → standardmaterial con **dos** `texturesampler` (base_color y refl_roughness) + un `uvcontextprojection` aplicado en un scope aislado con `proj_type=1`, `uv_tiling=0`.
+
+```
+samplers=2 ctx=True
+
+CTX_OUT = ['com.redshift3d.redshift4c4d.nodes.core.uvcontextprojection.outcontext']
+CTX_IN (43 puertos; los relevantes):
+  …uvcontextprojection.proj_type
+  …uvcontextprojection.uv_tiling
+  …uvcontextprojection.uv_tiles_u
+  …uvcontextprojection.uv_tiles_v
+  …uvcontextprojection.uv_uniform_tiles
+  …uvcontextprojection.uv_offset
+  …uvcontextprojection.uv_rotate
+
+S_IN (relevantes) = ['…texturesampler.scale', '…texturesampler.offset',
+                     '…texturesampler.rotate', '…texturesampler.uv_context']
+S_OUT = ['…texturesampler.outcolor']
+```
+
+**Read-back de lo escrito por GraphDescription** (los dos valores que el writer fija):
+
+```
+proj_type readback = '1'
+uv_tiling readback = '0'      ← el writer DEBE escribir 0; 1 = hex tiling (§A.1)
+```
+
+**vec2 con `maxon.Vector`** (reconfirmado en este build, dentro de una transacción — `SetPortValue` fuera de transacción lanza `RuntimeError: No current transaction`):
+
+```
+uv_offset (tipo leído) : net.maxon.parametrictype.vec<2,float64>
+maxon.Vector(0.25, 0.5, 0.0) → OK, readback 'X:0.25, Y:0.5, Z:0.0'
+(0.25, 0.5) [tuple]          → ValueError: A Maxon Datatype should be provided,
+                               <class 'tuple'> is not convertible
+```
+
+**Fan-out imperativo** (`outcontext` → `uv_context` de TODOS los samplers, una transacción):
+
+```
+fanout: sampler uv_context inbound conns = 2 over 2 samplers
+```
+
+**Probe de disponibilidad** (mismo idioma `FindLatestAsset(...).IsNullValue()` de `redshift_available`):
+
+```
+uvcontextprojection -> available=True
+texturesampler      -> available=True
+com.bogus.nope      -> available=False    ← control negativo
+```
+
+**Limpieza verificada**:
+
+```
+docs   : ['Untitled 1']
+active : 'Untitled 1'
+mats   : ['plaster_','wall','metal','plaster','wood_B','wood_A','old','UWS GRID','GREY MAT',
+          'chrome_shiny002_MAT','metal_painted_grey002_MAT','paper_cardboard_macbeth002_MAT']
+objs   : ['EFFECTORS',' ','BACKGROUND','OBJECTS','SPACE',' ','CAMERAS','LIGHTS']
+```
+
+Nada del spike sobrevive en el documento del usuario.

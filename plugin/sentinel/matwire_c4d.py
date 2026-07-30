@@ -55,6 +55,12 @@ _RS_OUTPUT = "com.redshift3d.redshift4c4d.node.output"
 _CS_SRGB = "RS_INPUT_COLORSPACE_SRGB"
 _CS_RAW = "RS_INPUT_COLORSPACE_RAW"
 _ASSETID_ATTR = "net.maxon.node.attribute.assetid"
+_RS_UVCTX = _RS_CORE + "uvcontextprojection"
+
+#: Projection selector value -> the node's ``proj_type`` enum (measured
+#: live, spike 2026-07-30: 1 = UV Channel, 2 = Tri-Planar). The strings are
+#: what the ops payload / SPA carry; the ints never leave this module.
+PROJECTION_TYPES = {"uv": 1, "triplanar": 2}
 
 # Format translation ONLY: engine answer ("srgb"/"raw") -> RS constant.
 # The DECISION of which channel is which colorspace lives in
@@ -71,6 +77,7 @@ def _rs_colorspace(channel):
 # (rows are keyed by COLUMN, so cohabitation never stacks — see
 # _layout_and_title_nodes).
 _LAYOUT_COLS = {
+    "uvcontextprojection": -900.0,  # upstream of every sampler (v1.33)
     "texturesampler": -600.0,
     "rscolorcorrection": -450.0,   # one stage BEFORE the AO layer it feeds
     "bumpmap": -300.0,
@@ -125,6 +132,95 @@ def redshift_available():
         return not desc.IsNullValue()
     except Exception:
         return False
+
+
+def uvcontext_available():
+    """Probe the shared ``uvcontextprojection`` node (RS 2026.2+). Same
+    ``IsNullValue()`` idiom as ``redshift_available`` — a bogus id still
+    returns a truthy AssetDescription, so ``bool()`` is not a probe.
+    Confirmed live 2026-07-30 (spike doc, "Confirmación de puertos v1.33":
+    the node probes True, a bogus id False)."""
+    if not MAXON_AVAILABLE:
+        return False
+    try:
+        repo = maxon.AssetInterface.GetUserPrefsRepository()
+        desc = repo.FindLatestAsset(
+            maxon.AssetTypes.NodeTemplate(),
+            maxon.Id(_RS_UVCTX),
+            maxon.Id(), maxon.ASSET_FIND_MODE.LATEST)
+        return not desc.IsNullValue()
+    except Exception:
+        return False
+
+
+def build_uvcontext_plan(proj_type):
+    """Plan for the ONE shared UV context, or ``None`` when the node isn't
+    available in this build (then the material is written exactly as
+    v1.32.1 — degrade honestly, never promise a wiring we won't make).
+
+    ``proj_type``: 1 = UV Channel, 2 = Tri-Planar (measured live; see
+    ``PROJECTION_TYPES`` for the string→int mapping the ops layer uses).
+
+    Two live-measured traps are pinned here:
+
+    - **``uv_tiling = 0`` is written EXPLICITLY.** Its value 1 is *hexagonal*
+      tiling, not "tiling on" — the spike rendered hexagons to find that
+      out. Never left to the node default (colorspace/flipy principle).
+    - **The samplers' own ``scale``/``offset``/``rotate`` are NOT written**
+      anywhere. They MULTIPLY with the context (measured: sampler scale 4 ×
+      context tiles 2 = 8 tiles), so writing both would give the artist two
+      chained transforms instead of one source of truth. Leaving them at
+      their defaults keeps the context the single edit point and leaves the
+      per-texture tweak free for the artist.
+
+    The connect is imperative, not part of the desc: one ``outcontext``
+    feeding N ``uv_context`` ports is not expressible in GraphDescription
+    (nesting duplicates the node, there is no ``$ref``) — same reason as
+    the ORM splitter."""
+    if not uvcontext_available():
+        return None
+    return {
+        "desc": {
+            "$type": "#" + _RS_UVCTX,
+            "#<" + _RS_UVCTX + ".proj_type": int(proj_type),
+            "#<" + _RS_UVCTX + ".uv_tiling": 0,  # 0 = rectangular; 1 = HEX
+        },
+        "connect_to": _RS_CORE + "texturesampler.uv_context",
+    }
+
+
+def _apply_uvcontext_plan(graph, plan):
+    """Materialize a ``build_uvcontext_plan`` result: isolated
+    ApplyDescription for the context node, then ONE transaction connecting
+    its ``outcontext`` to the ``uv_context`` input of EVERY texturesampler
+    in the graph (``_apply_orm_plan`` is the template; fan-out verified
+    live: one context → N samplers).
+
+    "EVERY sampler" is literal and deliberate: samplers are discovered by
+    assetid on the live graph, so the ORM sampler and the unconnected
+    leftovers get the context too — otherwise the shared control would
+    silently skip exactly the textures the artist is most likely to be
+    fixing up."""
+    maxon.GraphDescription.ApplyDescription(graph, plan["desc"])
+    ctx_node = None
+    samplers = []
+    for node in graph.GetViewRoot().GetInnerNodes(
+            mask=maxon.NODE_KIND.NODE, includeThis=False):
+        asset_id = str(node.GetValue(_ASSETID_ATTR) or "")
+        if "uvcontextprojection" in asset_id:
+            ctx_node = node
+        elif "texturesampler" in asset_id:
+            samplers.append(node)
+    if ctx_node is None:
+        raise RuntimeError("UV context wiring: context node lookup failed")
+    if not samplers:
+        return
+    out_id = _RS_UVCTX + ".outcontext"
+    with graph.BeginTransaction() as tr:
+        out_port = ctx_node.GetOutputs().FindChild(out_id)
+        for sampler in samplers:
+            out_port.Connect(sampler.GetInputs().FindChild(plan["connect_to"]))
+        tr.Commit()
 
 
 def _sampler(path, colorspace):
@@ -435,7 +531,7 @@ def _layout_and_title_nodes(graph, titles=None):
 
 
 def create_material_for_set(doc, folder, tex_set, name, leftover_files=None,
-                            multiply_ao=False):
+                            multiply_ao=False, projection="uv"):
     """Build ONE RS Standard material for ``tex_set`` (engine shape from
     ``matwire.scan_texture_sets``). ``name`` arrives already deduped;
     ``leftover_files`` (opt-in) ride along as extra unconnected RAW
@@ -450,11 +546,17 @@ def create_material_for_set(doc, folder, tex_set, name, leftover_files=None,
     failure path: anything that raises happens BEFORE insertion, the
     document never saw the material and no undo record exists for it — so
     there is nothing to remove and no DELETE record to balance. Just
-    report."""
+    report.
+
+    ``projection`` ("uv" | "triplanar") selects the shared UV context's
+    ``proj_type``; when the context node isn't available in this build the
+    plan is ``None`` and the material is written exactly as v1.32.1."""
     try:
         desc, ao_desc = build_description(folder, tex_set,
                                           multiply_ao=multiply_ao)
         orm_plan = build_orm_plan(folder, tex_set)
+        uvctx_plan = build_uvcontext_plan(
+            PROJECTION_TYPES.get(projection, PROJECTION_TYPES["uv"]))
         titles = build_node_titles(folder, tex_set, leftover_files)
         mat = c4d.BaseMaterial(c4d.Mmaterial)
         mat.SetName(name)
@@ -467,6 +569,14 @@ def create_material_for_set(doc, folder, tex_set, name, leftover_files=None,
             maxon.GraphDescription.ApplyDescription(graph, ao_desc)  # isolated (§5)
         for leftover_desc in build_leftover_descriptions(folder, leftover_files):
             maxon.GraphDescription.ApplyDescription(graph, leftover_desc)
+        # ORDER MATTERS: the context connects to EVERY sampler by walking the
+        # live graph, so it must run AFTER every sampler-creating apply
+        # (main desc, ORM, loose AO, leftovers) — a sampler born later would
+        # silently miss the shared control. And BEFORE the layout/title pass,
+        # which positions whatever nodes exist at that moment (the context
+        # needs its column, -900).
+        if uvctx_plan is not None:
+            _apply_uvcontext_plan(graph, uvctx_plan)
         _layout_and_title_nodes(graph, titles)
         # LAST — the document's only record of this material is the insertion.
         doc.InsertMaterial(mat)

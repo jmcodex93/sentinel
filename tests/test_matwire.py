@@ -1009,3 +1009,142 @@ class TestNodeTitles:
         assert matwire_c4d._node_title("rscolorcorrection", "", titles) == \
             "Color Correct"
         assert matwire_c4d._node_title("standardmaterial", "", titles) is None
+
+
+class TestUvContextPlan:
+    """v1.33 shared UV context — one ``uvcontextprojection`` per material
+    feeding the ``uv_context`` of EVERY sampler. Ids/enums/traps pinned here
+    come from the live introspection of 2026-07-30 (spike doc,
+    "Confirmación de puertos v1.33"), never from documentation."""
+
+    @pytest.fixture
+    def matwire_c4d(self, sentinel_module):
+        return importlib.import_module("sentinel.matwire_c4d")
+
+    @pytest.fixture
+    def available(self, matwire_c4d, monkeypatch):
+        monkeypatch.setattr(matwire_c4d, "uvcontext_available", lambda: True)
+        return matwire_c4d
+
+    def test_plan_pins_proj_type_and_rectangular_tiling(self, available):
+        matwire_c4d = available
+        UC = matwire_c4d._RS_UVCTX
+        for proj_type in (1, 2):
+            plan = matwire_c4d.build_uvcontext_plan(proj_type)
+            desc = plan["desc"]
+            assert desc["$type"] == "#" + UC
+            assert desc["#<" + UC + ".proj_type"] == proj_type
+            # 1 would be HEXAGONAL tiling (measured live) — a writer that
+            # "turns tiling on" with 1 ships hexagons.
+            assert desc["#<" + UC + ".uv_tiling"] == 0
+            assert plan["connect_to"] == \
+                matwire_c4d._RS_CORE + "texturesampler.uv_context"
+
+    def test_projection_string_map(self, matwire_c4d):
+        assert matwire_c4d.PROJECTION_TYPES == {"uv": 1, "triplanar": 2}
+
+    def test_plan_is_none_when_node_unavailable(self, matwire_c4d, monkeypatch):
+        monkeypatch.setattr(matwire_c4d, "uvcontext_available", lambda: False)
+        assert matwire_c4d.build_uvcontext_plan(1) is None
+
+    def test_context_has_its_own_layout_column_upstream(self, matwire_c4d):
+        cols = matwire_c4d._LAYOUT_COLS
+        assert cols["uvcontextprojection"] < cols["texturesampler"]
+
+    def test_sampler_transform_ports_are_never_written(self, matwire, matwire_c4d,
+                                                       monkeypatch):
+        """The sampler's own scale/offset/rotate MULTIPLY with the context
+        (measured: 4 x 2 = 8 tiles), so writing them would give the artist
+        two chained transforms. Every desc this writer builds is swept."""
+        monkeypatch.setattr(matwire_c4d, "uvcontext_available", lambda: True)
+        scan = matwire.scan_texture_sets([
+            "p_BaseColor.png", "p_Roughness.png", "p_Normal.png",
+            "p_AO.png", "p_ORM.png", "p_Height.exr", "p_Opacity.png",
+            "p_Emission.png"])
+        tex_set = scan["sets"][0]
+        descs = []
+        for multiply_ao in (False, True):
+            main, ao = matwire_c4d.build_description(
+                "/tex", tex_set, multiply_ao=multiply_ao)
+            descs.append(main)
+            if ao is not None:
+                descs.append(ao)
+        orm = matwire_c4d.build_orm_plan("/tex", tex_set)
+        if orm is not None:
+            descs.append(orm["splitter_desc"])
+        descs.extend(matwire_c4d.build_leftover_descriptions(
+            "/tex", ["stray.png"]))
+        descs.append(matwire_c4d.build_uvcontext_plan(1)["desc"])
+
+        forbidden = tuple(
+            matwire_c4d._RS_CORE + "texturesampler." + p
+            for p in ("scale", "offset", "rotate"))
+        seen_keys = []
+
+        def walk(node):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    seen_keys.append(key)
+                    walk(value)
+            elif isinstance(node, (list, tuple)):
+                for item in node:
+                    walk(item)
+
+        for desc in descs:
+            walk(desc)
+        assert seen_keys, "sweep found no keys — the fixture went stale"
+        for key in seen_keys:
+            assert not any(f in key for f in forbidden), \
+                "sampler transform port written: " + key
+
+    def test_create_material_threads_projection_to_the_plan(self, matwire_c4d,
+                                                            monkeypatch):
+        seen = []
+
+        def _fake_plan(proj_type):
+            seen.append(proj_type)
+            return None  # None => v1.32.1 graph, keeps this test c4d-free
+
+        monkeypatch.setattr(matwire_c4d, "build_uvcontext_plan", _fake_plan)
+        log = []
+        TestCreateMaterialOrdering._install_fakes(
+            TestCreateMaterialOrdering(), matwire_c4d, monkeypatch, log)
+        doc = _OrderRecordingDoc(log)
+        tex_set = {"name": "p", "channels": {"basecolor": "c.png"},
+                   "normal_flipy": False}
+        for projection, expected in (("uv", 1), ("triplanar", 2),
+                                     ("nonsense", 1)):
+            out = matwire_c4d.create_material_for_set(
+                doc, "/tex", tex_set, "p", projection=projection)
+            assert out["ok"] is True
+        assert seen == [1, 2, 1]
+
+    def test_context_applies_after_samplers_and_before_layout(self, matwire_c4d,
+                                                              monkeypatch):
+        """ORDER IS THE CONTRACT: the context walks the live graph to find
+        samplers, so every sampler-creating apply must already have run; the
+        layout pass must run last so the context gets positioned."""
+        log = []
+        TestCreateMaterialOrdering._install_fakes(
+            TestCreateMaterialOrdering(), matwire_c4d, monkeypatch, log)
+        monkeypatch.setattr(matwire_c4d, "build_uvcontext_plan",
+                            lambda proj_type: {"desc": {}, "connect_to": "x"})
+        monkeypatch.setattr(matwire_c4d, "_apply_uvcontext_plan",
+                            lambda graph, plan: log.append("_apply_uvcontext"))
+        # the ORM branch needs a live graph to walk; here only its position
+        # in the sequence matters, and it creates a sampler.
+        monkeypatch.setattr(
+            matwire_c4d, "_apply_orm_plan",
+            lambda graph, plan: log.append("ApplyDescription"))
+        doc = _OrderRecordingDoc(log)
+        tex_set = {"name": "p", "normal_flipy": False,
+                   "channels": {"basecolor": "c.png", "packed_orm": "o.png"}}
+        out = matwire_c4d.create_material_for_set(
+            doc, "/tex", tex_set, "p", leftover_files=["stray.png"])
+        assert out["ok"] is True
+        at = log.index("_apply_uvcontext")
+        # every ApplyDescription (main + ORM + leftovers) comes first...
+        assert max(i for i, e in enumerate(log)
+                   if e == "ApplyDescription") < at
+        # ...and the layout/title pass comes after.
+        assert at < log.index("_layout_nodes") < log.index("InsertMaterial")
