@@ -111,9 +111,15 @@ def build_description(folder, tex_set):
             "$type": "#" + _RS_CORE + "bumpmap",
             "#<" + _RS_CORE + "bumpmap.inputtype": 1,  # Tangent-Space Normal
             "#<" + _RS_CORE + "bumpmap.input": _sampler(path("normal"), _rs_colorspace("normal")),
+            # ALWAYS explicit — same principle as the colorspaces: never
+            # depend on node defaults. (Registro honesto: el default nativo
+            # de flipy es FALSE — verificado live con lectura correcta; el
+            # "bug" que motivó esto era un artefacto del harness de
+            # verificación: bool(maxon.Bool) devuelve la truthiness del
+            # OBJETO, no el dato — leer con repr()/comparación al dato.
+            # El write explícito se queda como endurecimiento.)
+            "#<" + _RS_CORE + "bumpmap.flipy": bool(tex_set.get("normal_flipy")),
         }
-        if tex_set.get("normal_flipy"):
-            bump["#<" + _RS_CORE + "bumpmap.flipy"] = True  # DX-only set
         material[sm + "bump_input"] = bump
     if "opacity" in channels:
         material[sm + "opacity_color"] = _sampler(path("opacity"), _rs_colorspace("opacity"))

@@ -266,8 +266,9 @@ class TestBuildDescription:
             matwire_c4d._RS_COLORSPACE[matwire.channel_colorspace("roughness")]
         assert matwire.channel_colorspace("roughness") == "raw"
 
-        # normal: bump chain, raw, inputtype 1 (tangent-space), flipy set
-        # only for DX-only sets (this set is Normal_DX-only -> flipy True)
+        # normal: bump chain, raw, inputtype 1 (tangent-space); flipy is
+        # ALWAYS explicit (hardening: never depend on node defaults) —
+        # True here (DX-only set)
         bump = material[sm + "bump_input"]
         assert bump["$type"] == "#" + RS + "bumpmap"
         assert bump["#<" + RS + "bumpmap.inputtype"] == 1
@@ -295,6 +296,18 @@ class TestBuildDescription:
         assert material[sm + "emission_weight"] == 1.0
 
         assert ao_desc is None
+
+    def test_gl_normal_writes_explicit_flipy_false(self, matwire, matwire_c4d):
+        # Hardening: flipy is ALWAYS written explicitly (never depend on
+        # node defaults — colorspace principle). NB the real RS default is
+        # false; the suspected live bug was a maxon.Bool truthiness read
+        # artifact in the verification harness.
+        scan = matwire.scan_texture_sets(["a_BaseColor.png", "a_Normal_GL.png"])
+        desc, _ao = matwire_c4d.build_description("/f", scan["sets"][0])
+        RS = matwire_c4d._RS_CORE
+        material = desc["#<" + matwire_c4d._RS_OUTPUT + ".surface"]
+        bump = material["#<" + RS + "standardmaterial.bump_input"]
+        assert bump["#<" + RS + "bumpmap.flipy"] is False
 
     def test_gloss_only_set_no_roughness_key_collision(self, matwire, matwire_c4d):
         scan = matwire.scan_texture_sets(
