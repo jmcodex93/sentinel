@@ -89,7 +89,14 @@ _LAYOUT_COLS = {
 }
 _LAYOUT_ROW_STEP = 220.0
 
+# The Node Editor's VISIBLE label is ``net.maxon.node.base.name`` — NOT
+# ``…attribute.title`` (live-caught by the user in the v1.33 matrix: the
+# titles were written and read back correctly, yet the editor still showed
+# each sampler's FILENAME and each utility node's native type name, because
+# `title` is not what it renders). Both are written: `name` is what the
+# artist sees, `title` stays for any consumer that reads it.
 _TITLE_ATTR = "net.maxon.node.attribute.title"
+_NAME_ATTR = "net.maxon.node.base.name"
 
 #: Semantic titles by node KIND (v1.33). The material and the output keep
 #: their native identity — renaming them would only hide what they are.
@@ -552,6 +559,7 @@ def _layout_and_title_nodes(graph, titles=None):
                 titles or {})
             if title:
                 node.SetValue(_TITLE_ATTR, maxon.String(title))
+                node.SetValue(_NAME_ATTR, maxon.String(title))
         tr.Commit()
 
 

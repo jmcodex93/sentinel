@@ -980,9 +980,22 @@ class TestColorCorrectAndAoMultiply:
 
 
 class TestNodeTitles:
-    """v1.33 semantic titles (net.maxon.node.attribute.title — write+read
-    verified live 2026-07-30). Samplers are titled by CHANNEL, not filename;
-    leftovers (which have no channel) fall back to their basename."""
+    """v1.33 semantic titles. Samplers are titled by CHANNEL, not filename;
+    leftovers (which have no channel) fall back to their basename.
+
+    LIVE-CAUGHT (user, v1.33 matrix): the Node Editor renders
+    ``net.maxon.node.base.name``, NOT ``…attribute.title`` — the titles were
+    written and read back fine while the editor still showed each sampler's
+    filename and each utility node's native type name. The writer now sets
+    BOTH attributes; `name` is the one the artist actually sees."""
+
+    def test_writer_sets_the_visible_name_attribute(self, matwire_c4d):
+        # Regression for the live catch: writing only the title attribute
+        # left the editor showing filenames.
+        assert matwire_c4d._NAME_ATTR == "net.maxon.node.base.name"
+        import inspect
+        body = inspect.getsource(matwire_c4d._layout_and_title_nodes)
+        assert "_NAME_ATTR" in body, "the visible name attribute must be written"
 
     @pytest.fixture
     def matwire_c4d(self, sentinel_module):
