@@ -9,9 +9,15 @@ Follows the LIVE-VERIFIED recipe in
   ``AddUndo(CHANGE)`` anchor (MANDATORY — without it the maxon Apply
   transaction is its own undo step) + ``GetGraph(mat, ...)``. Never
   ``GetGraph(name=...)`` (no handle → no undo anchor, no cleanup).
-- Wiring is pure GraphDescription dict syntax (§1/§2): ``"#<id"`` marks an
+- Wiring is GraphDescription dict syntax (§1/§2): ``"#<id"`` marks an
   input port, ``/child`` a group-port child (tex0). Paths are **plain str**
   (§4 — never ``pathlib.as_uri()``); colorspaces always explicit.
+  **One documented exception** (mini-spike v1.32.1): the ORM/ARM splitter
+  feeds TWO target ports from ONE node, which the dict syntax cannot
+  express (nesting duplicates the node — even the same dict instance — and
+  there is no ``$ref``). That branch alone is imperative: an isolated
+  ApplyDescription for splitter+sampler (AO pattern) followed by explicit
+  ``Connect()`` calls in one transaction — see ``_apply_orm_plan``.
 - AO sampler is a second, isolated ApplyDescription (§5).
 - Node positions via a ``SetValue`` transaction with ``maxon.Float`` (§6);
   never the arrange ``CallCommand``.
@@ -27,7 +33,7 @@ import os
 
 import c4d
 
-from sentinel.matwire import channel_colorspace
+from sentinel.matwire import channel_colorspace, orm_contributions
 
 try:
     import maxon
@@ -168,18 +174,22 @@ def build_orm_plan(folder, tex_set):
     Dedicated-wins per output: ``outg`` -> refl_roughness only without a
     dedicated roughness/glossiness map (glossiness occupies refl_roughness
     via ``refl_isglossiness``); ``outb`` -> metalness only without a
-    dedicated metalness map. ``outr`` (AO) is NEVER connected. If both
-    dedicated maps exist the splitter would contribute nothing — judged:
-    skip creating the dead node entirely, return ``None``."""
+    dedicated metalness map. ``outr`` (AO) is NEVER connected. That RULE
+    lives once, in ``matwire.orm_contributions`` — the same function the
+    preview's ``contributes`` note reads, so the row the artist sees and
+    the wiring they get can't drift (review I2). If both dedicated maps
+    exist the splitter contributes nothing: the ORM file still lands as a
+    visible unconnected sampler (M1)."""
     channels = tex_set.get("channels") or {}
     if "packed_orm" not in channels:
         return None
     split = _RS_CORE + "rscolorsplitter"
+    contributes = orm_contributions(channels)
     connects = []
-    if "roughness" not in channels and "glossiness" not in channels:
+    if "roughness" in contributes:
         connects.append((split + ".outg",
                          _RS_CORE + "standardmaterial.refl_roughness"))
-    if "metalness" not in channels:
+    if "metalness" in contributes:
         connects.append((split + ".outb",
                          _RS_CORE + "standardmaterial.metalness"))
     if not connects:
@@ -241,6 +251,19 @@ def _apply_orm_plan(graph, plan):
         tr.Commit()
 
 
+def _kind_from_assetid(value):
+    """Node KIND (last dotted segment) from a raw ``assetid`` attribute read
+    — pure, so it can be pytest-pinned without a graph.
+
+    ``node.GetValue(assetid)`` returns a maxon **Pair** whose ``str()`` is
+    ``"(com...texturesampler,)"`` — verified live 2026-07-30 (v1.32.1
+    mini-spike). Without stripping the parens/comma every kind read
+    ``"texturesampler,)"``, ``_LAYOUT_COLS`` never matched, and every
+    material created since v1.32 stacked in column 0.0. A plain id string
+    (``"com...texturesampler"``) passes through unchanged."""
+    return str(value or "").strip("(),").rsplit(".", 1)[-1]
+
+
 def _layout_nodes(graph):
     """GraphDescription assigns no positions (§6) — set xpos/ypos explicitly
     so the graph never stacks at (0,0). Nodes located by assetid; rows are
@@ -251,12 +274,7 @@ def _layout_nodes(graph):
     with graph.BeginTransaction() as tr:
         for node in graph.GetViewRoot().GetInnerNodes(
                 mask=maxon.NODE_KIND.NODE, includeThis=False):
-            asset_id = str(node.GetValue(_ASSETID_ATTR) or "")
-            # GetValue returns a maxon Pair whose str() is "(id,)" —
-            # verified live 2026-07-30 (v1.32.1 mini-spike session): without
-            # stripping, every kind read "xxx,)" and _LAYOUT_COLS never
-            # matched (all nodes fell to column 0.0).
-            kind = asset_id.strip("(),").rsplit(".", 1)[-1]
+            kind = _kind_from_assetid(node.GetValue(_ASSETID_ATTR))
             col = _LAYOUT_COLS.get(kind, 0.0)
             index = rows.get(col, 0)
             rows[col] = index + 1

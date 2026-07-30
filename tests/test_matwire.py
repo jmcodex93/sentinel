@@ -600,3 +600,142 @@ class TestLeftoverDescriptions:
     def test_empty_and_none_inputs(self, matwire_c4d):
         assert matwire_c4d.build_leftover_descriptions("/tex", []) == []
         assert matwire_c4d.build_leftover_descriptions("/tex", None) == []
+
+
+class TestDirectoryResolutionRanking:
+    """Review I1: the recursive lister (v1.32.1) delivers multi-res packs as
+    `1K/albedo.png` / `4K/albedo.png` — IDENTICAL filenames, so ranking from
+    the name alone collapsed them into one arbitrary winner. Directory
+    segments now supply the rank when the filename carries no token."""
+
+    def test_subfolder_pack_ranks_by_directory(self, matwire):
+        out = _scan(
+            matwire,
+            "1K/albedo.png", "1K/roughness.png",
+            "4K/albedo.png", "4K/roughness.png")
+        assert len(out["sets"]) == 1
+        s = out["sets"][0]
+        assert s["channels"]["basecolor"] == "4K/albedo.png"
+        assert s["channels"]["roughness"] == "4K/roughness.png"
+        ignored = dict(s["ignored"])
+        # The losers are LOWER RESOLUTION, not indistinguishable duplicates.
+        assert ignored["1K/albedo.png"] == "lower_resolution"
+        assert ignored["1K/roughness.png"] == "lower_resolution"
+
+    def test_deepest_directory_token_wins(self, matwire):
+        out = _scan(matwire, "8K/rock/2K/albedo.png", "8K/rock/4K/albedo.png")
+        s = out["sets"][0]
+        assert s["channels"]["basecolor"] == "8K/rock/4K/albedo.png"
+
+    def test_filename_token_beats_contradicting_directory_token(self, matwire):
+        # `1K/x_BaseColor_8k.png` really is the 8K map: the name wins.
+        out = _scan(matwire,
+                    "1K/x_BaseColor_8k.png", "8K/x_BaseColor_2k.png")
+        s = out["sets"][0]
+        assert s["channels"]["basecolor"] == "1K/x_BaseColor_8k.png"
+        assert ("8K/x_BaseColor_2k.png", "lower_resolution") in s["ignored"]
+
+    def test_untokened_directory_leaves_rank_untouched(self, matwire):
+        # A bare (no-token) file still outranks every explicit px — Shrink
+        # lesson, unchanged by the directory fallback.
+        out = _scan(matwire, "tex/x_BaseColor.png", "4K/x_BaseColor.png")
+        s = out["sets"][0]
+        assert s["channels"]["basecolor"] == "tex/x_BaseColor.png"
+        assert ("4K/x_BaseColor.png", "lower_resolution") in s["ignored"]
+
+    def test_flat_pack_is_byte_identical(self, matwire):
+        # No directory part anywhere: exactly the v1.32 behavior.
+        flat = _scan(matwire, "x_BaseColor.png", "x_Roughness.png",
+                     "x_BaseColor_2k.png")
+        s = flat["sets"][0]
+        assert s["channels"]["basecolor"] == "x_BaseColor.png"
+        assert ("x_BaseColor_2k.png", "lower_resolution") in s["ignored"]
+        assert matwire._dir_px("x_BaseColor.png") is None
+
+    def test_dir_px_helper_edges(self, matwire):
+        assert matwire._dir_px("4K/a.png") == 4096
+        assert matwire._dir_px("back4k/a.png") is None  # embedded, no boundary
+        assert matwire._dir_px("a.png") is None
+        assert matwire._dir_px("") is None
+
+
+class TestOrmContributions:
+    """Review I2: ONE source for what the packed ORM actually feeds — the
+    preview note and the writer's connect pairs read the same function."""
+
+    def test_no_dedicated_maps_feeds_both(self, matwire):
+        assert matwire.orm_contributions(
+            {"packed_orm": "x_ORM.png", "basecolor": "x_col.png"}) == \
+            ["roughness", "metalness"]
+
+    def test_dedicated_roughness_leaves_metalness_only(self, matwire):
+        assert matwire.orm_contributions(
+            {"packed_orm": "x.png", "roughness": "r.png"}) == ["metalness"]
+
+    def test_glossiness_also_occupies_refl_roughness(self, matwire):
+        assert matwire.orm_contributions(
+            {"packed_orm": "x.png", "glossiness": "g.png"}) == ["metalness"]
+
+    def test_dedicated_metalness_leaves_roughness_only(self, matwire):
+        assert matwire.orm_contributions(
+            {"packed_orm": "x.png", "metalness": "m.png"}) == ["roughness"]
+
+    def test_both_dedicated_contributes_nothing(self, matwire):
+        assert matwire.orm_contributions(
+            {"packed_orm": "x.png", "roughness": "r.png",
+             "metalness": "m.png"}) == []
+
+    def test_no_orm_or_empty(self, matwire):
+        assert matwire.orm_contributions({"basecolor": "c.png"}) == []
+        assert matwire.orm_contributions(None) == []
+
+    def test_writer_connects_follow_the_same_source(self, sentinel_module, matwire):
+        matwire_c4d = importlib.import_module("sentinel.matwire_c4d")
+        channels = {"packed_orm": "x_ORM.png", "roughness": "x_r.png"}
+        plan = matwire_c4d.build_orm_plan("/tex", {"channels": channels})
+        assert matwire.orm_contributions(channels) == ["metalness"]
+        assert [out for out, _in in plan["connects"]] == \
+            [matwire_c4d._RS_CORE + "rscolorsplitter.outb"]
+
+    def test_preview_row_carries_contributes(self, matwire):
+        scan = matwire.scan_texture_sets(
+            ["rock_ORM.png", "rock_BaseColor.png", "rock_Metalness.png"])
+        payload = matwire.preview_payload(scan, [])
+        rows = {r["channel"]: r for r in payload["sets"][0]["channels"]}
+        assert rows["packed_orm"]["contributes"] == ["roughness"]
+        # Only the ORM row carries the field — other channels stay clean.
+        assert "contributes" not in rows["basecolor"]
+
+    def test_preview_row_contributes_empty_when_both_dedicated(self, matwire):
+        scan = matwire.scan_texture_sets(
+            ["rock_ORM.png", "rock_Roughness.png", "rock_Metalness.png"])
+        payload = matwire.preview_payload(scan, [])
+        rows = {r["channel"]: r for r in payload["sets"][0]["channels"]}
+        assert rows["packed_orm"]["contributes"] == []
+
+
+class TestKindFromAssetid:
+    """Review M4: the assetid parse that shipped broken since v1.32 (every
+    material stacked in column 0.0) finally has a pin — BOTH read shapes."""
+
+    @pytest.fixture
+    def matwire_c4d(self, sentinel_module):
+        return importlib.import_module("sentinel.matwire_c4d")
+
+    def test_maxon_pair_str_form(self, matwire_c4d):
+        # What node.GetValue(assetid) really returns, str()'d.
+        value = "(com.redshift3d.redshift4c4d.nodes.core.texturesampler,)"
+        assert matwire_c4d._kind_from_assetid(value) == "texturesampler"
+
+    def test_plain_id_string_form(self, matwire_c4d):
+        value = matwire_c4d._RS_CORE + "standardmaterial"
+        assert matwire_c4d._kind_from_assetid(value) == "standardmaterial"
+
+    def test_parsed_kinds_hit_the_layout_columns(self, matwire_c4d):
+        for kind in matwire_c4d._LAYOUT_COLS:
+            pair = "(" + matwire_c4d._RS_CORE + kind + ",)"
+            assert matwire_c4d._kind_from_assetid(pair) == kind
+
+    def test_empty_and_none(self, matwire_c4d):
+        assert matwire_c4d._kind_from_assetid(None) == ""
+        assert matwire_c4d._kind_from_assetid("") == ""

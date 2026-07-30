@@ -75,7 +75,15 @@ def validate_extra_suffixes(raw):
     (the rest applies — per-key ruleset style); suffixes are normalized
     lowercase/stripped and empty entries dropped (a key left with no
     usable suffixes is rejected). Non-dict input yields ``({}, [])`` —
-    the type-level rejection is the rules layer's job."""
+    the type-level rejection is the rules layer's job.
+
+    KNOWN LIMIT (pinned judgment, review M8 v1.32.1): a valid extra suffix
+    that COLLIDES with an embedded suffix of ANOTHER channel loses to
+    ``_CHANNEL_VARIANTS`` table order — the table is scanned most-specific
+    first and the FIRST match wins, so ``{"metalness": ["col"]}`` will NOT
+    claim ``rock_col.png`` (``basecolor`` sits above ``metalness`` and
+    already owns ``col``). Extras EXTEND the tables; they never re-order
+    or override them."""
     valid = {}
     rejected = []
     if not isinstance(raw, dict):
@@ -160,6 +168,52 @@ def _strip_trailing_res(norm_stem):
     return prefix.rstrip("_-. "), px
 
 
+def _dir_px(relpath):
+    """Resolution rank read from the DIRECTORY segments of a scan-relative
+    path (review I1, v1.32.1). The recursive lister (v1.32.1) delivers real
+    packs as ``1K/albedo.png`` / ``4K/albedo.png``: the filenames are
+    IDENTICAL, so ranking from the name alone collapsed a multi-res pack
+    into one arbitrary winner (whatever ``sorted()`` put first —
+    ``16K`` < ``1K`` lexically), contradicting the engine's "highest wins"
+    policy. Walk the segments and let the DEEPEST one carrying a token win
+    (``Textures/4K/rock/…``); the caller consults this ONLY when the
+    filename itself yields no token, so filename tokens keep priority. A
+    flat path has no segments → ``None`` → byte-parity with v1.32."""
+    parts = str(relpath).replace("\\", "/").split("/")[:-1]
+    px = None
+    for part in parts:
+        try:
+            result = split_res_token(part)
+        except Exception:
+            result = None
+        if result is not None and result[1] is not None:
+            px = result[1]
+    return px
+
+
+def orm_contributions(channels):
+    """Which standard-material inputs a set's packed ORM/ARM ACTUALLY feeds
+    — the single source for both the preview note (``preview_payload``) and
+    the writer's connect pairs (``matwire_c4d.build_orm_plan``), so the
+    preview can never promise a wiring the writer won't make (review I2).
+
+    Dedicated maps win per output: ``outg`` -> roughness only when the set
+    has neither a dedicated roughness nor a glossiness map (glossiness
+    occupies ``refl_roughness`` via ``refl_isglossiness``); ``outb`` ->
+    metalness only without a dedicated metalness map; ``outr`` (AO) is
+    NEVER wired (existing AO policy). An empty list means the ORM lands as
+    a bare unconnected sampler (visible, never silently dropped)."""
+    channels = channels or {}
+    if "packed_orm" not in channels:
+        return []
+    out = []
+    if "roughness" not in channels and "glossiness" not in channels:
+        out.append("roughness")
+    if "metalness" not in channels:
+        out.append("metalness")
+    return out
+
+
 def scan_texture_sets(filenames, default_root="material", extra_suffixes=None):
     """``default_root`` names the set for ROOTLESS files ("albedo.png") —
     the caller passes the folder's basename so bare-channel packs group
@@ -199,6 +253,10 @@ def scan_texture_sets(filenames, default_root="material", extra_suffixes=None):
         if not root_key:
             root_key = str(default_root) or "material"
         px = trailing_px if trailing_px is not None else root_px
+        if px is None:
+            # No token in the FILENAME: fall back to the subfolder the file
+            # came from (`4K/albedo.png` — review I1). Filename tokens win.
+            px = _dir_px(filename)
         group_key = root_key.lower()
         if group_key not in sets:
             sets[group_key] = {"candidates": {}, "ignored": []}
@@ -278,13 +336,22 @@ def preview_payload(scan_result, existing_names):
     rows annotated with their colorspace (single source:
     ``channel_colorspace``), tuples flattened to JSON-friendly lists, and
     default material names deduped against ``existing_names`` (the
-    Material Manager) position-aligned with ``sets``."""
+    Material Manager) position-aligned with ``sets``.
+
+    The ``packed_orm`` row also carries ``contributes`` (``orm_contributions``
+    — the SAME function the writer's connect pairs come from): without it
+    the row looked like any other wired channel while the writer could be
+    degrading it to a bare unconnected sampler, i.e. the preview lied
+    exactly where "preview before create" earns its keep (review I2)."""
     sets = []
     for tex_set in scan_result.get("sets") or []:
-        channels = [
-            {"channel": channel, "file": filename,
-             "colorspace": channel_colorspace(channel)}
-            for channel, filename in sorted(tex_set["channels"].items())]
+        channels = []
+        for channel, filename in sorted(tex_set["channels"].items()):
+            row = {"channel": channel, "file": filename,
+                   "colorspace": channel_colorspace(channel)}
+            if channel == "packed_orm":
+                row["contributes"] = orm_contributions(tex_set["channels"])
+            channels.append(row)
         sets.append({
             "name": tex_set["name"],
             "channels": channels,
