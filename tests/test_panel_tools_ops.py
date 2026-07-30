@@ -981,3 +981,235 @@ class TestRenameOps:
     # 5. _forbid_dialog on both routes (no-document AND happy paths) — covered
     #    inline above via self._forbid_dialog(monkeypatch) applied to every
     #    test in this class (both error and happy paths for preview+apply).
+
+
+class _FakeMatwireMat:
+    def __init__(self, name):
+        self._name = name
+
+    def GetName(self):
+        return self._name
+
+
+class _FakeMatwireDoc:
+    """Doc fake for matwire ops: Material Manager enumeration + undo
+    bookkeeping (mirrors _FakeRenameDoc conventions)."""
+
+    def __init__(self, material_names=None):
+        self._materials = [_FakeMatwireMat(n) for n in (material_names or [])]
+        self.start_undo_count = 0
+        self.end_undo_count = 0
+        self.undo_operations = []
+
+    def GetMaterials(self):
+        return list(self._materials)
+
+    def AddUndo(self, undo_type, target):
+        self.undo_operations.append((undo_type, target))
+
+    def StartUndo(self):
+        self.start_undo_count += 1
+
+    def EndUndo(self):
+        self.end_undo_count += 1
+
+
+class TestMatwireOps:
+    """panel/tools/matwire_preview + matwire_create — server derives the
+    scan from the folder on EVERY call (v1.31 rename-ops pattern); the
+    writer is always monkeypatched (fakes never build real graphs)."""
+
+    def _setup(self, monkeypatch, doc, rs_available=True):
+        from sentinel.ui import panel_tools_ops
+        from sentinel import matwire_c4d
+
+        def _boom(*a, **k):
+            raise AssertionError("no dialog allowed in matwire op path")
+
+        monkeypatch.setattr(panel_tools_ops.c4d.gui, "MessageDialog", _boom)
+        monkeypatch.setattr(panel_tools_ops.c4d.gui, "QuestionDialog", _boom)
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(matwire_c4d, "redshift_available",
+                            lambda: rs_available)
+        return panel_tools_ops
+
+    def _folder(self, tmp_path, *names):
+        for n in names:
+            (tmp_path / n).write_bytes(b"x")
+        return str(tmp_path)
+
+    def test_ops_registered(self, sentinel_module):
+        from sentinel.ui import panel_tools_ops
+        assert "panel/tools/matwire_preview" in panel_tools_ops.PANEL_TOOLS_OPS
+        assert "panel/tools/matwire_create" in panel_tools_ops.PANEL_TOOLS_OPS
+
+    def test_preview_no_document(self, sentinel_module, monkeypatch):
+        ops = self._setup(monkeypatch, None)
+        assert ops._op_matwire_preview({"folder": "/x"}) == {
+            "ok": False, "error": "no_document"}
+
+    def test_preview_redshift_unavailable(self, sentinel_module, monkeypatch, tmp_path):
+        ops = self._setup(monkeypatch, _FakeMatwireDoc(), rs_available=False)
+        folder = self._folder(tmp_path, "a_col.png")
+        assert ops._op_matwire_preview({"folder": folder}) == {
+            "ok": False, "error": "redshift_unavailable"}
+
+    def test_preview_bad_folder(self, sentinel_module, monkeypatch, tmp_path):
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        missing = str(tmp_path / "nope")
+        assert ops._op_matwire_preview({"folder": missing}) == {
+            "ok": False, "error": "bad_folder"}
+        assert ops._op_matwire_preview({}) == {
+            "ok": False, "error": "bad_folder"}
+
+    def test_preview_no_sets(self, sentinel_module, monkeypatch, tmp_path):
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        folder = self._folder(tmp_path, "readme.txt", "notes.md")
+        assert ops._op_matwire_preview({"folder": folder}) == {
+            "ok": False, "error": "no_sets"}
+
+    def test_preview_happy_shapes_and_dedupes(self, sentinel_module, monkeypatch, tmp_path):
+        ops = self._setup(monkeypatch, _FakeMatwireDoc(material_names=["plaster"]))
+        folder = self._folder(
+            tmp_path, "plaster_BaseColor.jpg", "plaster_Roughness.jpg",
+            "readme.txt")
+        result = ops._op_matwire_preview({"folder": folder})
+        assert result["ok"] is True
+        assert len(result["sets"]) == 1
+        s = result["sets"][0]
+        assert s["name"] == "plaster"
+        rows = {r["channel"]: r for r in s["channels"]}
+        assert rows["basecolor"]["colorspace"] == "srgb"
+        assert rows["roughness"]["colorspace"] == "raw"
+        assert ["readme.txt", "bad_extension"] in result["ignored"]
+        # default name deduped against the Material Manager
+        assert result["names"] == ["plaster_02"]
+
+    def test_preview_bare_pack_uses_folder_basename(self, sentinel_module, monkeypatch, tmp_path):
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        pack = tmp_path / "RockCliff"
+        pack.mkdir()
+        (pack / "albedo.png").write_bytes(b"x")
+        (pack / "roughness.png").write_bytes(b"x")
+        result = ops._op_matwire_preview({"folder": str(pack)})
+        assert result["ok"] is True
+        assert result["sets"][0]["name"] == "RockCliff"
+
+    def test_create_redshift_unavailable(self, sentinel_module, monkeypatch, tmp_path):
+        ops = self._setup(monkeypatch, _FakeMatwireDoc(), rs_available=False)
+        folder = self._folder(tmp_path, "a_col.png")
+        assert ops._op_matwire_create({"folder": folder}) == {
+            "ok": False, "error": "redshift_unavailable"}
+
+    def test_create_happy_one_undo_pair(self, sentinel_module, monkeypatch, tmp_path):
+        from sentinel import matwire_c4d
+        doc = _FakeMatwireDoc()
+        ops = self._setup(monkeypatch, doc)
+        folder = self._folder(
+            tmp_path, "plaster_col.png", "plaster_rough.png", "wood_col.png")
+        calls = []
+
+        def _fake_create(d, f, tex_set, name):
+            calls.append((d, f, tex_set["name"], name))
+            return {"ok": True, "material_name": name, "error": None}
+
+        monkeypatch.setattr(matwire_c4d, "create_material_for_set", _fake_create)
+        result = ops._op_matwire_create({"folder": folder})
+        assert result == {"ok": True, "created": 2,
+                          "materials": ["plaster", "wood"], "errors": []}
+        assert [(c[2], c[3]) for c in calls] == [
+            ("plaster", "plaster"), ("wood", "wood")]
+        assert all(c[0] is doc and c[1] == folder for c in calls)
+        assert doc.start_undo_count == 1
+        assert doc.end_undo_count == 1
+
+    def test_create_exclude_and_names_rederived(self, sentinel_module, monkeypatch, tmp_path):
+        """exclude drops a set; names maps set->custom; poisoned keys that
+        don't exist server-side are ignored (server re-derives the scan)."""
+        from sentinel import matwire_c4d
+        doc = _FakeMatwireDoc()
+        ops = self._setup(monkeypatch, doc)
+        folder = self._folder(tmp_path, "plaster_col.png", "wood_col.png")
+        calls = []
+
+        def _fake_create(d, f, tex_set, name):
+            calls.append((tex_set["name"], name))
+            return {"ok": True, "material_name": name, "error": None}
+
+        monkeypatch.setattr(matwire_c4d, "create_material_for_set", _fake_create)
+        result = ops._op_matwire_create({
+            "folder": folder,
+            "exclude": ["wood"],
+            "names": {"plaster": "Hero_Wall", "GHOST_SET": "Injected"},
+        })
+        assert result["ok"] is True
+        assert result["created"] == 1
+        assert result["materials"] == ["Hero_Wall"]
+        assert calls == [("plaster", "Hero_Wall")]
+
+    def test_create_dedupes_against_material_manager(self, sentinel_module, monkeypatch, tmp_path):
+        from sentinel import matwire_c4d
+        doc = _FakeMatwireDoc(material_names=["plaster"])
+        ops = self._setup(monkeypatch, doc)
+        folder = self._folder(tmp_path, "plaster_col.png")
+        calls = []
+
+        def _fake_create(d, f, tex_set, name):
+            calls.append(name)
+            return {"ok": True, "material_name": name, "error": None}
+
+        monkeypatch.setattr(matwire_c4d, "create_material_for_set", _fake_create)
+        result = ops._op_matwire_create({"folder": folder})
+        assert calls == ["plaster_02"]
+        assert result["materials"] == ["plaster_02"]
+
+    def test_create_all_excluded_no_sets(self, sentinel_module, monkeypatch, tmp_path):
+        from sentinel import matwire_c4d
+        doc = _FakeMatwireDoc()
+        ops = self._setup(monkeypatch, doc)
+        folder = self._folder(tmp_path, "plaster_col.png")
+        monkeypatch.setattr(
+            matwire_c4d, "create_material_for_set",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not run")))
+        assert ops._op_matwire_create({"folder": folder,
+                                       "exclude": ["plaster"]}) == {
+            "ok": False, "error": "no_sets"}
+        assert doc.start_undo_count == 0
+
+    def test_create_collects_per_set_errors_never_aborts(self, sentinel_module, monkeypatch, tmp_path):
+        """One failing set (error dict) + one raising set never abort the
+        batch; the whole run stays a single undo pair."""
+        from sentinel import matwire_c4d
+        doc = _FakeMatwireDoc()
+        ops = self._setup(monkeypatch, doc)
+        folder = self._folder(
+            tmp_path, "brick_col.png", "plaster_col.png", "wood_col.png")
+
+        removed_mats = {}
+
+        def _fake_create(d, f, tex_set, name):
+            if tex_set["name"] == "brick":
+                # Mirror matwire_c4d.create_material_for_set's real §8c
+                # cleanup contract: a DELETE undo record MUST balance the
+                # NEWOBJ/CHANGE records taken inside the batch's open undo
+                # bracket before the half-built material is removed.
+                mat = _FakeMatwireMat(name)
+                removed_mats["brick"] = mat
+                d.AddUndo(matwire_c4d.c4d.UNDOTYPE_DELETE, mat)
+                return {"ok": False, "material_name": name, "error": "apply_failed"}
+            if tex_set["name"] == "plaster":
+                raise RuntimeError("boom")
+            return {"ok": True, "material_name": name, "error": None}
+
+        monkeypatch.setattr(matwire_c4d, "create_material_for_set", _fake_create)
+        result = ops._op_matwire_create({"folder": folder})
+        assert result["ok"] is True
+        assert result["created"] == 1
+        assert result["materials"] == ["wood"]
+        assert ["brick", "apply_failed"] in result["errors"]
+        assert any(row[0] == "plaster" for row in result["errors"])
+        assert doc.start_undo_count == 1
+        assert doc.end_undo_count == 1
+        assert (matwire_c4d.c4d.UNDOTYPE_DELETE, removed_mats["brick"]) in \
+            doc.undo_operations

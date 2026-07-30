@@ -65,6 +65,8 @@ import type {
   PanelRenderMutationResponse,
   PanelRenderResult,
   PanelRenderSection,
+  MatwireCreateResult,
+  MatwirePreviewResult,
   RenameApplyResult,
   RenamePreviewResult,
   PaletteAction,
@@ -1348,4 +1350,56 @@ export async function postRenameApply(
 ): Promise<RenameApplyResult> {
   if (isMock()) return { ok: false, error: "mock" };
   return postForm<RenameApplyResult>("/api/panel/tools/rename_apply", { source, ops });
+}
+
+// ---------------------------------------------------------------------------
+// Material from Folder (v1.32) — see `_op_matwire_preview` /
+// `_op_matwire_create` in panel_tools_ops.py. The scan is re-derived from
+// the FOLDER on every call (client rows are never trusted — the rename-ops
+// pattern); the SPA only sends `exclude` + edited `names` on create.
+// ---------------------------------------------------------------------------
+
+/** `POST /api/panel/tools/matwire_preview` — server-derived texture-set
+ * recognition for a disk folder. `?mock=1` serves a tiny static preview so
+ * the sub-view is screenshot-able without a live C4D behind it. */
+export async function fetchMatwirePreview(folder: string): Promise<MatwirePreviewResult> {
+  if (isMock()) {
+    return {
+      ok: true,
+      sets: [
+        {
+          name: "rock_cliff",
+          channels: [
+            { channel: "ao", file: "rock_cliff_AO.png", colorspace: "raw" },
+            { channel: "basecolor", file: "rock_cliff_BaseColor.png", colorspace: "srgb" },
+            { channel: "normal", file: "rock_cliff_NormalGL.png", colorspace: "raw" },
+            { channel: "roughness", file: "rock_cliff_Roughness.png", colorspace: "raw" },
+          ],
+          normal_flipy: false,
+          ignored: [["rock_cliff_NormalDX.png", "dx_superseded"]],
+        },
+      ],
+      ignored: [["readme.txt", "bad_extension"]],
+      names: ["rock_cliff"],
+    };
+  }
+  return postForm<MatwirePreviewResult>("/api/panel/tools/matwire_preview", { folder });
+}
+
+/** `POST /api/panel/tools/matwire_create` — re-scans `folder` server-side,
+ * wires one RS material per included set in a single undo. `exclude` =
+ * set names to skip; `names` = per-set edited material names (server falls
+ * back to the set name and dedupes). No live RS in `?mock=1` → informative
+ * failure (same convention as `postRenameApply`). */
+export async function postMatwireCreate(
+  folder: string,
+  exclude: string[],
+  names: Record<string, string>,
+): Promise<MatwireCreateResult> {
+  if (isMock()) return { ok: false, error: "mock" };
+  return postForm<MatwireCreateResult>("/api/panel/tools/matwire_create", {
+    folder,
+    exclude,
+    names,
+  });
 }
