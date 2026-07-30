@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   IGNORED_REASON_LABELS,
   MATWIRE_IMPORT_LEFTOVERS_LABEL,
+  MATWIRE_MULTIPLY_AO_LABEL,
+  MATWIRE_PROJECTION_UNAVAILABLE_COPY,
+  PROJECTION_OPTIONS,
+  aoDestination,
+  aoDestinationLabel,
   channelLabel,
   createMaterialCount,
   ignoredReasonLabel,
@@ -9,6 +14,7 @@ import {
   leftoverDestinationLabel,
   matwireToast,
   packedOrmNote,
+  projectionUnavailableNote,
   suffixWarningsNote,
 } from "./panelMatwire";
 
@@ -216,5 +222,80 @@ describe("createMaterialCount", () => {
 
   it("stays at zero with no included sets (the op returns no_sets first)", () => {
     expect(createMaterialCount(0, true, unassigned)).toBe(0);
+  });
+});
+
+// --- v1.33: Projection + AO multiply ---------------------------------------
+
+/** The server's `matwire.ao_destination` outcomes, verbatim. `aoDestination`
+ * is a CLIENT MIRROR (the sub-view must relabel the AO row the instant the
+ * checkbox flips, without a folder re-scan that would clobber the artist's
+ * name edits) — this list is the pin that keeps the mirror and the single
+ * source from drifting. */
+const SERVER_AO_DESTINATIONS = ["base_color_multiply", "unconnected"];
+
+describe("aoDestination (mirror of matwire.ao_destination)", () => {
+  it("returns the server's exact outcome strings", () => {
+    expect(aoDestination(["ao", "basecolor"], true)).toBe(SERVER_AO_DESTINATIONS[0]);
+    expect(aoDestination(["ao", "basecolor"], false)).toBe(SERVER_AO_DESTINATIONS[1]);
+  });
+
+  it("is null for a set with no AO at all", () => {
+    expect(aoDestination(["basecolor", "roughness"], true)).toBeNull();
+  });
+
+  it("never promises the multiply without a base color to multiply into", () => {
+    // AO-only set: the writer leaves the AO loose (a color layer would
+    // dangle), so the row must say unconnected even with the box ticked.
+    expect(aoDestination(["ao", "roughness"], true)).toBe("unconnected");
+  });
+});
+
+describe("aoDestinationLabel", () => {
+  it("names the multiply target when the AO is wired", () => {
+    expect(aoDestinationLabel("base_color_multiply")).toBe("→ base color (multiply)");
+  });
+
+  it("says unconnected when the AO stays a loose sampler", () => {
+    expect(aoDestinationLabel("unconnected")).toBe("→ unconnected");
+  });
+
+  it("renders nothing when there is no AO row", () => {
+    expect(aoDestinationLabel(null)).toBeNull();
+  });
+});
+
+describe("AO multiply checkbox copy", () => {
+  it("says DEDICATED — a packed ORM's AO is never wired by this toggle", () => {
+    // Honesty fix (Task 1 review Minor): a set with `packed_orm` but no
+    // dedicated `ao` file has its AO inside the ORM's red channel, which
+    // the writer never wires — an unscoped "Multiply AO into base color"
+    // would promise an effect that silently does nothing.
+    expect(MATWIRE_MULTIPLY_AO_LABEL).toBe("Multiply dedicated AO map into base color");
+  });
+});
+
+describe("PROJECTION_OPTIONS", () => {
+  it("carries exactly the values the op accepts (matwire_c4d.PROJECTION_TYPES)", () => {
+    expect(PROJECTION_OPTIONS.map((o) => o.value)).toEqual(["uv", "triplanar"]);
+  });
+
+  it("labels them as the artist reads them in the RS node", () => {
+    expect(PROJECTION_OPTIONS.map((o) => o.label)).toEqual(["UV Channel", "Tri-Planar"]);
+  });
+});
+
+describe("projectionUnavailableNote", () => {
+  it("explains the disabled selector instead of leaving a dead control", () => {
+    expect(projectionUnavailableNote(false)).toBe(MATWIRE_PROJECTION_UNAVAILABLE_COPY);
+    expect(MATWIRE_PROJECTION_UNAVAILABLE_COPY).toContain("Redshift");
+  });
+
+  it("renders nothing when the shared UV context node is available", () => {
+    expect(projectionUnavailableNote(true)).toBeNull();
+    // Preview shapes older than v1.33 (no field) must not scare the artist
+    // with a warning about a node that is probably there — treat missing as
+    // available, the same shape-tolerant default the other rows use.
+    expect(projectionUnavailableNote(undefined)).toBeNull();
   });
 });

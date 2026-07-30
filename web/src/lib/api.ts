@@ -1362,15 +1362,24 @@ export async function postRenameApply(
 /** `POST /api/panel/tools/matwire_preview` — server-derived texture-set
  * recognition for a disk folder. `?mock=1` serves a tiny static preview so
  * the sub-view is screenshot-able without a live C4D behind it. */
-export async function fetchMatwirePreview(folder: string): Promise<MatwirePreviewResult> {
+export async function fetchMatwirePreview(
+  folder: string,
+  multiplyAo = false,
+): Promise<MatwirePreviewResult> {
   if (isMock()) {
     return {
       ok: true,
+      uvcontext_available: true,
       sets: [
         {
           name: "rock_cliff",
           channels: [
-            { channel: "ao", file: "rock_cliff_AO.png", colorspace: "raw" },
+            {
+              channel: "ao",
+              file: "rock_cliff_AO.png",
+              colorspace: "raw",
+              destination: multiplyAo ? "base_color_multiply" : "unconnected",
+            },
             { channel: "basecolor", file: "rock_cliff_BaseColor.png", colorspace: "srgb" },
             { channel: "normal", file: "rock_cliff_NormalGL.png", colorspace: "raw" },
             { channel: "roughness", file: "rock_cliff_Roughness.png", colorspace: "raw" },
@@ -1385,7 +1394,13 @@ export async function fetchMatwirePreview(folder: string): Promise<MatwirePrevie
       leftovers: [{ file: "rock_cliff_extra.png", set: "rock_cliff" }],
     };
   }
-  return postForm<MatwirePreviewResult>("/api/panel/tools/matwire_preview", { folder });
+  // `multiply_ao` rides the preview so the server's AO row (stamped from
+  // `matwire.ao_destination`) agrees with what's on screen; the live label
+  // between fetches comes from the `aoDestination` mirror.
+  return postForm<MatwirePreviewResult>("/api/panel/tools/matwire_preview", {
+    folder,
+    multiply_ao: multiplyAo,
+  });
 }
 
 /** `POST /api/panel/tools/matwire_create` — re-scans `folder` server-side,
@@ -1400,12 +1415,18 @@ export async function postMatwireCreate(
   exclude: string[],
   names: Record<string, string>,
   importLeftovers: boolean,
+  projection = "uv",
+  multiplyAo = false,
 ): Promise<MatwireCreateResult> {
   if (isMock()) return { ok: false, error: "mock" };
+  // `projection` is normalized server-side (unknown -> "uv", never a raise):
+  // the op is the validation boundary, not this call.
   return postForm<MatwireCreateResult>("/api/panel/tools/matwire_create", {
     folder,
     exclude,
     names,
     import_leftovers: importLeftovers,
+    projection,
+    multiply_ao: multiplyAo,
   });
 }

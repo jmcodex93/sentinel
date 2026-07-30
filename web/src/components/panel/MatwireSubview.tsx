@@ -1,18 +1,24 @@
 import { useCallback, useRef, useState } from "react";
 import { Button } from "../form/Button";
 import { Checkbox } from "../form/Checkbox";
+import { SegmentedControl } from "../form/SegmentedControl";
 import { TextInput } from "../form/TextInput";
 import { SectionGroup } from "../SectionGroup";
 import { fetchMatwirePreview, postHubPickPath, postMatwireCreate } from "../../lib/api";
 import { restoreFocus } from "../../lib/focus";
 import {
   MATWIRE_IMPORT_LEFTOVERS_LABEL,
+  MATWIRE_MULTIPLY_AO_LABEL,
+  PROJECTION_OPTIONS,
+  aoDestination,
+  aoDestinationLabel,
   channelLabel,
   createMaterialCount,
   ignoredReasonLabel,
   leftoverDestinationLabel,
   matwireToast,
   packedOrmNote,
+  projectionUnavailableNote,
   suffixWarningsNote,
 } from "../../lib/panelMatwire";
 import { useToast } from "../../lib/toast";
@@ -134,6 +140,9 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [names, setNames] = useState<Record<string, string>>({});
   const [importLeftovers, setImportLeftovers] = useState(false);
+  // v1.33 wiring options — both default to the v1.32.1-equivalent material.
+  const [projection, setProjection] = useState("uv");
+  const [multiplyAo, setMultiplyAo] = useState(false);
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
 
@@ -145,7 +154,11 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
     const seq = ++seqRef.current;
     setLoading(true);
     try {
-      const result = await fetchMatwirePreview(dir);
+      // multiplyAo rides along so the server's AO rows agree with the
+      // checkbox; toggling it does NOT re-fetch (a re-scan re-seeds names
+      // and inclusion — the AO label stays live via the aoDestination
+      // mirror instead).
+      const result = await fetchMatwirePreview(dir, multiplyAo);
       if (seq !== seqRef.current) return;
       setPreview(result);
       // Re-seed the editable state from the server's scan: default names are
@@ -165,7 +178,7 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
     } finally {
       if (seq === seqRef.current) setLoading(false);
     }
-  }, []);
+  }, [multiplyAo]);
 
   const handleBrowse = async () => {
     const picked = await postHubPickPath(true, "Choose texture folder");
@@ -182,6 +195,11 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
   const included = sets.filter((s) => !excluded.has(s.name));
   const leftovers = preview?.ok ? (preview.leftovers ?? []) : [];
   const warningsNote = preview?.ok ? suffixWarningsNote(preview.suffix_warnings) : null;
+  // Non-null => this RS build has no shared UV context node: the Projection
+  // selector is disabled and says why (the writer degrades to v1.32.1).
+  const projectionNote = preview?.ok
+    ? projectionUnavailableNote(preview.uvcontext_available)
+    : null;
   const emptyReason = preview && !preview.ok
     ? (PREVIEW_EMPTY_COPY[preview.error ?? ""] ?? "Preview unavailable.")
     : null;
@@ -197,7 +215,8 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
     if (included.length === 0) return;
     setApplying(true);
     try {
-      const result = await postMatwireCreate(folder, [...excluded], names, importLeftovers);
+      const result = await postMatwireCreate(
+        folder, [...excluded], names, importLeftovers, projection, multiplyAo);
       toast(matwireToast(result));
       // Refetch: the new materials change the dedupe of default names.
       if (result.ok) await loadPreview(folder);
@@ -293,6 +312,19 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
                   </div>
                   <div className="mt-1.5 flex flex-col gap-0.5 pl-6">
                     {texSet.channels.map((row) => {
+                      // The AO row says where the AO ACTUALLY lands (loose
+                      // sampler vs. multiplied into base color) — mirrored
+                      // from the engine's ao_destination so it relabels the
+                      // instant the checkbox flips, without a re-scan.
+                      const aoNote =
+                        row.channel === "ao"
+                          ? aoDestinationLabel(
+                              aoDestination(
+                                texSet.channels.map((c) => c.channel),
+                                multiplyAo,
+                              ),
+                            )
+                          : null;
                       // ORM/ARM rows say what they actually feed HERE — a
                       // packed map whose outputs are both taken by dedicated
                       // maps ends up unconnected, and the preview must not
@@ -309,9 +341,9 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
                           >
                             {row.file}
                           </span>
-                          {ormNote && (
+                          {(ormNote || aoNote) && (
                             <span className="shrink-0" style={{ color: "var(--color-muted)" }}>
-                              {ormNote}
+                              {ormNote ?? aoNote}
                             </span>
                           )}
                           <ColorspaceChip colorspace={row.colorspace} />
@@ -324,6 +356,31 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
               );
             })}
             <IgnoredFold rows={preview?.ignored ?? []} title="file(s) not recognized" />
+            <div className="mt-1 flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <span className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
+                  Projection
+                </span>
+                <SegmentedControl
+                  options={PROJECTION_OPTIONS}
+                  value={projection}
+                  onChange={setProjection}
+                  disabled={projectionNote !== null}
+                />
+              </div>
+              {/* Honest degradation: a disabled control with no reason reads
+                  as a bug — the server tells us the node is missing. */}
+              {projectionNote && (
+                <p className="text-caption" style={{ color: "var(--color-muted)" }}>
+                  {projectionNote}
+                </p>
+              )}
+              <Checkbox
+                checked={multiplyAo}
+                onChange={setMultiplyAo}
+                label={MATWIRE_MULTIPLY_AO_LABEL}
+              />
+            </div>
             {leftovers.length > 0 && (
               <div className="mt-1 flex flex-col gap-1">
                 <Checkbox

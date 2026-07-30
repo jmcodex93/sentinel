@@ -358,6 +358,28 @@ class TestPreviewPayload:
         payload = matwire.preview_payload(scan, [])
         assert ["y_diffuse.png", "duplicate_channel"] in payload["sets"][0]["ignored"]
 
+    def test_ao_row_carries_destination_from_single_source(self, matwire):
+        """v1.33: the AO row says where the AO ACTUALLY lands, straight from
+        ``ao_destination`` — the same function the writer decides from (the
+        ``contributes`` discipline)."""
+        scan = matwire.scan_texture_sets(
+            ["rock_AO.png", "rock_BaseColor.png"])
+        off = matwire.preview_payload(scan, [])
+        rows = {r["channel"]: r for r in off["sets"][0]["channels"]}
+        assert rows["ao"]["destination"] == "unconnected"
+        assert "destination" not in rows["basecolor"]  # AO row only
+        on = matwire.preview_payload(scan, [], multiply_ao=True)
+        rows_on = {r["channel"]: r for r in on["sets"][0]["channels"]}
+        assert rows_on["ao"]["destination"] == "base_color_multiply"
+
+    def test_ao_row_destination_without_basecolor_stays_unconnected(self, matwire):
+        """AO-only set: nothing to multiply INTO, so the row must not
+        promise a wiring the writer won't make."""
+        scan = matwire.scan_texture_sets(["rock_AO.png", "rock_Roughness.png"])
+        payload = matwire.preview_payload(scan, [], multiply_ao=True)
+        rows = {r["channel"]: r for r in payload["sets"][0]["channels"]}
+        assert rows["ao"]["destination"] == "unconnected"
+
 
 class TestBuildDescription:
     """matwire_c4d.build_description (pure dict assembly, no c4d calls) —

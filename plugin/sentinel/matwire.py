@@ -351,7 +351,7 @@ def assign_leftovers(hints, set_names):
     return out
 
 
-def preview_payload(scan_result, existing_names):
+def preview_payload(scan_result, existing_names, multiply_ao=False):
     """Shape a ``scan_texture_sets`` result for the SPA preview: channel
     rows annotated with their colorspace (single source:
     ``channel_colorspace``), tuples flattened to JSON-friendly lists, and
@@ -362,7 +362,13 @@ def preview_payload(scan_result, existing_names):
     — the SAME function the writer's connect pairs come from): without it
     the row looked like any other wired channel while the writer could be
     degrading it to a bare unconnected sampler, i.e. the preview lied
-    exactly where "preview before create" earns its keep (review I2)."""
+    exactly where "preview before create" earns its keep (review I2).
+
+    Same discipline for the AO row (v1.33): it carries ``destination`` from
+    ``ao_destination`` — the SAME function the writer's graph decision comes
+    from — evaluated against the CURRENT ``multiply_ao`` (the sub-view's
+    checkbox), so the row can never advertise a multiply the writer would
+    skip (e.g. an AO-only set, which has no base color to multiply into)."""
     sets = []
     for tex_set in scan_result.get("sets") or []:
         channels = []
@@ -371,6 +377,9 @@ def preview_payload(scan_result, existing_names):
                    "colorspace": channel_colorspace(channel)}
             if channel == "packed_orm":
                 row["contributes"] = orm_contributions(tex_set["channels"])
+            if channel == "ao":
+                row["destination"] = ao_destination(tex_set["channels"],
+                                                    multiply_ao)
             channels.append(row)
         sets.append({
             "name": tex_set["name"],

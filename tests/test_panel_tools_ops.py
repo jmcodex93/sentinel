@@ -1110,7 +1110,7 @@ class TestMatwireOps:
             tmp_path, "plaster_col.png", "plaster_rough.png", "wood_col.png")
         calls = []
 
-        def _fake_create(d, f, tex_set, name):
+        def _fake_create(d, f, tex_set, name, **_kw):
             calls.append((d, f, tex_set["name"], name))
             return {"ok": True, "material_name": name, "error": None}
 
@@ -1133,7 +1133,7 @@ class TestMatwireOps:
         folder = self._folder(tmp_path, "plaster_col.png", "wood_col.png")
         calls = []
 
-        def _fake_create(d, f, tex_set, name):
+        def _fake_create(d, f, tex_set, name, **_kw):
             calls.append((tex_set["name"], name))
             return {"ok": True, "material_name": name, "error": None}
 
@@ -1155,7 +1155,7 @@ class TestMatwireOps:
         folder = self._folder(tmp_path, "plaster_col.png")
         calls = []
 
-        def _fake_create(d, f, tex_set, name):
+        def _fake_create(d, f, tex_set, name, **_kw):
             calls.append(name)
             return {"ok": True, "material_name": name, "error": None}
 
@@ -1186,7 +1186,7 @@ class TestMatwireOps:
         folder = self._folder(
             tmp_path, "brick_col.png", "plaster_col.png", "wood_col.png")
 
-        def _fake_create(d, f, tex_set, name):
+        def _fake_create(d, f, tex_set, name, **_kw):
             if tex_set["name"] == "brick":
                 # Mirror the real writer's v1.32.1 failure contract: the
                 # graph is built OFF-document and insertion is the last
@@ -1270,6 +1270,7 @@ class TestMatwireOpsPolish:
     import in create."""
 
     _setup = TestMatwireOps._setup
+    _folder = TestMatwireOps._folder
 
     def _pack(self, tmp_path, *names):
         pack = tmp_path / "pack"
@@ -1332,7 +1333,7 @@ class TestMatwireOpsPolish:
                             "plaster_custom_mask.png", "stray_data.png")
         calls = []
 
-        def _fake_create(d, f, tex_set, name, leftover_files=None):
+        def _fake_create(d, f, tex_set, name, leftover_files=None, **_kw):
             calls.append((tex_set["name"], name, dict(tex_set["channels"]),
                           leftover_files))
             return {"ok": True, "material_name": name, "error": None}
@@ -1357,7 +1358,7 @@ class TestMatwireOpsPolish:
         folder = self._pack(tmp_path, "plaster_col.png", "stray_data.png")
         calls = []
 
-        def _fake_create(d, f, tex_set, name, leftover_files=None):
+        def _fake_create(d, f, tex_set, name, leftover_files=None, **_kw):
             calls.append(name)
             return {"ok": True, "material_name": name, "error": None}
 
@@ -1377,7 +1378,8 @@ class TestMatwireOpsPolish:
         folder = self._pack(tmp_path, "plaster_col.png", "stray_data.png")
         calls = []
 
-        def _fake_create(d, f, tex_set, name):  # no leftover_files kwarg
+        def _fake_create(d, f, tex_set, name, *,  # no leftover_files kwarg
+                         multiply_ao=False, projection="uv"):
             calls.append((tex_set["name"], name))
             return {"ok": True, "material_name": name, "error": None}
 
@@ -1398,7 +1400,7 @@ class TestMatwireOpsPolish:
                             "plaster_custom_mask.png", "wood_col.png")
         calls = []
 
-        def _fake_create(d, f, tex_set, name, leftover_files=None):
+        def _fake_create(d, f, tex_set, name, leftover_files=None, **_kw):
             calls.append((tex_set["name"], leftover_files))
             return {"ok": True, "material_name": name, "error": None}
 
@@ -1408,3 +1410,98 @@ class TestMatwireOpsPolish:
                                          "import_leftovers": True})
         assert result["ok"] is True
         assert calls == [("wood", None)]
+
+    # --- v1.33: Projection + AO multiply -----------------------------------
+
+    def _capture_create(self, monkeypatch, calls):
+        from sentinel import matwire_c4d
+
+        def _fake_create(d, f, tex_set, name, leftover_files=None,
+                         multiply_ao=False, projection="uv"):
+            calls.append({"set": tex_set["name"], "multiply_ao": multiply_ao,
+                          "projection": projection})
+            return {"ok": True, "material_name": name, "error": None}
+
+        monkeypatch.setattr(matwire_c4d, "create_material_for_set", _fake_create)
+
+    def test_create_defaults_are_uv_and_no_ao_multiply(self, sentinel_module,
+                                                       monkeypatch, tmp_path):
+        """An empty payload must reach the writer as the v1.32.1-equivalent
+        material: UV projection, AO left loose."""
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        folder = self._folder(tmp_path, "plaster_col.png")
+        calls = []
+        self._capture_create(monkeypatch, calls)
+        assert ops._op_matwire_create({"folder": folder})["ok"] is True
+        assert calls == [{"set": "plaster", "multiply_ao": False,
+                          "projection": "uv"}]
+
+    def test_create_threads_projection_and_multiply_ao(self, sentinel_module,
+                                                       monkeypatch, tmp_path):
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        folder = self._folder(tmp_path, "plaster_col.png")
+        calls = []
+        self._capture_create(monkeypatch, calls)
+        ops._op_matwire_create({"folder": folder, "projection": "triplanar",
+                                "multiply_ao": True})
+        assert calls == [{"set": "plaster", "multiply_ao": True,
+                          "projection": "triplanar"}]
+
+    def test_create_normalizes_unknown_projection_to_uv(self, sentinel_module,
+                                                        monkeypatch, tmp_path):
+        """Validation lives HERE, not in the writer: the writer degrades a
+        bogus value to UV silently, so a typo shipped from the client would
+        promise Tri-Planar and deliver UV. The op normalizes (never raises)
+        so what reaches the writer is always a known value."""
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        folder = self._folder(tmp_path, "plaster_col.png")
+        for bogus in ["tripanar", "", None, 7, {"a": 1}]:
+            calls = []
+            self._capture_create(monkeypatch, calls)
+            ops._op_matwire_create({"folder": folder, "projection": bogus})
+            assert calls[0]["projection"] == "uv", bogus
+
+    def test_create_projection_accepts_case_and_whitespace(self, sentinel_module,
+                                                           monkeypatch, tmp_path):
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        folder = self._folder(tmp_path, "plaster_col.png")
+        calls = []
+        self._capture_create(monkeypatch, calls)
+        ops._op_matwire_create({"folder": folder, "projection": " TriPlanar "})
+        assert calls[0]["projection"] == "triplanar"
+
+    def test_create_projection_values_pinned_to_writer_table(self, sentinel_module):
+        """The op's accepted strings ARE the writer's table keys (single
+        source) — a renamed enum key can't leave the op accepting a value
+        the writer no longer knows."""
+        from sentinel.ui import panel_tools_ops
+        from sentinel import matwire_c4d
+        assert set(matwire_c4d.PROJECTION_TYPES) == {"uv", "triplanar"}
+        for key in matwire_c4d.PROJECTION_TYPES:
+            assert panel_tools_ops._matwire_projection({"projection": key}) == key
+
+    def test_preview_reports_uvcontext_available(self, sentinel_module,
+                                                 monkeypatch, tmp_path):
+        from sentinel import matwire_c4d
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        folder = self._folder(tmp_path, "plaster_col.png")
+        monkeypatch.setattr(matwire_c4d, "uvcontext_available", lambda: True)
+        assert ops._op_matwire_preview({"folder": folder})["uvcontext_available"] is True
+        monkeypatch.setattr(matwire_c4d, "uvcontext_available", lambda: False)
+        assert ops._op_matwire_preview({"folder": folder})["uvcontext_available"] is False
+
+    def test_preview_ao_row_destination_follows_multiply_ao(self, sentinel_module,
+                                                            monkeypatch, tmp_path):
+        """The AO row's destination comes from matwire.ao_destination — the
+        SAME function the writer decides from — and reflects the payload's
+        current checkbox state."""
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        folder = self._folder(tmp_path, "rock_AO.png", "rock_BaseColor.png")
+
+        def _ao_row(payload):
+            rows = ops._op_matwire_preview(payload)["sets"][0]["channels"]
+            return {r["channel"]: r for r in rows}["ao"]
+
+        assert _ao_row({"folder": folder})["destination"] == "unconnected"
+        assert _ao_row({"folder": folder, "multiply_ao": True})["destination"] \
+            == "base_color_multiply"

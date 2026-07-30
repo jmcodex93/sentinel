@@ -56,6 +56,60 @@ export function createMaterialCount(
  * the guard and the message can't drift apart. */
 export const MATWIRE_IMPORT_LEFTOVERS_LABEL = "Import unrecognized files";
 
+/** Checkbox copy for the opt-in AO multiply. "DEDICATED" is load-bearing
+ * (Task 1 review Minor): a set whose AO only exists inside a packed
+ * ORM/ARM red channel is NOT touched by this toggle — the writer wires the
+ * splitter's green/blue outputs and never the AO — so an unscoped
+ * "Multiply AO into base color" would promise an effect that silently does
+ * nothing on exactly the packs where it's easiest to assume otherwise. */
+export const MATWIRE_MULTIPLY_AO_LABEL = "Multiply dedicated AO map into base color";
+
+/** Where a set's AO map actually lands — a MIRROR of the engine's
+ * `matwire.ao_destination` (three outcomes, same strings; the vitest pins
+ * them). The mirror exists because the AO row must relabel the instant the
+ * checkbox flips: the alternative, re-fetching the preview on every toggle,
+ * re-seeds names/exclusions from the server scan and would throw away the
+ * artist's edits. The server still stamps `destination` on the row from the
+ * single source (the op takes `multiply_ao`) — this only keeps the on-screen
+ * label live between fetches. */
+export type AoDestination = "base_color_multiply" | "unconnected" | null;
+
+export function aoDestination(channels: string[], multiplyAo: boolean): AoDestination {
+  if (!channels.includes("ao")) return null;
+  // An AO-only set has nothing to multiply INTO (a dangling color layer),
+  // so the writer leaves the sampler loose — and so must the label.
+  if (multiplyAo && channels.includes("basecolor")) return "base_color_multiply";
+  return "unconnected";
+}
+
+/** Destination fragment rendered after the AO filename — the packedOrmNote
+ * idiom, so a wired and an unwired AO never read the same. */
+export function aoDestinationLabel(destination: AoDestination): string | null {
+  if (destination === "base_color_multiply") return "→ base color (multiply)";
+  if (destination === "unconnected") return "→ unconnected";
+  return null;
+}
+
+/** Projection selector options. The VALUES are the op's accepted strings
+ * (`matwire_c4d.PROJECTION_TYPES` — the op normalizes anything else to
+ * "uv", so a drift here degrades quietly and the vitest pins them); the
+ * labels are the RS node's own wording. */
+export const PROJECTION_OPTIONS: { value: string; label: string }[] = [
+  { value: "uv", label: "UV Channel" },
+  { value: "triplanar", label: "Tri-Planar" },
+];
+
+export const MATWIRE_PROJECTION_UNAVAILABLE_COPY =
+  "This Redshift build has no shared UV context node — materials are wired with each sampler's own UV.";
+
+/** Inline reason for the disabled Projection selector, or null when the
+ * shared context node is available. A preview without the field (pre-v1.33
+ * shape) counts as available: the honest degradation is server-reported,
+ * never guessed from a missing key. */
+export function projectionUnavailableNote(available: boolean | undefined): string | null {
+  return available === false ? MATWIRE_PROJECTION_UNAVAILABLE_COPY : null;
+}
+
 /** Destination fragment rendered after a leftover filename: its assigned
  * set's material, or the catch-all `<root>_leftovers` material when no set
  * name prefixes the file (the server names it — the client only says

@@ -1243,6 +1243,11 @@ export interface MatwireChannelRow {
   file: string;
   colorspace: string;
   contributes?: string[];
+  /** v1.33, `ao` rows only: where the AO actually lands, from the engine's
+   * `matwire.ao_destination` evaluated against the preview call's
+   * `multiply_ao`. The sub-view relabels live via the `aoDestination`
+   * mirror in lib/panelMatwire.ts (see its docstring). */
+  destination?: string | null;
 }
 
 /** One recognized texture set. `ignored` rows are `[filename, reason]`
@@ -1279,6 +1284,10 @@ export interface MatwirePreviewResult {
   names?: string[];
   suffix_warnings?: string[];
   leftovers?: MatwireLeftoverRow[];
+  /** v1.33: false when this Redshift build has no shared UV context node —
+   * the Projection selector is disabled with an inline reason and the
+   * writer builds v1.32.1-shaped materials (honest degradation). */
+  uvcontext_available?: boolean;
   error?: string;
 }
 
