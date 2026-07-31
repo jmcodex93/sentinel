@@ -135,3 +135,33 @@ def test_pin_summary_reports_keyframes_so_a_restore_is_never_a_silent_no_op():
 
 def test_safety_pin_name_is_the_tool_owned_restore_backup():
     assert pins.SAFETY_PIN_NAME == "↩ Antes de restaurar"
+
+
+# --- Per-pin icon (Task 5) --------------------------------------------------
+
+def test_pin_colors_leads_with_none_as_the_default():
+    """A pin's default color must render the plugin's normal icon, not a
+    color chosen by us — "none" has to be index 0 so an untouched cycle
+    param (C4D's own DTYPE_LONG default) means exactly that."""
+    assert pins.PIN_COLORS[0] == ("none", None)
+    assert len(pins.PIN_COLORS) == 8
+    names = [name for name, _rgb in pins.PIN_COLORS]
+    assert len(set(names)) == len(names), "no duplicate color names"
+    for name, rgb in pins.PIN_COLORS[1:]:
+        assert rgb is not None and len(rgb) == 3
+
+
+def test_pin_badge_uses_the_first_letter_of_a_real_name():
+    assert pins.pin_badge("wide angle", 0) == "W"
+
+
+def test_pin_badge_falls_back_to_the_ordinal_when_unlabeled():
+    assert pins.pin_badge("", 2) == "3"
+
+
+def test_pin_badge_treats_whitespace_only_as_unlabeled():
+    assert pins.pin_badge("  ", 0) == "1"
+
+
+def test_pin_badge_uppercases_and_handles_unicode_names():
+    assert pins.pin_badge("ángulo", 0) == "Á"

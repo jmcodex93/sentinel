@@ -41,6 +41,31 @@ ID_PIN_STATUS = 1002    # DTYPE_STATICTEXT — "12 obj · hace 2 h · ..." (solo
                          # justo eso lo que truncó el texto en la v6-slots)
 ID_PIN_STORE = 1003     # DTYPE_BUTTON     — "Pin aquí" / "Re-pin"
 ID_PIN_GO = 1004        # DTYPE_BUTTON     — "Ir"
+ID_PIN_COLOR = 1005     # DTYPE_LONG cycle — badge color, default "none"
+                         # (index 0 of pins.PIN_COLORS). Falls through to
+                         # C4D's own default container storage in
+                         # GetDParameter/SetDParameter (same as every other
+                         # untouched id below) — it needs no read/write code
+                         # here, only the description entry and the
+                         # MSG_GETCUSTOMICON reader (_pin_color_index).
+
+#: Cycle entries for ID_PIN_COLOR, built once from pins.PIN_COLORS so the
+#: two never drift apart — the cycle's integer VALUES are the same indices
+#: _pin_color_index reads back and pins.PIN_COLORS is keyed by.
+_COLOR_CYCLE = tuple(
+    (i, name.capitalize()) for i, (name, _rgb) in enumerate(pins.PIN_COLORS)
+)
+
+#: Icon canvas side, in pixels — matches what the Task 1 spike measured
+#: working end to end (GeClipMap.Init(32, 32, 32), §5).
+_ICON_SIZE = 32
+
+#: Generated-icon cache, keyed by (color_index, badge_char) rather than by
+#: node: MSG_GETCUSTOMICON fires on every Object Manager repaint, so two
+#: pins that happen to share a color and a badge letter share one bitmap
+#: instead of each regenerating their own on every paint (per-frame cost,
+#: called out explicitly in the brief).
+_ICON_CACHE = {}
 
 #: El string exacto pasado a ``RegisterTagPlugin(str=...)`` en
 #: ``sentinel_panel.pyp`` — reusado, nunca retecleado, porque la igualdad
@@ -711,6 +736,128 @@ def _restore(node):
     return report
 
 
+# --- Per-instance icon (Task 5) ---------------------------------------------
+#
+# The design's own rationale for one-tag-per-pin was "you see the states in
+# the Object Manager without opening anything" (module docstring above).
+# Without a per-pin icon that promise wasn't kept — several pins on one
+# object rendered as identical icons. This section answers MSG_GETCUSTOMICON
+# per the Task 1 spike's §5 findings (docs/research/2026-07-31-pin-storage-
+# spike.md): the message id, IconData's fields, and that GeClipMap really
+# rasterises both the fill and the text were all measured there; what a
+# TagData instance actually receiving MSG_GETCUSTOMICON looks like in
+# practice was NOT — that is this task's live verification step.
+
+def _pin_color_index(node):
+    """0 ("none") unless the artist picked a color — same default C4D
+    already gives an unset DTYPE_LONG container field, so nothing has to
+    initialise this explicitly at Init time."""
+    bc = node.GetDataInstance()
+    if bc is None:
+        return 0
+    try:
+        return int(bc.GetInt32(ID_PIN_COLOR, 0))
+    except Exception:
+        return 0
+
+
+def _pin_label_for_badge(node):
+    """The artist-typed name, or "" if this pin was never renamed away
+    from the plugin's registration default (or is the safety tag) — a
+    plugin-default name is not an artist label, so pins.pin_badge must see
+    it as unlabeled and fall back to the ordinal digit, the same as a
+    freshly-created pin with no name at all."""
+    name = _safe_node_name(node, "")
+    if name in (PIN_TAG_DEFAULT_NAME, pins.SAFETY_PIN_NAME):
+        return ""
+    return name
+
+
+def _pin_ordinal(node):
+    """0-based position of ``node`` among the OTHER Sentinel Pin tags on
+    the same host object (the safety tag excluded — it never shows a
+    number badge of its own), in ``GetTags()`` order. Feeds
+    ``pins.pin_badge``'s numeric fallback for a pin that has no name yet,
+    so the first three unnamed pins on one object read 1/2/3 rather than
+    all showing the same digit."""
+    obj = node.GetObject()
+    if obj is None:
+        return 0
+    getter = getattr(obj, "GetTags", None)
+    tags = getter() if callable(getter) else None
+    ordinal = 0
+    for tag in (tags or []):
+        if tag is node:
+            return ordinal
+        try:
+            if tag.GetType() == SENTINEL_PIN_TAG_PLUGIN_ID and not _is_safety_tag(tag):
+                ordinal += 1
+        except Exception:
+            continue
+    return ordinal
+
+
+def _build_pin_icon_bitmap(rgb, char):
+    """Compose a 32x32 icon: a solid ``rgb`` background with ``char`` in
+    white on top. The recipe — Init, BeginDraw, SetColor+FillRect,
+    GetDefaultFont+SetFont+TextAt, EndDraw, GetBitmap — is exactly what
+    the Task 1 spike measured working (§5: FillRect's fill read back
+    pixel-identical, TextAt changed 95 pixels from 0 before it). What the
+    spike did NOT pin down is glyph size/position — those are tuned live,
+    which is why the font/text half is its own try/except: a bad size or
+    coordinate there still leaves the colored square (readable by color
+    alone) instead of losing the icon entirely."""
+    clip = c4d.bitmaps.GeClipMap()
+    if clip is None or not clip.Init(_ICON_SIZE, _ICON_SIZE, 32):
+        return None
+    clip.BeginDraw()
+    try:
+        clip.SetColor(int(rgb[0]), int(rgb[1]), int(rgb[2]), 255)
+        clip.FillRect(0, 0, _ICON_SIZE, _ICON_SIZE)
+        try:
+            font = clip.GetDefaultFont(c4d.GE_FONT_DEFAULT_SYSTEM)
+            if font is not None:
+                clip.SetFont(font, 18)
+                clip.SetColor(255, 255, 255, 255)
+                clip.TextAt(9, 8, str(char))
+        except Exception:
+            pass
+    finally:
+        clip.EndDraw()
+    return clip.GetBitmap()
+
+
+def _fill_custom_icon(node, data):
+    """MSG_GETCUSTOMICON handler body. ``data`` IS the c4d.IconData C4D
+    passes in (bmp/x/y/w/h/flags, per the spike) — filled in place.
+    Returning False without touching it is the "none" contract: a pin
+    with the default color must render the plugin's own registered icon,
+    never a color WE chose for the artist (brief's binding constraint)."""
+    index = _pin_color_index(node)
+    if index <= 0 or index >= len(pins.PIN_COLORS):
+        return False
+    rgb = pins.PIN_COLORS[index][1]
+    if rgb is None:
+        return False
+    char = pins.pin_badge(_pin_label_for_badge(node), _pin_ordinal(node))
+    cache_key = (index, char)
+    bmp = _ICON_CACHE.get(cache_key)
+    if bmp is None:
+        bmp = _build_pin_icon_bitmap(rgb, char)
+        if bmp is None:
+            return False
+        _ICON_CACHE[cache_key] = bmp
+    try:
+        data.bmp = bmp
+        data.x = 0
+        data.y = 0
+        data.w = _ICON_SIZE
+        data.h = _ICON_SIZE
+        return True
+    except Exception:
+        return False
+
+
 try:
     _TagDataBase = plugins.TagData
     if not isinstance(_TagDataBase, type):
@@ -726,12 +873,17 @@ class SentinelPinTag(_TagDataBase):
 
     def _set_description_parameter(
         self, node, description, parameter_id, dtype, name, parent,
-        animatable=True,
+        animatable=True, cycle=None,
     ):
         desc_id = _description_parent(parameter_id, dtype, node)
         bc = c4d.GetCustomDatatypeDefault(dtype)
         _set_bc_value(bc, "SetString", c4d.DESC_NAME, name)
         _set_bc_value(bc, "SetString", c4d.DESC_SHORT_NAME, name)
+        if cycle is not None:
+            cycle_bc = c4d.BaseContainer()
+            for value, label in cycle:
+                _set_bc_value(cycle_bc, "SetString", int(value), label)
+            _set_bc_value(bc, "SetContainer", c4d.DESC_CYCLE, cycle_bc)
         if not animatable:
             # Every row param is a state snapshot / an action trigger, never
             # something to keyframe — the Frame tag learned live that
@@ -771,6 +923,15 @@ class SentinelPinTag(_TagDataBase):
         # Basic (ver ID_PIN_NAME/PIN_TAG_DEFAULT_NAME arriba) — un
         # segundo campo aquí competía por la misma información y perdía
         # renombrados en vivo (ver _sync_display_name).
+        # Color leads the row: it is what makes several pins on one object
+        # distinguishable in the Object Manager WITHOUT opening this tag
+        # at all (the whole point of Task 5 — see the module docstring's
+        # cross-reference), so it earns first position over Estado.
+        if not self._set_description_parameter(
+            node, description, ID_PIN_COLOR, c4d.DTYPE_LONG, "Color", root,
+            cycle=_COLOR_CYCLE, animatable=False
+        ):
+            return False
         if not self._set_description_parameter(
             node, description, ID_PIN_STATUS, c4d.DTYPE_STATICTEXT, "Estado", root,
             animatable=False
@@ -852,6 +1013,19 @@ class SentinelPinTag(_TagDataBase):
         return True
 
     def Message(self, node, mid, data):
+        custom_icon = getattr(c4d, "MSG_GETCUSTOMICON", None)
+        if custom_icon is not None and mid == custom_icon:
+            # Whether this actually reaches a TagData at all is the thing
+            # Task 5's live verification exists to confirm (see the
+            # module-level comment on _fill_custom_icon) — if it turns out
+            # NOT to, that is reported as a finding, not silently accepted,
+            # per the brief.
+            try:
+                if _fill_custom_icon(node, data):
+                    return True
+            except Exception:
+                pass
+            return False
         description_command = getattr(c4d, "MSG_DESCRIPTION_COMMAND", None)
         if description_command is not None and mid == description_command:
             return self._handle_command(node, data)
