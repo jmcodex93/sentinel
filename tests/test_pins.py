@@ -103,21 +103,35 @@ def test_restore_plan_with_nothing_left_matches_nothing():
     assert plan["missing"] == ["", "ctrl"]
 
 
-def test_slot_summary_of_an_empty_slot():
-    assert pins.slot_summary(None) == {
-        "filled": False, "label": "", "count": 0, "has_geometry": False}
+def test_pin_summary_of_an_empty_pin():
+    assert pins.pin_summary(None) == {
+        "filled": False, "label": "", "count": 0,
+        "has_geometry": False, "has_keyframes": False}
 
 
-def test_slot_summary_reports_geometry_so_the_row_can_warn():
+def test_pin_summary_reports_geometry_so_the_row_can_warn():
     """The row must say "geometry not included" at STORE time — the artist
     who pins a polygon object will otherwise expect the modelling back."""
-    slot = {"label": "wide", "entries": [
-        {"key": "", "geometry": False}, {"key": "geo", "geometry": True}]}
-    summary = pins.slot_summary(slot)
+    pin = {"label": "wide", "entries": [
+        {"key": "", "geometry": False, "keyframes": False},
+        {"key": "geo", "geometry": True, "keyframes": False}]}
+    summary = pins.pin_summary(pin)
     assert summary == {
-        "filled": True, "label": "wide", "count": 2, "has_geometry": True}
+        "filled": True, "label": "wide", "count": 2,
+        "has_geometry": True, "has_keyframes": False}
 
 
-def test_reserved_slot_is_the_seventh_and_not_an_artist_slot():
-    assert pins.MAX_SLOTS == 6
-    assert pins.RESERVED_SLOT == 6
+def test_pin_summary_reports_keyframes_so_a_restore_is_never_a_silent_no_op():
+    """An animated parameter overwrites its restored value on the very next
+    frame — the restore silently does nothing on exactly the rigs the tool
+    exists for, unless the row says so."""
+    pin = {"label": "", "entries": [
+        {"key": "", "geometry": False, "keyframes": False},
+        {"key": "ctrl", "geometry": False, "keyframes": True}]}
+    summary = pins.pin_summary(pin)
+    assert summary["has_keyframes"] is True
+    assert summary["has_geometry"] is False
+
+
+def test_safety_pin_name_is_the_tool_owned_restore_backup():
+    assert pins.SAFETY_PIN_NAME == "↩ Antes de restaurar"

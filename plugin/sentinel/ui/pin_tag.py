@@ -1,15 +1,21 @@
 # -*- coding: utf-8 -*-
-"""Sentinel Pin tag: registration, Attribute Manager rows, and storing a pin.
+"""Sentinel Pin tag: registration, Attribute Manager row, and storing a pin.
 
-Stores up to six named states (transform + parameters, per object, for the
-tagged object and every descendant) directly in the tag's own container —
-no sidecar file. The nested-BaseContainer round-trip through save/reload,
-the single-undo-step contract, and the ``isinstance(obj, c4d.PointObject)``
-geometry test are all measured facts from the Task 1 spike
-(docs/research/2026-07-31-pin-storage-spike.md), not assumptions.
+One tag = one pin (rehecho tras ver en vivo el modelo de seis slots: el
+texto de estado se truncaba y con él la advertencia de geometría, porque las
+columnas del grid del Attribute Manager reparten ancho entre campos que
+compiten. Y la interfaz real de Recall usa un tag por estado, que además
+cumple mejor la promesa de fondo — "ves los estados en el Object Manager" —
+sin necesitar layout alguno). Un pin guarda el estado (transform + parámetros,
+por objeto, del objeto etiquetado y cada descendiente) directamente en el
+contenedor propio del tag — sin sidecar. El round-trip de BaseContainer
+anidado por save/reload, el contrato de un solo paso de undo, y el test de
+geometría ``isinstance(obj, c4d.PointObject)`` son hechos medidos en el
+spike de la Tarea 1 (docs/research/2026-07-31-pin-storage-spike.md), no
+suposiciones.
 
-Restoring a stored pin back onto the scene is Task 4 — the "Ir" button here
-is wired to the description but its handler is intentionally a no-op.
+Restaurar un pin sobre la escena es la Tarea 4 — el botón "Ir" está cableado
+a la descripción pero su handler es deliberadamente un no-op.
 """
 
 import datetime
@@ -23,32 +29,30 @@ SENTINEL_PIN_TAG_PLUGIN_ID = 2099078
 SENTINEL_PIN_TAG_DESCRIPTION = "Tsentinelpin"
 
 # --- Description id layout ------------------------------------------------
-# Slots are strided so a row's ids are derivable, same discipline as
-# frame_tag._format_ids: nothing here is hand-numbered per row.
-ID_GROUP_SLOTS = 1000
-ID_SLOT_SEPARATOR = 1900  # full-width DTYPE_SEPARATOR before the reserved row
-ID_SLOT_BASE = 2000       # slot i occupies ID_SLOT_BASE + i * ID_SLOT_STRIDE
-ID_SLOT_STRIDE = 10
-ID_SLOT_LABEL = 0         # DTYPE_STRING  — editable name (artist slots only)
-ID_SLOT_INFO = 1          # DTYPE_STRING  — derived, "12 obj · hace 2 h"
-ID_SLOT_STORE = 2         # DTYPE_BUTTON  — "Pin aquí" / "Re-pin"
-ID_SLOT_GO = 3            # DTYPE_BUTTON  — "Ir"
-ID_SLOT_CLEAR = 4         # DTYPE_BUTTON  — "✕"
+# Una sola fila: sin stride, porque no hay filas que derivar unas de otras.
+ID_PIN_NAME = 1001      # DTYPE_STRING     — nombre del pin (= nombre del tag)
+ID_PIN_STATUS = 1002    # DTYPE_STATICTEXT — "12 obj · hace 2 h · ..." (solo
+                         # lectura: un DTYPE_STRING pinta una caja que
+                         # compite por ancho con el resto de la fila, y fue
+                         # justo eso lo que truncó el texto en la v6-slots)
+ID_PIN_STORE = 1003     # DTYPE_BUTTON     — "Pin aquí" / "Re-pin"
+ID_PIN_GO = 1004        # DTYPE_BUTTON     — "Ir"
 
-#: Pin payloads live under a private container id inside the tag's own
-#: container, so they travel with the .c4d (Task 1 step 1 proved the
-#: round-trip). Kept well clear of the description id range above.
-ID_PIN_STORE_BASE = 20000
+#: El payload vive bajo un id de contenedor privado dentro del contenedor
+#: propio del tag, así viaja con el .c4d (la Tarea 1 probó el round-trip).
+#: Lejos del rango de ids de descripción de arriba.
+ID_PIN_PAYLOAD = 20000
 
-#: Bumped only if the payload shape changes. A pin whose schema this build
-#: does not know is IGNORED with a note in its row — never applied
-#: partially, because a half-applied rig is worse than an untouched one.
+#: Se sube solo si cambia la forma del payload. Un pin cuyo esquema esta
+#: build no reconoce se IGNORA con una nota en su fila — nunca se aplica a
+#: medias, porque un rig medio-aplicado es peor que uno intacto.
 PIN_SCHEMA = 1
 
-# Sub-keys inside each stored payload BaseContainer (namespace is private to
-# that container instance — no collision risk with the ids above). The
-# object's own container and matrix are stored WHOLE (SetContainer/SetMatrix,
-# both verified round-trip in the Task 1 spike), never decomposed.
+# Sub-keys dentro del BaseContainer del payload (namespace privado a esa
+# instancia de contenedor — sin riesgo de colisión con los ids de arriba).
+# El contenedor y la matriz propios del objeto se guardan ENTEROS
+# (SetContainer/SetMatrix, ambos verificados en el spike de la Tarea 1),
+# nunca descompuestos.
 _PAYLOAD_SCHEMA = 1
 _PAYLOAD_TIMESTAMP = 2
 _PAYLOAD_COUNT = 3
@@ -58,38 +62,11 @@ _ENTRY_NAME = 2
 _ENTRY_GEOMETRY = 3
 _ENTRY_CONTAINER = 4
 _ENTRY_MATRIX = 5
-
-
-def _slot_ids(index):
-    base = ID_SLOT_BASE + index * ID_SLOT_STRIDE
-    return {"label": base + ID_SLOT_LABEL, "info": base + ID_SLOT_INFO,
-            "store": base + ID_SLOT_STORE, "go": base + ID_SLOT_GO,
-            "clear": base + ID_SLOT_CLEAR}
-
-
-def _slot_from_id(param_id):
-    """(slot index, action) for a pressed button id, or (None, None)."""
-    offset = param_id - ID_SLOT_BASE
-    if offset < 0:
-        return None, None
-    index, action = divmod(offset, ID_SLOT_STRIDE)
-    if index > pins.RESERVED_SLOT:
-        return None, None
-    return index, {ID_SLOT_STORE: "store", ID_SLOT_GO: "go",
-                   ID_SLOT_CLEAR: "clear"}.get(action)
-
-
-def _slot_index_for_info_id(param_id):
-    """Row index for an INFO cell id, or None — the info text is a derived
-    field (like frame_tag's ID_SYNC_STATUS), never a real stored value, so
-    it needs its own lookup distinct from the button action map above."""
-    offset = param_id - ID_SLOT_BASE
-    if offset < 0:
-        return None
-    index, action = divmod(offset, ID_SLOT_STRIDE)
-    if action != ID_SLOT_INFO or index > pins.RESERVED_SLOT:
-        return None
-    return index
+#: Cualquier CTrack (objeto o de sus tags) vuelve el valor guardado en un
+#: no-op silencioso: la pista lo pisa en el siguiente frame. Es la mitad de
+#: la advertencia obligatoria del spec, y la más fácil de pasar por alto
+#: porque no hay nada visible que la delate en el momento de guardar.
+_ENTRY_KEYFRAMES = 6
 
 
 # --- Small c4d helpers (copied pattern from frame_tag.py, not imported —
@@ -234,6 +211,28 @@ def _children_of(obj):
     return out
 
 
+def _has_ctracks(node):
+    """True si ``node`` o cualquiera de sus tags trae al menos una CTrack —
+    mismo criterio de "está animado" que ``keyframes._shift_track_list``
+    (Tools → keyframe offset/stagger, v1.30): CTracks de objeto Y de tags,
+    porque un rig suele animar por el tag (constraints, XPresso) tanto como
+    por el propio objeto."""
+    try:
+        if node.GetCTracks():
+            return True
+    except Exception:
+        pass
+    tag = node.GetFirstTag() if hasattr(node, "GetFirstTag") else None
+    while tag is not None:
+        try:
+            if tag.GetCTracks():
+                return True
+        except Exception:
+            pass
+        tag = tag.GetNext()
+    return False
+
+
 def _walk_object_tree(obj):
     """Depth-first pre-order walk producing ``(location_tree, flat_nodes)``
     in the SAME order ``pins.location_keys`` assigns keys to
@@ -257,31 +256,34 @@ def _walk_object_tree(obj):
 
 # --- Stored payload: read + write ------------------------------------------
 
-def _read_payload_bc(node, index):
+def _read_payload_bc(node):
     bc = node.GetDataInstance()
     if bc is None:
         return None
-    return bc.GetContainerInstance(ID_PIN_STORE_BASE + index)
+    return bc.GetContainerInstance(ID_PIN_PAYLOAD)
 
 
-def _slot_is_filled(node, index):
-    return _read_payload_bc(node, index) is not None
+def _pin_is_filled(node):
+    return _read_payload_bc(node) is not None
 
 
-def _slot_info_text(node, index):
-    """Text for the row's info cell, built from ``pins.slot_summary`` per
-    the spec: count + relative time, and — REQUIRED, not optional — a
-    "geometría no incluida" note whenever any pinned node has editable
-    geometry, since points/polygons live outside the object's container and
-    will not come back on restore.
+def _pin_status_text(node):
+    """Text for the row's status cell, built from ``pins.pin_summary`` per
+    el spec: conteo + tiempo relativo, y — OBLIGATORIO, no opcional — una
+    nota de "geometría no incluida" siempre que algún nodo pineado tenga
+    geometría editable (los puntos/polígonos viven fuera del contenedor del
+    objeto y no vuelven al restaurar), MÁS una nota de "N con keyframes"
+    cuando algún nodo pineado está animado (restaurar su valor no cambia
+    nada visible — la pista lo pisa en el siguiente frame).
 
-    This is SYNTHESIZED, never stored: ``GetDParameter`` calls this on every
-    read instead of the info cell holding a written value in the node's own
-    container (verified live — ``GetDataInstance().GetString(id)`` for this
-    id reads back empty, which is correct, not a bug). Storing the text
-    would let the relative-time part ("hace 2 h") go stale the moment the
-    AM stops repainting it; deriving it keeps it honest for free."""
-    payload = _read_payload_bc(node, index)
+    Esto se SINTETIZA, nunca se guarda: ``GetDParameter`` llama a esto en
+    cada lectura en vez de que la celda de estado tenga un valor escrito en
+    el contenedor propio del nodo (verificado en vivo —
+    ``GetDataInstance().GetString(id)`` para este id lee vacío, que es
+    correcto, no un bug). Guardar el texto dejaría que la parte de tiempo
+    relativo ("hace 2 h") se quedara obsoleta en cuanto el AM dejara de
+    repintarla; derivarlo la mantiene honesta gratis."""
+    payload = _read_payload_bc(node)
     if payload is None:
         return ""
     schema = payload.GetInt32(_PAYLOAD_SCHEMA, 0)
@@ -293,11 +295,14 @@ def _slot_info_text(node, index):
     for i in range(count):
         entry_bc = entries_bc.GetContainerInstance(i) if entries_bc is not None else None
         geometry = bool(entry_bc.GetBool(_ENTRY_GEOMETRY, False)) if entry_bc is not None else False
-        entries.append({"geometry": geometry})
-    summary = pins.slot_summary({"label": "", "entries": entries})
+        keyframes = bool(entry_bc.GetBool(_ENTRY_KEYFRAMES, False)) if entry_bc is not None else False
+        entries.append({"geometry": geometry, "keyframes": keyframes})
+    summary = pins.pin_summary({"label": "", "entries": entries})
     text = "%d obj · %s" % (summary["count"], _relative_time_es(payload.GetString(_PAYLOAD_TIMESTAMP, "")))
     if summary["has_geometry"]:
         text += " · geometría no incluida"
+    if summary["has_keyframes"]:
+        text += " · %d con keyframes" % sum(1 for e in entries if e["keyframes"])
     return text
 
 
@@ -305,14 +310,14 @@ def _store_button_label(filled):
     return "Re-pin" if filled else "Pin aquí"
 
 
-def _store_pin(node, slot_index):
-    """Store the tag's object + every descendant into slot ``slot_index``.
+def _store_pin(node):
+    """Store the tag's object + every descendant into the tag's own pin.
 
     One undo step (StartUndo/AddUndo(CHANGE, node)/EndUndo) per the spec and
-    the Task 1 spike's measured undo contract. Re-pinning an existing slot
-    keeps whatever label the artist already gave it; a fresh slot is left
-    with an empty label for them to fill — neither case needs code here,
-    since this function never touches the label id at all.
+    the Task 1 spike's measured undo contract. Re-pinning keeps whatever
+    name the artist already gave the tag; a fresh pin is left with the
+    tag's default name for them to rename — neither case needs code here,
+    since this function never touches the name id at all.
     """
     obj = node.GetObject()
     if obj is None:
@@ -335,6 +340,7 @@ def _store_pin(node, slot_index):
         entry_bc.SetString(_ENTRY_KEY, key)
         entry_bc.SetString(_ENTRY_NAME, _safe_node_name(child_obj, ""))
         entry_bc.SetBool(_ENTRY_GEOMETRY, isinstance(child_obj, c4d.PointObject))
+        entry_bc.SetBool(_ENTRY_KEYFRAMES, _has_ctracks(child_obj))
         entry_bc.SetContainer(_ENTRY_CONTAINER, child_obj.GetData())
         entry_bc.SetMatrix(_ENTRY_MATRIX, child_obj.GetMl())
         entries_bc.SetContainer(i, entry_bc)
@@ -343,25 +349,7 @@ def _store_pin(node, slot_index):
     doc.StartUndo()
     try:
         doc.AddUndo(c4d.UNDOTYPE_CHANGE, node)
-        node.GetDataInstance().SetContainer(ID_PIN_STORE_BASE + slot_index, payload_bc)
-    finally:
-        doc.EndUndo()
-    return True
-
-
-def _clear_pin(node, slot_index):
-    """Erase a stored slot. The inverse of storing, not a restore — nothing
-    here touches the scene graph, only the tag's own container."""
-    doc = _doc_from_node(node)
-    if doc is None:
-        return False
-    bc = node.GetDataInstance()
-    if bc is None:
-        return False
-    doc.StartUndo()
-    try:
-        doc.AddUndo(c4d.UNDOTYPE_CHANGE, node)
-        bc.RemoveData(ID_PIN_STORE_BASE + slot_index)
+        node.GetDataInstance().SetContainer(ID_PIN_PAYLOAD, payload_bc)
     finally:
         doc.EndUndo()
     return True
@@ -378,7 +366,7 @@ except Exception:
 
 
 class SentinelPinTag(_TagDataBase):
-    """TagData shell for the Sentinel Pin six-slot state store."""
+    """TagData shell for the Sentinel Pin single-pin state store."""
 
     def _init_attr(self, node, py_type, param_id):
         init_attr = getattr(self, "InitAttr", None)
@@ -417,29 +405,9 @@ class SentinelPinTag(_TagDataBase):
         except Exception:
             return False
 
-    def _set_description_group(self, node, description, group_id, name, parent,
-                               columns=None, titlebar=True):
-        desc_id = _description_parent(group_id, c4d.DTYPE_GROUP, node)
-        bc = c4d.GetCustomDatatypeDefault(c4d.DTYPE_GROUP)
-        _set_bc_value(bc, "SetString", c4d.DESC_NAME, name)
-        _set_bc_value(bc, "SetString", c4d.DESC_SHORT_NAME, name)
-        _set_bc_value(bc, "SetBool", c4d.DESC_TITLEBAR, bool(titlebar))
-        _set_bc_value(bc, "SetBool", c4d.DESC_DEFAULT, False)
-        if columns is not None:
-            _set_bc_value(bc, "SetInt32", c4d.DESC_COLUMNS, int(columns))
-        try:
-            return bool(description.SetParameter(desc_id, bc, parent))
-        except Exception:
-            return False
-
     def Init(self, node, isCloneInit=False):
-        # Only the six artist slots have an editable label id — the reserved
-        # slot (index pins.RESERVED_SLOT) has no label field at all (spec:
-        # the artist does not name it), so there is nothing to init for it.
-        for index in range(pins.MAX_SLOTS):
-            ids = _slot_ids(index)
-            self._init_attr(node, str, ids["label"])
-            _set_node_value(node, ids["label"], "")
+        self._init_attr(node, str, ID_PIN_NAME)
+        _set_node_value(node, ID_PIN_NAME, _safe_node_name(node, ""))
         return True
 
     def GetDDescription(self, node, description, flags):
@@ -449,63 +417,27 @@ class SentinelPinTag(_TagDataBase):
             pass
 
         root = c4d.DescID(c4d.DescLevel(c4d.ID_TAGPROPERTIES))
-        slots_group = _description_parent(ID_GROUP_SLOTS, c4d.DTYPE_GROUP, node)
 
-        # ONE 5-column grid holds every row's cells directly (label, info,
-        # store, go, clear) — per-row sub-groups each size their own columns
-        # from their own label width, so nothing lines up vertically across
-        # rows (frame_tag.py:1903-1910, the same reason this tag uses a
-        # single grid instead of six).
-        if not self._set_description_group(
-            node, description, ID_GROUP_SLOTS, "Pins", root, columns=5, titlebar=False
-        ):
-            return False
-
-        for index in range(pins.MAX_SLOTS):
-            ids = _slot_ids(index)
-            filled = _slot_is_filled(node, index)
-            if not self._set_description_parameter(
-                node, description, ids["label"], c4d.DTYPE_STRING, "", slots_group,
-                animatable=False
-            ):
-                return False
-            if not self._set_description_parameter(
-                node, description, ids["info"], c4d.DTYPE_STRING, "", slots_group,
-                animatable=False
-            ):
-                return False
-            if not self._set_description_parameter(
-                node, description, ids["store"], c4d.DTYPE_BUTTON,
-                _store_button_label(filled), slots_group, animatable=False
-            ):
-                return False
-            if not self._set_description_parameter(
-                node, description, ids["go"], c4d.DTYPE_BUTTON, "Ir", slots_group,
-                animatable=False
-            ):
-                return False
-            if not self._set_description_parameter(
-                node, description, ids["clear"], c4d.DTYPE_BUTTON, "✕", slots_group,
-                animatable=False
-            ):
-                return False
-
-        # Reserved row: a full-width separator, then just info + a single
-        # "Ir" button — no label (the artist does not name this slot; the
-        # tool owns it) and no Store/Clear (nothing to manually pin here
-        # until Task 4's restore writes it).
+        # Una sola fila, sin grupo multi-columna: sin columnas que
+        # competir por ancho, no hay nada que desalinear ni truncar (la
+        # razón entera de este rehecho — ver el docstring del módulo).
         if not self._set_description_parameter(
-            node, description, ID_SLOT_SEPARATOR, c4d.DTYPE_SEPARATOR, "", slots_group
-        ):
-            return False
-        reserved_ids = _slot_ids(pins.RESERVED_SLOT)
-        if not self._set_description_parameter(
-            node, description, reserved_ids["info"], c4d.DTYPE_STRING, "", slots_group,
+            node, description, ID_PIN_NAME, c4d.DTYPE_STRING, "Nombre", root,
             animatable=False
         ):
             return False
         if not self._set_description_parameter(
-            node, description, reserved_ids["go"], c4d.DTYPE_BUTTON, "Ir", slots_group,
+            node, description, ID_PIN_STATUS, c4d.DTYPE_STATICTEXT, "Estado", root,
+            animatable=False
+        ):
+            return False
+        if not self._set_description_parameter(
+            node, description, ID_PIN_STORE, c4d.DTYPE_BUTTON,
+            _store_button_label(_pin_is_filled(node)), root, animatable=False
+        ):
+            return False
+        if not self._set_description_parameter(
+            node, description, ID_PIN_GO, c4d.DTYPE_BUTTON, "Ir", root,
             animatable=False
         ):
             return False
@@ -513,58 +445,47 @@ class SentinelPinTag(_TagDataBase):
         return True, flags | c4d.DESCFLAGS_DESC_LOADED
 
     def GetDParameter(self, node, id, flags):
-        # Info is a derived field (same pattern as frame_tag's
-        # ID_SYNC_STATUS): it is never written into the node's real data, so
-        # its text is always fresh — including the relative-time part, which
-        # must keep advancing even when nothing has been re-pinned.
+        # El estado es un campo derivado (mismo patrón que ID_SYNC_STATUS de
+        # frame_tag): nunca se escribe en el dato real del nodo, así que su
+        # texto está siempre fresco — incluido el tiempo relativo, que debe
+        # seguir avanzando aunque no se haya vuelto a pinear nada.
         parameter_id = _desc_level_id(id)
-        index = _slot_index_for_info_id(parameter_id)
-        if index is not None:
-            return True, _slot_info_text(node, index), flags | c4d.DESCFLAGS_GET_PARAM_GET
+        if parameter_id == ID_PIN_STATUS:
+            return True, _pin_status_text(node), flags | c4d.DESCFLAGS_GET_PARAM_GET
         return False
 
     def SetDParameter(self, node, id, data, flags):
         parameter_id = _desc_level_id(id)
-        index = _slot_index_for_info_id(parameter_id)
-        if index is not None:
+        if parameter_id == ID_PIN_STATUS:
             # Read-only derived string: swallow writes.
             return True, flags | c4d.DESCFLAGS_SET_PARAM_SET
+        if parameter_id == ID_PIN_NAME:
+            # Propagar al nombre del TAG (no del objeto etiquetado): es lo
+            # que hace que el Object Manager muestre el pin sin abrir nada,
+            # que es media razón de que esto sea un tag y no un diálogo.
+            try:
+                node.SetName(str(data))
+            except Exception:
+                pass
         return False
 
     def GetDEnabling(self, node, cid, t_data, flags, itemdesc):
         parameter_id = _desc_level_id(cid)
-        index, action = _slot_from_id(parameter_id)
-        if index is None:
-            return True
-        if index == pins.RESERVED_SLOT:
-            # Tool-owned row: only "Ir" is ever actionable, and only once
-            # Task 4 has written something into it.
-            if action == "go":
-                return _slot_is_filled(node, index)
-            return False
-        if action == "store":
-            return True  # a slot that is empty shows only Store enabled
-        if action in ("go", "clear"):
-            return _slot_is_filled(node, index)
+        if parameter_id in (ID_PIN_GO,):
+            return _pin_is_filled(node)
         return True
 
     def _handle_command(self, node, data):
         if not _is_main_thread():
             return True
         command_id = _command_id_from_data(data)
-        index, action = _slot_from_id(command_id)
-        if index is None or action is None:
-            return True
-        if action == "store":
-            _store_pin(node, index)
+        if command_id == ID_PIN_STORE:
+            _store_pin(node)
             _event_add()
-        elif action == "clear":
-            _clear_pin(node, index)
-            _event_add()
-        elif action == "go":
+        elif command_id == ID_PIN_GO:
             # Restore is Task 4 — deliberately not implemented here. A pin
             # whose schema this build does not recognise also lands here
-            # forever (GetDEnabling still allows it since the slot IS
+            # forever (GetDEnabling still allows it since the pin IS
             # filled) — that is fine, Task 4 owns the schema-mismatch guard
             # for the actual restore, not this stub.
             pass

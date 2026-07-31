@@ -12,18 +12,12 @@ renaming breaks the pairing, and renumbering same-named siblings can pair
 the wrong one. That is why every restore REPORTS what it matched instead of
 assuming it went well."""
 
-#: Artist-visible slots. Six covers the most demanding real case (a camera
-#: set: wide/mid/close/top/side/hero) and past that nobody remembers what
-#: they stored. A fixed count also forces a decision about what to
-#: overwrite, which beats hoarding unnamed states.
-MAX_SLOTS = 6
-
-#: The seventh slot, written by the tool on every restore — never by the
-#: artist. The real fear when restoring is losing what you have RIGHT NOW,
-#: which you hadn't stored because you were only going to try something for
-#: a second. Cmd+Z covers that only if nothing else happens afterwards, and
-#: something always happens afterwards.
-RESERVED_SLOT = 6
+#: Nombre del tag que la herramienta gestiona sola: el estado de ANTES de
+#: cada restauración. El artista nunca lo crea ni lo nombra. Reemplaza al
+#: "reserved slot" del modelo de grid — en el modelo un-tag-por-pin ese
+#: estado de seguridad es simplemente otro tag, distinguido por nombre en
+#: vez de por índice.
+SAFETY_PIN_NAME = "↩ Antes de restaurar"
 
 
 def _escape_name_for_key(name):
@@ -88,17 +82,22 @@ def plan_restore(pinned_keys, current_keys):
     }
 
 
-def slot_summary(slot):
-    """What a slot's row shows. ``has_geometry`` drives the honest
-    "geometry not included" note: points and polygons live outside the
-    object's container, so a pinned polygon object comes back with its
-    parameters and its transform but not its modelling."""
-    if not slot:
-        return {"filled": False, "label": "", "count": 0, "has_geometry": False}
-    entries = slot.get("entries") or []
+def pin_summary(pin):
+    """Lo que muestra la fila de estado del tag.
+
+    ``has_geometry`` y ``has_keyframes`` existen por la misma razón: son las
+    dos cosas que el pin NO captura, y callarlas convierte una restauración
+    en un no-op que el artista descubre tarde. La de keyframes es la peor de
+    las dos porque es invisible — si un parámetro está animado, reponer su
+    valor no cambia nada: la pista lo sobrescribe en el siguiente frame."""
+    if not pin:
+        return {"filled": False, "label": "", "count": 0,
+                "has_geometry": False, "has_keyframes": False}
+    entries = pin.get("entries") or []
     return {
         "filled": True,
-        "label": slot.get("label") or "",
+        "label": pin.get("label") or "",
         "count": len(entries),
-        "has_geometry": any(entry.get("geometry") for entry in entries),
+        "has_geometry": any(e.get("geometry") for e in entries),
+        "has_keyframes": any(e.get("keyframes") for e in entries),
     }
