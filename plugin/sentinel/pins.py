@@ -26,6 +26,18 @@ MAX_SLOTS = 6
 RESERVED_SLOT = 6
 
 
+def _escape_name_for_key(name):
+    """A name is artist-controlled text — it can contain the very
+    characters the key format itself uses to mean something (``/`` for
+    nesting, ``[`` for the index suffix). Left unescaped, an object literally
+    named ``a/b`` would be indistinguishable from a child ``b`` of a parent
+    ``a``, and an object named ``Cube[0]`` would collide with the auto-index
+    of an unrelated ``Cube``. Backslash is escaped FIRST so escaping itself
+    doesn't introduce a fresh collision opportunity."""
+    name = name or ""
+    return name.replace("\\", "\\\\").replace("/", "\\/").replace("[", "\\[")
+
+
 def location_keys(root):
     """Depth-first keys for a subtree, relative to ``root`` itself.
 
@@ -33,24 +45,26 @@ def location_keys(root):
     root's own key is ``""``: keys are relative to the PINNED object, not to
     the scene, so moving the whole rig elsewhere keeps its pins valid.
 
-    Same-named siblings get ``name[i]`` in traversal order — the only way to
-    tell them apart without an id."""
+    Every child segment is ``escaped_name[i]``, where ``i`` is the index
+    among siblings that share that escaped name — UNCONDITIONALLY, not only
+    for actual duplicates. Two things depend on that: (1) escaping alone
+    isn't enough to avoid collisions (an object named ``Cube[0]`` next to two
+    plain ``Cube`` siblings needs its own index too, or the escaped name and
+    the auto-index syntax still collide), and (2) indexing only when a
+    duplicate shows up made every existing pin unstable — a lone ``ctrl``
+    keyed as bare ``ctrl``, and the moment a second ``ctrl`` appeared the
+    first one silently renamed itself to ``ctrl[0]``. Indexing always keeps
+    ``ctrl[0]`` stable whether or not a sibling ever joins it."""
     keys = []
 
     def walk(node, prefix):
         keys.append(prefix)
-        counts = {}
-        for child in node.get("children") or []:
-            counts[child.get("name")] = counts.get(child.get("name"), 0) + 1
         seen = {}
         for child in node.get("children") or []:
-            name = child.get("name") or ""
-            if counts.get(name, 0) > 1:
-                index = seen.get(name, 0)
-                seen[name] = index + 1
-                part = "%s[%d]" % (name, index)
-            else:
-                part = name
+            escaped = _escape_name_for_key(child.get("name"))
+            index = seen.get(escaped, 0)
+            seen[escaped] = index + 1
+            part = "%s[%d]" % (escaped, index)
             walk(child, part if not prefix else prefix + "/" + part)
 
     walk(root, "")

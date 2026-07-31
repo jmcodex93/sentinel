@@ -18,24 +18,74 @@ def test_keys_are_relative_to_the_pinned_root():
     """Keys start at the tag's object, NOT at the scene root, so moving the
     whole rig somewhere else does not invalidate its pins."""
     tree = node("rig", [node("ctrl"), node("geo")])
-    assert pins.location_keys(tree) == ["", "ctrl", "geo"]
+    assert pins.location_keys(tree) == ["", "ctrl[0]", "geo[0]"]
 
 
 def test_same_named_siblings_get_indices_in_traversal_order():
     tree = node("rig", [node("Cube"), node("Cube"), node("Sphere")])
-    assert pins.location_keys(tree) == ["", "Cube[0]", "Cube[1]", "Sphere"]
+    assert pins.location_keys(tree) == ["", "Cube[0]", "Cube[1]", "Sphere[0]"]
 
 
 def test_nesting_is_encoded_in_the_path():
     tree = node("rig", [node("arm", [node("hand")])])
-    assert pins.location_keys(tree) == ["", "arm", "arm/hand"]
+    assert pins.location_keys(tree) == ["", "arm[0]", "arm[0]/hand[0]"]
 
 
 def test_traversal_is_depth_first_and_stable():
     """Restore pairs by key, but the ORDER also has to be stable so a pin
     written today lines up with a plan computed tomorrow."""
     tree = node("rig", [node("a", [node("a1"), node("a2")]), node("b")])
-    assert pins.location_keys(tree) == ["", "a", "a/a1", "a/a2", "b"]
+    assert pins.location_keys(tree) == [
+        "", "a[0]", "a[0]/a1[0]", "a[0]/a2[0]", "b[0]"]
+
+
+def test_indexing_is_unconditional_so_a_lone_sibling_stays_stable():
+    """Before the escaping fix, a lone `ctrl` keyed as bare `ctrl`, and the
+    moment a second `ctrl` sibling appeared the first one silently renamed
+    itself to `ctrl[0]` — breaking every pin stored before the rename.
+    Indexing every child unconditionally means a lone sibling is already
+    `ctrl[0]`, so adding a second `ctrl` never changes the first one's key."""
+    lone = node("rig", [node("ctrl")])
+    with_sibling = node("rig", [node("ctrl"), node("ctrl")])
+    assert pins.location_keys(lone)[1] == "ctrl[0]"
+    assert pins.location_keys(with_sibling)[1] == "ctrl[0]"
+
+
+def test_name_with_brackets_does_not_collide_with_auto_index():
+    """An object named `Cube[0]` sitting next to two plain `Cube` siblings
+    must not collide with the auto-generated index of either of them."""
+    tree = node("rig", [node("Cube[0]"), node("Cube"), node("Cube")])
+    keys = pins.location_keys(tree)
+    assert keys == ["", "Cube\\[0][0]", "Cube[0]", "Cube[1]"]
+    assert len(set(keys)) == len(keys)
+
+
+def test_name_with_slash_does_not_collide_with_nested_path():
+    """An object literally named `a/b` must not collide with a nested child
+    `b` under a sibling named `a`."""
+    tree = node("rig", [node("a/b"), node("a", [node("b")])])
+    keys = pins.location_keys(tree)
+    assert keys == ["", "a\\/b[0]", "a[0]", "a[0]/b[0]"]
+    assert len(set(keys)) == len(keys)
+
+
+def test_lone_empty_named_child_does_not_collide_with_its_parent():
+    tree = node("rig", [node("")])
+    keys = pins.location_keys(tree)
+    assert keys == ["", "[0]"]
+    assert len(set(keys)) == len(keys)
+
+
+def test_two_nameless_children_get_distinct_keys():
+    """A node missing the "name" key entirely (not just empty-string) must
+    still key distinctly from its siblings."""
+    tree = {"name": "rig", "geometry": False, "children": [
+        {"geometry": False, "children": []},
+        {"geometry": False, "children": []},
+    ]}
+    keys = pins.location_keys(tree)
+    assert keys == ["", "[0]", "[1]"]
+    assert len(set(keys)) == len(keys)
 
 
 def test_restore_plan_reports_missing_and_extra():
