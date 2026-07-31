@@ -298,167 +298,121 @@ git commit -m "feat(pins): motor puro — claves de ubicacion, orden de recorrid
 > `ctrl[0]` en cuanto aparecía un hermano homónimo, invalidando en silencio
 > todos los pins existentes. Ver el fichero real `plugin/sentinel/pins.py`.
 
-### Task 3: The tag — registration, description UI, and storing a pin
+### Task 3 (REHECHA): un tag = un pin
 
-**Files:** Create `plugin/sentinel/ui/pin_tag.py`, `plugin/res/description/Tsentinelpin.res`, `plugin/res/description/Tsentinelpin.h`, `plugin/res/strings_us/description/Tsentinelpin.str`; modify `plugin/sentinel_panel.pyp`.
+> **Por qué se rehace.** La Tarea 3 original construyó un grid de seis slots dentro de un tag. Al verlo en vivo, el texto de estado **se truncaba** (`4 obj · hace`) y con él desaparecía la advertencia de geometría, que el spec declara obligatoria — las columnas del Attribute Manager reparten ancho entre campos que compiten. Y al ver la interfaz real de Recall quedó claro que su modelo es **un tag por estado**, lo cual cumple mejor la promesa que justificaba poner esto en un tag ("ves los estados en el Object Manager") y elimina el problema de layout en vez de maquillarlo. Ver la corrección en el spec.
+>
+> **Lo que se conserva del commit `6f0fcea`**: el registro del tag (id 2099078), el triplete de `plugin/res/`, la captura del subárbol (`GetData`/`GetMl`/`GetName`), el almacenamiento en el contenedor del tag, la detección de geometría y la síntesis del texto de estado en `GetDParameter`. **Lo que se tira**: el grid de seis filas, los ids con stride por slot y el slot reservado como fila.
 
-**Interfaces consumed:** `pins.MAX_SLOTS`, `pins.RESERVED_SLOT`, `pins.location_keys`, `pins.slot_summary`.
+**Files:** modify `plugin/sentinel/ui/pin_tag.py`, `plugin/sentinel/pins.py`, `tests/test_pins.py`.
 
-Read `plugin/sentinel/ui/frame_tag.py` first — it is the working template for every mechanism here: `_description_parent`, `_set_description_parameter` (including the `DTYPE_BUTTON` + `DESC_CUSTOMGUI` requirement at line 1775), `_set_description_group(columns=...)`, and `Message` → `MSG_DESCRIPTION_COMMAND` → `_handle_command`. Copy the patterns, not the semantics.
+- [ ] **Step 1: El motor pierde el modelo de slots**
 
-- [ ] **Step 1: The resource triplet**
-
-`plugin/res/description/Tsentinelpin.res`:
-
-```
-CONTAINER Tsentinelpin
-{
-	NAME Tsentinelpin;
-	INCLUDE Tbase;
-
-	GROUP ID_TAGPROPERTIES
-	{
-	}
-}
-```
-
-`plugin/res/description/Tsentinelpin.h`: empty file (the ids are assigned dynamically in `GetDDescription`, exactly as `Tsentinelframe.h` does).
-
-`plugin/res/strings_us/description/Tsentinelpin.str`:
-
-```
-STRINGTABLE Tsentinelpin
-{
-	Tsentinelpin "Sentinel Pin";
-}
-```
-
-- [ ] **Step 2: Id layout**
-
-In `pin_tag.py`, define the parameter ids. Slots are strided so a row's ids are derivable, the same way `frame_tag._format_ids` does it:
+En `pins.py`, `MAX_SLOTS` y `RESERVED_SLOT` dejan de tener sentido: un tag es un pin. Sustituir por:
 
 ```python
-ID_GROUP_SLOTS = 1000
-ID_SLOT_BASE = 2000       # slot i occupies ID_SLOT_BASE + i * ID_SLOT_STRIDE
-ID_SLOT_STRIDE = 10
-ID_SLOT_LABEL = 0         # DTYPE_STRING  — editable name
-ID_SLOT_INFO = 1          # DTYPE_STRING  — "12 obj · hace 2 h" (read-only text)
-ID_SLOT_STORE = 2         # DTYPE_BUTTON  — "Pin aquí" / "Re-pin"
-ID_SLOT_GO = 3            # DTYPE_BUTTON  — "Ir"
-ID_SLOT_CLEAR = 4         # DTYPE_BUTTON  — "✕"
-#: Pin payloads live under a private container id inside the tag's own
-#: container, so they travel with the .c4d (Task 1 step 1 proved the
-#: round-trip). Kept well clear of the description id range above.
-ID_PIN_STORE_BASE = 20000
-
-#: Bumped only if the payload shape changes. A pin whose schema this build
-#: does not know is IGNORED with a note in its row — never applied
-#: partially, because a half-applied rig is worse than an untouched one.
-PIN_SCHEMA = 1
+#: Nombre del tag que la herramienta gestiona sola: el estado de ANTES de
+#: cada restauración. El artista nunca lo crea ni lo nombra.
+SAFETY_PIN_NAME = "↩ Antes de restaurar"
 ```
 
-The row ids come from the stride, so nothing is hand-numbered:
+`slot_summary(slot)` pasa a `pin_summary(pin)` con la misma forma de entrada y una clave más:
 
 ```python
-def _slot_ids(index):
-    base = ID_SLOT_BASE + index * ID_SLOT_STRIDE
-    return {"label": base + ID_SLOT_LABEL, "info": base + ID_SLOT_INFO,
-            "store": base + ID_SLOT_STORE, "go": base + ID_SLOT_GO,
-            "clear": base + ID_SLOT_CLEAR}
+def pin_summary(pin):
+    """Lo que muestra la fila de estado del tag.
 
-
-def _slot_from_id(param_id):
-    """(slot index, action) for a pressed button id, or (None, None)."""
-    offset = param_id - ID_SLOT_BASE
-    if offset < 0:
-        return None, None
-    index, action = divmod(offset, ID_SLOT_STRIDE)
-    if index > pins.RESERVED_SLOT:
-        return None, None
-    return index, {ID_SLOT_STORE: "store", ID_SLOT_GO: "go",
-                   ID_SLOT_CLEAR: "clear"}.get(action)
+    ``has_geometry`` y ``has_keyframes`` existen por la misma razón: son las
+    dos cosas que el pin NO captura, y callarlas convierte una restauración
+    en un no-op que el artista descubre tarde. La de keyframes es la peor de
+    las dos porque es invisible — si un parámetro está animado, reponer su
+    valor no cambia nada: la pista lo sobrescribe en el siguiente frame."""
+    if not pin:
+        return {"filled": False, "label": "", "count": 0,
+                "has_geometry": False, "has_keyframes": False}
+    entries = pin.get("entries") or []
+    return {
+        "filled": True,
+        "label": pin.get("label") or "",
+        "count": len(entries),
+        "has_geometry": any(e.get("geometry") for e in entries),
+        "has_keyframes": any(e.get("keyframes") for e in entries),
+    }
 ```
 
-- [ ] **Step 3: `GetDDescription` — six rows plus the reserved one**
+Actualizar los tests de `slot_summary` a `pin_summary` (mismos casos) y añadir uno que fije que `has_keyframes` se reporta. Borrar los tests de `MAX_SLOTS`/`RESERVED_SLOT` y añadir uno que fije `SAFETY_PIN_NAME`.
 
-One 5-column group holding every row's cells directly. `frame_tag.py:1911-1917` explains why a single grid instead of per-row sub-groups: per-row groups size their own columns from their own label width, so nothing lines up vertically.
+`location_keys` y `plan_restore` **no se tocan** — su corrección de colisiones se conserva íntegra.
 
-For each of the six slots, in order: label (`DTYPE_STRING`), info (`DTYPE_STRING`), then Store / Go / Clear buttons. A slot that is empty shows only the Store button enabled; the spec's row mock is the target. The reserved row renders after a separator, with its info and a single `Ir` button, and NO label field — the artist does not name it.
+- [ ] **Step 2: La descripción del tag pasa a una sola fila**
 
-The info cell is where the honest notes live. Build its text from
-`pins.slot_summary(slot)`: `"12 obj · hace 2 h"`, and when `has_geometry` is
-true append `" · geometría no incluida"`. That note is REQUIRED by the spec
-and must appear at store time, not only in docs — an artist who pins a
-polygon object will otherwise expect the modelling back, and it will not
-come back. A slot whose stored `PIN_SCHEMA` this build does not recognise
-shows `"pin de una versión anterior — no se aplicará"` and its `Ir` button
-does nothing.
+Sustituir el grid por: un campo `DTYPE_STRING` **Nombre**, un `DTYPE_STATICTEXT` **Estado** (no un campo: es solo lectura, y meterlo en una caja fue lo que truncó el texto y lo que invita a editarlo), y dos `DTYPE_BUTTON` — `Pin` y `Ir`. Sin grupo multi-columna: sin columnas que competir, no hay nada que desalinear.
 
-Every parameter is `animatable=False` (the Frame tag learned this live: animatable parameters render a diamond per row and the diamonds were the biggest cost in row width).
+Ids planos, sin stride:
 
-- [ ] **Step 4: Store a pin**
+```python
+ID_PIN_NAME = 1001      # DTYPE_STRING     — nombre del pin (= nombre del tag)
+ID_PIN_STATUS = 1002    # DTYPE_STATICTEXT — "12 obj · hace 2 h · …"
+ID_PIN_STORE = 1003     # DTYPE_BUTTON     — "Pin"
+ID_PIN_GO = 1004        # DTYPE_BUTTON     — "Ir"
+ID_PIN_PAYLOAD = 20000  # sub-contenedor con el estado guardado
+```
 
-`_store_pin(node, slot_index)`:
-1. Resolve the tag's object (`node.GetObject()`); if absent, return without touching anything.
-2. Walk the object and all descendants depth-first, building both the `pins.location_keys` input tree and, per node, `{"key", "name", "geometry", "container", "matrix"}` — `obj.GetData()`, `obj.GetMl()`, `obj.GetName()`, and the geometry test recorded in Task 1 step 4.
-3. Write the payload — including `PIN_SCHEMA` — into the tag's container under `ID_PIN_STORE_BASE + slot_index`, wrapped in `doc.StartUndo()` / `doc.AddUndo(c4d.UNDOTYPE_CHANGE, node)` / `doc.EndUndo()` so storing is itself one undo step.
-4. Stamp the slot's label (keep an existing one on re-pin; otherwise leave it empty for the artist to fill) and the timestamp.
+Al escribir el nombre, **propagarlo al nombre del tag** (`node.SetName(...)`): es lo que hace que el Object Manager lo muestre sin abrir nada, que es la mitad del argumento para que esto sea un tag.
 
-- [ ] **Step 5: Register the tag**
+El texto de estado añade `" · N con keyframes"` cuando `has_keyframes`, junto al aviso de geometría ya existente.
 
-In `plugin/sentinel_panel.pyp`, beside the Sentinel Frame registration (line ~179), register with `id=2099078`, `str="Sentinel Pin"`, `description="Tsentinelpin"`, `info=c4d.TAG_VISIBLE | c4d.TAG_EXPRESSION`. **No `TAG_IMPLEMENTS_DRAW_FUNCTION`** — this tag draws nothing, and that flag exists only to make `Draw` fire. Extend the id comment at line 25-27 to record `2099078` as taken.
+- [ ] **Step 3: Suites y commit**
 
-- [ ] **Step 6: Verify live**
-
-`./sync.sh`, restart C4D, add the tag to an object with children, and confirm: the tag appears in the tag list with its name, six rows render with aligned columns, the buttons are clickable, and pressing Store fills the row's info text with the object count. Report what you saw.
-
-- [ ] **Step 7: Commit**
+`python3 -m pytest tests/ -q` (baseline 1163; el recuento cambia al reescribir los tests de slots).
 
 ```bash
-git add plugin/sentinel/ui/pin_tag.py plugin/res plugin/sentinel_panel.pyp
-git commit -m "feat(pin): tag Sentinel Pin — registro, UI de seis slots y guardado"
+git add plugin/sentinel tests/test_pins.py
+git commit -m "feat(pin): un tag = un pin — fila unica, estado en texto estatico, aviso de keyframes"
 ```
 
-### Task 4: Restore, the reserved slot, and the report
+### Task 4 (REVISADA): restaurar, el tag de seguridad y el doble clic
 
-**Files:** Modify `plugin/sentinel/ui/pin_tag.py`.
+**Files:** modify `plugin/sentinel/ui/pin_tag.py`.
 
-- [ ] **Step 1: `_restore_pin(node, slot_index)`**
+- [ ] **Step 1: `_restore(node)`**
 
-In this order, because the order IS the safety property:
-1. Build the current subtree and its keys.
-2. **Store the current state into `pins.RESERVED_SLOT` first** — before touching anything. If this fails, abort the restore: without the safety net the artist cannot get back, and a restore that silently drops it is worse than no restore.
-3. If the stored payload's `PIN_SCHEMA` is not this build's, stop here and report it in the row — never apply a payload whose shape you do not know.
+En este orden, porque el orden ES la propiedad de seguridad:
+1. Construir el subárbol actual y sus claves.
+2. **Si este tag NO es el de seguridad**, capturar el estado actual en un tag `SAFETY_PIN_NAME` sobre el mismo objeto — creándolo si no existe, sobrescribiéndolo si ya está. Si eso falla, abortar la restauración: sin la red el artista no puede volver, y una restauración que se la salta en silencio es peor que no restaurar.
+   **Si este tag SÍ es el de seguridad, no se sobrescribe** — destruiría la única copia del estado del que estás volviendo. Dejar el motivo en un comentario.
+3. Si el `PIN_SCHEMA` guardado no es el de este build, parar y decirlo en la fila.
 4. `pins.plan_restore(pinned_keys, current_keys)`.
-5. If `matched` is empty, change nothing and report — do not open an undo bracket for a no-op.
-6. Otherwise `doc.StartUndo()`, then for every matched key `doc.AddUndo(c4d.UNDOTYPE_CHANGE, obj)` followed by `SetData` / `SetMl` / `SetName`, then `doc.EndUndo()`. One bracket for the whole subtree — one Cmd+Z.
+5. Si `matched` está vacío, no tocar nada y reportar — sin abrir bracket de undo para un no-op.
+6. Si no: `doc.StartUndo()`, y por cada clave emparejada `doc.AddUndo(c4d.UNDOTYPE_CHANGE, obj)` seguido de `SetData` / `SetMl` / `SetName`; `doc.EndUndo()`. Un solo bracket para todo el subárbol.
 7. `c4d.EventAdd()`.
 
-- [ ] **Step 2: Report the outcome**
+- [ ] **Step 2: Reportar**
 
-Write the result into the slot's info field: `"9 de 12 restaurados · 3 no encontrados"` when anything is missing, `"12 restaurados"` when nothing is. Also `safe_print` the missing keys (`from sentinel.common.helpers import safe_print`), so the artist can see WHICH ones in the console — the row has no space for a list.
+Escribir el resultado en la fila de estado: `"9 de 12 restaurados · 3 no encontrados"`, o `"12 restaurados"` si no falta nada. Además `safe_print` de las claves que faltan — la fila no tiene sitio para una lista.
 
-- [ ] **Step 3: Wire the buttons**
+- [ ] **Step 3: Doble clic**
 
-`Message` → `MSG_DESCRIPTION_COMMAND` → `_handle_command`, deriving the slot index and the action from the pressed id via the stride (`frame_tag._handle_command` is the template). Store / Go / Clear map to `_store_pin` / `_restore_pin` / `_clear_pin`. The reserved row's `Ir` restores slot `RESERVED_SLOT` and, per the spec, does NOT overwrite the reserved slot with the state it is leaving — otherwise going back would destroy the only copy of what you are returning FROM. Add a comment recording that.
+En `Message`, manejar `c4d.MSG_EDIT` (id 21) llamando a `_restore`. Es el atajo de Recall y el camino más rápido posible: restaurar sin pasar por el Attribute Manager.
 
-- [ ] **Step 4: Verify live — the matrix from the spec**
+**No se sabe si un tag lo recibe** — no se pudo medir en el spike. El botón `Ir` es el camino garantizado; esto es un acelerador. Si en la verificación live no llega, anotarlo como limitación y seguir: la función no depende de ello.
 
-`./sync.sh`, restart C4D, then:
-1. Pin a parametric rig (Cloner + Effector + falloff), wreck all three (parameters AND transforms), restore, and verify each of the three by reading parameters back — not by eyeball.
-2. Put a third-party plugin object in the hierarchy and confirm it restores too (the capture is generic).
-3. Delete one object and add another, restore, and confirm the counts and the report.
-4. **One Cmd+Z** (the Edit menu, not `DoUndo`) reverts a whole restore.
-5. Restore, then use the reserved row to come back.
-6. Save the scene, reopen it, and confirm the pins are still there AND still restore — the case the baseline bug proved must be tested explicitly.
+- [ ] **Step 4: Verificación live (pedir reinicio al coordinador)**
 
-Report each with what you observed.
+1. Pin de un rig paramétrico (Cloner + Effector + falloff), destrozar los tres (parámetros Y transformaciones), restaurar, y comprobar los tres **leyendo parámetros**, no de vista. **Tras el undo hay que RE-BUSCAR el objeto en el documento**: C4D lo reemplaza al restaurar y el handle previo queda huérfano mostrando los valores mutados (spike §2 — esta trampa ya hizo creer que el undo estaba roto).
+2. Un objeto de plugin de terceros en la jerarquía restaura igual (la captura es genérica).
+3. Borrar un objeto y añadir otro: conteos y reporte correctos.
+4. **Un solo Cmd+Z** (menú Edit) revierte la restauración entera.
+5. El tag `↩ Antes de restaurar` aparece tras el primer salto y devuelve al estado previo; restaurar desde él NO lo sobrescribe.
+6. Dos pins sobre el mismo objeto conviven y cada uno restaura el suyo.
+7. Doble clic en el tag restaura (o queda anotado que `MSG_EDIT` no llega).
+8. Guardar, reabrir, y comprobar que los pins siguen y siguen restaurando.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add plugin/sentinel/ui/pin_tag.py
-git commit -m "feat(pin): restaurar con slot reservado, un solo undo y reporte honesto"
+git commit -m "feat(pin): restaurar con tag de seguridad, un solo undo, reporte y doble clic"
 ```
 
 ### Task 5: Docs and version
