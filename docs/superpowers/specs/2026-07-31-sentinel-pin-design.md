@@ -116,5 +116,5 @@ El tag usa **`2099078`**. Ocupados hoy en el rango `2099xxx`: `2099069` (plugin)
 
 - **La capa automática** (snapshot de documento antes de operaciones destructivas de Sentinel): es v1.36, mecanismo distinto y palabra distinta — ahí sí es un punto de retorno, no una alternativa.
 - **Geometría editable y grafos de nodos**: no están en el contenedor. Capturarlos exigiría clonar y reemplazar el objeto, lo que rompe los `BaseLink` que le apunten (constraints, XPresso, un Sentinel Frame apuntando a esa cámara) — y fallaría en silencio. Si algún día se aborda, va con su spike.
-- **Iconos personalizados por pin** (color + número o letra, como Recall): varios pins sobre un objeto se ven como iconos idénticos hasta pasar por encima. Es el hueco visual conocido frente a Recall.
+- **Iconos personalizados por pin**: se intentó y se retiró. `MSG_GETCUSTOMICON` **no llega a un `TagData`** (medido en C4D 2026.303), y además sobraba: la pestaña **Basic** de todo tag ya trae `Icon Color` con selector y presets, que tiñe el icono en el Object Manager. Distinguir pins se hace con ese control nativo. Lo que sigue sin haber es el **carácter** sobre el icono (Recall sí lo tiene).
 - **Keyframes** (ver arriba: hoy se avisa, no se capturan) y **listado de pins en el panel**.

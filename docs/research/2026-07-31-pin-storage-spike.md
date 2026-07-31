@@ -102,4 +102,14 @@ Lo que sí hay: `frame_tag.py:1775-1781` fija `DESC_CUSTOMGUI = CUSTOMGUI_BUTTON
 
 **Veredicto: viable.** Se genera el icono en memoria (fondo del color elegido + carácter encima) y se entrega respondiendo a `MSG_GETCUSTOMICON` con un `IconData`.
 
-**Lo que NO se pudo medir aquí**: que un `TagData` reciba efectivamente `MSG_GETCUSTOMICON` y que C4D pinte el `IconData` devuelto — eso exige el código en el tag y un reinicio. Es el punto de verificación de la tarea correspondiente. `SetFont` exige un `BaseContainer` de descripción de fuente: pasar `None` lanza.
+**Lo que NO se pudo medir aquí**: que un `TagData` reciba efectivamente `MSG_GETCUSTOMICON`. `SetFont` exige un `BaseContainer` de descripción de fuente: pasar `None` lanza.
+
+### RESULTADO NEGATIVO, medido después (2026-07-31)
+
+**`MSG_GETCUSTOMICON` NO llega a un `TagData`** en C4D 2026.303. Implementado el handler, sincronizado y reiniciado: ningún pin muestra la letra y el desplegable de color no hace nada. Tampoco se puede simular desde script — `C4DAtom.Message` en Python exige un `dict`, así que un `IconData` no se puede pasar; solo C4D envía ese mensaje.
+
+**Y sobraba de todos modos**: la pestaña **Basic** de cualquier tag ya trae un grupo `ICON` con `Icon File / ID`, casilla **`Icon Color`**, selector de color y presets. Marcar `Icon Color` tiñe el icono del tag en el Object Manager — exactamente lo que la tarea pretendía construir.
+
+**Lección, segunda vez en esta misma feature** (la primera fue el campo de nombre): **antes de construir algo para un tag, mirar qué trae ya su pestaña Basic**. Nombre, icono y color están ahí. Duplicarlos crea dos controles compitiendo, y el nuestro pierde.
+
+Todo el código del icono se retiró. Distinguir pins en el Object Manager se hace con el `Icon Color` nativo.
