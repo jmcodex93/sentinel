@@ -1,7 +1,7 @@
 # Sentinel Pin — estados por objeto a los que volver (v1.35)
 
 **Fecha**: 2026-07-31
-**Estado**: aprobado en brainstorm, pendiente de plan.
+**Estado**: aprobado en brainstorm. **Modelo revisado 2026-07-31** tras ver la interfaz real de Recall: un tag = un pin, en vez de seis slots dentro de un tag. La Tarea 3 del plan (grid de seis filas) queda obsoleta y se rehace.
 **Contexto**: primera de las dos capas del arco "puntos de retorno", que cierra la expansión de Tools (v1.30 quick-wins → v1.31 Batch Rename → v1.32-v1.34 matwire → **v1.35 este spec** → v1.36 red automática).
 
 Nace de un plugin que el usuario compró y **ya no puede ejecutar**: Rocket Lasso Recall (binario C++, última build R25; C4D 2026 está cuatro versiones mayores por delante). No es competir con una herramienta en uso — es recuperar una capacidad perdida. Su EULA prohíbe descompilar, así que **no se examinó el binario**: lo que se estudió son su documentación pública, sus recursos en texto plano y la API de C4D medida directamente.
@@ -21,21 +21,33 @@ Todo leído del C4D vivo (2026.303, 2026-07-31):
 
 ## Decisiones cerradas
 
-1. **Un tag por objeto** (`Sentinel Pin`), no una lista en el panel: la visibilidad en el Object Manager es la mitad del valor — ves que ese null tiene estados sin buscarlos. Un listado en el panel puede añadirse después leyendo lo que el tag ya guarda, sin rehacer nada.
-2. **Captura el objeto y toda su descendencia.** Un rig paramétrico casi nunca es un nodo: tocas el Cloner, el Effector y el falloff. Si hubiera que etiquetarlos uno a uno, la herramienta estorbaría más de lo que ayuda.
-3. **Seis slots fijos, más uno reservado.** Seis cubre el caso más exigente (un set de cámaras: wide/mid/close/top/side/hero) y a partir de ahí dejas de recordar qué guardaste. Un número fijo obliga a decidir qué sobrescribes, lo cual es sano frente a acumular estados sin nombre.
-4. **El séptimo slot es "Antes de restaurar"**, escrito por la herramienta en cada salto. Es la decisión central del diseño (ver abajo).
-5. **Sin colores.** Con nombre editable y contador de objetos, el color solo añade ruido.
-6. **Sin confirmación al restaurar.** Es reversible por dos vías y un diálogo mataría lo único que hace útil esto: saltar rápido entre alternativas.
+1. **Un tag = UN pin.** No una lista de slots dentro de un tag. Varios pins sobre un objeto son varios tags, cada uno con su nombre.
+
+   *Corrección sobre la primera versión de este spec, tras ver la interfaz real de Recall (captura del usuario, 2026-07-31).* Su modelo es este —`Recall`/`Override` en singular, `Clear Current`, `Remove All Recall Tags` en plural, y toda una sección para personalizar el **icono del tag** con color, número o letra— y es mejor que el de seis slots por una razón que invalida mi propio argumento: defendí el tag frente al panel diciendo "ves que ese null tiene estados sin buscar nada", pero con seis slots **dentro** de un tag ves un tag, no los estados. Un tag por estado sí cumple esa promesa.
+
+   Beneficio colateral: elimina el problema de layout en vez de maquillarlo. La primera implementación produjo un grid de seis filas donde el texto de estado se truncaba —ocultando precisamente la advertencia de geometría, que el spec declara obligatoria— porque las columnas del Attribute Manager reparten ancho entre campos que compiten. Un tag con una sola fila no tiene ese problema.
+
+2. **Captura el objeto y toda su descendencia.** Un rig paramétrico casi nunca es un nodo: tocas el Cloner, el Effector y el falloff. Si hubiera que etiquetarlos uno a uno, la herramienta estorbaría más de lo que ayuda. Sin casillas para elegir alcance (Recall las tiene: Object / Hierarchy / Keyframes) — convención con opinión antes que knobs, como en matwire.
+
+3. **La red de seguridad es un tag propio**, `↩ Antes de restaurar`, creado o actualizado por la herramienta en cada restauración y nunca por el artista. Es la decisión central del diseño (ver abajo) y es lo único que este diseño tiene y el de Recall no: en su interfaz no hay nada equivalente.
+
+4. **Restaurar es el botón `Ir` del Attribute Manager, y además doble clic en el tag** desde el Object Manager (`MSG_EDIT`, id 21). El botón es el camino garantizado; el doble clic es el acelerador y se verifica en vivo — si no llegara el mensaje, se pierde el atajo, no la función.
+
+5. **Sin confirmación al restaurar.** Es reversible por dos vías y un diálogo mataría lo único que hace útil esto: saltar rápido entre alternativas.
+
+6. **El nombre del pin es el nombre del tag.** Así el Object Manager lo muestra al pasar por encima o seleccionarlo, sin abrir nada. **Sin iconos personalizados en v1** (Recall los tiene, con color y número o letra): generar bitmaps por color y carácter es trabajo real y no bloquea el uso. Queda anotado como el hueco visual frente a Recall — varios pins sobre un objeto se ven como iconos idénticos hasta que pasas por encima.
+
 7. **Nombre "Pin"** elegido tras comprobar colisiones sobre los 427 tags/objetos registrados en el C4D del usuario: `Pose` (Pose Morph, PoseMixer), `State` (Initial State Tag), `Rest` (Octane Rest Position) y `Look` están ocupados; `Mark` y `Shot` los usa ya Sentinel para otra cosa.
 
 ## Diseño
 
-### El slot reservado, y por qué es lo más importante
+### La red de seguridad, y por qué es lo más importante
 
 El miedo real al restaurar no es perder el pin: es perder **lo que tienes ahora**, que no habías guardado porque ibas a probar un momento. Cmd+Z solo cubre eso si no haces nada más después, y siempre haces algo más después.
 
-Cada vez que se restaura un pin, la herramienta **captura primero el estado actual** en el slot reservado. Saltar pasa a ser gratis: si no era eso, vuelves. Cuesta exactamente lo mismo que ya cuesta guardar un pin, y es la diferencia entre una herramienta que usas y una que te da respeto.
+Cada vez que se restaura un pin, la herramienta **captura primero el estado actual** en un tag `↩ Antes de restaurar` sobre el mismo objeto — creándolo si no existe, sobrescribiéndolo si ya está. Saltar pasa a ser gratis: si no era eso, vuelves. Cuesta exactamente lo mismo que ya cuesta guardar un pin.
+
+Restaurar DESDE ese tag no lo sobrescribe: si lo hiciera, destruiría la única copia del estado del que estás volviendo.
 
 ### Qué guarda un pin
 
@@ -56,24 +68,25 @@ En **un solo paso de deshacer**. Cada objeto reencontrado por ubicación recuper
 
 El resultado se reporta siempre: *"9 de 12 restaurados · 3 no encontrados"*, con la lista de los que faltan. Nunca falla en silencio ni deja el rig a medias sin decirlo.
 
-### La fila de un slot
+### La interfaz del tag
+
+Una sola fila, porque el tag es un solo pin:
 
 ```
-● wide angle          12 obj · hace 2 h        [ Ir ]  [ Re-pin ]  [ ✕ ]
-● falloff v2           3 obj · ayer 18:40      [ Ir ]  [ Re-pin ]  [ ✕ ]
-○ vacío                                        [ Pin aquí ]
-○ vacío                                        [ Pin aquí ]
-○ vacío                                        [ Pin aquí ]
-○ vacío                                        [ Pin aquí ]
-─────────────────────────────────────────────────────────────
-↩ Antes de restaurar   12 obj · hace 1 min     [ Ir ]
+Nombre   [ wide angle                    ]
+Estado     12 obj · hace 2 h · geometría no incluida · 2 con keyframes
+           [ Pin ]   [ Ir ]
 ```
+
+El **estado es texto estático**, no un campo: es dato de solo lectura y meterlo en una caja editable invita a escribir en ella y además le roba ancho al nombre — que fue exactamente el fallo de la primera implementación.
 
 El **contador de objetos no es decoración**: dice de un vistazo si el pin cubre el rig entero o solo el nodo que tocaste, y es la primera señal de que la jerarquía cambió.
 
 ### Decir la verdad sobre lo que no captura
 
 Un artista va a pinchar un objeto poligonal esperando recuperar el modelado, y no va a volver. Si algún objeto cubierto tiene geometría editable, **la fila lo dice** — *"geometría no incluida"* — en el momento de guardar, no en un manual. Misma regla que ya rige el preview de matwire: una fila no promete un cableado que el writer no va a hacer.
+
+**Y lo mismo con los keyframes, que es peor porque es silencioso.** Recall los captura (casilla `Keyframes` en su interfaz); nosotros no. Consecuencia concreta: si un parámetro está **animado**, restaurar su valor no hace nada visible — la pista lo sobrescribe en el siguiente cambio de frame. El pin sería un no-op justo en los rigs animados, que es media razón de ser de la herramienta. Así que cuando algún objeto cubierto tenga pistas de animación, la fila también lo dice — *"N con keyframes"* — y queda como el primer candidato a ampliar.
 
 ### Identificadores de plugin
 
@@ -88,17 +101,20 @@ El tag usa **`2099078`**. Ocupados hoy en el rango `2099xxx`: `2099069` (plugin)
 
 ## Verificación
 
-- **pytest** sobre el motor puro: recorrido determinista de la jerarquía, construcción de la clave de ubicación, plan de restauración con objetos ausentes y sobrantes, y el pin automático al slot reservado.
+- **pytest** sobre el motor puro: recorrido determinista de la jerarquía, construcción de la clave de ubicación, plan de restauración con objetos ausentes y sobrantes.
 - **Live en C4D**, que es donde esto se demuestra:
   - Pinchar un rig paramétrico (Cloner + Effector + falloff), destrozar los tres, restaurar, y comprobar **parámetros y transformaciones** de los tres — no solo que "se ve bien".
   - Un objeto de plugin de terceros dentro de la jerarquía, para probar que la captura es genérica.
   - Restaurar tras borrar un objeto y añadir otro: conteo correcto y reporte honesto.
   - **Un solo Cmd+Z** revierte una restauración completa.
-  - El slot "Antes de restaurar" permite volver al estado previo a un salto.
+  - El tag `↩ Antes de restaurar` aparece tras el primer salto y permite volver al estado previo; restaurar desde él NO lo sobrescribe.
+  - Varios pins sobre un mismo objeto conviven y cada uno restaura el suyo.
+  - Doble clic en el tag desde el Object Manager restaura (o, si `MSG_EDIT` no llega a un tag, queda anotado como atajo no disponible y el botón `Ir` es el camino).
   - Guardar la escena, reabrirla, y comprobar que los pins siguen ahí y **siguen restaurando** — el caso que el bug del baseline demostró que hay que probar explícitamente.
 
 ## Fuera de alcance
 
 - **La capa automática** (snapshot de documento antes de operaciones destructivas de Sentinel): es v1.36, mecanismo distinto y palabra distinta — ahí sí es un punto de retorno, no una alternativa.
 - **Geometría editable y grafos de nodos**: no están en el contenedor. Capturarlos exigiría clonar y reemplazar el objeto, lo que rompe los `BaseLink` que le apunten (constraints, XPresso, un Sentinel Frame apuntando a esa cámara) — y fallaría en silencio. Si algún día se aborda, va con su spike.
-- **Listado de pins en el panel** y colores por slot.
+- **Iconos personalizados por pin** (color + número o letra, como Recall): varios pins sobre un objeto se ven como iconos idénticos hasta pasar por encima. Es el hueco visual conocido frente a Recall.
+- **Keyframes** (ver arriba: hoy se avisa, no se capturan) y **listado de pins en el panel**.
