@@ -31,7 +31,10 @@ SENTINEL_PIN_TAG_DESCRIPTION = "Tsentinelpin"
 
 # --- Description id layout ------------------------------------------------
 # Una sola fila: sin stride, porque no hay filas que derivar unas de otras.
-ID_PIN_NAME = 1001      # DTYPE_STRING     — nombre del pin (= nombre del tag)
+# SIN campo de nombre propio: cada tag de C4D YA trae uno, en su pestaña
+# Basic — el mismo sitio donde el artista renombra cualquier otro tag. Un
+# segundo campo "Nombre" aquí competía por la misma información con el
+# nombre real del tag (ver ID_PIN_NAME más abajo, degradado a espejo).
 ID_PIN_STATUS = 1002    # DTYPE_STATICTEXT — "12 obj · hace 2 h · ..." (solo
                          # lectura: un DTYPE_STRING pinta una caja que
                          # compite por ancho con el resto de la fila, y fue
@@ -39,10 +42,31 @@ ID_PIN_STATUS = 1002    # DTYPE_STATICTEXT — "12 obj · hace 2 h · ..." (solo
 ID_PIN_STORE = 1003     # DTYPE_BUTTON     — "Pin aquí" / "Re-pin"
 ID_PIN_GO = 1004        # DTYPE_BUTTON     — "Ir"
 
+#: El string exacto pasado a ``RegisterTagPlugin(str=...)`` en
+#: ``sentinel_panel.pyp`` — reusado, nunca retecleado, porque la igualdad
+#: contra este literal es la ÚNICA señal que ``_sync_display_name`` tiene
+#: para "acabo de cargar, C4D reseteó el nombre" (ver esa función). Si
+#: alguna vez diverge del ``str=`` real de ahí, la detección de reset
+#: diverge con él en silencio.
+PIN_TAG_DEFAULT_NAME = "Sentinel Pin"
+
 #: El payload vive bajo un id de contenedor privado dentro del contenedor
 #: propio del tag, así viaja con el .c4d (la Tarea 1 probó el round-trip).
 #: Lejos del rango de ids de descripción de arriba.
 ID_PIN_PAYLOAD = 20000
+
+#: Espejo del nombre REAL del tag (``node.GetName()``, editado en la
+#: pestaña Basic) — ya NO es un campo de descripción (ver arriba). Existe
+#: por una única razón, medida en vivo: C4D resetea el nombre de un tag
+#: de plugin Python al string de registro en cada carga, y el nombre real
+#: es la única pieza de este feature que NO sobrevive el ciclo
+#: guardar/recargar por sí sola (todo lo demás — payload, flags — vive en
+#: el contenedor propio y sí sobrevive). ``_sync_display_name`` escribe
+#: aquí cuando ve el nombre real cambiado (nunca al revés salvo el caso
+#: de reset) — ver esa función para la política completa. Se conserva el
+#: mismo id numérico (1001) que tenía como campo de descripción: ya no es
+#: uno, pero renumerar no aporta nada y sí ensucia el diff.
+ID_PIN_NAME = 1001
 
 #: Resultado en texto de la última restauración desde ESTE tag (p.ej. "9 de
 #: 12 restaurados · 3 no encontrados"). Se escribe directo en el contenedor
@@ -99,16 +123,6 @@ def _set_bc_value(bc, method_name, key, value):
     else:
         try:
             bc[key] = value
-        except Exception:
-            pass
-
-
-def _set_node_value(node, param_id, value):
-    try:
-        node[param_id] = value
-    except Exception:
-        try:
-            node.SetParameter(param_id, value, c4d.DESCFLAGS_SET_0)
         except Exception:
             pass
 
@@ -504,47 +518,58 @@ def _capture_safety_pin(node, obj, doc):
     return _store_pin(tag)
 
 
-def _reapply_display_name(node):
-    """Self-heal the tag's REAL name — ``node.GetName()``, what the Object
-    Manager shows — against its source of truth.
+def _sync_display_name(node):
+    """Keep the tag's OWN name (``node.GetName()``, edited in the Basic
+    tab like every other C4D tag — no dedicated field on this tag exists
+    anymore) as the single source of truth for a pin's name, with the
+    ``ID_PIN_NAME`` container mirror existing for ONE reason only:
+    surviving the one thing a live rename cannot — a reload.
 
-    Confirmed live (Task 4 coordinator report, after the TAG_MULTIPLE
-    fix): C4D resets a Python-registered plugin tag's real name back to
-    the plugin's REGISTRATION STRING ("Sentinel Pin") on every load,
-    discarding whatever ``SetName`` put there in the previous session —
-    even though the tag's own stored payload/parameters round-trip fine.
-    Left alone, every pin (and the safety tag) reads the identical
-    generic label after a reload, defeating the entire reason this model
-    was chosen over six slots: telling pins apart in the Object Manager
-    without opening any of them.
+    MEASURED, twice, live (both facts load-bearing to the policy below):
+    1. (Coordinator, first pass) C4D resets a Python-registered plugin
+       tag's real name back to its REGISTRATION STRING
+       (``PIN_TAG_DEFAULT_NAME``) on every load, discarding whatever the
+       artist had typed — even though every other piece of the tag's own
+       container round-trips fine. This reset is the ENTIRE reason the
+       mirror exists; a tag type whose name round-tripped normally would
+       need none of this.
+    2. (Coordinator, second pass — the bug this rewrite fixes) an EARLIER
+       version of this function trusted the mirror over the live name any
+       time the two disagreed. Since ``Execute()`` (the hook this runs
+       from) ticks continuously, a live rename disagreed with the
+       (stale) mirror for exactly one tick and then got SILENTLY
+       REVERTED a moment later — worse than an instant failure, because
+       the artist saw the rename work, looked away, and it undid itself
+       behind their back.
 
-    Source of truth, decided explicitly rather than left to drift:
-    - ORDINARY pin: the ``ID_PIN_NAME`` container field (the "Nombre" row
-      in the Attribute Manager) wins over the raw tag name. A rename
-      typed directly into the Object Manager bypasses ``SetDParameter``
-      entirely — that hook only fires for edits made THROUGH the
-      description field — so a direct Object Manager rename never
-      reaches the container. That makes the container the only value
-      that reliably survives a save/reload cycle for this tag type.
-      Overwriting a stray Object Manager rename back to the field's
-      value is recoverable (re-type it in the field); silently losing
-      the field's value — and with it the ability to tell pins apart —
-      on the next save would not be.
-    - SAFETY tag: the source of truth is the constant
-      ``pins.SAFETY_PIN_NAME``, never its own ``ID_PIN_NAME`` field.
-      ``_capture_safety_pin`` sets the tag's real name with
-      ``tag.SetName(...)`` directly — the exact same bypass of
-      ``SetDParameter`` described above — so that field was NEVER
-      written for the safety tag and still holds its stale creation-time
-      default. Trusting it would just re-apply "Sentinel Pin" again. The
-      field itself is repaired to match too, so the Attribute Manager's
-      own "Nombre" row stops disagreeing with the Object Manager for
-      this one tag (this is exactly the drift the coordinator's live
-      diagnostic caught: ``param NAME='Sentinel Pin' (la red)``).
+    Policy, inverted from that first attempt: the TAG NAME wins,
+    unconditionally, with exactly one exception — the reset signature
+    itself. The mirror is consulted ONLY when the current name reads
+    EXACTLY ``PIN_TAG_DEFAULT_NAME``, because that is indistinguishable
+    from "a load just erased it" without also being wrong to restore
+    from in that case. Any other name — including one the artist typed
+    a moment ago — is trusted as-is and copied INTO the mirror, so the
+    mirror stays current for the NEXT load without ever fighting the
+    CURRENT one.
 
-    Idempotent by construction (checks before writing) — safe to call on
-    every ``Execute`` tick without a separate dirty flag; in the steady
-    state (no drift) it is a cheap no-op read.
+    Edge case, noted rather than "solved": an artist who names a pin
+    literally "Sentinel Pin" is indistinguishable from a fresh load —
+    this function will try to "restore" from the mirror every tick. The
+    consequence is nil (the mirror holds that exact same string, so the
+    restore is a no-op, never a wrong name) — do not "fix" this with
+    cleverness later; the ambiguity is genuinely unresolvable from inside
+    this function and happens to be harmless.
+
+    SAFETY tag: never goes through the general branch above. Its name is
+    unconditionally forced to ``pins.SAFETY_PIN_NAME`` — including
+    repairing its OWN mirror to match, since ``_capture_safety_pin`` sets
+    it with ``tag.SetName(...)`` directly and never touches the mirror,
+    so a fresh safety tag's mirror starts stale too. Renaming the safety
+    tag must never be a way to turn it into an ordinary pin.
+
+    Idempotent — safe to call on every ``Execute`` tick without a
+    separate dirty flag; the steady state (name already correct, mirror
+    already current) is a cheap read-only comparison.
     """
     bc = node.GetDataInstance()
     if bc is None:
@@ -553,15 +578,32 @@ def _reapply_display_name(node):
         target = pins.SAFETY_PIN_NAME
         if bc.GetString(ID_PIN_NAME, "") != target:
             bc.SetString(ID_PIN_NAME, target)
-    else:
-        target = bc.GetString(ID_PIN_NAME, "")
-    if not target:
+        if _safe_node_name(node, "") != target:
+            try:
+                node.SetName(target)
+            except Exception:
+                pass
         return
-    if _safe_node_name(node, "") != target:
-        try:
-            node.SetName(target)
-        except Exception:
-            pass
+
+    current = _safe_node_name(node, "")
+    if current == PIN_TAG_DEFAULT_NAME:
+        # Reset signature — restore from the mirror, if there is one. A
+        # brand-new, never-named pin also reads the default here; its
+        # mirror is empty, so this is a correct no-op for that case too.
+        mirrored = bc.GetString(ID_PIN_NAME, "")
+        if mirrored and mirrored != current:
+            try:
+                node.SetName(mirrored)
+            except Exception:
+                pass
+        return
+
+    # Any other name is authoritative, including one the artist just
+    # typed — never written back to node.SetName here. Only the mirror
+    # follows the name, so the NEXT load has something correct to
+    # restore from.
+    if bc.GetString(ID_PIN_NAME, "") != current:
+        bc.SetString(ID_PIN_NAME, current)
 
 
 def _restore(node):
@@ -682,14 +724,6 @@ except Exception:
 class SentinelPinTag(_TagDataBase):
     """TagData shell for the Sentinel Pin single-pin state store."""
 
-    def _init_attr(self, node, py_type, param_id):
-        init_attr = getattr(self, "InitAttr", None)
-        if callable(init_attr):
-            try:
-                init_attr(node, py_type, param_id)
-            except Exception:
-                pass
-
     def _set_description_parameter(
         self, node, description, parameter_id, dtype, name, parent,
         animatable=True,
@@ -720,8 +754,6 @@ class SentinelPinTag(_TagDataBase):
             return False
 
     def Init(self, node, isCloneInit=False):
-        self._init_attr(node, str, ID_PIN_NAME)
-        _set_node_value(node, ID_PIN_NAME, _safe_node_name(node, ""))
         return True
 
     def GetDDescription(self, node, description, flags):
@@ -735,11 +767,10 @@ class SentinelPinTag(_TagDataBase):
         # Una sola fila, sin grupo multi-columna: sin columnas que
         # competir por ancho, no hay nada que desalinear ni truncar (la
         # razón entera de este rehecho — ver el docstring del módulo).
-        if not self._set_description_parameter(
-            node, description, ID_PIN_NAME, c4d.DTYPE_STRING, "Nombre", root,
-            animatable=False
-        ):
-            return False
+        # SIN campo de nombre: el nombre del tag YA vive en su pestaña
+        # Basic (ver ID_PIN_NAME/PIN_TAG_DEFAULT_NAME arriba) — un
+        # segundo campo aquí competía por la misma información y perdía
+        # renombrados en vivo (ver _sync_display_name).
         if not self._set_description_parameter(
             node, description, ID_PIN_STATUS, c4d.DTYPE_STATICTEXT, "Estado", root,
             animatable=False
@@ -773,14 +804,11 @@ class SentinelPinTag(_TagDataBase):
         if parameter_id == ID_PIN_STATUS:
             # Read-only derived string: swallow writes.
             return True, flags | c4d.DESCFLAGS_SET_PARAM_SET
-        if parameter_id == ID_PIN_NAME:
-            # Propagar al nombre del TAG (no del objeto etiquetado): es lo
-            # que hace que el Object Manager muestre el pin sin abrir nada,
-            # que es media razón de que esto sea un tag y no un diálogo.
-            try:
-                node.SetName(str(data))
-            except Exception:
-                pass
+        # No ID_PIN_NAME branch anymore: there is no name field in the
+        # description to write through (see GetDDescription) — renaming
+        # happens in the Basic tab like any other tag, and
+        # _sync_display_name (called from Execute) mirrors it into the
+        # container on its own, without needing this hook at all.
         return False
 
     def GetDEnabling(self, node, cid, t_data, flags, itemdesc):
@@ -790,9 +818,10 @@ class SentinelPinTag(_TagDataBase):
         return True
 
     def Execute(self, tag, doc, op, bt, priority, flags):
-        # The GUARANTEED path the display-name self-heal relies on (see
-        # _reapply_display_name for the bug and the source-of-truth
-        # rules): Execute already runs on every scene re-evaluation for
+        # The GUARANTEED path the display-name sync relies on (see
+        # _sync_display_name for the two measured bugs and the resulting
+        # policy — tag name wins, mirror only feeds it back after a
+        # reset): Execute already runs on every scene re-evaluation for
         # this exact reason elsewhere in the plugin (frame_tag.py's own
         # Execute — "every change re-evaluates the scene", same
         # catch-all pattern) — including the evaluation a document load
@@ -800,7 +829,7 @@ class SentinelPinTag(_TagDataBase):
         # artist ever opens THIS tag in the Attribute Manager, which is
         # the actual requirement: the Object Manager has to show the
         # right label without opening anything.
-        _reapply_display_name(tag)
+        _sync_display_name(tag)
         return c4d.EXECUTIONRESULT_OK
 
     def _handle_command(self, node, data):
@@ -840,8 +869,8 @@ class SentinelPinTag(_TagDataBase):
         load_type = getattr(c4d, "MSG_DOCUMENTINFO_TYPE_LOAD", None)
         if document_info is not None and mid == document_info:
             # Earlier-firing ACCELERATOR on top of Execute() above, which
-            # is the actual guaranteed path the name self-heal depends on
-            # — whether this message reaches a TagData at all is NOT
+            # is the actual guaranteed path the name sync depends on —
+            # whether this message reaches a TagData at all is NOT
             # verified (same honesty as the MSG_EDIT accelerator), so a
             # silent no-op here just means the fix lands one evaluation
             # tick later via Execute instead of immediately on load. Not
@@ -852,7 +881,7 @@ class SentinelPinTag(_TagDataBase):
             except Exception:
                 msg_type = None
             if load_type is not None and msg_type == load_type:
-                _reapply_display_name(node)
+                _sync_display_name(node)
         try:
             return super().Message(node, mid, data)
         except AttributeError:

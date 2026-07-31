@@ -52,12 +52,14 @@ try:
         SENTINEL_PIN_TAG_PLUGIN_ID,
         SentinelPinTag,
         _SENTINEL_PIN_TAG_AVAILABLE,
+        PIN_TAG_DEFAULT_NAME,
     )
     _PIN_TAG_IMPORT_ERROR = None
 except Exception as _exc:
     SENTINEL_PIN_TAG_PLUGIN_ID = 2099078
     SentinelPinTag = None
     _SENTINEL_PIN_TAG_AVAILABLE = False
+    PIN_TAG_DEFAULT_NAME = "Sentinel Pin"
     _PIN_TAG_IMPORT_ERROR = _exc
 
 # Compatibility surface for tests, fixture runner, and C4D scripts that import
@@ -234,7 +236,12 @@ def Register():
             pin_tag_info = c4d.TAG_VISIBLE | c4d.TAG_EXPRESSION | c4d.TAG_MULTIPLE
             pin_tag_ok = plugins.RegisterTagPlugin(
                 id=SENTINEL_PIN_TAG_PLUGIN_ID,
-                str="Sentinel Pin",
+                # PIN_TAG_DEFAULT_NAME, not a re-typed literal: pin_tag.py's
+                # display-name sync detects "a load just reset this name"
+                # by comparing against that exact same constant, so this
+                # registration string and that comparison must never drift
+                # apart (see pin_tag.py for the full reasoning).
+                str=PIN_TAG_DEFAULT_NAME,
                 info=pin_tag_info,
                 g=SentinelPinTag,
                 description="Tsentinelpin",

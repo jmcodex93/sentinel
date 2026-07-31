@@ -284,7 +284,22 @@ def test_restore_from_the_safety_tag_does_not_back_up_itself(sentinel_module):
 # reload machinery itself — same class of limitation as the eviction bug
 # above: the trigger is C4D-internal, the RESPONSE is ours to test.
 
-def test_reapply_display_name_repairs_an_ordinary_pin_after_a_simulated_reload(sentinel_module):
+# --- Second live pass: the mirror-wins policy above was WRONG ----------
+#
+# C4D ticks Execute() continuously. Trusting the mirror any time it
+# disagreed with the live name (the first version of this fix) meant a
+# LIVE rename disagreed with the (stale) mirror for exactly one tick and
+# then got silently reverted a moment later — the coordinator measured
+# it directly: renamed a tag natively (SetName, exactly what the Basic
+# tab does), read it back immediately (correct), read it back on the
+# NEXT call (reverted). That's worse than an instant failure: the artist
+# sees the rename work, looks away, and finds it undone.
+#
+# The policy is inverted below: the tag's own name wins, unconditionally,
+# except when it reads EXACTLY the plugin's registration default — the
+# one unambiguous signal that a load (not a rename) produced it.
+
+def test_sync_display_name_restores_an_ordinary_pin_after_a_simulated_reload(sentinel_module):
     pin_tag = importlib.import_module("sentinel.ui.pin_tag")
     import c4d
 
@@ -292,26 +307,27 @@ def test_reapply_display_name_repairs_an_ordinary_pin_after_a_simulated_reload(s
     host = FakeObject("rig", c4d, doc)
     tag = _make_pin_tag(host, pin_tag, c4d, name="close up")
 
-    # Simulate what a reload does: the container field survives, the raw
+    # Simulate what a reload does: the container mirror survives, the raw
     # tag name reverts to the plugin's registration string.
-    tag.SetName("Sentinel Pin")
+    tag.SetName(pin_tag.PIN_TAG_DEFAULT_NAME)
 
-    pin_tag._reapply_display_name(tag)
+    pin_tag._sync_display_name(tag)
 
     assert tag.GetName() == "close up"
-    # The field itself is untouched — it was already the correct value,
-    # the raw name was the only thing that drifted.
     assert tag.GetDataInstance().GetString(pin_tag.ID_PIN_NAME) == "close up"
 
 
-def test_reapply_display_name_repairs_the_safety_tag_from_the_constant_not_its_own_field(sentinel_module):
-    """The safety tag's OWN ID_PIN_NAME field is never written at
+def test_sync_display_name_repairs_the_safety_tag_from_the_constant_not_its_own_field(sentinel_module):
+    """The safety tag's OWN ID_PIN_NAME mirror is never written at
     creation time (_capture_safety_pin calls SetName directly, bypassing
-    SetDParameter) — exactly the drift the coordinator's live diagnostic
-    caught: ``param NAME='Sentinel Pin' (la red)``. Trusting that field
-    would just re-apply the wrong default, so the safety tag must repair
-    from ``pins.SAFETY_PIN_NAME`` instead — and the field gets fixed too,
-    closing the gap for good instead of leaving it to drift forever."""
+    the mirror-write path) — exactly the drift the coordinator's live
+    diagnostic caught: ``param NAME='Sentinel Pin' (la red)``. Trusting
+    that mirror would just re-apply the wrong default, so the safety tag
+    must repair from ``pins.SAFETY_PIN_NAME`` instead — and the mirror
+    gets fixed too, closing the gap for good instead of leaving it to
+    drift forever. Unlike an ordinary pin, this is NOT policy-invertible:
+    renaming the safety tag must never be a path to becoming an ordinary
+    pin, so it always wins over whatever name the artist gave it."""
     pin_tag = importlib.import_module("sentinel.ui.pin_tag")
     from sentinel import pins
     import c4d
@@ -322,25 +338,56 @@ def test_reapply_display_name_repairs_the_safety_tag_from_the_constant_not_its_o
     assert pin_tag._capture_safety_pin(original, host, doc) is True
     safety = [t for t in host.GetTags() if t is not original][0]
 
-    # Simulate the reload: both the raw name AND its never-written field
-    # read the stale plugin default.
-    safety.SetName("Sentinel Pin")
-    assert safety.GetDataInstance().GetString(pin_tag.ID_PIN_NAME, "") in ("", "Sentinel Pin")
+    # Simulate the reload exactly as the coordinator's live diagnostic
+    # showed it: the raw name reverts to the plugin default AND its
+    # never-written mirror explicitly reads that same default too — a
+    # non-empty, wrong value, not merely an empty one, so a mutation that
+    # trusted "whatever's in the mirror, if anything" instead of the
+    # constant would read this as legitimate and fail to distinguish.
+    safety.SetName(pin_tag.PIN_TAG_DEFAULT_NAME)
+    safety.GetDataInstance().SetString(pin_tag.ID_PIN_NAME, pin_tag.PIN_TAG_DEFAULT_NAME)
 
-    pin_tag._reapply_display_name(safety)
+    pin_tag._sync_display_name(safety)
 
     assert safety.GetName() == pins.SAFETY_PIN_NAME
     assert safety.GetDataInstance().GetString(pin_tag.ID_PIN_NAME) == pins.SAFETY_PIN_NAME
 
+    # And renaming it by hand still doesn't stick — every tick forces it
+    # back, same as the reload case above.
+    safety.SetName("promoted to ordinary pin?")
+    pin_tag._sync_display_name(safety)
+    assert safety.GetName() == pins.SAFETY_PIN_NAME
 
-def test_reapply_display_name_prefers_the_field_over_a_direct_object_manager_rename(sentinel_module):
-    """Explicit policy, per the coordinator's ask ('decide which wins'):
-    the ID_PIN_NAME field (the AM's 'Nombre' row) is the source of truth
-    for an ordinary pin. A rename typed directly into the Object Manager
-    bypasses SetDParameter and never reaches that field, so it cannot
-    reliably survive a save/reload — the self-heal overwrites it back to
-    the field's value rather than silently accepting (and, on the next
-    save, losing) an untracked rename."""
+
+def test_sync_display_name_never_reverts_a_live_rename(sentinel_module):
+    """The exact symptom the coordinator measured and pins down here:
+    rename a tag natively (SetName — what the Basic tab does), then call
+    the sync repeatedly (Execute ticks continuously) and confirm the name
+    the artist typed survives every single tick, not just the first."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+    tag = _make_pin_tag(host, pin_tag, c4d, name="wide angle")
+
+    tag.SetName("gran angular")
+
+    for _ in range(5):
+        pin_tag._sync_display_name(tag)
+        assert tag.GetName() == "gran angular", "a live rename must never revert, tick or no tick"
+
+    # The mirror follows the rename, so the NEXT load has something
+    # correct to restore from.
+    assert tag.GetDataInstance().GetString(pin_tag.ID_PIN_NAME) == "gran angular"
+
+
+def test_sync_display_name_direct_object_manager_rename_also_survives(sentinel_module):
+    """A rename typed straight into the Object Manager is the SAME
+    SetName() call the Basic tab field makes — there is no separate path
+    to distinguish anymore now that the description has no name field of
+    its own, so this is really the same case as the test above, checked
+    from the angle the coordinator originally raised it from."""
     pin_tag = importlib.import_module("sentinel.ui.pin_tag")
     import c4d
 
@@ -348,26 +395,41 @@ def test_reapply_display_name_prefers_the_field_over_a_direct_object_manager_ren
     host = FakeObject("rig", c4d, doc)
     tag = _make_pin_tag(host, pin_tag, c4d, name="close up")
 
-    # A rename straight in the Object Manager: only the raw name changes,
-    # the field (only ever touched via SetDParameter) does not.
     tag.SetName("renamed via OM")
+    pin_tag._sync_display_name(tag)
 
-    pin_tag._reapply_display_name(tag)
-
-    assert tag.GetName() == "close up"
+    assert tag.GetName() == "renamed via OM"
 
 
-def test_reapply_display_name_is_idempotent(sentinel_module):
+def test_sync_display_name_a_fresh_never_named_pin_stays_at_the_default(sentinel_module):
+    """A brand-new pin (never renamed, never synced) reads the plugin
+    default and has an empty mirror — that must be a correct no-op, not
+    a crash or a spurious rename to empty string."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+    tag = host.MakeTag(pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID)
+    assert tag.GetName() == pin_tag.PIN_TAG_DEFAULT_NAME
+    assert tag.GetDataInstance().GetString(pin_tag.ID_PIN_NAME, "") == ""
+
+    pin_tag._sync_display_name(tag)
+
+    assert tag.GetName() == pin_tag.PIN_TAG_DEFAULT_NAME
+
+
+def test_sync_display_name_is_idempotent(sentinel_module):
     pin_tag = importlib.import_module("sentinel.ui.pin_tag")
     import c4d
 
     doc = FakeDoc()
     host = FakeObject("rig", c4d, doc)
     tag = _make_pin_tag(host, pin_tag, c4d, name="close up")
-    tag.SetName("Sentinel Pin")
 
-    pin_tag._reapply_display_name(tag)
-    pin_tag._reapply_display_name(tag)
-    pin_tag._reapply_display_name(tag)
+    pin_tag._sync_display_name(tag)
+    pin_tag._sync_display_name(tag)
+    pin_tag._sync_display_name(tag)
 
     assert tag.GetName() == "close up"
+    assert tag.GetDataInstance().GetString(pin_tag.ID_PIN_NAME) == "close up"
