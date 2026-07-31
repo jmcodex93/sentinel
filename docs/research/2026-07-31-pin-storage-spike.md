@@ -113,3 +113,47 @@ Lo que sí hay: `frame_tag.py:1775-1781` fija `DESC_CUSTOMGUI = CUSTOMGUI_BUTTON
 **Lección, segunda vez en esta misma feature** (la primera fue el campo de nombre): **antes de construir algo para un tag, mirar qué trae ya su pestaña Basic**. Nombre, icono y color están ahí. Duplicarlos crea dos controles compitiendo, y el nuestro pierde.
 
 Todo el código del icono se retiró. Distinguir pins en el Object Manager se hace con el `Icon Color` nativo.
+
+---
+
+## 6. Keyframes (spike de la Tarea 6)
+
+**Por qué**: hoy el pin solo AVISA de que hay pistas animadas. Si un parámetro está animado, reponer su valor no cambia nada visible — la pista lo sobrescribe en el siguiente frame — así que el pin es un **no-op silencioso justo en los rigs animados**.
+
+### Vías descartadas, medidas
+
+| Vía | Resultado |
+|---|---|
+| `TagData.Read` / `.Write` (persistencia binaria propia en el `.c4d`) | **no expuestos en Python** |
+| `HyperFile.WriteObject` (serializar nodos a memoria) | **no existe** en el binding de Python |
+| `BaseContainer.SetData(id, bytes)` | **falla**: `could not convert 'bytes'` |
+| `CTrack.GetClone()` | funciona y conserva las claves… pero un clon es un NODO, y un contenedor no guarda nodos |
+
+O sea: **serializar nodos no es una vía**. La única es guardar las claves a mano en contenedores anidados.
+
+### Lo que hay que guardar, medido
+
+Por **clave** (`CKey`), y todo cabe en un `BaseContainer`:
+
+| Getter | Ejemplo |
+|---|---|
+| `GetTime()` | `BaseTime` — **el contenedor lo admite directamente** (`SetData` OK) |
+| `GetValue()` | `100.0` |
+| `GetInterpolation()` | `1` |
+| `GetValueLeft()` / `GetValueRight()` | tangentes en valor |
+| `GetTimeLeft()` / `GetTimeRight()` | tangentes en tiempo |
+| `GetAutomaticTangentMode()` | `1` |
+
+Por **pista** (`CTrack`):
+
+| Getter | Ejemplo |
+|---|---|
+| `GetDescriptionID()` | `((903, 23, 5155), (1000, 19, 23))` — la clave de reemparejamiento |
+| `GetTrackCategory()` | `1` = `CTRACK_CATEGORY_VALUE` |
+| `GetName()` | `Position . X` |
+
+### Alcance que impone la medición
+
+Categorías existentes: `CTRACK_CATEGORY_VALUE`, `CTRACK_CATEGORY_DATA`, `CTRACK_CATEGORY_PLUGIN`.
+
+Solo **VALUE** son escalares con claves simples. `DATA` y `PLUGIN` (PLA, morphs, sonido, pistas de terceros) tienen otra estructura y **quedan fuera** — pero, como la geometría, **se avisan** en la fila del tag en vez de callarse. Prometer que capturamos "los keyframes" y no reponer una pista PLA sería exactamente el no-op silencioso que esta tarea viene a eliminar.
