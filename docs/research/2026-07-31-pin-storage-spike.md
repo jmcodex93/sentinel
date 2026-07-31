@@ -83,3 +83,23 @@ Lo que sí hay: `frame_tag.py:1775-1781` fija `DESC_CUSTOMGUI = CUSTOMGUI_BUTTON
 - `AddUndo(UNDOTYPE_CHANGE, obj)` antes de escribir, todo dentro de un `StartUndo`/`EndUndo`: un solo paso.
 - **Al verificar un undo, re-buscar el objeto en el documento** — nunca leer el handle previo.
 - Advertencia de geometría: `isinstance(obj, c4d.PointObject)`.
+
+---
+
+## 5. Iconos por instancia de tag (añadido 2026-07-31, tras comparar con la UI de Recall)
+
+**Por qué**: elegimos *un tag por pin* con el argumento de que se ven los estados en el Object Manager sin abrir nada. Sin icono propio, varios pins son iconos idénticos y hay que pasar por encima para leer el nombre — el hueco ataca justo la razón del modelo. Recall dedica una sección entera a esto (color + número o letra).
+
+| Pieza | Resultado |
+|---|---|
+| `c4d.MSG_GETCUSTOMICON` | existe (**1001090**) |
+| `c4d.IconData` | existe; campos `bmp`, `x`, `y`, `w`, `h`, `flags` |
+| `GeClipMap.Init(32,32,32)` | OK |
+| `SetColor` + `FillRect` | OK — píxel central leído `[220,80,60]` |
+| `GeClipMap.GetDefaultFont(GE_FONT_DEFAULT_SYSTEM)` | disponible |
+| `SetFont` + `TextAt` | **dibuja de verdad**: 0 píxeles distintos del fondo antes, **95 después** |
+| `GetBitmap()` | devuelve un `BaseBitmap` 32×32 usable |
+
+**Veredicto: viable.** Se genera el icono en memoria (fondo del color elegido + carácter encima) y se entrega respondiendo a `MSG_GETCUSTOMICON` con un `IconData`.
+
+**Lo que NO se pudo medir aquí**: que un `TagData` reciba efectivamente `MSG_GETCUSTOMICON` y que C4D pinte el `IconData` devuelto — eso exige el código en el tag y un reinicio. Es el punto de verificación de la tarea correspondiente. `SetFont` exige un `BaseContainer` de descripción de fuente: pasar `None` lanza.

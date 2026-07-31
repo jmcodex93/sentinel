@@ -415,6 +415,66 @@ git add plugin/sentinel/ui/pin_tag.py
 git commit -m "feat(pin): restaurar con tag de seguridad, un solo undo, reporte y doble clic"
 ```
 
+### Task 5 (NUEVA): icono por pin — color y carácter
+
+> **Por qué entra en v1.35 y no después.** Elegimos *un tag por pin* argumentando que se ven los estados en el Object Manager sin abrir nada. Sin icono propio, varios pins se ven como iconos idénticos: el hueco ataca la razón misma del modelo. Referencia: Recall dedica una sección entera a esto.
+
+**Files:** modify `plugin/sentinel/ui/pin_tag.py`, `plugin/sentinel/pins.py`, `tests/test_pins.py`.
+
+Medido en el spike (§5) — usar estos hechos, no re-descubrirlos: `MSG_GETCUSTOMICON` = 1001090; `IconData` con campos `bmp/x/y/w/h/flags`; `GeClipMap.Init(32,32,32)` + `SetColor`/`FillRect` + `GetDefaultFont(GE_FONT_DEFAULT_SYSTEM)` + `SetFont` + `TextAt` **dibujan de verdad** (95 píxeles frente a 0); `SetFont(None, ...)` lanza.
+
+- [ ] **Step 1: motor puro** — en `pins.py`, la paleta y la derivación del carácter:
+
+```python
+#: Paleta de identidad del pin. Siete tonos legibles sobre el fondo oscuro
+#: del Object Manager, más "sin color" como valor por defecto — un pin sin
+#: personalizar debe verse como el icono normal del plugin, no como un color
+#: elegido al azar por nosotros.
+PIN_COLORS = [
+    ("none", None), ("red", (200, 70, 60)), ("orange", (215, 130, 50)),
+    ("yellow", (210, 190, 70)), ("green", (95, 175, 95)),
+    ("blue", (80, 130, 210)), ("violet", (150, 110, 200)),
+    ("grey", (150, 150, 150)),
+]
+
+
+def pin_badge(label, index):
+    """El carácter que va sobre el icono: la primera letra del nombre si el
+    artista puso uno, y si no el ordinal del pin sobre su objeto.
+
+    Un solo carácter a propósito: en 32x32 dos ya no se leen, y el nombre
+    completo está a un hover de distancia."""
+    text = (label or "").strip()
+    if text:
+        return text[0].upper()
+    return str(index + 1)[-1]
+```
+
+Tests: paleta con `none` primero; `pin_badge("wide angle", 0) == "W"`; `pin_badge("", 2) == "3"`; `pin_badge("  ", 0) == "1"`; un nombre unicode devuelve su primera letra.
+
+- [ ] **Step 2: parámetro de color en el tag** — un `DTYPE_LONG` con ciclo (`ID_PIN_COLOR = 1005`) construido desde `PIN_COLORS`, `animatable=False`, etiqueta `Color`. Default `none`.
+
+- [ ] **Step 3: el icono** — responder a `MSG_GETCUSTOMICON` en `Message`: si el color es `none`, devolver False (icono normal del plugin). Si no, componer con `GeClipMap` el fondo del color y `pin_badge(...)` encima en blanco, y rellenar el `IconData` que llega en `data`. Cachear el bitmap por (color, carácter) — este mensaje se dispara al pintar el Object Manager, así que regenerarlo en cada llamada es coste por frame.
+
+- [ ] **Step 4: verificación live (pedir reinicio)** — tres pins con colores distintos sobre un objeto se distinguen en el Object Manager; el pin sin color se ve como el icono normal; cambiar el color repinta; el carácter refleja el nombre y cambia al renombrar. **Si `MSG_GETCUSTOMICON` no llega a un TagData, reportarlo** — no es una limitación aceptable aquí, porque es la razón de la tarea.
+
+- [ ] **Step 5: commit** `feat(pin): icono por pin — color y carácter en el Object Manager`
+
+### Task 6 (NUEVA): keyframes
+
+> **Por qué entra.** Hoy el pin solo **avisa** de que hay pistas de animación. Si un parámetro está animado, reponer su valor no cambia nada visible —la pista lo sobrescribe en el siguiente frame— así que el pin es un no-op silencioso justo en los rigs animados, que son media razón de ser de la herramienta. Recall los captura.
+
+**Files:** modify `plugin/sentinel/pins.py`, `plugin/sentinel/ui/pin_tag.py`; tests.
+
+- [ ] **Step 1: SPIKE live (bloqueante)** — antes de escribir nada, medir en C4D y anotar en `docs/research/2026-07-31-pin-storage-spike.md` §6:
+  1. Qué expone una `CCurve`/`CKey` que haya que guardar para reproducir una pista: tiempo, valor, interpolación, tangentes. Listar los getters reales.
+  2. Si una `CTrack` se puede **clonar** (`GetClone`) y re-insertar en el objeto — sería mucho más fiable que serializar claves a mano.
+  3. Si un `BaseContainer` puede guardar lo necesario, o hace falta otra representación.
+  4. Cómo se identifica una pista para reemparejarla al restaurar (su `DescID`).
+  `plugin/sentinel/keyframes.py` (v1.30) ya recorre `CTrack`s incluidas las de tags — leerlo antes.
+
+- [ ] **Step 2 en adelante:** el plan concreto lo fija el spike. Restricciones que NO cambian: un solo paso de undo; restaurar no crea ni borra objetos; lo que no se reencuentre se reporta; y el aviso `" · N con keyframes"` se sustituye por la captura real cuando esté.
+
 ### Task 5: Docs and version
 
 - [ ] **Step 1:** `PLUGIN_VERSION = "1.35.0"` in `plugin/sentinel/__init__.py`; update the CLAUDE.md header and the `## Current Status` heading.
