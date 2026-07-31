@@ -284,6 +284,20 @@ git add plugin/sentinel/pins.py tests/test_pins.py
 git commit -m "feat(pins): motor puro — claves de ubicacion, orden de recorrido, plan de restauracion"
 ```
 
+> **CORRECCIÓN (2026-07-31, review de la Tarea 2).** La implementación de
+> referencia de `location_keys` que aparece arriba **produce claves que
+> colisionan** y NO debe copiarse tal cual. Cuatro casos verificados: un objeto
+> llamado literalmente `Cube[0]` junto a duplicados `Cube`; un nombre con `/`
+> junto a una ruta anidada equivalente; un hijo con nombre vacío contra la raíz;
+> y varios hijos sin nombre. Como la clave es lo ÚNICO que reempareja estado con
+> objeto, una colisión aplica el estado al objeto equivocado **en silencio**.
+>
+> El código correcto **escapa** `\`, `/` y `[` en cada nombre y **indexa
+> siempre** (`nombre[i]`), no solo a los duplicados. Eso además arregla una
+> inestabilidad que nadie había visto: un hijo único pasaba de `ctrl` a
+> `ctrl[0]` en cuanto aparecía un hermano homónimo, invalidando en silencio
+> todos los pins existentes. Ver el fichero real `plugin/sentinel/pins.py`.
+
 ### Task 3: The tag — registration, description UI, and storing a pin
 
 **Files:** Create `plugin/sentinel/ui/pin_tag.py`, `plugin/res/description/Tsentinelpin.res`, `plugin/res/description/Tsentinelpin.h`, `plugin/res/strings_us/description/Tsentinelpin.str`; modify `plugin/sentinel_panel.pyp`.
