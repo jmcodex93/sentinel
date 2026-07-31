@@ -504,6 +504,66 @@ def _capture_safety_pin(node, obj, doc):
     return _store_pin(tag)
 
 
+def _reapply_display_name(node):
+    """Self-heal the tag's REAL name — ``node.GetName()``, what the Object
+    Manager shows — against its source of truth.
+
+    Confirmed live (Task 4 coordinator report, after the TAG_MULTIPLE
+    fix): C4D resets a Python-registered plugin tag's real name back to
+    the plugin's REGISTRATION STRING ("Sentinel Pin") on every load,
+    discarding whatever ``SetName`` put there in the previous session —
+    even though the tag's own stored payload/parameters round-trip fine.
+    Left alone, every pin (and the safety tag) reads the identical
+    generic label after a reload, defeating the entire reason this model
+    was chosen over six slots: telling pins apart in the Object Manager
+    without opening any of them.
+
+    Source of truth, decided explicitly rather than left to drift:
+    - ORDINARY pin: the ``ID_PIN_NAME`` container field (the "Nombre" row
+      in the Attribute Manager) wins over the raw tag name. A rename
+      typed directly into the Object Manager bypasses ``SetDParameter``
+      entirely — that hook only fires for edits made THROUGH the
+      description field — so a direct Object Manager rename never
+      reaches the container. That makes the container the only value
+      that reliably survives a save/reload cycle for this tag type.
+      Overwriting a stray Object Manager rename back to the field's
+      value is recoverable (re-type it in the field); silently losing
+      the field's value — and with it the ability to tell pins apart —
+      on the next save would not be.
+    - SAFETY tag: the source of truth is the constant
+      ``pins.SAFETY_PIN_NAME``, never its own ``ID_PIN_NAME`` field.
+      ``_capture_safety_pin`` sets the tag's real name with
+      ``tag.SetName(...)`` directly — the exact same bypass of
+      ``SetDParameter`` described above — so that field was NEVER
+      written for the safety tag and still holds its stale creation-time
+      default. Trusting it would just re-apply "Sentinel Pin" again. The
+      field itself is repaired to match too, so the Attribute Manager's
+      own "Nombre" row stops disagreeing with the Object Manager for
+      this one tag (this is exactly the drift the coordinator's live
+      diagnostic caught: ``param NAME='Sentinel Pin' (la red)``).
+
+    Idempotent by construction (checks before writing) — safe to call on
+    every ``Execute`` tick without a separate dirty flag; in the steady
+    state (no drift) it is a cheap no-op read.
+    """
+    bc = node.GetDataInstance()
+    if bc is None:
+        return
+    if _is_safety_tag(node):
+        target = pins.SAFETY_PIN_NAME
+        if bc.GetString(ID_PIN_NAME, "") != target:
+            bc.SetString(ID_PIN_NAME, target)
+    else:
+        target = bc.GetString(ID_PIN_NAME, "")
+    if not target:
+        return
+    if _safe_node_name(node, "") != target:
+        try:
+            node.SetName(target)
+        except Exception:
+            pass
+
+
 def _restore(node):
     """Apply this tag's pinned state back onto the live scene.
 
@@ -729,6 +789,20 @@ class SentinelPinTag(_TagDataBase):
             return _pin_is_filled(node)
         return True
 
+    def Execute(self, tag, doc, op, bt, priority, flags):
+        # The GUARANTEED path the display-name self-heal relies on (see
+        # _reapply_display_name for the bug and the source-of-truth
+        # rules): Execute already runs on every scene re-evaluation for
+        # this exact reason elsewhere in the plugin (frame_tag.py's own
+        # Execute — "every change re-evaluates the scene", same
+        # catch-all pattern) — including the evaluation a document load
+        # triggers to draw the viewport, and independent of whether the
+        # artist ever opens THIS tag in the Attribute Manager, which is
+        # the actual requirement: the Object Manager has to show the
+        # right label without opening anything.
+        _reapply_display_name(tag)
+        return c4d.EXECUTIONRESULT_OK
+
     def _handle_command(self, node, data):
         if not _is_main_thread():
             return True
@@ -762,6 +836,23 @@ class SentinelPinTag(_TagDataBase):
             if _is_main_thread() and _pin_is_filled(node):
                 _restore(node)
             return True
+        document_info = getattr(c4d, "MSG_DOCUMENTINFO", None)
+        load_type = getattr(c4d, "MSG_DOCUMENTINFO_TYPE_LOAD", None)
+        if document_info is not None and mid == document_info:
+            # Earlier-firing ACCELERATOR on top of Execute() above, which
+            # is the actual guaranteed path the name self-heal depends on
+            # — whether this message reaches a TagData at all is NOT
+            # verified (same honesty as the MSG_EDIT accelerator), so a
+            # silent no-op here just means the fix lands one evaluation
+            # tick later via Execute instead of immediately on load. Not
+            # returned early: this message may still matter to whatever
+            # the base class does with it.
+            try:
+                msg_type = data.get("type") if isinstance(data, dict) else None
+            except Exception:
+                msg_type = None
+            if load_type is not None and msg_type == load_type:
+                _reapply_display_name(node)
         try:
             return super().Message(node, mid, data)
         except AttributeError:
