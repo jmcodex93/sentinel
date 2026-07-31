@@ -20,32 +20,6 @@ assuming it went well."""
 SAFETY_PIN_NAME = "↩ Antes de restaurar"
 
 
-#: Paleta de identidad del pin. Siete tonos legibles sobre el fondo oscuro
-#: del Object Manager, más "sin color" como valor por defecto — un pin sin
-#: personalizar debe verse como el icono normal del plugin, no como un color
-#: elegido al azar por nosotros. Verificado en el spike de la Tarea 1 (§5):
-#: GeClipMap.SetColor + FillRect rellenan el bitmap con estos valores tal
-#: cual (píxel central leído de vuelta idéntico al fill).
-PIN_COLORS = [
-    ("none", None), ("red", (200, 70, 60)), ("orange", (215, 130, 50)),
-    ("yellow", (210, 190, 70)), ("green", (95, 175, 95)),
-    ("blue", (80, 130, 210)), ("violet", (150, 110, 200)),
-    ("grey", (150, 150, 150)),
-]
-
-
-def pin_badge(label, index):
-    """El carácter que va sobre el icono: la primera letra del nombre si el
-    artista puso uno, y si no el ordinal del pin sobre su objeto.
-
-    Un solo carácter a propósito: en 32x32 dos ya no se leen, y el nombre
-    completo está a un hover de distancia."""
-    text = (label or "").strip()
-    if text:
-        return text[0].upper()
-    return str(index + 1)[-1]
-
-
 def _escape_name_for_key(name):
     """A name is artist-controlled text — it can contain the very
     characters the key format itself uses to mean something (``/`` for
