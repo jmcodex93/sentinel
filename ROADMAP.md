@@ -616,6 +616,10 @@ Visual budget meter for scene resources:
 
 ### Backlog — Consider Later
 
+#### Higiene del repo público *(anotado 2026-07-31)*
+- **Rutas personales absolutas en documentos ya publicados** (`/Users/javiermelgar/...`): 11 ficheros, todos de fases anteriores — lo nuevo entra limpio. En un repo público es información de la máquina del autor, no crítica, pero conviene barrerla. Ficheros: `docs/plans/2026-07-07-002-postrender-u5u7-codex-handoff.md`, `docs/superpowers/plans/2026-07-18-ui-foundation.md`, `docs/superpowers/plans/2026-07-23-panel-deliver.md`, `docs/superpowers/plans/2026-07-24-panel-frame.md`, `docs/superpowers/plans/2026-07-24-panel-tools.md`, `docs/superpowers/plans/2026-07-27-cleanup-post-redesign.md`, `docs/superpowers/plans/2026-07-27-panel-polish.md`, `docs/superpowers/plans/2026-07-27-retire-native-panel.md` y 3 más.
+  - Barrido sugerido: sustituir por rutas relativas o por un marcador (`<repo>`, `<c4d-prefs>`) en el CONTENIDO actual. **No reescribir historia** — el coste de un force-push en un repo público supera al beneficio, y los commits antiguos seguirían conteniéndolas de todos modos.
+
 #### Sentinel Frame follow-ups *(deferred in the v1.8.0 plan)*
 - Format catalog: cinema (2.39 / 1.85 / 2:1) + print (A4 / A3 / Letter) — needs QC-name-matching-compatible ids.
 - User-defined custom formats (ratio/resolution) — cheap given the dynamic description.
