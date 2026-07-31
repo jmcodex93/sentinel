@@ -144,7 +144,24 @@ def test_renamed_object_rearms_and_marks_old_entry_stale(tmp_path):
     assert matched["stale_entries"] == [entry_from_violation(original)]
 
 
-def test_guid_mismatch_delete_shift_rearms_and_marks_stale(tmp_path):
+def test_guid_mismatch_at_same_location_still_accepts(tmp_path):
+    """WAS: ``test_guid_mismatch_delete_shift_rearms_and_marks_stale``, which
+    asserted that a differing guid at the same location re-armed — the guard
+    against a deleted ``Cube[0]`` handing its acceptance to the sibling that
+    shifted into its place.
+
+    That guard could not work and did far more harm than good. C4D
+    regenerates an object's guid every time the document is loaded (measured
+    live 2026-07-31, and again end-to-end: accept, save, reopen, and the
+    acceptance was gone). Since a stored guid NEVER matches after a reopen,
+    this branch fired on every acceptance in every scene — accepting a
+    violation lasted only until the artist closed the file.
+
+    It also modelled the wrong thing. Accepting says "an object named this,
+    HERE, is on purpose" — a statement about a place, with an author and a
+    reason. If a different object occupies that place, the reason almost
+    certainly still holds. Renaming still re-arms (see the test above), which
+    is the case where the artist's statement genuinely stops applying."""
     path = tmp_path / "shot_baseline.json"
     original = object_violation("default_names", "/Root/Cube[0]", 0, "guid-old")
     shifted = object_violation("default_names", "/Root/Cube[0]", 0, "guid-new")
@@ -153,12 +170,15 @@ def test_guid_mismatch_delete_shift_rearms_and_marks_stale(tmp_path):
     entries, _status = baseline.load_baseline(str(path))
     matched = baseline.match_violations(entries, [shifted])
 
-    assert matched["new"] == [shifted]
-    assert matched["accepted"] == []
-    assert matched["stale_entries"] == [entry_from_violation(original)]
+    assert matched["accepted"] == [shifted]
+    assert matched["new"] == []
+    assert matched["stale_entries"] == []
 
 
-def test_missing_current_guid_at_same_location_rearms_and_marks_stale(tmp_path):
+def test_missing_current_guid_at_same_location_still_accepts(tmp_path):
+    """Same correction as above for the case where the CURRENT violation
+    carries no guid at all: the location is what identifies the acceptance,
+    so a missing guid cannot invalidate it either."""
     path = tmp_path / "shot_baseline.json"
     original = object_violation("default_names", "/Root/Cube[0]", 0, "guid-old")
     no_guid = object_violation("default_names", "/Root/Cube[0]", 0, None)
@@ -167,9 +187,9 @@ def test_missing_current_guid_at_same_location_rearms_and_marks_stale(tmp_path):
     entries, _status = baseline.load_baseline(str(path))
     matched = baseline.match_violations(entries, [no_guid])
 
-    assert matched["new"] == [no_guid]
-    assert matched["accepted"] == []
-    assert matched["stale_entries"] == [entry_from_violation(original)]
+    assert matched["accepted"] == [no_guid]
+    assert matched["new"] == []
+    assert matched["stale_entries"] == []
 
 
 def test_param_snapshot_mismatch_rearms_and_marks_stale(tmp_path):
@@ -320,3 +340,123 @@ def test_remove_acceptance_writes_schema_and_rearms_violation(tmp_path):
     assert entries == []
     assert matched["new"] == [violation]
     assert matched["accepted"] == []
+
+
+def test_acceptance_survives_reopening_the_scene(tmp_path):
+    """C4D REGENERATES an object's GUID on every save (measured live
+    2026-07-31: two saved generations of the same file give different
+    GetGUID() AND different FindUniqueID(MAXON_CREATOR_ID)). So an entry read
+    back from a sidecar can never carry a guid that matches the object it
+    describes, and treating that mismatch as "different object" re-armed
+    EVERY acceptance the moment the artist reopened the scene.
+
+    The location is all there is to match on, and it is what the artist means
+    by "this violation, here". (An earlier attempt kept the guid's veto for
+    the session that wrote the entry; an end-to-end run in C4D killed it —
+    the guid dies when the DOCUMENT reloads, which happens constantly inside
+    one session, so the veto still fired.)"""
+    path = tmp_path / "shot_baseline.json"
+    original = object_violation("default_names", "/Root/Cube[0]", 0, "guid-session-1")
+    baseline.add_acceptance(str(path), entry_from_violation(original))
+
+    # The artist saves and reopens the scene: C4D has handed the very same
+    # object a brand new guid.
+    reopened = object_violation("default_names", "/Root/Cube[0]", 0, "guid-session-2")
+
+    entries, _status = baseline.load_baseline(str(path))
+    matched = baseline.match_violations(entries, [reopened])
+
+    assert matched["accepted"] == [reopened], "acceptance forgotten on reopen"
+    assert matched["new"] == []
+    assert matched["stale_entries"] == []
+
+
+def test_reaccepting_after_reopen_does_not_duplicate_the_entry(tmp_path):
+    """Second manifestation of the same root cause: the entry KEY carried the
+    object guid, so the same acceptance sealed in two sessions produced two
+    entries — a sidecar that grows every time the artist re-accepts, and (via
+    the same key) an entry no caller could address, since the only key one can
+    build carries today's guid. (``remove_acceptance`` has no production
+    callers today, so the live symptom was the growth, not a broken retire.)
+
+    Identity is the LOCATION, and the guid adds nothing to it: at any one
+    instant only one object occupies a given path and sibling index."""
+    path = tmp_path / "shot_baseline.json"
+    first = object_violation("default_names", "/Root/Cube", 0, "guid-session-1")
+    baseline.add_acceptance(str(path), entry_from_violation(first))
+
+    again = object_violation("default_names", "/Root/Cube", 0, "guid-session-2")
+    baseline.add_acceptance(str(path), entry_from_violation(again))
+
+    entries, _status = baseline.load_baseline(str(path))
+    assert len(entries) == 1, "the sidecar grew a duplicate on re-accept"
+
+    # ...and the surviving entry is addressable with a key built from today's
+    # violation, which is the only key any caller can produce.
+    assert baseline.remove_acceptance(str(path), baseline._entry_key(again))
+    assert baseline.load_baseline(str(path))[0] == []
+
+
+def test_conflict_copy_never_overwrites_another_artists_acceptance(tmp_path):
+    """Two artists accepting the SAME location is the whole point of this
+    function, and since identity stopped carrying the object guid their two
+    records share a key. Letting the copy win would destroy an audit record —
+    author and reason are mandatory fields — and report `merged_count == 0`
+    while doing it, so the loss would not even appear in the log."""
+    path = tmp_path / "shot_baseline.json"
+    violation = object_violation("default_names", "/Root/Cube", 0, "guid-a")
+    write_payload(path, [entry_from_violation(violation, author="Ana",
+                                              reason="legacy prop, keep")])
+    copy_path = tmp_path / "shot_baseline (Javier's conflicted copy).json"
+    write_payload(copy_path, [entry_from_violation(violation, author="Beto",
+                                                   reason="")])
+
+    merged_count, copies = baseline.merge_conflict_copies(str(path))
+
+    entries, _status = baseline.load_baseline(str(path))
+    assert len(entries) == 1
+    assert entries[0]["author"] == "Ana", "the copy erased an audit record"
+    assert entries[0]["reason"] == "legacy prop, keep"
+    assert merged_count == 0 and copies == [str(copy_path)]
+
+
+def test_same_object_accepted_in_two_formats_keeps_both(tmp_path):
+    """`fmt_id` is part of the entry key: QC #12 accepts a subject per
+    delivery format, so the same object at the same location legitimately
+    carries one acceptance per format. Collapsing them would silently drop
+    the first one the artist made."""
+    path = tmp_path / "shot_baseline.json"
+    vertical = cross_aspect_violation("/Root/Logo", 0, "guid-logo", fmt_id="9x16")
+    square = cross_aspect_violation("/Root/Logo", 0, "guid-logo", fmt_id="1x1")
+    baseline.add_acceptance(str(path), entry_from_violation(vertical))
+    baseline.add_acceptance(str(path), entry_from_violation(square))
+
+    entries, _status = baseline.load_baseline(str(path))
+    assert len(entries) == 2, "one format's acceptance was overwritten"
+    matched = baseline.match_violations(entries, [vertical, square])
+    assert matched["accepted"] == [vertical, square]
+
+
+def test_sibling_index_separates_acceptances_at_the_same_path(tmp_path):
+    """Location means path AND sibling index. Accepting `Cube[0]` must not
+    accept `Cube[1]`, which is a different violation the artist never saw."""
+    path = tmp_path / "shot_baseline.json"
+    first = object_violation("default_names", "/Root/Cube", 0, "guid-0")
+    second = object_violation("default_names", "/Root/Cube", 1, "guid-1")
+    baseline.add_acceptance(str(path), entry_from_violation(first))
+
+    entries, _status = baseline.load_baseline(str(path))
+    assert len(entries) == 1
+    matched = baseline.match_violations(entries, [first, second])
+
+    assert matched["accepted"] == [first]
+    assert matched["new"] == [second], "an unaccepted sibling was masked"
+
+    # ...and the index has to be part of the STORED key too, or accepting the
+    # sibling afterwards would overwrite the first acceptance instead of
+    # standing beside it.
+    baseline.add_acceptance(str(path), entry_from_violation(second))
+    entries, _status = baseline.load_baseline(str(path))
+    assert len(entries) == 2, "the sibling's acceptance replaced the first"
+    assert baseline.match_violations(entries, [first, second])["accepted"] == [
+        first, second]
