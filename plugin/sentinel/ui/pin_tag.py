@@ -24,6 +24,7 @@ import c4d
 from c4d import plugins
 
 from sentinel import pins
+from sentinel.common.helpers import safe_print
 
 SENTINEL_PIN_TAG_PLUGIN_ID = 2099078
 SENTINEL_PIN_TAG_DESCRIPTION = "Tsentinelpin"
@@ -42,6 +43,14 @@ ID_PIN_GO = 1004        # DTYPE_BUTTON     — "Ir"
 #: propio del tag, así viaja con el .c4d (la Tarea 1 probó el round-trip).
 #: Lejos del rango de ids de descripción de arriba.
 ID_PIN_PAYLOAD = 20000
+
+#: Resultado en texto de la última restauración desde ESTE tag (p.ej. "9 de
+#: 12 restaurados · 3 no encontrados"). Se escribe directo en el contenedor
+#: del tag — no forma parte de ``ID_PIN_PAYLOAD`` ni de su schema, así que
+#: un build más nuevo nunca la confunde con datos de restauración. Se limpia
+#: en cada (re-)pin para que la fila vuelva a mostrar el resumen del pin en
+#: vez de dejar clavado el resultado de una restauración ya vieja.
+ID_PIN_LAST_RESTORE = 20001
 
 #: Se sube solo si cambia la forma del payload. Un pin cuyo esquema esta
 #: build no reconoce se IGNORA con una nota en su fila — nunca se aplica a
@@ -267,6 +276,24 @@ def _pin_is_filled(node):
     return _read_payload_bc(node) is not None
 
 
+def _read_last_restore(node):
+    bc = node.GetDataInstance()
+    if bc is None:
+        return ""
+    return bc.GetString(ID_PIN_LAST_RESTORE, "")
+
+
+def _write_last_restore(node, text):
+    bc = node.GetDataInstance()
+    if bc is None:
+        return
+    bc.SetString(ID_PIN_LAST_RESTORE, text or "")
+
+
+def _clear_last_restore(node):
+    _write_last_restore(node, "")
+
+
 def _pin_status_text(node):
     """Text for the row's status cell, built from ``pins.pin_summary`` per
     el spec: conteo + tiempo relativo, y — OBLIGATORIO, no opcional — una
@@ -288,7 +315,13 @@ def _pin_status_text(node):
         return ""
     schema = payload.GetInt32(_PAYLOAD_SCHEMA, 0)
     if schema != PIN_SCHEMA:
+        # Checked before the last-restore note on purpose: a mismatched
+        # schema is never applied, so this message must win over whatever
+        # a previous (older-build) restore happened to leave behind.
         return "pin de una versión anterior — no se aplicará"
+    last_restore = _read_last_restore(node)
+    if last_restore:
+        return last_restore
     count = payload.GetInt32(_PAYLOAD_COUNT, 0)
     entries_bc = payload.GetContainerInstance(_PAYLOAD_ENTRIES)
     entries = []
@@ -350,9 +383,198 @@ def _store_pin(node):
     try:
         doc.AddUndo(c4d.UNDOTYPE_CHANGE, node)
         node.GetDataInstance().SetContainer(ID_PIN_PAYLOAD, payload_bc)
+        # A (re-)pin overwrites what this tag now holds, so any leftover
+        # "N restaurados" note from a previous restore is stale the moment
+        # this write lands — otherwise the row would keep showing that old
+        # result forever instead of the fresh pin summary.
+        _clear_last_restore(node)
     finally:
         doc.EndUndo()
     return True
+
+
+# --- Restore ----------------------------------------------------------------
+
+def _read_pinned_entries(payload_bc):
+    """Unpack a stored payload's entries into an ORDERED key list (the order
+    the writer applied in, per the docstring of ``pins.location_keys``) plus
+    a key -> {name, container, matrix} lookup for applying them."""
+    count = payload_bc.GetInt32(_PAYLOAD_COUNT, 0)
+    entries_container = payload_bc.GetContainerInstance(_PAYLOAD_ENTRIES)
+    keys = []
+    by_key = {}
+    for i in range(count):
+        entry_bc = entries_container.GetContainerInstance(i) if entries_container is not None else None
+        if entry_bc is None:
+            continue
+        key = entry_bc.GetString(_ENTRY_KEY, "")
+        keys.append(key)
+        by_key[key] = {
+            "name": entry_bc.GetString(_ENTRY_NAME, ""),
+            "container": entry_bc.GetContainerInstance(_ENTRY_CONTAINER),
+            "matrix": entry_bc.GetMatrix(_ENTRY_MATRIX, c4d.Matrix()),
+        }
+    return keys, by_key
+
+
+def _restore_report_text(matched_count, total_count):
+    missing_count = total_count - matched_count
+    if missing_count <= 0:
+        return "%d restaurados" % matched_count
+    return "%d de %d restaurados · %d no encontrados" % (
+        matched_count, total_count, missing_count)
+
+
+def _find_safety_tag(obj):
+    """The safety tag is identified by TYPE + its reserved name, same rule
+    the overlay/frame tags use elsewhere in the plugin to find their own
+    tag rather than trust a Python-side cache that a document reload would
+    invalidate."""
+    getter = getattr(obj, "GetTags", None)
+    tags = getter() if callable(getter) else None
+    for tag in (tags or []):
+        try:
+            if tag.GetType() == SENTINEL_PIN_TAG_PLUGIN_ID and tag.GetName() == pins.SAFETY_PIN_NAME:
+                return tag
+        except Exception:
+            continue
+    return None
+
+
+def _capture_safety_pin(node, obj, doc):
+    """Snapshot the object's subtree AS IT IS RIGHT NOW into the ``↩ Antes
+    de restaurar`` tag on the same host — creating it if it doesn't exist
+    yet, overwriting it (via ``_store_pin``, same as a manual Re-pin) if it
+    does. Called BEFORE the caller touches anything else: this is the whole
+    safety property, not a nicety, so a failure here must abort the
+    restore rather than proceed net-less."""
+    tag = _find_safety_tag(obj)
+    if tag is None:
+        try:
+            tag = obj.MakeTag(SENTINEL_PIN_TAG_PLUGIN_ID)
+        except Exception:
+            tag = None
+        if tag is None:
+            return False
+        # SetName lives INSIDE this bracket, not after it: a plain mutation
+        # made once the bracket has already closed is not undo-tracked at
+        # all (nothing to attach it to), which would leave the rename
+        # permanent even if the NEW tag itself gets undone later.
+        doc.StartUndo()
+        try:
+            doc.AddUndo(c4d.UNDOTYPE_NEW, tag)
+            try:
+                tag.SetName(pins.SAFETY_PIN_NAME)
+            except Exception:
+                return False
+        finally:
+            doc.EndUndo()
+    return _store_pin(tag)
+
+
+def _restore(node):
+    """Apply this tag's pinned state back onto the live scene.
+
+    The order below IS the safety property (see the module's callers and
+    the brief): capture the net before touching anything, verify the
+    schema before planning, plan against the scene as it stands NOW, then
+    apply every matched key inside one undo bracket — nothing is created or
+    deleted, and a schema this build doesn't recognise is never applied,
+    not even partially.
+
+    Writes its own outcome into the row (``_write_last_restore``) for every
+    path except the schema mismatch — ``_pin_status_text`` already shows
+    that one unconditionally, so writing it here too would just be a second
+    source of truth for the same message. Missing keys go to
+    ``safe_print`` instead of the row — no room for a list there. Also
+    returns the report text, for callers that want it directly.
+    """
+    obj = node.GetObject()
+    if obj is None:
+        report = "no se pudo restaurar — el tag no está sobre un objeto"
+        _write_last_restore(node, report)
+        return report
+    doc = _doc_from_node(node)
+    if doc is None:
+        report = "no se pudo restaurar — sin documento"
+        _write_last_restore(node, report)
+        return report
+
+    # 1. The subtree as it stands right now, and its keys.
+    current_tree, current_flat_nodes = _walk_object_tree(obj)
+    current_keys = pins.location_keys(current_tree)
+    current_by_key = dict(zip(current_keys, current_flat_nodes))
+
+    # 2. Safety net FIRST. Skip only when THIS tag IS the safety net —
+    # overwriting it here would destroy the one copy of the state the
+    # artist is restoring away FROM.
+    is_safety_tag = _safe_node_name(node, "") == pins.SAFETY_PIN_NAME
+    if not is_safety_tag:
+        if not _capture_safety_pin(node, obj, doc):
+            report = "no se pudo respaldar el estado actual — restauración cancelada"
+            safe_print("Sentinel Pin: %s" % report)
+            _write_last_restore(node, report)
+            return report
+
+    # 3. Schema gate. A payload this build doesn't recognise is never
+    # applied, not even partially — and the row already says so on every
+    # read via ``_pin_status_text``, so there is nothing further to write.
+    payload = _read_payload_bc(node)
+    if payload is None:
+        return ""
+    schema = payload.GetInt32(_PAYLOAD_SCHEMA, 0)
+    if schema != PIN_SCHEMA:
+        return ""
+
+    pinned_keys, pinned_by_key = _read_pinned_entries(payload)
+
+    # 4. Plan against the scene as it is now.
+    plan = pins.plan_restore(pinned_keys, current_keys)
+    matched = plan["matched"]
+    missing = plan["missing"]
+
+    # 5. Nothing matched: report, touch nothing, open no undo bracket for
+    # a no-op.
+    if not matched:
+        report = _restore_report_text(0, len(pinned_keys))
+        if missing:
+            safe_print("Sentinel Pin: no encontrados — %s" % ", ".join(missing))
+        _write_last_restore(node, report)
+        return report
+
+    # 6. One undo bracket for the whole matched subtree.
+    doc.StartUndo()
+    try:
+        for key in matched:
+            live_obj = current_by_key.get(key)
+            entry = pinned_by_key.get(key)
+            if live_obj is None or entry is None:
+                continue
+            doc.AddUndo(c4d.UNDOTYPE_CHANGE, live_obj)
+            try:
+                live_obj.SetData(entry["container"])
+            except Exception:
+                pass
+            try:
+                live_obj.SetMl(entry["matrix"])
+            except Exception:
+                pass
+            try:
+                live_obj.SetName(entry["name"])
+            except Exception:
+                pass
+        report = _restore_report_text(len(matched), len(pinned_keys))
+        doc.AddUndo(c4d.UNDOTYPE_CHANGE, node)
+        _write_last_restore(node, report)
+    finally:
+        doc.EndUndo()
+
+    # 7.
+    _event_add()
+
+    if missing:
+        safe_print("Sentinel Pin: no encontrados — %s" % ", ".join(missing))
+    return report
 
 
 try:
@@ -483,18 +705,31 @@ class SentinelPinTag(_TagDataBase):
             _store_pin(node)
             _event_add()
         elif command_id == ID_PIN_GO:
-            # Restore is Task 4 — deliberately not implemented here. A pin
-            # whose schema this build does not recognise also lands here
-            # forever (GetDEnabling still allows it since the pin IS
-            # filled) — that is fine, Task 4 owns the schema-mismatch guard
-            # for the actual restore, not this stub.
-            pass
+            # GetDEnabling already gates the button to a filled pin; the
+            # explicit check here is a defensive mirror of the same guard
+            # (cheap, and it's exactly what protects the MSG_EDIT path
+            # below, which has no button-enable state to lean on). A pin
+            # whose schema this build does not recognise still passes this
+            # check (the pin IS filled) — _restore's own schema gate is
+            # what refuses to apply it, not this one.
+            if _pin_is_filled(node):
+                _restore(node)
         return True
 
     def Message(self, node, mid, data):
         description_command = getattr(c4d, "MSG_DESCRIPTION_COMMAND", None)
         if description_command is not None and mid == description_command:
             return self._handle_command(node, data)
+        edit_message = getattr(c4d, "MSG_EDIT", None)
+        if edit_message is not None and mid == edit_message:
+            # Double-click shortcut (Recall's UX, id 21) — NOT known to
+            # reach a TagData in C4D 2026 (unmeasured in the Task 1 spike).
+            # The "Ir" button above is the guaranteed path; this is only an
+            # accelerator on top of it, so a silent no-op here if the
+            # message never arrives costs nothing but the shortcut itself.
+            if _is_main_thread() and _pin_is_filled(node):
+                _restore(node)
+            return True
         try:
             return super().Message(node, mid, data)
         except AttributeError:
