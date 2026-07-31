@@ -311,6 +311,40 @@ def _matwire_projection(payload):
     return value if value in matwire_c4d.PROJECTION_TYPES else "uv"
 
 
+def _matwire_material(payload):
+    """VALIDATE AT THE BOUNDARY, exactly like ``_matwire_projection``: the
+    writer degrades an unknown material type to the default silently, so a
+    typo from the client would render as "Standard requested, OpenPBR
+    delivered". Case and whitespace tolerated; anything the writer's table
+    doesn't know becomes the default, never a raise. ``MATERIAL_TYPES`` is
+    the single source of the accepted strings.
+
+    Not sufficient on its own (review finding, not in the original spec):
+    a REQUESTED "openpbr" must still degrade to "standard" when this C4D
+    build has no OpenPBR node — the SPA disables the selector, but the
+    server cannot trust that; a stale "openpbr" reaching the writer fails
+    ApplyDescription for EVERY set (N error rows, zero materials), not just
+    the mislabeled one. The availability check runs only after normalizing
+    the client's string, so an unknown value still lands on the default
+    first."""
+    from sentinel import matwire_c4d
+    raw = (payload or {}).get("material")
+    if not isinstance(raw, str):
+        value = matwire_c4d.DEFAULT_MATERIAL
+    else:
+        candidate = raw.strip().lower()
+        value = (candidate if candidate in matwire_c4d.MATERIAL_TYPES
+                 else matwire_c4d.DEFAULT_MATERIAL)
+    # openpbr only if this build actually has the node — the SPA disables
+    # the selector, but the server cannot trust that: a stale "openpbr"
+    # would reach the writer and fail EVERY set at ApplyDescription. Any
+    # OTHER normalized value (review fix: not hardcoded "standard" — a
+    # future third BRDF added to MATERIAL_TYPES must pass through here
+    # unharmed, or this guard silently downgrades it the same way it exists
+    # to prevent).
+    return value if value != "openpbr" or matwire_c4d.openpbr_available() else "standard"
+
+
 def _op_matwire_preview(payload):
     from sentinel import matwire
     from sentinel import matwire_c4d
@@ -328,6 +362,10 @@ def _op_matwire_preview(payload):
     # the Projection selector has nothing to drive, and the sub-view says so
     # instead of offering a control that silently does nothing.
     out["uvcontext_available"] = bool(matwire_c4d.uvcontext_available())
+    # Honest degradation (spec): without the OpenPBR node in this build the
+    # Material selector has nothing to drive, and the sub-view says so
+    # instead of offering a control that silently delivers Standard.
+    out["openpbr_available"] = bool(matwire_c4d.openpbr_available())
     out["suffix_warnings"] = result["suffix_warnings"]
     out["leftovers"] = matwire.assign_leftovers(
         result["scan"].get("leftover_hints"),
@@ -355,6 +393,7 @@ def _op_matwire_create(payload):
     import_leftovers = bool(payload.get("import_leftovers"))
     multiply_ao = bool(payload.get("multiply_ao"))
     projection = _matwire_projection(payload)  # normalized, never raises
+    material = _matwire_material(payload)  # normalized, never raises
     per_set = {}
     unassigned = []
     if import_leftovers:
@@ -388,19 +427,24 @@ def _op_matwire_create(payload):
     try:
         for tex_set, name, extra_files in jobs:
             try:
-                # projection/multiply_ao ride ALWAYS and already normalized —
-                # the op decides them, never the writer's defaults.
-                # leftover_files stays conditional (the v1.32 call shape is
-                # the no-regression path when the import is off).
+                # projection/multiply_ao/material ride ALWAYS and already
+                # normalized — the op decides them, never the writer's
+                # defaults. leftover_files stays conditional (the v1.32
+                # call shape is the no-regression path when the import is
+                # off). BOTH call sites must carry `material` (v1.33
+                # lesson: a kwarg added to only one call site here stayed
+                # green because the leftovers fake swallowed **kw).
                 if import_leftovers:
                     created = matwire_c4d.create_material_for_set(
                         doc, folder, tex_set, name,
                         leftover_files=extra_files,
-                        multiply_ao=multiply_ao, projection=projection)
+                        multiply_ao=multiply_ao, projection=projection,
+                        material=material)
                 else:
                     created = matwire_c4d.create_material_for_set(
                         doc, folder, tex_set, name,
-                        multiply_ao=multiply_ao, projection=projection)
+                        multiply_ao=multiply_ao, projection=projection,
+                        material=material)
             except Exception as exc:  # writer contract is no-raise; belt+braces
                 errors.append([tex_set["name"], str(exc)])
                 continue

@@ -1293,6 +1293,10 @@ export interface MatwirePreviewResult {
    * the Projection selector is disabled with an inline reason and the
    * writer builds v1.32.1-shaped materials (honest degradation). */
   uvcontext_available?: boolean;
+  /** v1.34: false when this Redshift build has no OpenPBR node — the
+   * Material selector is disabled with an inline reason and the writer
+   * builds a Standard Surface material (honest degradation). */
+  openpbr_available?: boolean;
   error?: string;
 }
 

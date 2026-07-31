@@ -124,6 +124,58 @@ export function effectiveProjection(
   return unavailableNote === null ? selected : "uv";
 }
 
+/** Material type options. OpenPBR is FIRST because it is the default; the
+ * values are the op's accepted strings (`matwire_c4d.MATERIAL_TYPES` — the
+ * op normalizes anything else to the default, never raises). */
+export const MATERIAL_OPTIONS: { value: string; label: string }[] = [
+  { value: "openpbr", label: "OpenPBR" },
+  { value: "standard", label: "Standard" },
+];
+
+export const MATWIRE_OPENPBR_UNAVAILABLE_COPY =
+  "This Redshift build has no OpenPBR node — materials are built as Standard Surface.";
+
+/** Inline reason for the disabled Material selector, or null when OpenPBR
+ * is available. A preview without the field (pre-v1.34 shape) counts as
+ * available: the degradation is server-reported, never guessed. */
+export function openpbrUnavailableNote(
+  available: boolean | undefined,
+): string | null {
+  return available === false ? MATWIRE_OPENPBR_UNAVAILABLE_COPY : null;
+}
+
+/** The material the writer will ACTUALLY build — what both the payload and
+ * the (disabled) selector must show. Derived, never a state mutation on
+ * render, so the artist's pick survives if a later preview reports the node
+ * present again.
+ *
+ * Deliberately asymmetric with `effectiveProjection` (which collapses ANY
+ * unavailable pick to "uv"): this only degrades `"openpbr"` specifically,
+ * mirroring the server's `_matwire_material` (Task 3 review finding) —
+ * `value if value != "openpbr" or openpbr_available() else "standard"`. A
+ * future third `MATERIAL_TYPES` entry must pass through unharmed on a build
+ * lacking the OpenPBR node; only "openpbr" itself is unavailable there. */
+export function effectiveMaterial(
+  selected: string,
+  unavailableNote: string | null,
+): string {
+  return selected === "openpbr" && unavailableNote !== null ? "standard" : selected;
+}
+
+/** Destination fragment after a glossiness filename — a MIRROR of the
+ * engine's `matwire.gloss_destination`, for the same reason the AO mirror
+ * exists: the row must relabel the instant the selector flips, and
+ * re-fetching the preview would discard the artist's name edits. */
+export function glossDestinationLabel(
+  channels: string[],
+  material: string,
+): string | null {
+  if (!channels.includes("glossiness")) return null;
+  return material === "standard"
+    ? "→ roughness (glossiness mode)"
+    : "→ specular roughness (inverted)";
+}
+
 /** Destination fragment rendered after a leftover filename: its assigned
  * set's material, or the catch-all `<root>_leftovers` material when no set
  * name prefixes the file (the server names it — the client only says

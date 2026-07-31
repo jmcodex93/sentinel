@@ -192,17 +192,21 @@ def _dir_px(relpath):
 
 
 def orm_contributions(channels):
-    """Which standard-material inputs a set's packed ORM/ARM ACTUALLY feeds
-    — the single source for both the preview note (``preview_payload``) and
-    the writer's connect pairs (``matwire_c4d.build_orm_plan``), so the
-    preview can never promise a wiring the writer won't make (review I2).
+    """Which BRDF inputs a set's packed ORM/ARM ACTUALLY feeds — the single
+    source for both the preview note (``preview_payload``) and the writer's
+    connect pairs (``matwire_c4d.build_orm_plan``), so the preview can never
+    promise a wiring the writer won't make (review I2). Type-neutral: the
+    ports themselves are ``matwire_c4d.BRDF_PORTS``' concern, not this
+    function's — this is only the RULE, which holds for both BRDF types.
 
-    Dedicated maps win per output: ``outg`` -> roughness only when the set
-    has neither a dedicated roughness nor a glossiness map (glossiness
-    occupies ``refl_roughness`` via ``refl_isglossiness``); ``outb`` ->
-    metalness only without a dedicated metalness map; ``outr`` (AO) is
-    NEVER wired (existing AO policy). An empty list means the ORM lands as
-    a bare unconnected sampler (visible, never silently dropped)."""
+    Dedicated maps win per output: ``outg`` -> the roughness port only when
+    the set has neither a dedicated roughness nor a glossiness map (the
+    roughness port is already taken when one exists — natively via
+    Standard's ``refl_isglossiness`` bool, or via the interposed
+    ``rsmathinv`` under OpenPBR); ``outb`` -> the metalness port only
+    without a dedicated metalness map; ``outr`` (AO) is NEVER wired
+    (existing AO policy). An empty list means the ORM lands as a bare
+    unconnected sampler (visible, never silently dropped)."""
     channels = channels or {}
     if "packed_orm" not in channels:
         return []
@@ -232,6 +236,23 @@ def ao_destination(channels, multiply_ao):
     if multiply_ao and "basecolor" in channels:
         return "base_color_multiply"
     return "unconnected"
+
+
+def gloss_destination(channels, material):
+    """Where a set's GLOSSINESS map lands — the single source for both the
+    writer's graph and the preview's row (same discipline as
+    ``ao_destination``/``orm_contributions``).
+
+    ``None`` when the set has no glossiness. On Standard the map goes
+    straight to the roughness port and the native ``refl_isglossiness``
+    bool flips the interpretation — no extra node. OpenPBR has NO such port
+    (measured live: ``specular_isglossiness`` is absent), so the only
+    correct wiring interposes an invert node."""
+    channels = channels or {}
+    if "glossiness" not in channels:
+        return None
+    return ("roughness_isglossiness" if material == "standard"
+            else "roughness_inverted")
 
 
 def scan_texture_sets(filenames, default_root="material", extra_suffixes=None):

@@ -1370,6 +1370,7 @@ export async function fetchMatwirePreview(
     return {
       ok: true,
       uvcontext_available: true,
+      openpbr_available: true,
       sets: [
         {
           name: "rock_cliff",
@@ -1417,10 +1418,11 @@ export async function postMatwireCreate(
   importLeftovers: boolean,
   projection = "uv",
   multiplyAo = false,
+  material = "openpbr",
 ): Promise<MatwireCreateResult> {
   if (isMock()) return { ok: false, error: "mock" };
-  // `projection` is normalized server-side (unknown -> "uv", never a raise):
-  // the op is the validation boundary, not this call.
+  // `projection`/`material` are normalized server-side (unknown -> defaults,
+  // never a raise): the op is the validation boundary, not this call.
   return postForm<MatwireCreateResult>("/api/panel/tools/matwire_create", {
     folder,
     exclude,
@@ -1428,5 +1430,6 @@ export async function postMatwireCreate(
     import_leftovers: importLeftovers,
     projection,
     multiply_ao: multiplyAo,
+    material,
   });
 }

@@ -1379,7 +1379,8 @@ class TestMatwireOpsPolish:
         calls = []
 
         def _fake_create(d, f, tex_set, name, *,  # no leftover_files kwarg
-                         multiply_ao=False, projection="uv"):
+                         multiply_ao=False, projection="uv",
+                         material=matwire_c4d.DEFAULT_MATERIAL):
             calls.append((tex_set["name"], name))
             return {"ok": True, "material_name": name, "error": None}
 
@@ -1417,9 +1418,10 @@ class TestMatwireOpsPolish:
         from sentinel import matwire_c4d
 
         def _fake_create(d, f, tex_set, name, leftover_files=None,
-                         multiply_ao=False, projection="uv"):
+                         multiply_ao=False, projection="uv",
+                         material=matwire_c4d.DEFAULT_MATERIAL):
             calls.append({"set": tex_set["name"], "multiply_ao": multiply_ao,
-                          "projection": projection})
+                          "projection": projection, "material": material})
             return {"ok": True, "material_name": name, "error": None}
 
         monkeypatch.setattr(matwire_c4d, "create_material_for_set", _fake_create)
@@ -1428,24 +1430,34 @@ class TestMatwireOpsPolish:
                                                        monkeypatch, tmp_path):
         """An empty payload must reach the writer as the v1.32.1-equivalent
         material: UV projection, AO left loose."""
+        from sentinel import matwire_c4d
         ops = self._setup(monkeypatch, _FakeMatwireDoc())
         folder = self._folder(tmp_path, "plaster_col.png")
         calls = []
         self._capture_create(monkeypatch, calls)
+        # material defaults to "openpbr" but degrades to "standard" without
+        # the node — stated explicitly (review Minor 3) rather than relying
+        # on this harness's real openpbr_available() happening to be False.
+        monkeypatch.setattr(matwire_c4d, "openpbr_available", lambda: False)
         assert ops._op_matwire_create({"folder": folder})["ok"] is True
         assert calls == [{"set": "plaster", "multiply_ao": False,
-                          "projection": "uv"}]
+                          "projection": "uv", "material": "standard"}]
 
     def test_create_threads_projection_and_multiply_ao(self, sentinel_module,
                                                        monkeypatch, tmp_path):
+        from sentinel import matwire_c4d
         ops = self._setup(monkeypatch, _FakeMatwireDoc())
         folder = self._folder(tmp_path, "plaster_col.png")
         calls = []
         self._capture_create(monkeypatch, calls)
+        # Stated explicitly (review Minor 3): the default material's
+        # degradation to "standard" below depends on this, not on the
+        # harness's incidental lack of a `maxon` module.
+        monkeypatch.setattr(matwire_c4d, "openpbr_available", lambda: False)
         ops._op_matwire_create({"folder": folder, "projection": "triplanar",
                                 "multiply_ao": True})
         assert calls == [{"set": "plaster", "multiply_ao": True,
-                          "projection": "triplanar"}]
+                          "projection": "triplanar", "material": "standard"}]
 
     def test_create_leftovers_branch_threads_projection_and_multiply_ao(
             self, sentinel_module, monkeypatch, tmp_path):
@@ -1528,3 +1540,125 @@ class TestMatwireOpsPolish:
         assert _ao_row({"folder": folder})["destination"] == "unconnected"
         assert _ao_row({"folder": folder, "multiply_ao": True})["destination"] \
             == "base_color_multiply"
+
+
+class TestMatwireMaterialType:
+    """v1.34: material type ("openpbr"/"standard") boundary normalization,
+    openpbr_available reporting on preview, and threading to BOTH
+    create_material_for_set call sites (v1.33 lesson, restated by the Task 2
+    review for this new kwarg: the leftovers call site is a SEPARATE call —
+    a kwarg added to only the other site keeps every other test green while
+    half the batch silently gets the default material)."""
+
+    _setup = TestMatwireOps._setup
+    _folder = TestMatwireOps._folder
+    _pack = TestMatwireOpsPolish._pack
+
+    def test_unknown_material_normalizes_to_the_default(self, sentinel_module,
+                                                         monkeypatch):
+        from sentinel.ui import panel_tools_ops as ops
+        from sentinel import matwire_c4d
+        # openpbr_available forced True (review Important 2): without this
+        # every input degrades to "standard" regardless of the membership
+        # check, so the test can't tell a working normalizer from a broken
+        # one — the reviewer proved this by deleting the membership check
+        # entirely and getting a green suite.
+        monkeypatch.setattr(matwire_c4d, "openpbr_available", lambda: True)
+        assert ops._matwire_material({"material": "nonsense"}) == "openpbr"
+        assert ops._matwire_material({}) == "openpbr"
+        assert ops._matwire_material({"material": 7}) == "openpbr"
+
+    def test_known_values_survive_case_and_whitespace(self, sentinel_module,
+                                                       monkeypatch):
+        from sentinel.ui import panel_tools_ops as ops
+        from sentinel import matwire_c4d
+        # openpbr_available forced True so "OPENPBR" survives normalization
+        # instead of degrading — isolates the string-parsing behaviour from
+        # the availability gate, which gets its own test below.
+        monkeypatch.setattr(matwire_c4d, "openpbr_available", lambda: True)
+        assert ops._matwire_material({"material": " Standard "}) == "standard"
+        assert ops._matwire_material({"material": "OPENPBR"}) == "openpbr"
+
+    def test_openpbr_requested_but_unavailable_degrades_to_standard(
+            self, sentinel_module, monkeypatch):
+        """The review-added acceptance item: the SPA disables the selector
+        when the node is missing, but the server must not trust the client
+        — a stale "openpbr" surviving in the payload would otherwise reach
+        the writer and fail ApplyDescription for every set."""
+        from sentinel.ui import panel_tools_ops as ops
+        from sentinel import matwire_c4d
+        monkeypatch.setattr(matwire_c4d, "openpbr_available", lambda: False)
+        assert ops._matwire_material({"material": "openpbr"}) == "standard"
+
+    def test_preview_reports_openpbr_availability(self, sentinel_module,
+                                                   monkeypatch, tmp_path):
+        from sentinel import matwire_c4d
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        folder = self._folder(tmp_path, "p_BaseColor.png")
+        monkeypatch.setattr(matwire_c4d, "openpbr_available", lambda: False)
+        payload = ops._op_matwire_preview({"folder": folder})
+        assert payload["openpbr_available"] is False
+        # The sub-view disables the selector from this flag, so it must be a
+        # plain bool the JSON layer can serialize — not the truthy
+        # AssetDescription the real probe wraps (bool() on one is True
+        # either way, same non-probe idiom as uvcontext_available/
+        # redshift_available). Stubbing an arbitrary truthy object (never
+        # a bare True) is what actually exercises the `bool(...)` cast at
+        # the call site — a `False`/`True` stub can't tell the cast apart
+        # from a no-op pass-through (review Minor 4).
+        monkeypatch.setattr(matwire_c4d, "openpbr_available", lambda: object())
+        payload = ops._op_matwire_preview({"folder": folder})
+        assert payload["openpbr_available"] is True
+
+    def test_create_threads_material_to_every_call_site(self, sentinel_module,
+                                                         monkeypatch, tmp_path):
+        """v1.33 lesson (restated by review for the `material` kwarg):
+        `import_leftovers` routes through a SECOND create_material_for_set
+        call, and a kwarg added to only one of them keeps every test green
+        while half the batch gets the default."""
+        from sentinel import matwire_c4d
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        # A set whose material is created, plus an unassigned leftover (a
+        # file matching no set's root prefix) — that second file is what
+        # triggers the second create_material_for_set call site.
+        folder = self._pack(tmp_path, "plaster_col.png", "stray_data.png")
+        seen = []
+
+        def _fake_create(doc, folder, tex_set, name, **kw):
+            seen.append(kw.get("material"))
+            return {"ok": True, "material_name": name, "error": None}
+
+        monkeypatch.setattr(matwire_c4d, "create_material_for_set", _fake_create)
+        result = ops._op_matwire_create({"folder": folder, "material": "standard",
+                                         "import_leftovers": True})
+        assert result["ok"] is True
+        assert len(seen) >= 2, \
+            "the leftovers call site did not run — the test proves nothing"
+        assert all(m == "standard" for m in seen), \
+            "a call site dropped the material type"
+
+    def test_create_omitting_material_key_defaults_to_openpbr_at_the_op(
+            self, sentinel_module, monkeypatch, tmp_path):
+        """The end-to-end pin that the release default is OpenPBR AT THE OP
+        BOUNDARY (review follow-up): every other create-path test either
+        stubs openpbr_available False or sends an explicit "material" key,
+        so none of them can tell whether `_op_matwire_create` actually uses
+        `_matwire_material`'s result rather than some other/hardcoded value
+        — a mutation replacing `material = _matwire_material(payload)` with
+        `material = "standard"` left the whole suite green before this
+        test existed."""
+        from sentinel import matwire_c4d
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        folder = self._folder(tmp_path, "plaster_col.png")
+        monkeypatch.setattr(matwire_c4d, "openpbr_available", lambda: True)
+        seen = []
+
+        def _fake_create(doc, folder, tex_set, name, **kw):
+            seen.append(kw.get("material"))
+            return {"ok": True, "material_name": name, "error": None}
+
+        monkeypatch.setattr(matwire_c4d, "create_material_for_set", _fake_create)
+        # No "material" key at all — the op must derive it itself.
+        result = ops._op_matwire_create({"folder": folder})
+        assert result["ok"] is True
+        assert seen == ["openpbr"]
