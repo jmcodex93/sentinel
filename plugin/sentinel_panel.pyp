@@ -24,7 +24,9 @@ from sentinel.ui.panel_spa import SentinelPanelSPACmd, SentinelPaletteCmd
 # PLUGIN_ID/the main panel) so the artist can bind it a shortcut
 # independently via Preferences > Customize Commands. Grepped the 2099xxx
 # range (PLUGIN_ID=2099069, SENTINEL_FRAME_TAG_PLUGIN_ID=2099073, 2099072
-# retired) before picking 2099075 — free.
+# retired, SENTINEL_PANEL_SPA_PLUGIN_ID=2099076, 2099077 unassigned,
+# SENTINEL_PIN_TAG_PLUGIN_ID=2099078 taken by pin_tag.py) before picking
+# 2099075 — free.
 SENTINEL_PALETTE_PLUGIN_ID = 2099075
 
 try:
@@ -44,6 +46,19 @@ try:
     from sentinel.ui import frame_sync as _frame_sync
 except Exception:
     _frame_sync = None
+
+try:
+    from sentinel.ui.pin_tag import (
+        SENTINEL_PIN_TAG_PLUGIN_ID,
+        SentinelPinTag,
+        _SENTINEL_PIN_TAG_AVAILABLE,
+    )
+    _PIN_TAG_IMPORT_ERROR = None
+except Exception as _exc:
+    SENTINEL_PIN_TAG_PLUGIN_ID = 2099078
+    SentinelPinTag = None
+    _SENTINEL_PIN_TAG_AVAILABLE = False
+    _PIN_TAG_IMPORT_ERROR = _exc
 
 # Compatibility surface for tests, fixture runner, and C4D scripts that import
 # sentinel_panel.pyp directly. Keep private helpers too.
@@ -195,6 +210,32 @@ def Register():
     else:
         reason = f" ({_FRAME_TAG_IMPORT_ERROR})" if _FRAME_TAG_IMPORT_ERROR else ""
         safe_print(f"TagData API unavailable{reason} — Sentinel Frame tag disabled")
+
+    # Sentinel Pin (TagData) — six-slot state store per object (v1.35).
+    # No TAG_IMPLEMENTS_DRAW_FUNCTION: unlike Sentinel Frame this tag draws
+    # nothing to the viewport, and that flag exists only to make Draw fire
+    # (frame_tag's own comment on the same flag). Failure is non-fatal, same
+    # pattern as the Frame tag registration above.
+    if _SENTINEL_PIN_TAG_AVAILABLE and SentinelPinTag is not None:
+        try:
+            pin_tag_info = c4d.TAG_VISIBLE | c4d.TAG_EXPRESSION
+            pin_tag_ok = plugins.RegisterTagPlugin(
+                id=SENTINEL_PIN_TAG_PLUGIN_ID,
+                str="Sentinel Pin",
+                info=pin_tag_info,
+                g=SentinelPinTag,
+                description="Tsentinelpin",
+                icon=icon,
+            )
+            if pin_tag_ok:
+                safe_print("Sentinel Pin (TagData) registered")
+            else:
+                safe_print("Failed to register Sentinel Pin TagData")
+        except Exception as e:
+            safe_print(f"Sentinel Pin registration crashed: {e}")
+    else:
+        reason = f" ({_PIN_TAG_IMPORT_ERROR})" if _PIN_TAG_IMPORT_ERROR else ""
+        safe_print(f"TagData API unavailable{reason} — Sentinel Pin tag disabled")
 
     # Frame v2 auto-sync pump (MessageData): drains the debounced per-tag sync
     # queue on main thread. Non-fatal on failure — the tag still works, just
