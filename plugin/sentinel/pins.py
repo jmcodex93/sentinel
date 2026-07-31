@@ -87,17 +87,84 @@ def pin_summary(pin):
 
     ``has_geometry`` y ``has_keyframes`` existen por la misma razón: son las
     dos cosas que el pin NO captura, y callarlas convierte una restauración
-    en un no-op que el artista descubre tarde. La de keyframes es la peor de
-    las dos porque es invisible — si un parámetro está animado, reponer su
-    valor no cambia nada: la pista lo sobrescribe en el siguiente frame."""
+    en un no-op que el artista descubre tarde. Desde la Tarea 6,
+    ``has_keyframes`` ya NO significa "hay algo animado" — significa "hay
+    animación que este pin NO pudo capturar" (categoría CTRACK_CATEGORY_DATA
+    /PLUGIN, o un pin de una build anterior a esta) — las pistas VALUE sí se
+    capturan y restauran de verdad, así que ya no son un no-op silencioso."""
     if not pin:
         return {"filled": False, "label": "", "count": 0,
-                "has_geometry": False, "has_keyframes": False}
+                "has_geometry": False, "has_keyframes": False,
+                "tracks_captured": 0, "tracks_skipped": 0}
     entries = pin.get("entries") or []
+    tracks_captured = sum(int(e.get("tracks_captured") or 0) for e in entries)
+    tracks_skipped = sum(int(e.get("tracks_skipped") or 0) for e in entries)
     return {
         "filled": True,
         "label": pin.get("label") or "",
         "count": len(entries),
         "has_geometry": any(e.get("geometry") for e in entries),
-        "has_keyframes": any(e.get("keyframes") for e in entries),
+        "has_keyframes": tracks_skipped > 0,
+        "tracks_captured": tracks_captured,
+        "tracks_skipped": tracks_skipped,
     }
+
+
+# --- Animation tracks (Task 6) -----------------------------------------
+#
+# Measured in the Task 6 spike (docs/research/2026-07-31-pin-storage-spike.md
+# §6): serialising a CTrack node is not a route Python exposes at all
+# (TagData.Read/Write aren't bound, HyperFile.WriteObject doesn't exist,
+# BaseContainer.SetData rejects raw bytes, and CTrack.GetClone() returns a
+# NODE — a container can't hold one). The only route is writing each key's
+# fields into nested containers by hand, which only works for
+# CTRACK_CATEGORY_VALUE tracks (simple scalar keys) — CTRACK_CATEGORY_DATA
+# and _PLUGIN (PLA, morphs, sound, third-party) have a different structure
+# entirely and are out of scope. This module never imports c4d, so the
+# category is passed in already normalized to one of the two strings below
+# — the c4d-side adapter (pin_tag.py) does the classifying.
+
+#: A CTrack whose GetTrackCategory() the writer can actually store/restore.
+TRACK_CATEGORY_VALUE = "value"
+#: Everything else (CTRACK_CATEGORY_DATA / _PLUGIN) — captured is impossible,
+#: so it must be COUNTED and REPORTED, never silently dropped.
+TRACK_CATEGORY_OTHER = "other"
+
+
+def is_captured_track_category(category):
+    """Whether a (normalized) track category is one this tool can actually
+    store and restore key-by-key. The single source of truth for "in scope"
+    — pin_tag.py must never re-decide this on its own."""
+    return category == TRACK_CATEGORY_VALUE
+
+
+def track_key(owner, desc_id_parts):
+    """Positional identity for ONE CTrack within a node, re-pairing a
+    stored track with a live one the same way ``location_keys`` re-pairs
+    OBJECTS: never a C4D id (neither GetGUID() nor
+    FindUniqueID(MAXON_CREATOR_ID) survives save/reload — see the module
+    docstring), but WHERE the track lives plus WHICH parameter it animates.
+
+    ``owner`` is ``""`` for a track on the node itself, or ``"tag[N]"`` for
+    the Nth tag on that node in capture-time order — the same positional
+    weakness ``location_keys`` already accepts for objects: reordering tags
+    can mis-pair, and a restore only ever REPORTS that (via ``plan_restore``,
+    reused unchanged for tracks too), never guesses.
+
+    ``desc_id_parts`` is the track's ``GetDescriptionID()`` flattened to
+    ``[(id, dtype, creator), ...]`` (one triple per DescLevel) — the
+    parameter identity, which — unlike any C4D handle — DOES survive
+    save/reload."""
+    desc_key = "/".join("%d.%d.%d" % tuple(part) for part in desc_id_parts)
+    return "%s::%s" % (owner, desc_key)
+
+
+def track_capture_counts(track_categories):
+    """Split a flat list of (normalized) categories — one per CTrack a
+    node actually had something to say about — into captured vs
+    skipped-by-category. Pure so the counting rule is tested without a
+    scene: pin_tag.py walks the real tracks and hands over only the
+    categories, this decides what they mean for the row."""
+    categories = list(track_categories or [])
+    captured = sum(1 for c in categories if is_captured_track_category(c))
+    return {"captured": captured, "skipped": len(categories) - captured}

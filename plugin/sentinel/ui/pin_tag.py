@@ -117,11 +117,44 @@ _ENTRY_NAME = 2
 _ENTRY_GEOMETRY = 3
 _ENTRY_CONTAINER = 4
 _ENTRY_MATRIX = 5
-#: Cualquier CTrack (objeto o de sus tags) vuelve el valor guardado en un
-#: no-op silencioso: la pista lo pisa en el siguiente frame. Es la mitad de
-#: la advertencia obligatoria del spec, y la más fácil de pasar por alto
-#: porque no hay nada visible que la delate en el momento de guardar.
+#: DEPRECATED (Task 6): antes de la captura real de pistas, esto era solo
+#: un bool "algo está animado". Ya no se escribe — la captura real vive en
+#: _ENTRY_TRACKS de abajo — pero el id NUNCA se reutiliza para otra cosa,
+#: porque un pin guardado con una build anterior a esta todavía lo trae, y
+#: _pin_status_text lo sigue leyendo como último recurso (ver esa función)
+#: para no volverse silencioso justo en los pins más viejos.
 _ENTRY_KEYFRAMES = 6
+#: Pistas CTRACK_CATEGORY_VALUE capturadas para este nodo (objeto propio Y
+#: sus tags — mismas dos fuentes que keyframes.py camina para offset/
+#: stagger, v1.30: un rig se desincroniza en silencio si solo se mira el
+#: objeto). BaseContainer indexado 0..N-1, cada entrada un registro de
+#: pista (ver _TRACK_* más abajo). Ninguna pista DATA/PLUGIN vive aquí —
+#: ver pins.TRACK_CATEGORY_OTHER — solo se cuentan en _ENTRY_TRACKS_SKIPPED.
+_ENTRY_TRACKS = 7
+_ENTRY_TRACKS_COUNT = 8
+#: Pistas encontradas en este nodo que NO se pudieron capturar (categoría
+#: != CTRACK_CATEGORY_VALUE: PLA, morphs, sonido, de terceros). Contadas,
+#: nunca calladas — es la mitad "queda fuera" de la regla de honestidad del
+#: spec, la misma que ya cubre geometría.
+_ENTRY_TRACKS_SKIPPED = 9
+
+# Sub-keys de UN registro de pista, dentro de su propio BaseContainer
+# (namespace privado, sin riesgo de colisión con los ids de arriba).
+_TRACK_KEY = 1          # string — pins.track_key(owner, desc_id_parts)
+_TRACK_KEY_COUNT = 2    # int32 — nº de claves en _TRACK_KEYS
+_TRACK_KEYS = 3         # BaseContainer indexado 0..N-1, cada uno una clave
+
+# Sub-keys de UNA clave (CKey), medidas en el spike de la Tarea 6 — todo
+# cabe en un BaseContainer, incluido el BaseTime de GetTime() (el
+# contenedor lo admite directamente, sin descomponerlo).
+_KEY_TIME = 1
+_KEY_VALUE = 2
+_KEY_INTERPOLATION = 3
+_KEY_VALUE_LEFT = 4
+_KEY_VALUE_RIGHT = 5
+_KEY_TIME_LEFT = 6
+_KEY_TIME_RIGHT = 7
+_KEY_AUTO_TANGENT = 8
 
 
 # --- Small c4d helpers (copied pattern from frame_tag.py, not imported —
@@ -256,26 +289,215 @@ def _children_of(obj):
     return out
 
 
-def _has_ctracks(node):
-    """True si ``node`` o cualquiera de sus tags trae al menos una CTrack —
-    mismo criterio de "está animado" que ``keyframes._shift_track_list``
-    (Tools → keyframe offset/stagger, v1.30): CTracks de objeto Y de tags,
-    porque un rig suele animar por el tag (constraints, XPresso) tanto como
-    por el propio objeto."""
+def _iter_node_tracks(node):
+    """Yield ``(owner, track)`` for every CTrack belonging to ``node``
+    itself (owner ``""``) and every one of its TAGS (owner ``"tag[N]"``,
+    N = position in ``GetTags()`` order at capture time) — the same two
+    sources ``keyframes.py`` walks for offset/stagger (v1.30, see
+    ``_shift_track_list``): a rig desyncs silently if only the
+    object-level tracks are considered, because constraints/XPresso/
+    UserData animate through tags as often as through the object itself."""
     try:
-        if node.GetCTracks():
-            return True
+        for track in node.GetCTracks() or []:
+            yield "", track
     except Exception:
         pass
-    tag = node.GetFirstTag() if hasattr(node, "GetFirstTag") else None
-    while tag is not None:
+    try:
+        tags = node.GetTags() or []
+    except Exception:
+        tags = []
+    for index, tag in enumerate(tags):
         try:
-            if tag.GetCTracks():
-                return True
+            tag_tracks = tag.GetCTracks() or []
+        except Exception:
+            continue
+        for track in tag_tracks:
+            yield "tag[%d]" % index, track
+
+
+def _track_category_name(track):
+    """Normalize a CTrack's ``GetTrackCategory()`` to the plain strings
+    ``pins.py`` reasons about (that module never imports c4d — see its
+    module docstring). Measured categories: only ``CTRACK_CATEGORY_VALUE``
+    tracks are simple per-key scalar data (docs/research/
+    2026-07-31-pin-storage-spike.md §6); everything else (DATA/PLUGIN —
+    PLA, morphs, sound, third-party) is a different structure entirely."""
+    try:
+        category = track.GetTrackCategory()
+    except Exception:
+        return pins.TRACK_CATEGORY_OTHER
+    value_category = getattr(c4d, "CTRACK_CATEGORY_VALUE", None)
+    if value_category is not None and category == value_category:
+        return pins.TRACK_CATEGORY_VALUE
+    return pins.TRACK_CATEGORY_OTHER
+
+
+def _track_desc_id_parts(track):
+    """Flatten a CTrack's ``GetDescriptionID()`` into the shape the spike
+    measured live: one ``(id, dtype, creator)`` triple per DescLevel —
+    the parameter identity ``pins.track_key`` re-pairs a restore by."""
+    desc_id = track.GetDescriptionID()
+    depth_getter = getattr(desc_id, "GetDepth", None)
+    depth = depth_getter() if callable(depth_getter) else 0
+    parts = []
+    for i in range(depth):
+        level = desc_id[i]
+        parts.append((int(level.id), int(level.dtype), int(level.creator)))
+    return parts
+
+
+def _bc_get(bc, key):
+    """Generic typed read (BaseTime/float/int all round-trip through plain
+    ``__getitem__`` on a BaseContainer, per the Task 1 spike) that never
+    raises when ``key`` was never written — a stored key record from an
+    OLDER build of this same schema may simply be missing a field this
+    build now also reads."""
+    try:
+        return bc[key]
+    except Exception:
+        return None
+
+
+def _apply_key_setter(setter, curve, value):
+    """Some CKey setters (``SetTime`` — confirmed live in keyframes.py,
+    v1.30 — and, following the same shape, ``SetInterpolation``) take the
+    owning curve as their first argument so C4D can re-sort/renormalize;
+    the tangent getters/setters do not. Only ``SetTime`` is actually
+    confirmed; the rest are implemented from the documented CKey shape and
+    deliberately try BOTH call shapes so a wrong guess about ANY one of
+    them degrades to "this tangent didn't restore" instead of aborting the
+    whole key — never raises."""
+    try:
+        setter(curve, value)
+        return True
+    except TypeError:
+        pass
+    except Exception:
+        return False
+    try:
+        setter(value)
+        return True
+    except Exception:
+        return False
+
+
+def _capture_node_tracks(node):
+    """Every ``CTRACK_CATEGORY_VALUE`` CTrack on ``node`` (its own + its
+    tags'), captured key-by-key into containers per the Task 6 spike's
+    measured shape. Returns ``(tracks_bc, captured_count, skipped_count)``
+    — ``skipped_count`` is every OTHER track found (DATA/PLUGIN category —
+    a different structure entirely, see the spike), counted so the row can
+    say so instead of silently restoring nothing for it. A VALUE track
+    with zero keys is neither captured nor skipped — there is nothing to
+    lose and nothing to warn about."""
+    tracks_bc = c4d.BaseContainer()
+    captured = 0
+    skipped = 0
+    for owner, track in _iter_node_tracks(node):
+        if _track_category_name(track) != pins.TRACK_CATEGORY_VALUE:
+            skipped += 1
+            continue
+        try:
+            curve = track.GetCurve()
+        except Exception:
+            curve = None
+        key_count = curve.GetKeyCount() if curve is not None else 0
+        if not key_count:
+            continue
+        try:
+            desc_parts = _track_desc_id_parts(track)
+        except Exception:
+            skipped += 1
+            continue
+        keys_bc = c4d.BaseContainer()
+        for i in range(key_count):
+            key = curve.GetKey(i)
+            if key is None:
+                continue
+            key_bc = c4d.BaseContainer()
+            key_bc[_KEY_TIME] = key.GetTime()
+            key_bc[_KEY_VALUE] = key.GetValue()
+            key_bc[_KEY_INTERPOLATION] = key.GetInterpolation()
+            key_bc[_KEY_VALUE_LEFT] = key.GetValueLeft()
+            key_bc[_KEY_VALUE_RIGHT] = key.GetValueRight()
+            key_bc[_KEY_TIME_LEFT] = key.GetTimeLeft()
+            key_bc[_KEY_TIME_RIGHT] = key.GetTimeRight()
+            key_bc[_KEY_AUTO_TANGENT] = key.GetAutomaticTangentMode()
+            keys_bc.SetContainer(i, key_bc)
+        track_bc = c4d.BaseContainer()
+        track_bc.SetString(_TRACK_KEY, pins.track_key(owner, desc_parts))
+        track_bc.SetInt32(_TRACK_KEY_COUNT, key_count)
+        track_bc.SetContainer(_TRACK_KEYS, keys_bc)
+        tracks_bc.SetContainer(captured, track_bc)
+        captured += 1
+    return tracks_bc, captured, skipped
+
+
+def _live_tracks_by_key(node):
+    """Live VALUE-category CTracks on ``node`` (own + tags), keyed the
+    SAME way ``_capture_node_tracks`` keyed them at pin time — so a
+    restore can look one up by the identity that survives save/reload
+    (``pins.track_key``), never by any live C4D handle."""
+    out = {}
+    for owner, track in _iter_node_tracks(node):
+        if _track_category_name(track) != pins.TRACK_CATEGORY_VALUE:
+            continue
+        try:
+            desc_parts = _track_desc_id_parts(track)
+        except Exception:
+            continue
+        out[pins.track_key(owner, desc_parts)] = track
+    return out
+
+
+def _apply_track_keys(track, key_records):
+    """Replace EVERY key of ``track`` with the stored ``key_records`` —
+    restore means the pinned set IS the desired state, not something to
+    merge with whatever the live curve currently holds (that is exactly
+    how a wrecked animated parameter gets un-wrecked). Deletes walk in
+    REVERSE (deleting index 0 first would shift every later index — same
+    footgun ``keyframes._shift_track_list`` already documents for
+    positive-direction shifts). Returns the number of keys written."""
+    try:
+        curve = track.GetCurve()
+    except Exception:
+        curve = None
+    if curve is None:
+        return 0
+    existing = curve.GetKeyCount()
+    for i in range(existing - 1, -1, -1):
+        try:
+            curve.DelKey(i)
         except Exception:
             pass
-        tag = tag.GetNext()
-    return False
+    applied = 0
+    for record in key_records:
+        time_value = record.get("time")
+        if time_value is None:
+            continue
+        try:
+            result = curve.AddKey(time_value)
+        except Exception:
+            result = None
+        key = result.get("key") if isinstance(result, dict) else result
+        if key is None:
+            continue
+        if record.get("value") is not None:
+            _apply_key_setter(key.SetValue, curve, record["value"])
+        if record.get("interpolation") is not None:
+            _apply_key_setter(key.SetInterpolation, curve, record["interpolation"])
+        if record.get("time_left") is not None:
+            _apply_key_setter(key.SetTimeLeft, curve, record["time_left"])
+        if record.get("time_right") is not None:
+            _apply_key_setter(key.SetTimeRight, curve, record["time_right"])
+        if record.get("value_left") is not None:
+            _apply_key_setter(key.SetValueLeft, curve, record["value_left"])
+        if record.get("value_right") is not None:
+            _apply_key_setter(key.SetValueRight, curve, record["value_right"])
+        if record.get("auto_tangent") is not None:
+            _apply_key_setter(key.SetAutomaticTangentMode, curve, record["auto_tangent"])
+        applied += 1
+    return applied
 
 
 def _walk_object_tree(obj):
@@ -335,9 +557,11 @@ def _pin_status_text(node):
     el spec: conteo + tiempo relativo, y — OBLIGATORIO, no opcional — una
     nota de "geometría no incluida" siempre que algún nodo pineado tenga
     geometría editable (los puntos/polígonos viven fuera del contenedor del
-    objeto y no vuelven al restaurar), MÁS una nota de "N con keyframes"
-    cuando algún nodo pineado está animado (restaurar su valor no cambia
-    nada visible — la pista lo pisa en el siguiente frame).
+    objeto y no vuelven al restaurar). Desde la Tarea 6, las pistas
+    CTRACK_CATEGORY_VALUE se capturan y restauran de verdad — la fila lo
+    refleja con "N pistas" — y solo lo que sigue sin poder capturarse
+    (categoría DATA/PLUGIN, o un pin de una build anterior a esta que solo
+    guardó el bool viejo) se avisa como "no incluidas", nunca en silencio.
 
     Esto se SINTETIZA, nunca se guarda: ``GetDParameter`` llama a esto en
     cada lectura en vez de que la celda de estado tenga un valor escrito en
@@ -364,14 +588,29 @@ def _pin_status_text(node):
     for i in range(count):
         entry_bc = entries_bc.GetContainerInstance(i) if entries_bc is not None else None
         geometry = bool(entry_bc.GetBool(_ENTRY_GEOMETRY, False)) if entry_bc is not None else False
-        keyframes = bool(entry_bc.GetBool(_ENTRY_KEYFRAMES, False)) if entry_bc is not None else False
-        entries.append({"geometry": geometry, "keyframes": keyframes})
+        tracks_captured = int(entry_bc.GetInt32(_ENTRY_TRACKS_COUNT, 0)) if entry_bc is not None else 0
+        tracks_skipped = int(entry_bc.GetInt32(_ENTRY_TRACKS_SKIPPED, 0)) if entry_bc is not None else 0
+        if entry_bc is not None and not tracks_captured and not tracks_skipped:
+            # This entry predates Task 6 — the old code only ever wrote a
+            # bool ("something is animated"), never per-track data. Folded
+            # into "skipped" so a LEGACY pin keeps warning honestly instead
+            # of going silent the moment this build starts reading it
+            # (it has nothing new to restore for that object either way).
+            if bool(entry_bc.GetBool(_ENTRY_KEYFRAMES, False)):
+                tracks_skipped = 1
+        entries.append({
+            "geometry": geometry,
+            "tracks_captured": tracks_captured,
+            "tracks_skipped": tracks_skipped,
+        })
     summary = pins.pin_summary({"label": "", "entries": entries})
     text = "%d obj · %s" % (summary["count"], _relative_time_es(payload.GetString(_PAYLOAD_TIMESTAMP, "")))
     if summary["has_geometry"]:
         text += " · geometría no incluida"
+    if summary["tracks_captured"]:
+        text += " · %d pistas" % summary["tracks_captured"]
     if summary["has_keyframes"]:
-        text += " · %d con keyframes" % sum(1 for e in entries if e["keyframes"])
+        text += " · %d pistas no incluidas" % summary["tracks_skipped"]
     return text
 
 
@@ -409,7 +648,10 @@ def _store_pin(node):
         entry_bc.SetString(_ENTRY_KEY, key)
         entry_bc.SetString(_ENTRY_NAME, _safe_node_name(child_obj, ""))
         entry_bc.SetBool(_ENTRY_GEOMETRY, isinstance(child_obj, c4d.PointObject))
-        entry_bc.SetBool(_ENTRY_KEYFRAMES, _has_ctracks(child_obj))
+        tracks_bc, tracks_captured, tracks_skipped = _capture_node_tracks(child_obj)
+        entry_bc.SetContainer(_ENTRY_TRACKS, tracks_bc)
+        entry_bc.SetInt32(_ENTRY_TRACKS_COUNT, tracks_captured)
+        entry_bc.SetInt32(_ENTRY_TRACKS_SKIPPED, tracks_skipped)
         entry_bc.SetContainer(_ENTRY_CONTAINER, child_obj.GetData())
         entry_bc.SetMatrix(_ENTRY_MATRIX, child_obj.GetMl())
         entries_bc.SetContainer(i, entry_bc)
@@ -431,10 +673,45 @@ def _store_pin(node):
 
 # --- Restore ----------------------------------------------------------------
 
+def _read_pinned_tracks(entry_bc):
+    """Unpack one entry's captured tracks into ``{track_key: [key_record,
+    ...]}`` — ``key_record`` is a plain dict mirroring the getters the
+    Task 6 spike measured, ready for ``_apply_track_keys``. An entry
+    written before Task 6 (no ``_ENTRY_TRACKS_COUNT``) reads back as ``{}``
+    — nothing to restore, not a crash."""
+    count = entry_bc.GetInt32(_ENTRY_TRACKS_COUNT, 0)
+    tracks_container = entry_bc.GetContainerInstance(_ENTRY_TRACKS)
+    out = {}
+    for i in range(count):
+        track_bc = tracks_container.GetContainerInstance(i) if tracks_container is not None else None
+        if track_bc is None:
+            continue
+        track_key_str = track_bc.GetString(_TRACK_KEY, "")
+        key_count = track_bc.GetInt32(_TRACK_KEY_COUNT, 0)
+        keys_container = track_bc.GetContainerInstance(_TRACK_KEYS)
+        records = []
+        for k in range(key_count):
+            key_bc = keys_container.GetContainerInstance(k) if keys_container is not None else None
+            if key_bc is None:
+                continue
+            records.append({
+                "time": _bc_get(key_bc, _KEY_TIME),
+                "value": _bc_get(key_bc, _KEY_VALUE),
+                "interpolation": _bc_get(key_bc, _KEY_INTERPOLATION),
+                "value_left": _bc_get(key_bc, _KEY_VALUE_LEFT),
+                "value_right": _bc_get(key_bc, _KEY_VALUE_RIGHT),
+                "time_left": _bc_get(key_bc, _KEY_TIME_LEFT),
+                "time_right": _bc_get(key_bc, _KEY_TIME_RIGHT),
+                "auto_tangent": _bc_get(key_bc, _KEY_AUTO_TANGENT),
+            })
+        out[track_key_str] = records
+    return out
+
+
 def _read_pinned_entries(payload_bc):
     """Unpack a stored payload's entries into an ORDERED key list (the order
     the writer applied in, per the docstring of ``pins.location_keys``) plus
-    a key -> {name, container, matrix} lookup for applying them."""
+    a key -> {name, container, matrix, tracks} lookup for applying them."""
     count = payload_bc.GetInt32(_PAYLOAD_COUNT, 0)
     entries_container = payload_bc.GetContainerInstance(_PAYLOAD_ENTRIES)
     keys = []
@@ -449,6 +726,7 @@ def _read_pinned_entries(payload_bc):
             "name": entry_bc.GetString(_ENTRY_NAME, ""),
             "container": entry_bc.GetContainerInstance(_ENTRY_CONTAINER),
             "matrix": entry_bc.GetMatrix(_ENTRY_MATRIX, c4d.Matrix()),
+            "tracks": _read_pinned_tracks(entry_bc),
         }
     return keys, by_key
 
@@ -689,6 +967,7 @@ def _restore(node):
         return report
 
     # 6. One undo bracket for the whole matched subtree.
+    missing_tracks = []
     doc.StartUndo()
     try:
         for key in matched:
@@ -709,6 +988,27 @@ def _restore(node):
                 live_obj.SetName(entry["name"])
             except Exception:
                 pass
+            # Restoring the container/matrix above is exactly the write an
+            # animated parameter overwrites on its very next frame — this
+            # is the actual fix for that silent no-op, applied inside the
+            # SAME undo bracket as everything else (one Cmd+Z for the lot).
+            stored_tracks = entry.get("tracks") or {}
+            if stored_tracks:
+                live_tracks = _live_tracks_by_key(live_obj)
+                track_plan = pins.plan_restore(
+                    list(stored_tracks.keys()), list(live_tracks.keys()))
+                for track_key_str in track_plan["matched"]:
+                    live_track = live_tracks.get(track_key_str)
+                    if live_track is None:
+                        continue
+                    try:
+                        doc.AddUndo(c4d.UNDOTYPE_CHANGE, live_track)
+                    except Exception:
+                        pass
+                    _apply_track_keys(live_track, stored_tracks.get(track_key_str) or [])
+                if track_plan["missing"]:
+                    missing_tracks.extend(
+                        "%s@%s" % (key, tk) for tk in track_plan["missing"])
         report = _restore_report_text(len(matched), len(pinned_keys))
         doc.AddUndo(c4d.UNDOTYPE_CHANGE, node)
         _write_last_restore(node, report)
@@ -720,6 +1020,8 @@ def _restore(node):
 
     if missing:
         safe_print("Sentinel Pin: no encontrados — %s" % ", ".join(missing))
+    if missing_tracks:
+        safe_print("Sentinel Pin: pistas no encontradas — %s" % ", ".join(missing_tracks))
     return report
 
 

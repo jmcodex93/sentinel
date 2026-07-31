@@ -106,32 +106,90 @@ def test_restore_plan_with_nothing_left_matches_nothing():
 def test_pin_summary_of_an_empty_pin():
     assert pins.pin_summary(None) == {
         "filled": False, "label": "", "count": 0,
-        "has_geometry": False, "has_keyframes": False}
+        "has_geometry": False, "has_keyframes": False,
+        "tracks_captured": 0, "tracks_skipped": 0}
 
 
 def test_pin_summary_reports_geometry_so_the_row_can_warn():
     """The row must say "geometry not included" at STORE time — the artist
     who pins a polygon object will otherwise expect the modelling back."""
     pin = {"label": "wide", "entries": [
-        {"key": "", "geometry": False, "keyframes": False},
-        {"key": "geo", "geometry": True, "keyframes": False}]}
+        {"key": "", "geometry": False, "tracks_captured": 0, "tracks_skipped": 0},
+        {"key": "geo", "geometry": True, "tracks_captured": 0, "tracks_skipped": 0}]}
     summary = pins.pin_summary(pin)
     assert summary == {
         "filled": True, "label": "wide", "count": 2,
-        "has_geometry": True, "has_keyframes": False}
+        "has_geometry": True, "has_keyframes": False,
+        "tracks_captured": 0, "tracks_skipped": 0}
 
 
-def test_pin_summary_reports_keyframes_so_a_restore_is_never_a_silent_no_op():
-    """An animated parameter overwrites its restored value on the very next
-    frame — the restore silently does nothing on exactly the rigs the tool
-    exists for, unless the row says so."""
+def test_pin_summary_reports_skipped_tracks_so_a_restore_is_never_a_silent_no_op():
+    """A DATA/PLUGIN track (or a track this build simply can't parse) can't
+    be captured at all — the restore silently does nothing for exactly the
+    animation the tool exists to protect, unless the row says so."""
     pin = {"label": "", "entries": [
-        {"key": "", "geometry": False, "keyframes": False},
-        {"key": "ctrl", "geometry": False, "keyframes": True}]}
+        {"key": "", "geometry": False, "tracks_captured": 3, "tracks_skipped": 0},
+        {"key": "ctrl", "geometry": False, "tracks_captured": 0, "tracks_skipped": 1}]}
     summary = pins.pin_summary(pin)
     assert summary["has_keyframes"] is True
     assert summary["has_geometry"] is False
+    assert summary["tracks_captured"] == 3
+    assert summary["tracks_skipped"] == 1
+
+
+def test_pin_summary_captured_tracks_alone_do_not_trigger_the_warning():
+    """VALUE tracks that WERE captured must not read as "not captured" —
+    only genuinely skipped tracks should light up has_keyframes."""
+    pin = {"label": "", "entries": [
+        {"key": "ctrl", "geometry": False, "tracks_captured": 2, "tracks_skipped": 0}]}
+    summary = pins.pin_summary(pin)
+    assert summary["has_keyframes"] is False
+    assert summary["tracks_captured"] == 2
 
 
 def test_safety_pin_name_is_the_tool_owned_restore_backup():
     assert pins.SAFETY_PIN_NAME == "↩ Antes de restaurar"
+
+
+# --- Task 6: which track categories are in scope, and how they're keyed --
+
+def test_only_value_category_tracks_are_captured():
+    assert pins.is_captured_track_category(pins.TRACK_CATEGORY_VALUE) is True
+    assert pins.is_captured_track_category(pins.TRACK_CATEGORY_OTHER) is False
+    assert pins.is_captured_track_category("something_unrecognized") is False
+
+
+def test_track_capture_counts_splits_captured_and_skipped():
+    categories = [
+        pins.TRACK_CATEGORY_VALUE,
+        pins.TRACK_CATEGORY_VALUE,
+        pins.TRACK_CATEGORY_OTHER,
+    ]
+    assert pins.track_capture_counts(categories) == {"captured": 2, "skipped": 1}
+
+
+def test_track_capture_counts_of_nothing_is_all_zero():
+    assert pins.track_capture_counts([]) == {"captured": 0, "skipped": 0}
+    assert pins.track_capture_counts(None) == {"captured": 0, "skipped": 0}
+
+
+def test_track_key_combines_owner_and_description_id():
+    key = pins.track_key("", [(903, 23, 5155), (1000, 19, 23)])
+    assert key == "::903.23.5155/1000.19.23"
+
+
+def test_track_key_distinguishes_object_from_tag_owner():
+    """The SAME parameter id on the object vs. on a tag must key
+    differently — otherwise a restore could write an object-level track's
+    keys onto a same-shaped tag track (or vice versa)."""
+    object_key = pins.track_key("", [(1000, 19, 23)])
+    tag_key = pins.track_key("tag[0]", [(1000, 19, 23)])
+    assert object_key != tag_key
+
+
+def test_track_key_of_a_root_level_track_has_no_nesting_ambiguity():
+    """A track with a single DescID level still produces a valid, distinct
+    key — no accidental collision with an empty desc_id_parts list."""
+    key = pins.track_key("", [(1000, 0, 0)])
+    empty_key = pins.track_key("", [])
+    assert key != empty_key
