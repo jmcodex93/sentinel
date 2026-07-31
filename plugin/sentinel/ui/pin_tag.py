@@ -52,6 +52,16 @@ ID_PIN_PAYLOAD = 20000
 #: vez de dejar clavado el resultado de una restauración ya vieja.
 ID_PIN_LAST_RESTORE = 20001
 
+#: Marca que ESTE tag es la red de seguridad — nunca el nombre. Un nombre
+#: es texto editable por el artista: si la identidad dependiera de él,
+#: renombrar CUALQUIER pin a "↩ Antes de restaurar" lo convertiría en la
+#: red de seguridad por accidente (y viceversa, renombrar la red de
+#: seguridad la dejaría de reconocer como tal). Se escribe una sola vez,
+#: al crear el tag en ``_capture_safety_pin`` — nunca en ``_store_pin``,
+#: que esa función sirve tanto para pines normales como para la red de
+#: seguridad y no debe decidir cuál es cuál.
+ID_PIN_IS_SAFETY = 20002
+
 #: Se sube solo si cambia la forma del payload. Un pin cuyo esquema esta
 #: build no reconoce se IGNORA con una nota en su fila — nunca se aplica a
 #: medias, porque un rig medio-aplicado es peor que uno intacto.
@@ -425,16 +435,27 @@ def _restore_report_text(matched_count, total_count):
         matched_count, total_count, missing_count)
 
 
+def _is_safety_tag(node):
+    """Identity check for the safety tag — the ``ID_PIN_IS_SAFETY`` flag in
+    its OWN container, never the name. A name is artist-editable text:
+    matching on it would let renaming any ordinary pin to
+    ``pins.SAFETY_PIN_NAME`` turn it into the safety tag by accident (and
+    renaming the real safety tag away from that string would un-safety
+    it)."""
+    bc = node.GetDataInstance()
+    if bc is None:
+        return False
+    return bool(bc.GetBool(ID_PIN_IS_SAFETY, False))
+
+
 def _find_safety_tag(obj):
-    """The safety tag is identified by TYPE + its reserved name, same rule
-    the overlay/frame tags use elsewhere in the plugin to find their own
-    tag rather than trust a Python-side cache that a document reload would
-    invalidate."""
+    """The safety tag is identified by TYPE + the ``ID_PIN_IS_SAFETY``
+    flag in its own container (see ``_is_safety_tag``) — never by name."""
     getter = getattr(obj, "GetTags", None)
     tags = getter() if callable(getter) else None
     for tag in (tags or []):
         try:
-            if tag.GetType() == SENTINEL_PIN_TAG_PLUGIN_ID and tag.GetName() == pins.SAFETY_PIN_NAME:
+            if tag.GetType() == SENTINEL_PIN_TAG_PLUGIN_ID and _is_safety_tag(tag):
                 return tag
         except Exception:
             continue
@@ -447,7 +468,16 @@ def _capture_safety_pin(node, obj, doc):
     yet, overwriting it (via ``_store_pin``, same as a manual Re-pin) if it
     does. Called BEFORE the caller touches anything else: this is the whole
     safety property, not a nicety, so a failure here must abort the
-    restore rather than proceed net-less."""
+    restore rather than proceed net-less.
+
+    Requires the tag to be registered with ``c4d.TAG_MULTIPLE`` (see the
+    comment in ``sentinel_panel.pyp``): without it, C4D's own
+    ``MakeTag``/``InsertTag`` implicitly evicts any existing same-type tag
+    on the object the moment a second one is added — which is exactly
+    ``node``, the pin this whole function exists to protect. That was the
+    Task 4 live Critical: the eviction invalidated ``node`` mid-restore, so
+    the very next read of its payload came back empty and nothing applied.
+    """
     tag = _find_safety_tag(obj)
     if tag is None:
         try:
@@ -456,15 +486,17 @@ def _capture_safety_pin(node, obj, doc):
             tag = None
         if tag is None:
             return False
-        # SetName lives INSIDE this bracket, not after it: a plain mutation
-        # made once the bracket has already closed is not undo-tracked at
-        # all (nothing to attach it to), which would leave the rename
-        # permanent even if the NEW tag itself gets undone later.
+        # SetName + the identity flag live INSIDE this bracket, not after
+        # it: a plain mutation made once the bracket has already closed is
+        # not undo-tracked at all (nothing to attach it to), which would
+        # leave them permanent even if the NEW tag itself gets undone
+        # later.
         doc.StartUndo()
         try:
             doc.AddUndo(c4d.UNDOTYPE_NEW, tag)
             try:
                 tag.SetName(pins.SAFETY_PIN_NAME)
+                tag.GetDataInstance().SetBool(ID_PIN_IS_SAFETY, True)
             except Exception:
                 return False
         finally:
@@ -505,11 +537,11 @@ def _restore(node):
     current_keys = pins.location_keys(current_tree)
     current_by_key = dict(zip(current_keys, current_flat_nodes))
 
-    # 2. Safety net FIRST. Skip only when THIS tag IS the safety net —
+    # 2. Safety net FIRST. Skip only when THIS tag IS the safety net (by
+    # its ID_PIN_IS_SAFETY flag, never its name — see _is_safety_tag) —
     # overwriting it here would destroy the one copy of the state the
     # artist is restoring away FROM.
-    is_safety_tag = _safe_node_name(node, "") == pins.SAFETY_PIN_NAME
-    if not is_safety_tag:
+    if not _is_safety_tag(node):
         if not _capture_safety_pin(node, obj, doc):
             report = "no se pudo respaldar el estado actual — restauración cancelada"
             safe_print("Sentinel Pin: %s" % report)

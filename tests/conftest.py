@@ -93,6 +93,40 @@ class BaseContainer(dict):
     def GetLink(self, key, doc=None):
         return self.get(key)
 
+    # Typed accessors modeled after the real c4d.BaseContainer API — added
+    # for the Sentinel Pin harness (nested containers, ints, strings,
+    # bools, matrices), purely additive on top of the dict this already
+    # is, so nothing that only used GetFilename/GetLink is affected.
+    def GetInt32(self, key, default=0):
+        return self.get(key, default)
+
+    def SetInt32(self, key, value):
+        self[key] = value
+
+    def GetString(self, key, default=""):
+        return self.get(key, default)
+
+    def SetString(self, key, value):
+        self[key] = value
+
+    def GetBool(self, key, default=False):
+        return self.get(key, default)
+
+    def SetBool(self, key, value):
+        self[key] = value
+
+    def GetContainerInstance(self, key):
+        return self.get(key)
+
+    def SetContainer(self, key, value):
+        self[key] = value
+
+    def GetMatrix(self, key, default=None):
+        return self.get(key, default)
+
+    def SetMatrix(self, key, value):
+        self[key] = value
+
 
 class BaseDocument(dict):
     def __init__(self, render_datas=None):
@@ -154,6 +188,14 @@ def _install_fake_c4d():
     c4d.BaseContainer = BaseContainer
     c4d.GetCustomDatatypeDefault = lambda dtype: BaseContainer()
     c4d.EventAdd = lambda *args, **kwargs: None
+
+    class PointObject:
+        """Placeholder for c4d.PointObject — a real class (not a
+        _PermissiveModule auto-int) so isinstance() checks against it
+        (e.g. pin_tag._walk_object_tree's geometry test) don't raise
+        TypeError. Fake geometry objects in a test subclass this."""
+
+    c4d.PointObject = PointObject
 
     gui = _PermissiveModule("c4d.gui")
     gui.GeDialog = _BaseGui

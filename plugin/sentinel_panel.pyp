@@ -216,9 +216,22 @@ def Register():
     # nothing to the viewport, and that flag exists only to make Draw fire
     # (frame_tag's own comment on the same flag). Failure is non-fatal, same
     # pattern as the Frame tag registration above.
+    #
+    # TAG_MULTIPLE is REQUIRED, not optional polish: without it, C4D
+    # enforces single-instance-per-object for this tag type, and
+    # BaseObject.MakeTag()/InsertTag() silently EVICTS any existing tag of
+    # the same type when a second one is added — invalidating every
+    # Python reference to the old tag in the process (Maxon SDK docs,
+    # BaseObject.InsertTag). That is the root cause of the Task 4 Critical
+    # live bug: creating the "↩ Antes de restaurar" safety tag on the same
+    # host object as the pin being restored evicted the pin's own tag
+    # mid-restore, so the very next read of its payload came back empty
+    # and nothing got applied. It also would have silently broken the
+    # ordinary case of two artist-added Sentinel Pin tags coexisting on
+    # one object, unrelated to restore.
     if _SENTINEL_PIN_TAG_AVAILABLE and SentinelPinTag is not None:
         try:
-            pin_tag_info = c4d.TAG_VISIBLE | c4d.TAG_EXPRESSION
+            pin_tag_info = c4d.TAG_VISIBLE | c4d.TAG_EXPRESSION | c4d.TAG_MULTIPLE
             pin_tag_ok = plugins.RegisterTagPlugin(
                 id=SENTINEL_PIN_TAG_PLUGIN_ID,
                 str="Sentinel Pin",
