@@ -103,6 +103,13 @@ class FakeTag:
     def GetDocument(self):
         return self._doc
 
+    def Remove(self):
+        if self._host is not None:
+            try:
+                self._host._tags.remove(self)
+            except ValueError:
+                pass
+
 
 class FakeObject:
     """Doubles as a c4d.BaseObject: a tag list + MakeTag that ALWAYS adds
@@ -126,8 +133,14 @@ class FakeObject:
         return list(self._tags)
 
     def MakeTag(self, plugin_id):
+        # MEASURED LIVE (C1 regression, see docs/superpowers/sdd/
+        # review-final-pin.diff): BaseObject.MakeTag with no ``pred``
+        # PREPENDS in real C4D, not appends — an earlier version of this
+        # fake modeled the wrong contract, which is exactly why the tag[N]
+        # index-shift bug reproduced against the pure engine but was
+        # invisible to this harness.
         tag = FakeTag(self, plugin_id, "Sentinel Pin", self._c4d, self._doc)
-        self._tags.append(tag)
+        self._tags.insert(0, tag)
         return tag
 
     def GetDown(self):
@@ -262,6 +275,15 @@ def test_restore_from_the_safety_tag_does_not_back_up_itself(sentinel_module):
     original = _make_pin_tag(host, pin_tag, c4d)
     assert pin_tag._capture_safety_pin(original, host, doc) is True
     safety = [t for t in host.GetTags() if t is not original][0]
+    # C4: the count-only assertion below stayed green under a mutation
+    # that made ``_restore`` always capture a safety pin, even from the
+    # safety tag itself — because that mutation just overwrites the SAME
+    # tag rather than adding a third one. Pin the payload's identity
+    # (object reference — `_store_pin` always builds and stores a BRAND
+    # NEW BaseContainer, so any re-store swaps this reference even if its
+    # content happened to match) so that overwrite is actually caught.
+    safety_payload_before = safety.GetDataInstance().GetContainerInstance(
+        pin_tag.ID_PIN_PAYLOAD)
 
     pin_tag._restore(safety)
 
@@ -270,6 +292,11 @@ def test_restore_from_the_safety_tag_does_not_back_up_itself(sentinel_module):
     # not overwrite it" requirement, checked from the other direction:
     # it also must not spawn a new one instead.
     assert len(host.GetTags()) == 2
+    safety_payload_after = safety.GetDataInstance().GetContainerInstance(
+        pin_tag.ID_PIN_PAYLOAD)
+    assert safety_payload_after is safety_payload_before, (
+        "restoring FROM the safety tag must never overwrite its own payload"
+    )
 
 
 # --- Display-name self-heal after a save/reload ------------------------
@@ -433,3 +460,151 @@ def test_sync_display_name_is_idempotent(sentinel_module):
 
     assert tag.GetName() == "close up"
     assert tag.GetDataInstance().GetString(pin_tag.ID_PIN_NAME) == "close up"
+
+
+# --- C9: a failed safety-tag creation must never leave a dead, unflagged --
+# --- tag behind that blocks every future retry -----------------------------
+
+class _BrokenSafetyObject(FakeObject):
+    """The FIRST tag ``MakeTag`` creates has a ``SetName`` that raises —
+    simulating a failure partway through creating the safety tag — every
+    tag created AFTER that one behaves normally, so the test can prove
+    both halves: a half-made tag never lingers unflagged, and a retry
+    afterwards succeeds cleanly instead of breaking again."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Off by default: ``_make_pin_tag`` (the test helper) creates the
+        # ARTIST'S own pin tag via ``MakeTag`` first — that call must
+        # succeed normally. The test below arms this right before the
+        # call under test, so only the SAFETY tag's creation breaks.
+        self._break_next_make_tag = False
+
+    def MakeTag(self, plugin_id):
+        tag = super().MakeTag(plugin_id)
+        if self._break_next_make_tag:
+            self._break_next_make_tag = False
+
+            def _broken_set_name(name):
+                raise RuntimeError("boom")
+
+            tag.SetName = _broken_set_name
+        return tag
+
+
+def test_capture_safety_pin_removes_a_half_made_tag_on_failure_so_retry_is_clean(sentinel_module):
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = _BrokenSafetyObject("rig", c4d, doc)
+    original = _make_pin_tag(host, pin_tag, c4d)
+    host._break_next_make_tag = True  # arm it only for the safety tag
+
+    ok = pin_tag._capture_safety_pin(original, host, doc)
+
+    assert ok is False
+    assert len(host.GetTags()) == 1, (
+        "a half-made, unflagged safety tag must not linger on the object"
+    )
+    assert host.GetTags()[0] is original
+
+    # A second attempt (e.g. the artist just hits "Ir" again) must succeed
+    # cleanly instead of piling up another dead tag next to the first.
+    ok2 = pin_tag._capture_safety_pin(original, host, doc)
+
+    assert ok2 is True
+    assert len(host.GetTags()) == 2
+    flagged = [t for t in host.GetTags() if pin_tag._is_safety_tag(t)]
+    assert len(flagged) == 1
+
+
+# --- C10: mutation survivors — name restore, last-restore clearing on ------
+# --- re-pin, and the exact report-text branches -----------------------------
+
+def test_restore_restores_the_pinned_name(sentinel_module):
+    """The mutation ``live_obj.SetName(entry["name"]) -> pass`` survived
+    the whole suite before this test existed — nothing checked that a
+    restore actually puts the pinned NAME back, only the container/
+    matrix."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("original name", c4d, doc)
+    original = _make_pin_tag(host, pin_tag, c4d)  # captures "original name"
+
+    host.SetName("renamed by mistake")
+
+    pin_tag._restore(original)
+
+    assert host.GetName() == "original name"
+
+
+def test_store_pin_clears_a_previous_restore_note(sentinel_module):
+    """The mutation ``_clear_last_restore -> pass`` survived the whole
+    suite — nothing checked that a fresh (re-)pin drops the stale
+    "N restaurados" note from a previous restore."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+    original = _make_pin_tag(host, pin_tag, c4d)
+
+    pin_tag._restore(original)
+    assert pin_tag._read_last_restore(original) != ""
+
+    pin_tag._store_pin(original)
+
+    assert pin_tag._read_last_restore(original) == ""
+
+
+def test_restore_report_text_partial_match_format(sentinel_module):
+    """Direct coverage of the "N de M restaurados · K no encontrados"
+    branch — before this test, nothing in the suite asserted its exact
+    text, only the all-matched "N restaurados" shape."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+
+    assert pin_tag._restore_report_text(2, 5) == "2 de 5 restaurados · 3 no encontrados"
+    assert pin_tag._restore_report_text(3, 3) == "3 restaurados"
+
+
+def test_pin_status_text_warns_about_geometry(sentinel_module):
+    """Direct coverage of the "geometría no incluida" string — before
+    this test, nothing in the suite asserted it appears when a pinned
+    entry actually has geometry."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+    tag = _make_pin_tag(host, pin_tag, c4d)
+    payload = tag.GetDataInstance().GetContainerInstance(pin_tag.ID_PIN_PAYLOAD)
+    entries = payload.GetContainerInstance(pin_tag._PAYLOAD_ENTRIES)
+    entries.GetContainerInstance(0).SetBool(pin_tag._ENTRY_GEOMETRY, True)
+
+    text = pin_tag._pin_status_text(tag)
+
+    assert "geometría no incluida" in text
+
+
+def test_pin_status_text_keeps_geometry_warning_after_a_restore(sentinel_module):
+    """C3: those notes are binding, not decoration — they must not
+    disappear from the row just because a restore already happened once
+    and left its own "N restaurados" text behind."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+    tag = _make_pin_tag(host, pin_tag, c4d)
+    payload = tag.GetDataInstance().GetContainerInstance(pin_tag.ID_PIN_PAYLOAD)
+    entries = payload.GetContainerInstance(pin_tag._PAYLOAD_ENTRIES)
+    entries.GetContainerInstance(0).SetBool(pin_tag._ENTRY_GEOMETRY, True)
+
+    pin_tag._write_last_restore(tag, "1 restaurados")
+    text = pin_tag._pin_status_text(tag)
+
+    assert text.startswith("1 restaurados")
+    assert "geometría no incluida" in text

@@ -14,8 +14,11 @@ geometría ``isinstance(obj, c4d.PointObject)`` son hechos medidos en el
 spike de la Tarea 1 (docs/research/2026-07-31-pin-storage-spike.md), no
 suposiciones.
 
-Restaurar un pin sobre la escena es la Tarea 4 — el botón "Ir" está cableado
-a la descripción pero su handler es deliberadamente un no-op.
+Restaurar un pin sobre la escena está implementado (Tarea 4, con la captura
+real de pistas de animación de la Tarea 6 encima): el botón "Ir" está
+cableado a la descripción y su handler llama a ``_restore`` — ver esa
+función más abajo para el contrato completo (red de seguridad, plan de
+reemparejamiento por ubicación, un solo undo).
 """
 
 import datetime
@@ -292,11 +295,27 @@ def _children_of(obj):
 def _iter_node_tracks(node):
     """Yield ``(owner, track)`` for every CTrack belonging to ``node``
     itself (owner ``""``) and every one of its TAGS (owner ``"tag[N]"``,
-    N = position in ``GetTags()`` order at capture time) — the same two
-    sources ``keyframes.py`` walks for offset/stagger (v1.30, see
-    ``_shift_track_list``): a rig desyncs silently if only the
+    N = position among the node's NON-Sentinel-Pin tags at capture time)
+    — the same two sources ``keyframes.py`` walks for offset/stagger
+    (v1.30, see ``_shift_track_list``): a rig desyncs silently if only the
     object-level tracks are considered, because constraints/XPresso/
-    UserData animate through tags as often as through the object itself."""
+    UserData animate through tags as often as through the object itself.
+
+    Sentinel Pin tags (own type ``SENTINEL_PIN_TAG_PLUGIN_ID``) are
+    excluded from the index entirely — not merely skipped for their own
+    (nonexistent) CTracks. MEASURED LIVE: ``BaseObject.MakeTag`` with no
+    ``pred`` PREPENDS, so creating the ``↩ Antes de restaurar`` safety tag
+    during a restore (``_capture_safety_pin``, which runs BEFORE this is
+    called again to resolve live tracks) shifts every other tag's position
+    in ``GetTags()`` by one — and the same shift happens permanently the
+    moment an artist adds a second Sentinel Pin tag to the same object.
+    Either way, a ``tag[N]`` computed at capture time would then pair
+    against a DIFFERENT tag's tracks at restore time — a wrong-object
+    write, not merely a missed one, and ``plan_restore`` cannot tell a
+    coincidental string match from a correct one (see ``pins.track_key``).
+    Excluding Sentinel Pin tags from the count makes every other tag's
+    index invariant to how many pins exist on the object or when they were
+    created, closing both causes at once instead of reducing their odds."""
     try:
         for track in node.GetCTracks() or []:
             yield "", track
@@ -306,7 +325,15 @@ def _iter_node_tracks(node):
         tags = node.GetTags() or []
     except Exception:
         tags = []
-    for index, tag in enumerate(tags):
+    non_pin_tags = []
+    for tag in tags:
+        try:
+            if tag.GetType() == SENTINEL_PIN_TAG_PLUGIN_ID:
+                continue
+        except Exception:
+            pass
+        non_pin_tags.append(tag)
+    for index, tag in enumerate(non_pin_tags):
         try:
             tag_tracks = tag.GetCTracks() or []
         except Exception:
@@ -359,23 +386,17 @@ def _bc_get(bc, key):
 
 
 def _apply_key_setter(setter, curve, value):
-    """Some CKey setters (``SetTime`` — confirmed live in keyframes.py,
-    v1.30 — and, following the same shape, ``SetInterpolation``) take the
-    owning curve as their first argument so C4D can re-sort/renormalize;
-    the tangent getters/setters do not. Only ``SetTime`` is actually
-    confirmed; the rest are implemented from the documented CKey shape and
-    deliberately try BOTH call shapes so a wrong guess about ANY one of
-    them degrades to "this tangent didn't restore" instead of aborting the
-    whole key — never raises."""
+    """Every CKey setter used here — ``SetTime`` (confirmed live in
+    keyframes.py, v1.30) and, MEASURED LIVE in this task's own spike,
+    ``SetValue``/``SetInterpolation``/``SetTimeLeft``/``SetValueLeft``/
+    ``SetAutomaticTangentMode`` — takes the owning curve as its first
+    argument so C4D can re-sort/renormalize; the one-arg, value-only shape
+    an earlier version of this function also tried does not exist on any
+    of them and always raised. Never raises itself: a setter failure just
+    means that one field didn't restore, not that the whole key should
+    abort."""
     try:
         setter(curve, value)
-        return True
-    except TypeError:
-        pass
-    except Exception:
-        return False
-    try:
-        setter(value)
         return True
     except Exception:
         return False
@@ -457,7 +478,17 @@ def _apply_track_keys(track, key_records):
     how a wrecked animated parameter gets un-wrecked). Deletes walk in
     REVERSE (deleting index 0 first would shift every later index — same
     footgun ``keyframes._shift_track_list`` already documents for
-    positive-direction shifts). Returns the number of keys written."""
+    positive-direction shifts). Returns the number of keys written.
+
+    The applicable records (those with a real ``time``) are collected
+    FIRST, before the live curve is touched at all — if that list turns
+    out empty (every stored record has ``time is None``, e.g. a
+    corrupted/partial capture), the track is skipped whole. Deleting the
+    live keys up front and only THEN discovering there is nothing to
+    rebuild would destroy real animation for a net loss, not a wash."""
+    applicable = [r for r in (key_records or []) if r.get("time") is not None]
+    if not applicable:
+        return 0
     try:
         curve = track.GetCurve()
     except Exception:
@@ -471,12 +502,9 @@ def _apply_track_keys(track, key_records):
         except Exception:
             pass
     applied = 0
-    for record in key_records:
-        time_value = record.get("time")
-        if time_value is None:
-            continue
+    for record in applicable:
         try:
-            result = curve.AddKey(time_value)
+            result = curve.AddKey(record["time"])
         except Exception:
             result = None
         key = result.get("key") if isinstance(result, dict) else result
@@ -563,6 +591,15 @@ def _pin_status_text(node):
     (categoría DATA/PLUGIN, o un pin de una build anterior a esta que solo
     guardó el bool viejo) se avisa como "no incluidas", nunca en silencio.
 
+    Estas dos notas son un compromiso vinculante del spec, no decoración
+    del resumen de pineo — así que se calculan y se anexan SIEMPRE, tanto
+    si la fila abre con el resumen del pin como si abre con el resultado
+    de la última restauración (``last_restore``). Antes de este fix, un
+    ``last_restore`` no vacío retornaba de inmediato y las notas
+    desaparecían de la fila para siempre en cuanto se pulsaba "Ir" una vez
+    — justo cuando más importan, porque es el momento en que el artista
+    más necesita saber qué NO se restauró.
+
     Esto se SINTETIZA, nunca se guarda: ``GetDParameter`` llama a esto en
     cada lectura en vez de que la celda de estado tenga un valor escrito en
     el contenedor propio del nodo (verificado en vivo —
@@ -579,9 +616,6 @@ def _pin_status_text(node):
         # schema is never applied, so this message must win over whatever
         # a previous (older-build) restore happened to leave behind.
         return "pin de una versión anterior — no se aplicará"
-    last_restore = _read_last_restore(node)
-    if last_restore:
-        return last_restore
     count = payload.GetInt32(_PAYLOAD_COUNT, 0)
     entries_bc = payload.GetContainerInstance(_PAYLOAD_ENTRIES)
     entries = []
@@ -604,7 +638,12 @@ def _pin_status_text(node):
             "tracks_skipped": tracks_skipped,
         })
     summary = pins.pin_summary({"label": "", "entries": entries})
-    text = "%d obj · %s" % (summary["count"], _relative_time_es(payload.GetString(_PAYLOAD_TIMESTAMP, "")))
+    last_restore = _read_last_restore(node)
+    if last_restore:
+        text = last_restore
+    else:
+        text = "%d obj · %s" % (
+            summary["count"], _relative_time_es(payload.GetString(_PAYLOAD_TIMESTAMP, "")))
     if summary["has_geometry"]:
         text += " · geometría no incluida"
     if summary["tracks_captured"]:
@@ -731,12 +770,25 @@ def _read_pinned_entries(payload_bc):
     return keys, by_key
 
 
-def _restore_report_text(matched_count, total_count):
+def _restore_report_text(matched_count, total_count, extra_tracks_count=0):
     missing_count = total_count - matched_count
     if missing_count <= 0:
-        return "%d restaurados" % matched_count
-    return "%d de %d restaurados · %d no encontrados" % (
-        matched_count, total_count, missing_count)
+        text = "%d restaurados" % matched_count
+    else:
+        text = "%d de %d restaurados · %d no encontrados" % (
+            matched_count, total_count, missing_count)
+    if extra_tracks_count:
+        # Animation added to a covered node AFTER it was pinned — tracks
+        # ``plan_restore`` puts in its "extra" bucket, which nothing in
+        # this function used to read (thrown away, per the review finding
+        # this parameter closes). Worth a note on the row itself, not just
+        # a log line: a live VALUE track the pin never knew about can
+        # overwrite the container/matrix values a restore JUST wrote back,
+        # on the very next frame — the same silent-no-op failure mode
+        # Task 6 fixed for the opposite direction (a wrecked track), just
+        # facing the other way.
+        text += " · %d pistas nuevas sin restaurar" % extra_tracks_count
+    return text
 
 
 def _is_safety_tag(node):
@@ -802,6 +854,19 @@ def _capture_safety_pin(node, obj, doc):
                 tag.SetName(pins.SAFETY_PIN_NAME)
                 tag.GetDataInstance().SetBool(ID_PIN_IS_SAFETY, True)
             except Exception:
+                # A half-made tag must never linger unflagged: the NEXT
+                # attempt's `_find_safety_tag` would not recognise it (the
+                # flag never got set), so it would create ANOTHER tag on
+                # top of it every single time this fails — an unbounded
+                # pile of dead tags instead of one clean retry. Best-effort
+                # removal so a failure here stays retryable.
+                remover = getattr(tag, "Remove", None)
+                if callable(remover):
+                    try:
+                        doc.AddUndo(c4d.UNDOTYPE_DELETE, tag)
+                        remover()
+                    except Exception:
+                        pass
                 return False
         finally:
             doc.EndUndo()
@@ -968,6 +1033,7 @@ def _restore(node):
 
     # 6. One undo bracket for the whole matched subtree.
     missing_tracks = []
+    extra_tracks_total = 0
     doc.StartUndo()
     try:
         for key in matched:
@@ -993,8 +1059,15 @@ def _restore(node):
             # is the actual fix for that silent no-op, applied inside the
             # SAME undo bracket as everything else (one Cmd+Z for the lot).
             stored_tracks = entry.get("tracks") or {}
-            if stored_tracks:
-                live_tracks = _live_tracks_by_key(live_obj)
+            # Always resolve the live tracks, even when nothing was
+            # pinned for this node (`stored_tracks` empty) — an `if
+            # stored_tracks:` guard here would skip `plan_restore`
+            # entirely for a node whose animation was added AFTER it was
+            # pinned, so its "extra" bucket (live VALUE tracks with no
+            # pinned counterpart) was computed and thrown away instead of
+            # ever being counted.
+            live_tracks = _live_tracks_by_key(live_obj)
+            if stored_tracks or live_tracks:
                 track_plan = pins.plan_restore(
                     list(stored_tracks.keys()), list(live_tracks.keys()))
                 for track_key_str in track_plan["matched"]:
@@ -1009,7 +1082,8 @@ def _restore(node):
                 if track_plan["missing"]:
                     missing_tracks.extend(
                         "%s@%s" % (key, tk) for tk in track_plan["missing"])
-        report = _restore_report_text(len(matched), len(pinned_keys))
+                extra_tracks_total += len(track_plan["extra"])
+        report = _restore_report_text(len(matched), len(pinned_keys), extra_tracks_total)
         doc.AddUndo(c4d.UNDOTYPE_CHANGE, node)
         _write_last_restore(node, report)
     finally:

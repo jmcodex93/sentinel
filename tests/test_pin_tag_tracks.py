@@ -14,11 +14,14 @@ different structure and are out of scope — this suite also proves they are
 COUNTED and REPORTED, never silently dropped, and that a restore never
 touches their keys (it can't understand them, so it must leave them alone).
 
-The fake CTrack/CCurve/CKey classes below deliberately mix call SHAPES for
-the tangent setters (one-arg vs. two-arg-with-curve) — neither shape is
-confirmed live for anything but SetTime (see pin_tag._apply_key_setter's
-docstring) — so these tests also exercise the dual-signature fallback
-actually working, not just being present.
+The fake CKey class below gives every setter — value AND every tangent
+field — the curve-taking two-arg shape, matching what was MEASURED LIVE
+in this task's own spike: SetValue/SetInterpolation/SetTimeLeft/
+SetValueLeft/SetAutomaticTangentMode all require ``(curve, value)``, same
+as the previously-confirmed SetTime. An earlier version of this fake
+modeled a value-only one-arg shape for the tangent setters that does not
+exist in real C4D — a dead branch that made ``_apply_key_setter`` LOOK
+covered without ever exercising the shape production actually takes.
 """
 
 import importlib
@@ -54,10 +57,11 @@ class FakeDescID:
 
 
 class FakeKey:
-    """Deliberately mixes setter call shapes: SetTime/SetInterpolation take
-    the curve (mirroring the one CONFIRMED-live shape, keyframes.py
-    SetTime), the tangent setters take just the value — so a test relying
-    on _apply_key_setter's fallback actually exercises the fallback."""
+    """Every setter takes the curve as its first argument — the shape
+    MEASURED LIVE for all of them (SetTime confirmed earlier in
+    keyframes.py, v1.30; the rest confirmed in this task's own spike).
+    There is no value-only shape in real C4D; modeling one here would
+    hide a fake-vs-production mismatch instead of catching it."""
 
     def __init__(self, time, value=0.0):
         self.time = time
@@ -78,43 +82,43 @@ class FakeKey:
     def GetValue(self):
         return self.value
 
-    def SetValue(self, value):  # one-arg: exercises the fallback branch
+    def SetValue(self, curve, value):
         self.value = value
 
     def GetInterpolation(self):
         return self.interpolation
 
-    def SetInterpolation(self, curve, interpolation):  # curve-taking
+    def SetInterpolation(self, curve, interpolation):
         self.interpolation = interpolation
 
     def GetValueLeft(self):
         return self.value_left
 
-    def SetValueLeft(self, value):
+    def SetValueLeft(self, curve, value):
         self.value_left = value
 
     def GetValueRight(self):
         return self.value_right
 
-    def SetValueRight(self, value):
+    def SetValueRight(self, curve, value):
         self.value_right = value
 
     def GetTimeLeft(self):
         return self.time_left
 
-    def SetTimeLeft(self, time):
+    def SetTimeLeft(self, curve, time):
         self.time_left = time
 
     def GetTimeRight(self):
         return self.time_right
 
-    def SetTimeRight(self, time):
+    def SetTimeRight(self, curve, time):
         self.time_right = time
 
     def GetAutomaticTangentMode(self):
         return self.auto_tangent
 
-    def SetAutomaticTangentMode(self, mode):
+    def SetAutomaticTangentMode(self, curve, mode):
         self.auto_tangent = mode
 
 
@@ -206,8 +210,11 @@ class FakeTrackObject:
         return list(self._tags)
 
     def MakeTag(self, plugin_id):
+        # MEASURED LIVE (C1 regression): BaseObject.MakeTag with no
+        # ``pred`` PREPENDS in real C4D — see the matching comment in
+        # test_pin_tag.py's FakeObject.MakeTag.
         tag = FakeTag(self, plugin_id, self._c4d, self._doc)
-        self._tags.append(tag)
+        self._tags.insert(0, tag)
         return tag
 
     def GetDocument(self):
@@ -527,30 +534,121 @@ def test_legacy_bool_only_pin_still_warns_without_new_track_fields(sentinel_modu
     assert "no incluidas" in text
 
 
-# --- _apply_key_setter: the dual-signature fallback itself ---------------
+# --- _apply_key_setter: the (single) call shape production actually uses -
 
-def test_apply_key_setter_tries_curve_arg_then_falls_back_to_value_only(sentinel_module):
+def test_apply_key_setter_calls_the_curve_taking_setter(sentinel_module):
+    """C6: the dual-signature fallback this test used to exercise is gone
+    — measured live, EVERY CKey setter used here takes ``(curve, value)``,
+    with no value-only shape in real C4D at all."""
     pin_tag = importlib.import_module("sentinel.ui.pin_tag")
 
     calls = []
 
     def curve_taking_setter(curve, value):
-        calls.append(("curve", curve, value))
+        calls.append((curve, value))
 
-    def value_only_setter(value):
-        calls.append(("value", value))
+    ok = pin_tag._apply_key_setter(curve_taking_setter, "CURVE", 5)
 
-    ok1 = pin_tag._apply_key_setter(curve_taking_setter, "CURVE", 5)
-    ok2 = pin_tag._apply_key_setter(value_only_setter, "CURVE", 7)
-
-    assert ok1 is True and ok2 is True
-    assert calls == [("curve", "CURVE", 5), ("value", 7)]
+    assert ok is True
+    assert calls == [("CURVE", 5)]
 
 
-def test_apply_key_setter_never_raises_when_both_shapes_fail(sentinel_module):
+def test_apply_key_setter_never_raises_when_the_setter_fails(sentinel_module):
     pin_tag = importlib.import_module("sentinel.ui.pin_tag")
 
-    def broken_setter(*args):
+    def broken_setter(curve, value):
         raise ValueError("nope")
 
     assert pin_tag._apply_key_setter(broken_setter, "CURVE", 1) is False
+
+
+# --- C7: a track with nothing applicable must never lose its live keys ---
+
+def test_apply_track_keys_never_destroys_existing_keys_when_nothing_is_applicable(sentinel_module):
+    """Before this fix, ``_apply_track_keys`` deleted every live key
+    FIRST and only then discovered (per-record) whether there was
+    anything to rebuild — a stored payload whose records all have
+    ``time is None`` (a corrupted/partial capture) destroyed real,
+    perfectly fine live animation for a net loss of zero keys gained."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    track = FakeTrack([(1000, 19, 5000)], c4d.CTRACK_CATEGORY_VALUE, keys=[
+        FakeKey(c4d.BaseTime(0), 1.0),
+    ])
+
+    applied = pin_tag._apply_track_keys(track, [{"time": None, "value": 99.0}])
+
+    assert applied == 0
+    curve = track.GetCurve()
+    assert curve.GetKeyCount() == 1
+    assert curve.GetKey(0).GetValue() == 1.0
+
+
+# --- C1: MakeTag prepending must never mis-pair a tag-owned track --------
+
+def test_restore_pairs_tag_owned_tracks_correctly_even_when_the_safety_tag_shifts_indices(sentinel_module):
+    """CRITICAL regression: ``BaseObject.MakeTag`` PREPENDS in real C4D
+    (measured live), so creating the ``↩ Antes de restaurar`` safety tag
+    during ``_restore`` — BEFORE the pinned tag-owned tracks are resolved
+    against the live scene — shifts where every OTHER tag sits in
+    ``GetTags()``. Two ordinary tags on the SAME host, each animating the
+    SAME parameter, pinned at 10 and 20: without excluding Sentinel Pin
+    tags from the ``tag[N]`` index, the shift makes ``plan_restore`` pair
+    tag[1]'s pinned keys onto what is now tag[1] live — actually the FIRST
+    ordinary tag, not the one that was tag[1] at capture time — so one
+    tag ends up with the OTHER tag's value and the other stays wrecked.
+    After the fix both must read back their OWN pinned value."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    track_a = FakeTrack([(1000, 19, 5000)], c4d.CTRACK_CATEGORY_VALUE, keys=[
+        FakeKey(c4d.BaseTime(0), 10.0),
+    ])
+    track_b = FakeTrack([(1000, 19, 5000)], c4d.CTRACK_CATEGORY_VALUE, keys=[
+        FakeKey(c4d.BaseTime(0), 20.0),
+    ])
+    tag_a = FakeTagWithTracks(tracks=[track_a])
+    tag_b = FakeTagWithTracks(tracks=[track_b])
+    host = FakeTrackObject("ctrl", c4d, tags=[tag_a, tag_b], doc=doc)
+    fake_tag = FakeTag(host, pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID, c4d, doc)
+
+    assert pin_tag._store_pin(fake_tag) is True
+
+    # The artist wrecks both.
+    track_a.GetCurve()._keys[0].value = -2.0
+    track_b.GetCurve()._keys[0].value = -2.0
+
+    pin_tag._restore(fake_tag)
+
+    assert track_a.GetCurve()._keys[0].value == 10.0, "tag_a's own pinned value must come back"
+    assert track_b.GetCurve()._keys[0].value == 20.0, "tag_b's own pinned value must come back"
+
+
+# --- C2: animation added to a covered node AFTER it was pinned -----------
+
+def test_restore_reports_tracks_added_after_pinning(sentinel_module):
+    """C2: ``track_plan["extra"]`` (live VALUE tracks with no pinned
+    counterpart, e.g. animation added AFTER the pin) was computed by
+    ``plan_restore`` and thrown away — worse, the ``if stored_tracks:``
+    guard skipped computing it AT ALL when the node had nothing pinned in
+    the first place, which is exactly the case here (pinned with zero
+    tracks, animated afterwards). The restore must surface the count."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeTrackObject("ctrl", c4d, tracks=[], doc=doc)
+    fake_tag = FakeTag(host, pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID, c4d, doc)
+    assert pin_tag._store_pin(fake_tag) is True
+
+    # Animation added AFTER pinning — nothing pinned knows about this.
+    new_track = FakeTrack([(1000, 19, 5000)], c4d.CTRACK_CATEGORY_VALUE, keys=[
+        FakeKey(c4d.BaseTime(0), 7.0),
+    ])
+    host._tracks = [new_track]
+
+    report = pin_tag._restore(fake_tag)
+
+    assert "1 pistas nuevas sin restaurar" in report

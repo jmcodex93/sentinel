@@ -148,8 +148,16 @@ def track_key(owner, desc_id_parts):
     ``owner`` is ``""`` for a track on the node itself, or ``"tag[N]"`` for
     the Nth tag on that node in capture-time order — the same positional
     weakness ``location_keys`` already accepts for objects: reordering tags
-    can mis-pair, and a restore only ever REPORTS that (via ``plan_restore``,
-    reused unchanged for tracks too), never guesses.
+    can mis-pair. Unlike a MISSING key (which ``plan_restore`` puts in its
+    ``missing`` bucket and a restore reports honestly), a mis-pair is
+    INVISIBLE to ``plan_restore``: two different tags whose track happens
+    to produce the same string key look like a correct match, get applied,
+    and the report reads exactly like a real success. This is not merely
+    theoretical — it is the exact shape of the Sentinel Pin tags themselves
+    shifting every OTHER tag's ``tag[N]`` index by creating/removing a pin
+    (``MakeTag`` prepends, measured live), which is why ``pin_tag.py``'s
+    ``_iter_node_tracks`` excludes Sentinel Pin tags from this index
+    entirely rather than merely reporting when it goes wrong.
 
     ``desc_id_parts`` is the track's ``GetDescriptionID()`` flattened to
     ``[(id, dtype, creator), ...]`` (one triple per DescLevel) — the

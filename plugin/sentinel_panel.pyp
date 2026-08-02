@@ -213,7 +213,9 @@ def Register():
         reason = f" ({_FRAME_TAG_IMPORT_ERROR})" if _FRAME_TAG_IMPORT_ERROR else ""
         safe_print(f"TagData API unavailable{reason} — Sentinel Frame tag disabled")
 
-    # Sentinel Pin (TagData) — six-slot state store per object (v1.35).
+    # Sentinel Pin (TagData) — one tag = one pin state store (v1.35;
+    # rehecho durante el propio v1.35 desde un modelo de seis slots por
+    # tag tras ver la interfaz real de Recall — ver pin_tag.py).
     # No TAG_IMPLEMENTS_DRAW_FUNCTION: unlike Sentinel Frame this tag draws
     # nothing to the viewport, and that flag exists only to make Draw fire
     # (frame_tag's own comment on the same flag). Failure is non-fatal, same

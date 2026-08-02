@@ -74,9 +74,14 @@ Una sola fila, porque el tag es un solo pin:
 
 ```
 Nombre   [ wide angle                    ]
-Estado     12 obj · hace 2 h · geometría no incluida · 2 con keyframes
+Estado     12 obj · hace 2 h · geometría no incluida · 8 pistas · 2 pistas no incluidas
            [ Pin ]   [ Ir ]
 ```
+
+*(Actualizado tras la Tarea 6, que capturó y restauró las pistas
+CTRACK_CATEGORY_VALUE de verdad — ver más abajo. "pistas" es lo capturado
+y restaurable; "pistas no incluidas" es lo que sigue sin poder capturarse,
+nunca lo que había en el diseño original de este spec.)*
 
 El **estado es texto estático**, no un campo: es dato de solo lectura y meterlo en una caja editable invita a escribir en ella y además le roba ancho al nombre — que fue exactamente el fallo de la primera implementación.
 
@@ -86,7 +91,7 @@ El **contador de objetos no es decoración**: dice de un vistazo si el pin cubre
 
 Un artista va a pinchar un objeto poligonal esperando recuperar el modelado, y no va a volver. Si algún objeto cubierto tiene geometría editable, **la fila lo dice** — *"geometría no incluida"* — en el momento de guardar, no en un manual. Misma regla que ya rige el preview de matwire: una fila no promete un cableado que el writer no va a hacer.
 
-**Y lo mismo con los keyframes, que es peor porque es silencioso.** Recall los captura (casilla `Keyframes` en su interfaz); nosotros no. Consecuencia concreta: si un parámetro está **animado**, restaurar su valor no hace nada visible — la pista lo sobrescribe en el siguiente cambio de frame. El pin sería un no-op justo en los rigs animados, que es media razón de ser de la herramienta. Así que cuando algún objeto cubierto tenga pistas de animación, la fila también lo dice — *"N con keyframes"* — y queda como el primer candidato a ampliar.
+**Y lo mismo con los keyframes, que era peor porque era silencioso — hasta la Tarea 6, ejecutada dentro de este mismo release.** Recall los captura (casilla `Keyframes` en su interfaz); la primera versión de este spec dejaba a Sentinel Pin solo avisando. Consecuencia concreta que motivó la Tarea 6: si un parámetro está **animado**, restaurar solo su valor estático no hace nada visible — la pista lo sobrescribe en el siguiente cambio de frame. El pin sería un no-op justo en los rigs animados, que es media razón de ser de la herramienta. Así que **las pistas `CTRACK_CATEGORY_VALUE` (claves escalares simples) se capturan y se restauran de verdad** — la fila lo dice con *"N pistas"* — y solo lo que queda genuinamente fuera de alcance (categoría `CTRACK_CATEGORY_DATA`/`_PLUGIN`: PLA, morphs, sonido, terceros — estructura distinta, sin ruta de serialización desde Python) se avisa como *"N pistas no incluidas"*, nunca en silencio. Ver `docs/research/2026-07-31-pin-storage-spike.md` §6 para lo medido.
 
 ### Identificadores de plugin
 
@@ -117,4 +122,4 @@ El tag usa **`2099078`**. Ocupados hoy en el rango `2099xxx`: `2099069` (plugin)
 - **La capa automática** (snapshot de documento antes de operaciones destructivas de Sentinel): es v1.36, mecanismo distinto y palabra distinta — ahí sí es un punto de retorno, no una alternativa.
 - **Geometría editable y grafos de nodos**: no están en el contenedor. Capturarlos exigiría clonar y reemplazar el objeto, lo que rompe los `BaseLink` que le apunten (constraints, XPresso, un Sentinel Frame apuntando a esa cámara) — y fallaría en silencio. Si algún día se aborda, va con su spike.
 - **Iconos personalizados por pin**: se intentó y se retiró. `MSG_GETCUSTOMICON` **no llega a un `TagData`** (medido en C4D 2026.303), y además sobraba: la pestaña **Basic** de todo tag ya trae `Icon Color` con selector y presets, que tiñe el icono en el Object Manager. Distinguir pins se hace con ese control nativo. Lo que sigue sin haber es el **carácter** sobre el icono (Recall sí lo tiene).
-- **Keyframes** (ver arriba: hoy se avisa, no se capturan) y **listado de pins en el panel**.
+- **Pistas fuera de la categoría VALUE** (ver arriba: `CTRACK_CATEGORY_DATA`/`_PLUGIN` — PLA, morphs, sonido, terceros — hoy se avisan, no se capturan; las pistas `VALUE` SÍ se capturan y restauran desde la Tarea 6) y **listado de pins en el panel**.
