@@ -70,22 +70,37 @@ El resultado se reporta siempre: *"9 de 12 restaurados · 3 no encontrados"*, co
 
 ### La interfaz del tag
 
-Una sola fila, porque el tag es un solo pin:
+Todo lo que el artista necesita para un pin, en su propia pestaña, sin saltar a *Basic*:
 
 ```
+[ Ir ]   [ Pin ]
+
 Nombre   [ wide angle                    ]
-Estado     12 obj · hace 2 h · geometría no incluida · 8 pistas · 2 pistas no incluidas
-           [ Pin ]   [ Ir ]
+Color    ○ ● ● ● ● ● ● ●
+Estado     12 obj · hace 2 h · geometría no incluida · 2 pistas
+
+[ Quitar todos los pins de este objeto ]
 ```
 
-*(Actualizado tras la Tarea 6, que capturó y restauró las pistas
-CTRACK_CATEGORY_VALUE de verdad — ver más abajo. "pistas" es lo capturado
-y restaurable; "pistas no incluidas" es lo que sigue sin poder capturarse,
-nunca lo que había en el diseño original de este spec.)*
+**Las acciones van arriba y en horizontal.** Es el 99% del uso: se pulsa `Ir` mucho más de lo que se configura nada. (Recall las pone igual, primero y en fila; nosotros las teníamos al final y apiladas, que es lo que hacía la herramienta poco intuitiva en la primera pasada.)
 
-El **estado es texto estático**, no un campo: es dato de solo lectura y meterlo en una caja editable invita a escribir en ella y además le roba ancho al nombre — que fue exactamente el fallo de la primera implementación.
+**Nombre y Color son los parámetros NATIVOS del tag**, no copias:
+
+| Control | Parámetro | Medido |
+|---|---|---|
+| Nombre | `ID_BASELIST_NAME` (900) | lee/escribe el mismo dato que la pestaña *Basic* |
+| Color | `ID_BASELIST_ICON_COLORIZE_MODE` (1041670) + `ID_BASELIST_ICON_COLOR` (1041671) | escritura desde código verificada |
+
+Esto es lo contrario de lo que se intentó dos veces antes en esta misma feature: **no se crea un dato nuevo, se da un atajo al que ya existe**. Escribir en nuestra fila o en *Basic* es escribir en el mismo sitio, así que no pueden competir ni revertirse el uno al otro. Pulsar un swatch fija `COLORIZE_MODE = CUSTOM` y el color; el primero de la fila es "sin color" (`MODE = NONE`) y devuelve el icono normal del plugin.
+
+**El estado es texto estático**, no un campo: es dato de solo lectura y meterlo en una caja editable invita a escribir en ella y le roba ancho al nombre.
 
 El **contador de objetos no es decoración**: dice de un vistazo si el pin cubre el rig entero o solo el nodo que tocaste, y es la primera señal de que la jerarquía cambió.
+
+### Lo que deliberadamente NO se copia de Recall
+
+- Sus **Recalling Options** (Relink to External, Adopt Parent PSR, Adopt Child PSRs, Replace Children) y las casillas Object / Hierarchy / Keyframes: son knobs que trasladan al artista una decisión que debería estar tomada. Misma regla que en matwire — convención con opinión antes que knobs. Si alguna resulta necesaria en uso real, entra con esa evidencia detrás.
+- Su **`Character`** con `123...` / `ABC...` (numeración automática del icono): tentador, pero **el badge no se puede pintar** — `MSG_GETCUSTOMICON` no llega a un `TagData` (medido). Sin superficie donde mostrarlo, el control no tendría sentido.
 
 ### Decir la verdad sobre lo que no captura
 
