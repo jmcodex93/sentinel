@@ -145,19 +145,40 @@ def track_key(owner, desc_id_parts):
     FindUniqueID(MAXON_CREATOR_ID) survives save/reload — see the module
     docstring), but WHERE the track lives plus WHICH parameter it animates.
 
-    ``owner`` is ``""`` for a track on the node itself, or ``"tag[N]"`` for
-    the Nth tag on that node in capture-time order — the same positional
-    weakness ``location_keys`` already accepts for objects: reordering tags
-    can mis-pair. Unlike a MISSING key (which ``plan_restore`` puts in its
+    ``owner`` is ``""`` for a track on the node itself, or
+    ``"tag[<type>:N]"`` for the Nth tag of that TYPE on that node in
+    capture-time order — the same positional weakness ``location_keys``
+    already accepts for objects, scoped to same-type tags specifically
+    because a flat cross-type position turned out not to hold in practice
+    (see below). Unlike a MISSING key (which ``plan_restore`` puts in its
     ``missing`` bucket and a restore reports honestly), a mis-pair is
     INVISIBLE to ``plan_restore``: two different tags whose track happens
     to produce the same string key look like a correct match, get applied,
-    and the report reads exactly like a real success. This is not merely
-    theoretical — it is the exact shape of the Sentinel Pin tags themselves
-    shifting every OTHER tag's ``tag[N]`` index by creating/removing a pin
-    (``MakeTag`` prepends, measured live), which is why ``pin_tag.py``'s
-    ``_iter_node_tracks`` excludes Sentinel Pin tags from this index
-    entirely rather than merely reporting when it goes wrong.
+    and the report reads exactly like a real success — applied and
+    reported as success, not flagged, because nothing about that
+    duplicate-key situation looks abnormal from inside ``plan_restore``.
+
+    This is not merely theoretical. Three causes were reproduced live, two
+    fixed by scoping the index to same-type tags, one residual and
+    accepted:
+
+    - Sentinel Pin tags themselves shift every OTHER tag's flat position
+      by creating/removing a pin (``MakeTag`` prepends, measured live) —
+      closed by excluding Sentinel Pin tags from the index entirely
+      (``pin_tag.py``'s ``_iter_node_tracks``).
+    - Deleting an ordinary tag that sat BEFORE the animated ones (e.g. a
+      Phong tag) shifted every later tag's flat position — closed by
+      keying on (type, position-within-type) instead of a flat position
+      among all tags.
+    - Adding a NEW tag ahead of the animated ones — including via
+      Sentinel's own "Add Sentinel Frame to camera" or ABC Retime buttons
+      — had the same effect and is closed the same way.
+
+    NOT closed, and not claimed to be: reordering (or inserting a new
+    one among) two or more tags of the SAME type remains genuinely
+    ambiguous from position alone — e.g. two Constraint tags on the same
+    host swapping order. That case is unresolved by this key format and
+    would still mis-pair silently.
 
     ``desc_id_parts`` is the track's ``GetDescriptionID()`` flattened to
     ``[(id, dtype, creator), ...]`` (one triple per DescLevel) — the

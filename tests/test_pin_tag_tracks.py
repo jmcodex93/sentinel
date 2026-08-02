@@ -159,11 +159,20 @@ class FakeTrack:
 
 
 class FakeTagWithTracks:
-    def __init__(self, tracks=None):
+    def __init__(self, tracks=None, tag_type=0):
         self._tracks = list(tracks or [])
+        self._tag_type = tag_type
 
     def GetCTracks(self):
         return list(self._tracks)
+
+    def GetType(self):
+        # Default 0 matches the pre-N2 fallback every existing test in
+        # this file relied on (no GetType attr -> AttributeError ->
+        # _iter_node_tracks falls back to tag_type=0). Explicit here so
+        # tests that need a REAL, distinct type (N2 regressions below)
+        # can pass ``tag_type=`` without disturbing anything else.
+        return self._tag_type
 
 
 class FakeTrackObject:
@@ -309,7 +318,9 @@ def test_capture_node_tracks_includes_tag_tracks(sentinel_module):
     assert captured == 2
     assert skipped == 0
     keys_found = {tracks_bc.GetContainerInstance(i).GetString(pin_tag._TRACK_KEY) for i in range(captured)}
-    assert keys_found == {"::1000.19.5000", "tag[0]::3000.0.5000"}
+    # Owner format is "tag[<type>:N]" (N2 fix): type-scoped position, not a
+    # flat cross-type index. ``FakeTagWithTracks`` defaults to tag_type=0.
+    assert keys_found == {"::1000.19.5000", "tag[0:0]::3000.0.5000"}
 
 
 def test_capture_node_tracks_ignores_empty_value_tracks(sentinel_module):
@@ -652,3 +663,137 @@ def test_restore_reports_tracks_added_after_pinning(sentinel_module):
     report = pin_tag._restore(fake_tag)
 
     assert "1 pistas nuevas sin restaurar" in report
+
+
+# --- N1: an empty VALUE track must never become a permanent false alarm --
+
+def test_restore_never_reports_an_empty_value_track_as_extra(sentinel_module):
+    """N1 regression: capture already skips a VALUE track with zero keys
+    (see ``test_capture_node_tracks_ignores_empty_value_tracks`` above) —
+    nothing to lose, nothing to warn about. Before this fix,
+    ``_live_tracks_by_key`` had no matching filter, so that SAME empty
+    track never appeared in ``stored_tracks`` (capture skipped it) but
+    ALWAYS appeared in ``live_tracks`` (this function didn't skip it) —
+    landing in ``plan_restore``'s ``extra`` bucket on EVERY restore,
+    permanently, with no way for the artist to clear it (empty tracks are
+    routine: Add Track, or deleting every key without deleting the track
+    itself)."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    real_track = FakeTrack([(1000, 19, 5000)], c4d.CTRACK_CATEGORY_VALUE, keys=[
+        FakeKey(c4d.BaseTime(0), 1.0),
+    ])
+    empty_track = FakeTrack([(2000, 19, 5000)], c4d.CTRACK_CATEGORY_VALUE, keys=[])
+    host = FakeTrackObject("ctrl", c4d, tracks=[real_track, empty_track], doc=doc)
+    fake_tag = FakeTag(host, pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID, c4d, doc)
+    assert pin_tag._store_pin(fake_tag) is True
+
+    report = pin_tag._restore(fake_tag)
+
+    assert "pistas nuevas sin restaurar" not in report
+    assert "restaurados" in report
+
+
+# --- N2: tag[N] must be scoped by tag TYPE, not a flat cross-type index --
+
+def test_restore_pairs_correctly_after_deleting_a_preceding_non_pin_tag(sentinel_module):
+    """N2 (a) — reproduced live by the reviewer: deleting an ordinary tag
+    that sat BEFORE the animated ones (e.g. a Phong tag) used to shift
+    every later tag's FLAT position (``tag[1]`` at capture time became
+    ``tag[0]`` at restore time), so a mis-pair could apply one tag's
+    pinned keys onto a DIFFERENT tag entirely — a wrong-object write, not
+    merely a missed one. Scoping the index to same-type tags makes the
+    constraint tag's own index invariant to an unrelated Phong tag (a
+    different type) being deleted ahead of it."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    constraint_track = FakeTrack([(1000, 19, 5000)], c4d.CTRACK_CATEGORY_VALUE, keys=[
+        FakeKey(c4d.BaseTime(0), 10.0),
+    ])
+    phong_tag = FakeTagWithTracks(tracks=[], tag_type=5678)
+    constraint_tag = FakeTagWithTracks(tracks=[constraint_track], tag_type=1011)
+    host = FakeTrackObject("ctrl", c4d, tags=[phong_tag, constraint_tag], doc=doc)
+    fake_tag = FakeTag(host, pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID, c4d, doc)
+    assert pin_tag._store_pin(fake_tag) is True
+
+    # Wreck the value, then delete the PRECEDING Phong tag (a different
+    # type) — nothing about the constraint tag itself changed.
+    constraint_track.GetCurve()._keys[0].value = -2.0
+    host._tags = [constraint_tag]
+
+    pin_tag._restore(fake_tag)
+
+    assert constraint_track.GetCurve()._keys[0].value == 10.0, (
+        "the constraint tag's own pinned value must come back even though "
+        "an unrelated preceding tag was deleted"
+    )
+
+
+def test_restore_pairs_correctly_after_adding_a_new_tag_ahead(sentinel_module):
+    """N2 (b) — reproduced live by the reviewer, with one of Sentinel's OWN
+    buttons as the trigger: "Add Sentinel Frame to camera"
+    (``scene_tools.py``) and ABC Retime both create a new tag ahead of
+    whatever tags a host already carries (``MakeTag`` with no ``pred``
+    prepends). That used to shift an already-pinned animated tag's flat
+    ``tag[N]`` the exact same way a deletion did. Scoping the index to
+    same-type tags means a new tag of a DIFFERENT type never touches the
+    animated tag's own index."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    constraint_track = FakeTrack([(1000, 19, 5000)], c4d.CTRACK_CATEGORY_VALUE, keys=[
+        FakeKey(c4d.BaseTime(0), 20.0),
+    ])
+    constraint_tag = FakeTagWithTracks(tracks=[constraint_track], tag_type=1011)
+    host = FakeTrackObject("ctrl", c4d, tags=[constraint_tag], doc=doc)
+    fake_tag = FakeTag(host, pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID, c4d, doc)
+    assert pin_tag._store_pin(fake_tag) is True
+
+    # Wreck the value, then a Sentinel Frame tag (a different type) is
+    # added AHEAD of the constraint tag — same prepend shape MakeTag uses
+    # in scene_tools.py.
+    constraint_track.GetCurve()._keys[0].value = -2.0
+    frame_tag = FakeTagWithTracks(tracks=[], tag_type=2099073)
+    host._tags = [frame_tag, constraint_tag]
+
+    pin_tag._restore(fake_tag)
+
+    assert constraint_track.GetCurve()._keys[0].value == 20.0, (
+        "the constraint tag's own pinned value must come back even though "
+        "a new Sentinel Frame tag was added ahead of it"
+    )
+
+
+# --- N4: the pin-summary "pistas" count is not restore-report metadata ---
+
+def test_pin_status_text_drops_the_pistas_count_after_a_restore(sentinel_module):
+    """N4: "· N pistas" is pin-summary metadata (how many tracks THIS PIN
+    captured), not a warning — the two mandatory warning notes (geometry,
+    tracks NOT included) stay unconditional per C3, but this count read
+    oddly stapled onto a restore's own headline ("N restaurados · N
+    pistas" implies the restore itself touched N NEW tracks). It belongs
+    on the pin-summary line and must drop once the row is showing a
+    restore's own report text."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeTrackObject("ctrl", c4d, tracks=[
+        FakeTrack([(1000, 19, 5000)], c4d.CTRACK_CATEGORY_VALUE, keys=[FakeKey(c4d.BaseTime(0), 1.0)]),
+    ], doc=doc)
+    fake_tag = FakeTag(host, pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID, c4d, doc)
+    assert pin_tag._store_pin(fake_tag) is True
+
+    before = pin_tag._pin_status_text(fake_tag)
+    assert "1 pistas" in before
+
+    pin_tag._write_last_restore(fake_tag, "1 restaurados")
+    after = pin_tag._pin_status_text(fake_tag)
+
+    assert after.startswith("1 restaurados")
+    assert "pistas" not in after

@@ -294,10 +294,11 @@ def _children_of(obj):
 
 def _iter_node_tracks(node):
     """Yield ``(owner, track)`` for every CTrack belonging to ``node``
-    itself (owner ``""``) and every one of its TAGS (owner ``"tag[N]"``,
-    N = position among the node's NON-Sentinel-Pin tags at capture time)
-    — the same two sources ``keyframes.py`` walks for offset/stagger
-    (v1.30, see ``_shift_track_list``): a rig desyncs silently if only the
+    itself (owner ``""``) and every one of its TAGS (owner
+    ``"tag[<type>:N]"``, N = position among the node's NON-Sentinel-Pin
+    tags of that SAME type, at capture time) — the same two sources
+    ``keyframes.py`` walks for offset/stagger (v1.30, see
+    ``_shift_track_list``): a rig desyncs silently if only the
     object-level tracks are considered, because constraints/XPresso/
     UserData animate through tags as often as through the object itself.
 
@@ -306,16 +307,29 @@ def _iter_node_tracks(node):
     (nonexistent) CTracks. MEASURED LIVE: ``BaseObject.MakeTag`` with no
     ``pred`` PREPENDS, so creating the ``↩ Antes de restaurar`` safety tag
     during a restore (``_capture_safety_pin``, which runs BEFORE this is
-    called again to resolve live tracks) shifts every other tag's position
-    in ``GetTags()`` by one — and the same shift happens permanently the
+    called again to resolve live tracks) shifts where every other tag
+    sits in ``GetTags()`` — and the same shift happens permanently the
     moment an artist adds a second Sentinel Pin tag to the same object.
-    Either way, a ``tag[N]`` computed at capture time would then pair
-    against a DIFFERENT tag's tracks at restore time — a wrong-object
-    write, not merely a missed one, and ``plan_restore`` cannot tell a
-    coincidental string match from a correct one (see ``pins.track_key``).
-    Excluding Sentinel Pin tags from the count makes every other tag's
-    index invariant to how many pins exist on the object or when they were
-    created, closing both causes at once instead of reducing their odds."""
+
+    The index is additionally scoped to tags of the SAME type (rather than
+    a flat position among ALL non-pin tags), closing a second, narrower
+    but real mis-pairing that the type-blind ``tag[N]`` left open — both
+    reproduced live, and neither had a test before this fix:
+
+    - Deleting a non-pin tag that sits BEFORE the animated ones (e.g. a
+      Phong tag ahead of two constraint tags) shifts every later tag's
+      flat position by one, same shape as the Sentinel-Pin-prepend case
+      above but for an ordinary tag deletion.
+    - Adding a NEW tag ahead of the animated ones — including via
+      Sentinel's OWN tooling, e.g. "Add Sentinel Frame to camera"
+      (``scene_tools.py``) or ABC Retime (``scene_tools.py``) — has the
+      exact same effect for any pin already sitting on that host.
+
+    Neither of those touches how many tags of the SAME type exist, so
+    keying by (type, position-within-type) makes the index invariant to
+    both. The residual case — reordering or inserting among tags of the
+    SAME type — remains genuinely ambiguous from position alone; see
+    ``pins.track_key`` for what that means for a restore's honesty."""
     try:
         for track in node.GetCTracks() or []:
             yield "", track
@@ -333,13 +347,21 @@ def _iter_node_tracks(node):
         except Exception:
             pass
         non_pin_tags.append(tag)
-    for index, tag in enumerate(non_pin_tags):
+    type_counts = {}
+    for tag in non_pin_tags:
+        try:
+            tag_type = tag.GetType()
+        except Exception:
+            tag_type = 0
+        index = type_counts.get(tag_type, 0)
+        type_counts[tag_type] = index + 1
         try:
             tag_tracks = tag.GetCTracks() or []
         except Exception:
             continue
+        owner = "tag[%d:%d]" % (tag_type, index)
         for track in tag_tracks:
-            yield "tag[%d]" % index, track
+            yield owner, track
 
 
 def _track_category_name(track):
@@ -458,10 +480,27 @@ def _live_tracks_by_key(node):
     """Live VALUE-category CTracks on ``node`` (own + tags), keyed the
     SAME way ``_capture_node_tracks`` keyed them at pin time — so a
     restore can look one up by the identity that survives save/reload
-    (``pins.track_key``), never by any live C4D handle."""
+    (``pins.track_key``), never by any live C4D handle.
+
+    A track with zero keys is excluded, mirroring the same filter
+    ``_capture_node_tracks`` applies on the capture side (see its
+    docstring: "nothing to lose, nothing to warn about"). Before this
+    filter existed here, an object with an empty VALUE track (routine in
+    C4D — Add Track, or deleting every key without deleting the track
+    itself) NEVER appeared in ``stored_tracks`` (capture skips it) but
+    ALWAYS appeared in ``live_tracks`` (this function didn't), so
+    ``plan_restore`` put it in ``extra`` on every single restore — a
+    permanent, meaningless "N pistas nuevas sin restaurar" that never
+    clears no matter how many times the artist re-pins."""
     out = {}
     for owner, track in _iter_node_tracks(node):
         if _track_category_name(track) != pins.TRACK_CATEGORY_VALUE:
+            continue
+        try:
+            curve = track.GetCurve()
+        except Exception:
+            curve = None
+        if not curve or not curve.GetKeyCount():
             continue
         try:
             desc_parts = _track_desc_id_parts(track)
@@ -591,14 +630,22 @@ def _pin_status_text(node):
     (categoría DATA/PLUGIN, o un pin de una build anterior a esta que solo
     guardó el bool viejo) se avisa como "no incluidas", nunca en silencio.
 
-    Estas dos notas son un compromiso vinculante del spec, no decoración
-    del resumen de pineo — así que se calculan y se anexan SIEMPRE, tanto
-    si la fila abre con el resumen del pin como si abre con el resultado
-    de la última restauración (``last_restore``). Antes de este fix, un
-    ``last_restore`` no vacío retornaba de inmediato y las notas
-    desaparecían de la fila para siempre en cuanto se pulsaba "Ir" una vez
-    — justo cuando más importan, porque es el momento en que el artista
-    más necesita saber qué NO se restauró.
+    Las dos notas de advertencia (geometría, pistas NO incluidas) son un
+    compromiso vinculante del spec, no decoración del resumen de pineo —
+    así que se calculan y se anexan SIEMPRE, tanto si la fila abre con el
+    resumen del pin como si abre con el resultado de la última
+    restauración (``last_restore``). Antes de este fix, un ``last_restore``
+    no vacío retornaba de inmediato y las notas desaparecían de la fila
+    para siempre en cuanto se pulsaba "Ir" una vez — justo cuando más
+    importan, porque es el momento en que el artista más necesita saber
+    qué NO se restauró.
+
+    La línea "· N pistas" es distinta: es metadata del PIN (cuántas pistas
+    capturó), no una advertencia, así que solo se antepone al resumen de
+    pineo — nunca al texto de un ``last_restore``, donde leería raro junto
+    al titular de una restauración ("N restaurados · N pistas" sugiere que
+    la restauración tocó N pistas nuevas, cuando en realidad es cuántas
+    capturó el pin original).
 
     Esto se SINTETIZA, nunca se guarda: ``GetDParameter`` llama a esto en
     cada lectura en vez de que la celda de estado tenga un valor escrito en
@@ -646,7 +693,7 @@ def _pin_status_text(node):
             summary["count"], _relative_time_es(payload.GetString(_PAYLOAD_TIMESTAMP, "")))
     if summary["has_geometry"]:
         text += " · geometría no incluida"
-    if summary["tracks_captured"]:
+    if not last_restore and summary["tracks_captured"]:
         text += " · %d pistas" % summary["tracks_captured"]
     if summary["has_keyframes"]:
         text += " · %d pistas no incluidas" % summary["tracks_skipped"]
@@ -833,6 +880,17 @@ def _capture_safety_pin(node, obj, doc):
     ``node``, the pin this whole function exists to protect. That was the
     Task 4 live Critical: the eviction invalidated ``node`` mid-restore, so
     the very next read of its payload came back empty and nothing applied.
+
+    ``SetName``/``SetBool`` run BEFORE the ``UNDOTYPE_NEW`` undo is ever
+    registered, not after — registering it first (an earlier version of
+    this function did) is undo-unsafe: ``UNDOTYPE_DELETE`` restores an
+    object from a CLONE taken at registration time, so if a Cmd+Z landed
+    after a failed restore that clone would be of the half-made,
+    unflagged tag — undoing the delete would then re-insert that stale
+    clone right back, which the surrounding ``NEW`` undo never accounted
+    for removing again. Registering ``NEW`` only once the tag is fully
+    formed means the failure path never needs an undo at all: a bare
+    ``tag.Remove()`` with nothing yet registered to unwind.
     """
     tag = _find_safety_tag(obj)
     if tag is None:
@@ -842,32 +900,27 @@ def _capture_safety_pin(node, obj, doc):
             tag = None
         if tag is None:
             return False
-        # SetName + the identity flag live INSIDE this bracket, not after
-        # it: a plain mutation made once the bracket has already closed is
-        # not undo-tracked at all (nothing to attach it to), which would
-        # leave them permanent even if the NEW tag itself gets undone
-        # later.
+        try:
+            tag.SetName(pins.SAFETY_PIN_NAME)
+            tag.GetDataInstance().SetBool(ID_PIN_IS_SAFETY, True)
+        except Exception:
+            # A half-made tag must never linger unflagged: the NEXT
+            # attempt's `_find_safety_tag` would not recognise it (the
+            # flag never got set), so it would create ANOTHER tag on top
+            # of it every single time this fails — an unbounded pile of
+            # dead tags instead of one clean retry. Nothing was ever
+            # registered for this tag yet, so a bare Remove is undo-safe
+            # on its own.
+            remover = getattr(tag, "Remove", None)
+            if callable(remover):
+                try:
+                    remover()
+                except Exception:
+                    pass
+            return False
         doc.StartUndo()
         try:
             doc.AddUndo(c4d.UNDOTYPE_NEW, tag)
-            try:
-                tag.SetName(pins.SAFETY_PIN_NAME)
-                tag.GetDataInstance().SetBool(ID_PIN_IS_SAFETY, True)
-            except Exception:
-                # A half-made tag must never linger unflagged: the NEXT
-                # attempt's `_find_safety_tag` would not recognise it (the
-                # flag never got set), so it would create ANOTHER tag on
-                # top of it every single time this fails — an unbounded
-                # pile of dead tags instead of one clean retry. Best-effort
-                # removal so a failure here stays retryable.
-                remover = getattr(tag, "Remove", None)
-                if callable(remover):
-                    try:
-                        doc.AddUndo(c4d.UNDOTYPE_DELETE, tag)
-                        remover()
-                    except Exception:
-                        pass
-                return False
         finally:
             doc.EndUndo()
     return _store_pin(tag)

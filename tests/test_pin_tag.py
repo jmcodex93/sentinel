@@ -519,6 +519,39 @@ def test_capture_safety_pin_removes_a_half_made_tag_on_failure_so_retry_is_clean
     assert len(flagged) == 1
 
 
+# --- N3: a failed safety-tag creation must register NOTHING to undo -------
+
+def test_capture_safety_pin_failure_registers_no_undo_ops(sentinel_module):
+    """N3 regression: an earlier version registered
+    ``AddUndo(UNDOTYPE_NEW, tag)`` BEFORE ``SetName``/``SetBool`` ran, so
+    the failure branch had to also register ``AddUndo(UNDOTYPE_DELETE,
+    tag)`` to balance it — leaving two undo entries behind for a tag that
+    was immediately removed outright (not through undo at all).
+    ``UNDOTYPE_DELETE`` restores from a CLONE taken at registration time,
+    so a Cmd+Z reaching that entry after this failure would re-insert a
+    clone of the half-made, unflagged tag — which the ``NEW`` entry right
+    above it never accounted for removing again. Registering ``NEW`` only
+    AFTER the writes succeed means the failure path needs no undo
+    bookkeeping at all: a bare ``Remove()`` with nothing registered to
+    unwind, and this test proves exactly that — ``doc.undo_ops`` must stay
+    empty when the safety tag's own creation fails."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = _BrokenSafetyObject("rig", c4d, doc)
+    original = _make_pin_tag(host, pin_tag, c4d)
+    host._break_next_make_tag = True  # arm it only for the safety tag
+
+    ok = pin_tag._capture_safety_pin(original, host, doc)
+
+    assert ok is False
+    assert doc.undo_ops == [], (
+        "a failed safety-tag creation must not register ANY undo op — "
+        "the tag was removed directly, not through undo"
+    )
+
+
 # --- C10: mutation survivors — name restore, last-restore clearing on ------
 # --- re-pin, and the exact report-text branches -----------------------------
 
