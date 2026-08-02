@@ -188,6 +188,65 @@ def track_key(owner, desc_id_parts):
     return "%s::%s" % (owner, desc_key)
 
 
+# --- Icon color palette (usability pass, v1.35.1) -----------------------
+#
+# "Color" in the tag's own row is NOT a color of our own — it is a shortcut
+# that writes straight to the tag's NATIVE ID_BASELIST_ICON_COLORIZE_MODE +
+# ID_BASELIST_ICON_COLOR (the exact pair the Basic tab's "Icon Color"
+# checkbox + picker already edits, measured live: mode became 1, colour
+# became Vector(0.85, 0.3, 0.25) — see the design spec's crux). The palette
+# itself is pure data on purpose: pin_tag.py must never invent a color
+# ad-hoc, and "legible on the Object Manager's dark background" is a
+# testable fact here, not an eyeball guess made once and forgotten.
+
+#: The first swatch is never a color — it clears colorize mode back to
+#: ID_BASELIST_ICON_COLORIZE_MODE_NONE, returning the tag's normal plugin
+#: icon. Kept as an explicit sentinel key rather than ``rgb is None`` being
+#: the only signal, so pin_tag.py's dispatch reads as intent, not as an
+#: incidental null check.
+PIN_COLOR_NONE_KEY = "none"
+
+#: Seven hues plus "sin color" (eight swatches total, matching the design
+#: spec's row: ``○ ● ● ● ● ● ● ●``). Each is mid-saturation, mid-luminance —
+#: dark enough to read as a distinct tint against the OM's near-black rows,
+#: bright enough not to disappear into it (see
+#: ``pin_color_palette_is_legible_on_dark`` below, which is what actually
+#: enforces that band instead of asserting it in a docstring).
+PIN_COLOR_PALETTE = (
+    {"key": PIN_COLOR_NONE_KEY, "label": "Sin color", "rgb": None},
+    {"key": "red", "label": "Rojo", "rgb": (0.85, 0.30, 0.25)},
+    {"key": "orange", "label": "Naranja", "rgb": (0.90, 0.55, 0.20)},
+    {"key": "yellow", "label": "Amarillo", "rgb": (0.85, 0.80, 0.25)},
+    {"key": "green", "label": "Verde", "rgb": (0.40, 0.75, 0.40)},
+    {"key": "cyan", "label": "Cian", "rgb": (0.30, 0.70, 0.80)},
+    {"key": "blue", "label": "Azul", "rgb": (0.40, 0.55, 0.90)},
+    {"key": "magenta", "label": "Magenta", "rgb": (0.80, 0.35, 0.75)},
+)
+
+
+def _relative_luminance(rgb):
+    r, g, b = rgb
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def pin_color_palette_is_legible_on_dark(minimum=0.28, maximum=0.92):
+    """Whether every COLORED swatch in ``PIN_COLOR_PALETTE`` (the "sin
+    color" entry has no rgb and is skipped — legibility doesn't apply to
+    "no tint at all") sits inside a luminance band that reads clearly
+    against the Object Manager's dark rows: bright enough to register as a
+    distinct color, dark enough not to blow out and look identical to a
+    lighter neighbour. Pure and parameterized so a future palette edit is
+    checked by pytest, not by eyeballing a screenshot once."""
+    for entry in PIN_COLOR_PALETTE:
+        rgb = entry.get("rgb")
+        if rgb is None:
+            continue
+        luminance = _relative_luminance(rgb)
+        if luminance < minimum or luminance > maximum:
+            return False
+    return True
+
+
 def track_capture_counts(track_categories):
     """Split a flat list of (normalized) categories — one per CTrack a
     node actually had something to say about — into captured vs

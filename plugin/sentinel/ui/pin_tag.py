@@ -33,17 +33,44 @@ SENTINEL_PIN_TAG_PLUGIN_ID = 2099078
 SENTINEL_PIN_TAG_DESCRIPTION = "Tsentinelpin"
 
 # --- Description id layout ------------------------------------------------
-# Una sola fila: sin stride, porque no hay filas que derivar unas de otras.
-# SIN campo de nombre propio: cada tag de C4D YA trae uno, en su pestaña
-# Basic — el mismo sitio donde el artista renombra cualquier otro tag. Un
-# segundo campo "Nombre" aquí competía por la misma información con el
-# nombre real del tag (ver ID_PIN_NAME más abajo, degradado a espejo).
+# Usability pass (v1.35.1, docs/superpowers/specs/2026-07-31-sentinel-pin-
+# design.md, section "La interfaz del tag"): actions first and side by
+# side (Ir leads — it's the 99% action), then Nombre/Color as SHORTCUTS to
+# the tag's own native parameters (never copies — see GetDParameter/
+# SetDParameter and _apply_pin_color), then Estado, then the remove-all
+# escape hatch. Still a single column of rows/groups — no multi-column
+# grid competing for width, which is what truncated the status text in the
+# original six-slot design this tag replaced.
+ID_GROUP_ACTIONS = 1005  # DTYPE_GROUP, 2 columns, no titlebar — Ir | Pin
+ID_PIN_GO = 1004         # DTYPE_BUTTON     — "Ir" (FIRST in the row: the
+                          # button pressed far more than anything else here
+                          # is configured — the exact ordering this pass
+                          # exists to fix, see the design spec's crux)
+ID_PIN_STORE = 1003      # DTYPE_BUTTON     — "Pin aquí" / "Re-pin"
+ID_PIN_NAME_FIELD = 1006  # DTYPE_STRING — "Nombre". NOT our own data: reads
+                           # node.GetName(), writes node.SetName() (see
+                           # GetDParameter/SetDParameter below) — the exact
+                           # same call the Basic tab's own name field makes,
+                           # so editing here or there writes the same place
+                           # and neither can revert the other.
+ID_GROUP_COLOR = 1007      # DTYPE_GROUP, one column per pins.PIN_COLOR_PALETTE
+                            # entry — "Color". Each button below writes
+                            # straight to the tag's NATIVE
+                            # ID_BASELIST_ICON_COLORIZE_MODE +
+                            # ID_BASELIST_ICON_COLOR (see _apply_pin_color) —
+                            # the same pair the Basic tab's "Icon Color"
+                            # checkbox + picker already edits.
+ID_PIN_COLOR_BASE = 1008   # DTYPE_BUTTON × len(pins.PIN_COLOR_PALETTE) —
+                            # one id per swatch, contiguous from here.
 ID_PIN_STATUS = 1002    # DTYPE_STATICTEXT — "12 obj · hace 2 h · ..." (solo
                          # lectura: un DTYPE_STRING pinta una caja que
                          # compite por ancho con el resto de la fila, y fue
                          # justo eso lo que truncó el texto en la v6-slots)
-ID_PIN_STORE = 1003     # DTYPE_BUTTON     — "Pin aquí" / "Re-pin"
-ID_PIN_GO = 1004        # DTYPE_BUTTON     — "Ir"
+ID_PIN_REMOVE_ALL = 1016  # DTYPE_BUTTON — "Quitar todos los pins de este
+                           # objeto": deletes EVERY Sentinel Pin tag on the
+                           # host (this one, every sibling pin, AND the
+                           # safety net) in one undo step. Recall has the
+                           # equivalent ("Remove All Recall Tags").
 
 # Task 5 tried a per-pin icon (colored GeClipMap bitmap + badge letter,
 # generated on MSG_GETCUSTOMICON) so several pins on one object would be
@@ -100,6 +127,17 @@ ID_PIN_LAST_RESTORE = 20001
 #: que esa función sirve tanto para pines normales como para la red de
 #: seguridad y no debe decidir cuál es cuál.
 ID_PIN_IS_SAFETY = 20002
+
+#: The tag's NATIVE icon-tint parameters (Basic tab's "Icon Color" group) —
+#: never our own storage. Numeric fallbacks are the values measured live
+#: in the design spec's spike (mode became 1, colour became
+#: Vector(0.85, 0.3, 0.25)); ``getattr`` only matters for a C4D build old
+#: enough that the symbol is missing from the ``c4d`` module, not for the
+#: test harness (whose permissive fake auto-vivifies any attribute).
+_ICON_COLORIZE_MODE_ID = getattr(c4d, "ID_BASELIST_ICON_COLORIZE_MODE", 1041670)
+_ICON_COLOR_ID = getattr(c4d, "ID_BASELIST_ICON_COLOR", 1041671)
+_ICON_COLORIZE_MODE_NONE = getattr(c4d, "ID_BASELIST_ICON_COLORIZE_MODE_NONE", 0)
+_ICON_COLORIZE_MODE_CUSTOM = getattr(c4d, "ID_BASELIST_ICON_COLORIZE_MODE_CUSTOM", 1)
 
 #: Se sube solo si cambia la forma del payload. Un pin cuyo esquema esta
 #: build no reconoce se IGNORA con una nota en su fila — nunca se aplica a
@@ -948,6 +986,91 @@ def _capture_safety_pin(node, obj, doc):
     return _store_pin(tag)
 
 
+# --- Color shortcut and "remove all" escape hatch (usability pass) --------
+
+def _apply_pin_color(node, entry):
+    """Write ONE swatch's choice straight to the tag's NATIVE icon-tint
+    parameters — never our own data. ``node[id] = value`` goes through the
+    same ``SetParameter``/description path the Basic tab's own "Icon
+    Color" checkbox + picker use (measured live, see the module's ID
+    layout comment), so a color picked here and one picked in Basic write
+    the identical place; neither can compete with or revert the other.
+
+    ``entry`` is one row of ``pins.PIN_COLOR_PALETTE``. The "sin color"
+    entry (``key == pins.PIN_COLOR_NONE_KEY``, ``rgb is None``) clears the
+    tint back to ``ID_BASELIST_ICON_COLORIZE_MODE_NONE`` instead of writing
+    a color at all."""
+    doc = _doc_from_node(node)
+    if doc is None:
+        return False
+    doc.StartUndo()
+    try:
+        doc.AddUndo(c4d.UNDOTYPE_CHANGE, node)
+        if entry.get("key") == pins.PIN_COLOR_NONE_KEY:
+            node[_ICON_COLORIZE_MODE_ID] = _ICON_COLORIZE_MODE_NONE
+        else:
+            rgb = entry.get("rgb") or (0.6, 0.6, 0.6)
+            node[_ICON_COLORIZE_MODE_ID] = _ICON_COLORIZE_MODE_CUSTOM
+            node[_ICON_COLOR_ID] = c4d.Vector(*rgb)
+    finally:
+        doc.EndUndo()
+    return True
+
+
+def _pin_tags_on_host(obj):
+    """Every Sentinel Pin tag on ``obj`` — ordinary pins AND the safety
+    net alike, identified by TYPE only (never by name or by
+    ``ID_PIN_IS_SAFETY``, since removing all of them is exactly the one
+    operation that must not discriminate between the two)."""
+    getter = getattr(obj, "GetTags", None)
+    tags = getter() if callable(getter) else None
+    out = []
+    for tag in (tags or []):
+        try:
+            if tag.GetType() == SENTINEL_PIN_TAG_PLUGIN_ID:
+                out.append(tag)
+        except Exception:
+            continue
+    return out
+
+
+def _remove_all_pins(node):
+    """Delete EVERY Sentinel Pin tag on this tag's host — this pin, every
+    sibling pin, and the ``↩ Antes de restaurar`` safety net — in ONE undo
+    step. Recall has the exact equivalent ("Remove All Recall Tags").
+
+    Guarded: a host that can't be resolved, or one that (somehow) carries
+    no Sentinel Pin tag at all, is a no-op — no undo bracket opened, so a
+    stray click never shows up as an empty step in the Edit menu. In
+    practice the button's OWN tag always counts as at least one while it
+    exists, so the empty case is defensive rather than reachable from the
+    UI, but ``GetDEnabling`` still consults this so the button never
+    dangles clickable-but-pointless if that ever changes."""
+    obj = node.GetObject()
+    if obj is None:
+        return False
+    doc = _doc_from_node(node)
+    if doc is None:
+        return False
+    tags = _pin_tags_on_host(obj)
+    if not tags:
+        return False
+    doc.StartUndo()
+    try:
+        for tag in tags:
+            try:
+                doc.AddUndo(c4d.UNDOTYPE_DELETEOBJ, tag)
+            except Exception:
+                pass
+            try:
+                tag.Remove()
+            except Exception:
+                pass
+    finally:
+        doc.EndUndo()
+    return True
+
+
 def _sync_display_name(node):
     """Keep the tag's OWN name (``node.GetName()``, edited in the Basic
     tab like every other C4D tag — no dedicated field on this tag exists
@@ -1226,6 +1349,25 @@ class SentinelPinTag(_TagDataBase):
         except Exception:
             return False
 
+    def _set_description_group(self, node, description, group_id, name, parent,
+                                columns=None, titlebar=True):
+        # Copied pattern from frame_tag.py, not imported — these two tags
+        # are independent plugins and should not couple through private
+        # helpers (same rule the module docstring states for the small
+        # c4d helpers above).
+        desc_id = _description_parent(group_id, c4d.DTYPE_GROUP, node)
+        bc = c4d.GetCustomDatatypeDefault(c4d.DTYPE_GROUP)
+        _set_bc_value(bc, "SetString", c4d.DESC_NAME, name)
+        _set_bc_value(bc, "SetString", c4d.DESC_SHORT_NAME, name)
+        _set_bc_value(bc, "SetBool", c4d.DESC_TITLEBAR, bool(titlebar))
+        _set_bc_value(bc, "SetBool", c4d.DESC_DEFAULT, False)
+        if columns is not None:
+            _set_bc_value(bc, "SetInt32", c4d.DESC_COLUMNS, int(columns))
+        try:
+            return bool(description.SetParameter(desc_id, bc, parent))
+        except Exception:
+            return False
+
     def Init(self, node, isCloneInit=False):
         return True
 
@@ -1237,26 +1379,72 @@ class SentinelPinTag(_TagDataBase):
 
         root = c4d.DescID(c4d.DescLevel(c4d.ID_TAGPROPERTIES))
 
-        # Una sola fila, sin grupo multi-columna: sin columnas que
-        # competir por ancho, no hay nada que desalinear ni truncar (la
-        # razón entera de este rehecho — ver el docstring del módulo).
-        # SIN campo de nombre: el nombre del tag YA vive en su pestaña
-        # Basic (ver ID_PIN_NAME/PIN_TAG_DEFAULT_NAME arriba) — un
-        # segundo campo aquí competía por la misma información y perdía
-        # renombrados en vivo (ver _sync_display_name).
+        # Target layout (usability pass, design spec section "La interfaz
+        # del tag"):
+        #   [ Ir ]   [ Pin ]
+        #   Nombre   [ ... ]
+        #   Color    o * * * * * * *
+        #   Estado     12 obj · hace 2 h · ...
+        #   [ Quitar todos los pins de este objeto ]
+        # A single column of rows/groups — no multi-column grid competing
+        # for width across UNRELATED fields, which is what truncated the
+        # status text in the six-slot design this tag replaced. The two
+        # groups below (Actions, Color) are each internally multi-column,
+        # but every field inside a group is the SAME kind of control, so
+        # there is nothing to desalign.
+
+        # --- Actions: Ir first, side by side, no titlebar -----------------
+        actions_group = _description_parent(ID_GROUP_ACTIONS, c4d.DTYPE_GROUP, node)
+        if not self._set_description_group(
+            node, description, ID_GROUP_ACTIONS, "", root, columns=2, titlebar=False
+        ):
+            return False
         if not self._set_description_parameter(
-            node, description, ID_PIN_STATUS, c4d.DTYPE_STATICTEXT, "Estado", root,
+            node, description, ID_PIN_GO, c4d.DTYPE_BUTTON, "Ir", actions_group,
             animatable=False
         ):
             return False
         if not self._set_description_parameter(
             node, description, ID_PIN_STORE, c4d.DTYPE_BUTTON,
-            _store_button_label(_pin_is_filled(node)), root, animatable=False
+            _store_button_label(_pin_is_filled(node)), actions_group, animatable=False
         ):
             return False
+
+        # --- Nombre: a shortcut to the tag's OWN name, not a field of ----
+        # --- our own (see GetDParameter/SetDParameter) -------------------
         if not self._set_description_parameter(
-            node, description, ID_PIN_GO, c4d.DTYPE_BUTTON, "Ir", root,
+            node, description, ID_PIN_NAME_FIELD, c4d.DTYPE_STRING, "Nombre", root,
             animatable=False
+        ):
+            return False
+
+        # --- Color: one button per pins.PIN_COLOR_PALETTE entry, each a --
+        # --- shortcut to the tag's NATIVE icon-tint parameters (see ------
+        # --- _apply_pin_color) — never our own color data -----------------
+        color_group = _description_parent(ID_GROUP_COLOR, c4d.DTYPE_GROUP, node)
+        if not self._set_description_group(
+            node, description, ID_GROUP_COLOR, "Color", root,
+            columns=len(pins.PIN_COLOR_PALETTE), titlebar=False
+        ):
+            return False
+        for index, entry in enumerate(pins.PIN_COLOR_PALETTE):
+            if not self._set_description_parameter(
+                node, description, ID_PIN_COLOR_BASE + index, c4d.DTYPE_BUTTON,
+                entry.get("label", ""), color_group, animatable=False
+            ):
+                return False
+
+        # --- Estado: unchanged (see _pin_status_text) ---------------------
+        if not self._set_description_parameter(
+            node, description, ID_PIN_STATUS, c4d.DTYPE_STATICTEXT, "Estado", root,
+            animatable=False
+        ):
+            return False
+
+        # --- Quitar todos los pins de este objeto -------------------------
+        if not self._set_description_parameter(
+            node, description, ID_PIN_REMOVE_ALL, c4d.DTYPE_BUTTON,
+            "Quitar todos los pins de este objeto", root, animatable=False
         ):
             return False
 
@@ -1270,6 +1458,12 @@ class SentinelPinTag(_TagDataBase):
         parameter_id = _desc_level_id(id)
         if parameter_id == ID_PIN_STATUS:
             return True, _pin_status_text(node), flags | c4d.DESCFLAGS_GET_PARAM_GET
+        if parameter_id == ID_PIN_NAME_FIELD:
+            # Proxy read, not a mirror: this IS node.GetName(), the exact
+            # same data the Basic tab's name field shows — see the ID
+            # layout comment for why a copy here would be the mistake
+            # this pass exists to undo.
+            return True, _safe_node_name(node, ""), flags | c4d.DESCFLAGS_GET_PARAM_GET
         return False
 
     def SetDParameter(self, node, id, data, flags):
@@ -1277,17 +1471,31 @@ class SentinelPinTag(_TagDataBase):
         if parameter_id == ID_PIN_STATUS:
             # Read-only derived string: swallow writes.
             return True, flags | c4d.DESCFLAGS_SET_PARAM_SET
-        # No ID_PIN_NAME branch anymore: there is no name field in the
-        # description to write through (see GetDDescription) — renaming
-        # happens in the Basic tab like any other tag, and
-        # _sync_display_name (called from Execute) mirrors it into the
-        # container on its own, without needing this hook at all.
+        if parameter_id == ID_PIN_NAME_FIELD:
+            # Proxy write: node.SetName(), the SAME call the Basic tab's
+            # name field makes — editing here or there writes the same
+            # underlying data, so they cannot compete or revert each
+            # other. _sync_display_name is called immediately (rather
+            # than waiting for the next Execute tick) so the container
+            # mirror it maintains for the reload-reset case (see that
+            # function's docstring) stays current the instant an artist
+            # types here, not one evaluation later.
+            text = str(data) if data is not None else ""
+            try:
+                node.SetName(text)
+            except Exception:
+                pass
+            _sync_display_name(node)
+            return True, flags | c4d.DESCFLAGS_SET_PARAM_SET
         return False
 
     def GetDEnabling(self, node, cid, t_data, flags, itemdesc):
         parameter_id = _desc_level_id(cid)
-        if parameter_id in (ID_PIN_GO,):
+        if parameter_id == ID_PIN_GO:
             return _pin_is_filled(node)
+        if parameter_id == ID_PIN_REMOVE_ALL:
+            obj = node.GetObject()
+            return obj is not None and bool(_pin_tags_on_host(obj))
         return True
 
     def Execute(self, tag, doc, op, bt, priority, flags):
@@ -1322,6 +1530,13 @@ class SentinelPinTag(_TagDataBase):
             # what refuses to apply it, not this one.
             if _pin_is_filled(node):
                 _restore(node)
+        elif command_id == ID_PIN_REMOVE_ALL:
+            if _remove_all_pins(node):
+                _event_add()
+        elif ID_PIN_COLOR_BASE <= command_id < ID_PIN_COLOR_BASE + len(pins.PIN_COLOR_PALETTE):
+            entry = pins.PIN_COLOR_PALETTE[command_id - ID_PIN_COLOR_BASE]
+            if _apply_pin_color(node, entry):
+                _event_add()
         return True
 
     def Message(self, node, mid, data):

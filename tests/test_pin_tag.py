@@ -84,6 +84,15 @@ class FakeTag:
         self._name = name
         self._bc = c4d.BaseContainer()
         self._doc = doc
+        # Models node[id] = value / node[id] (BaseList2D.__getitem__/
+        # __setitem__ over SetParameter/GetParameter) as its OWN storage,
+        # separate from GetDataInstance() — the real distinction the color
+        # shortcut depends on: ID_BASELIST_ICON_COLORIZE_MODE/COLOR are
+        # NATIVE base-list parameters, not entries in the tag's own
+        # plugin-data container, so a test that only checked
+        # GetDataInstance() would pass even if the real code wrote to the
+        # wrong place.
+        self._baselist = {}
 
     def GetObject(self):
         return self._host
@@ -109,6 +118,12 @@ class FakeTag:
                 self._host._tags.remove(self)
             except ValueError:
                 pass
+
+    def __setitem__(self, key, value):
+        self._baselist[key] = value
+
+    def __getitem__(self, key):
+        return self._baselist.get(key)
 
 
 class FakeObject:
@@ -641,3 +656,162 @@ def test_pin_status_text_keeps_geometry_warning_after_a_restore(sentinel_module)
 
     assert text.startswith("1 restaurados")
     assert "geometría no incluida" in text
+
+
+# --- Usability pass (v1.35.1): Nombre/Color as shortcuts to native --------
+# --- parameters, and "Quitar todos los pins de este objeto" --------------
+
+def test_apply_pin_color_writes_the_native_baselist_parameters_not_our_own(sentinel_module):
+    """The crux of the pass: a swatch must write ID_BASELIST_ICON_COLORIZE_
+    MODE + ID_BASELIST_ICON_COLOR (node[id] = value, modeled by FakeTag's
+    ``_baselist`` — see its class docstring), never a key of our own in
+    GetDataInstance()."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    from sentinel import pins
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+    tag = host.MakeTag(pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID)
+
+    entry = next(e for e in pins.PIN_COLOR_PALETTE if e["key"] == "red")
+    ok = pin_tag._apply_pin_color(tag, entry)
+
+    assert ok is True
+    assert tag[pin_tag._ICON_COLORIZE_MODE_ID] == pin_tag._ICON_COLORIZE_MODE_CUSTOM
+    written = tag[pin_tag._ICON_COLOR_ID]
+    assert (written.x, written.y, written.z) == entry["rgb"]
+    # Never a competing entry under the SAME numeric id in our own data —
+    # that would be the mistake this pass exists to undo, just moved one
+    # level deeper (same id, wrong container).
+    assert pin_tag._ICON_COLOR_ID not in tag.GetDataInstance()
+
+
+def test_apply_pin_color_none_clears_the_colorize_mode(sentinel_module):
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    from sentinel import pins
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+    tag = host.MakeTag(pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID)
+    tag[pin_tag._ICON_COLORIZE_MODE_ID] = pin_tag._ICON_COLORIZE_MODE_CUSTOM
+    tag[pin_tag._ICON_COLOR_ID] = c4d.Vector(0.85, 0.3, 0.25)
+
+    none_entry = pins.PIN_COLOR_PALETTE[0]
+    assert none_entry["key"] == pins.PIN_COLOR_NONE_KEY
+
+    ok = pin_tag._apply_pin_color(tag, none_entry)
+
+    assert ok is True
+    assert tag[pin_tag._ICON_COLORIZE_MODE_ID] == pin_tag._ICON_COLORIZE_MODE_NONE
+
+
+def test_pin_name_field_get_set_proxy_the_real_tag_name(sentinel_module):
+    """Nombre must read/write node.GetName()/SetName() directly — the SAME
+    call the Basic tab's own name field makes — never a copy in our own
+    container. Exercised through the class's GetDParameter/SetDParameter
+    hooks directly (the AM's actual call path), not just the underlying
+    proxy functions."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+    tag = host.MakeTag(pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID)
+    tag.SetName("wide angle")
+
+    instance = pin_tag.SentinelPinTag()
+    desc_id = c4d.DescID(c4d.DescLevel(pin_tag.ID_PIN_NAME_FIELD))
+
+    ok, value, _flags = instance.GetDParameter(tag, desc_id, 0)
+    assert ok is True
+    assert value == "wide angle"
+
+    instance.SetDParameter(tag, desc_id, "gran angular", 0)
+
+    assert tag.GetName() == "gran angular"
+    # The reload-survival mirror (see _sync_display_name) must be updated
+    # immediately by the same edit, not left to the next Execute tick.
+    assert tag.GetDataInstance().GetString(pin_tag.ID_PIN_NAME) == "gran angular"
+
+
+def test_remove_all_pins_deletes_every_pin_tag_on_the_host_in_one_undo(sentinel_module):
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+    original = _make_pin_tag(host, pin_tag, c4d, name="mi pin")
+    assert pin_tag._capture_safety_pin(original, host, doc) is True
+    assert len(host.GetTags()) == 2  # the pin + the safety net
+
+    ok = pin_tag._remove_all_pins(original)
+
+    assert ok is True
+    assert host.GetTags() == []
+    # One undo bracket for the whole batch, not one per tag.
+    assert doc.undo_depth == 0
+    delete_ops = [op for op, _ in doc.undo_ops if op == c4d.UNDOTYPE_DELETEOBJ]
+    assert len(delete_ops) == 2
+
+
+def test_remove_all_pins_is_a_no_op_when_the_host_has_none(sentinel_module):
+    """Guard: nothing to do when there are none — no undo bracket opened
+    for an empty batch."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+
+    class _Orphan:
+        def GetObject(self):
+            return None
+
+    ok = pin_tag._remove_all_pins(_Orphan())
+
+    assert ok is False
+    assert doc.undo_ops == []
+
+
+def test_remove_all_pins_opens_no_undo_bracket_when_the_host_carries_none(sentinel_module):
+    """Narrower than the orphan case above: the host itself resolves fine,
+    it just carries zero Sentinel Pin tags (the node calling this isn't
+    even attached to it — a defensive shape per the function's own
+    docstring, not reachable from the real button, but the guard exists
+    precisely so an empty batch never opens/closes an undo bracket for
+    nothing)."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)  # no tags at all
+
+    class _Detached:
+        def GetObject(self):
+            return host
+
+        def GetDocument(self):
+            return doc
+
+    ok = pin_tag._remove_all_pins(_Detached())
+
+    assert ok is False
+    assert doc.undo_ops == []
+    assert doc.undo_depth == 0
+
+
+def test_remove_all_pins_does_not_touch_an_unrelated_tag(sentinel_module):
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+    original = _make_pin_tag(host, pin_tag, c4d)
+    other = FakeTag(host, 999999, "Phong", c4d, doc)
+    host._tags.append(other)
+
+    pin_tag._remove_all_pins(original)
+
+    assert host.GetTags() == [other]
