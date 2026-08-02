@@ -696,6 +696,136 @@ def test_restore_never_reports_an_empty_value_track_as_extra(sentinel_module):
     assert "restaurados" in report
 
 
+# --- N5: an emptied PINNED track must still be a restore target ----------
+
+def test_restore_rewrites_a_track_that_was_emptied_since_it_was_pinned(sentinel_module):
+    """N5 regression: pin an object with a 2-key animated parameter, then
+    the artist selects every key in the Timeline and deletes them — the
+    CTrack survives, empty, which is exactly what C4D does. This is the
+    canonical "un-wreck a wrecked animated parameter" case restore exists
+    for. N1's fix filtered zero-key tracks out of ``_live_tracks_by_key``
+    itself (the restore's lookup table), not out of the ``extra`` count
+    alone — so this SAME emptied track dropped out of the lookup
+    entirely, its pinned keys fell into ``missing`` (``safe_print`` only,
+    never applied) instead of being rewritten, and the row still claimed
+    success. The keys must actually come back."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    track = FakeTrack([(1000, 19, 5000)], c4d.CTRACK_CATEGORY_VALUE, keys=[
+        FakeKey(c4d.BaseTime(0), 1.0),
+        FakeKey(c4d.BaseTime(10), 2.0),
+    ])
+    host = FakeTrackObject("ctrl", c4d, tracks=[track], doc=doc)
+    fake_tag = FakeTag(host, pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID, c4d, doc)
+    assert pin_tag._store_pin(fake_tag) is True
+
+    # Select every key in the Timeline, delete them all — track survives,
+    # empty.
+    track.GetCurve()._keys = []
+    assert track.GetCurve().GetKeyCount() == 0
+
+    report = pin_tag._restore(fake_tag)
+
+    curve = track.GetCurve()
+    assert curve.GetKeyCount() == 2, "the pinned keys must be rewritten onto the emptied track"
+    values = sorted(k.value for k in curve._keys)
+    assert values == [1.0, 2.0]
+    assert "restaurados" in report
+    assert "pistas nuevas sin restaurar" not in report
+
+
+# --- N6: the C1 guard, tested directly at the level it actually holds ----
+#
+# Two tests below, deliberately split. Mutation-verified (see the branch's
+# final-fix report): reverting JUST the pin-tag exclusion in
+# ``_iter_node_tracks`` — leaving the type-scoped ``tag[N]`` index intact
+# — does NOT fail the first test below. That is not a gap in the test; it
+# is the honest shape of the current design. A Sentinel Pin tag's type
+# (``SENTINEL_PIN_TAG_PLUGIN_ID``) never collides with a real tag's type,
+# so type-scoping alone already keeps every OTHER tag's index invariant to
+# how many pin tags are interleaved with it — the exclusion's one-time job
+# (protecting a FLAT, pre-N2 index from being shifted by pin tags) is
+# structurally subsumed. The second test isolates what the exclusion
+# actually still does on its own — keep a Sentinel Pin tag from ever
+# contributing its OWN tracks to the index — which type-scoping does not
+# provide and which DOES fail when the exclusion is reverted.
+
+def test_iter_node_tracks_owner_strings_unaffected_by_sentinel_pin_tag_count(sentinel_module):
+    """N6: locks in the observable claim — the owner string
+    ``_iter_node_tracks`` yields for a host's ordinary (non-pin) tags must
+    be byte-identical whether the host carries 0, 1, or 2 Sentinel Pin
+    tags, interleaved with (and counted against) ordinary tags of THAT
+    SAME type, the same prepend shape ``MakeTag`` produces for the safety
+    tag. Regression coverage for the CURRENT behavior; per the note above,
+    this specific assertion is satisfied by type-scoping alone and does
+    not by itself resist a reverted pin-tag exclusion — see
+    ``test_iter_node_tracks_excludes_sentinel_pin_tags_own_tracks`` below
+    for the assertion that does."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    def owners_for(pin_count):
+        track_a = FakeTrack([(1000, 19, 5000)], c4d.CTRACK_CATEGORY_VALUE, keys=[
+            FakeKey(c4d.BaseTime(0), 10.0),
+        ])
+        track_b = FakeTrack([(1000, 19, 5000)], c4d.CTRACK_CATEGORY_VALUE, keys=[
+            FakeKey(c4d.BaseTime(0), 20.0),
+        ])
+        tag_a = FakeTagWithTracks(tracks=[track_a], tag_type=1011)
+        tag_b = FakeTagWithTracks(tracks=[track_b], tag_type=1011)
+        pins_before = [
+            FakeTagWithTracks(tracks=[], tag_type=pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID)
+            for _ in range(pin_count)
+        ]
+        pins_between = [
+            FakeTagWithTracks(tracks=[], tag_type=pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID)
+            for _ in range(pin_count)
+        ]
+        # Pin tags both ahead of AND between the two same-type ordinary
+        # tags — the exact prepend shape ``MakeTag`` produces for the
+        # safety tag, plus the shape of an artist adding a second pin.
+        host = FakeTrackObject(
+            "ctrl", c4d, tags=pins_before + [tag_a] + pins_between + [tag_b])
+        owners = {}
+        for owner, track in pin_tag._iter_node_tracks(host):
+            if track is track_a:
+                owners["a"] = owner
+            elif track is track_b:
+                owners["b"] = owner
+        return owners
+
+    baseline = owners_for(0)
+    assert baseline == {"a": "tag[1011:0]", "b": "tag[1011:1]"}
+    assert owners_for(1) == baseline, "one Sentinel Pin tag must not shift ordinary owner strings"
+    assert owners_for(2) == baseline, "two Sentinel Pin tags must not shift ordinary owner strings"
+
+
+def test_iter_node_tracks_excludes_sentinel_pin_tags_own_tracks(sentinel_module):
+    """N6 companion: isolates the pin-tag exclusion's actual, INDEPENDENT
+    effect — a tag whose type is ``SENTINEL_PIN_TAG_PLUGIN_ID`` must never
+    contribute its own tracks to the index — rather than its now-redundant
+    side effect on other tags' positions (see the test above and the
+    section note). A real Sentinel Pin tag has no animatable description
+    fields (see the module docstring) so it never actually carries a
+    CTrack in production; this fake gives one a stray track anyway,
+    specifically to observe the exclusion apart from type-scoping, which
+    makes it inert for every realistic input."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    stray_track = FakeTrack([(9999, 19, 5000)], c4d.CTRACK_CATEGORY_VALUE, keys=[
+        FakeKey(c4d.BaseTime(0), 42.0),
+    ])
+    pin = FakeTagWithTracks(tracks=[stray_track], tag_type=pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID)
+    host = FakeTrackObject("ctrl", c4d, tags=[pin])
+
+    yielded = list(pin_tag._iter_node_tracks(host))
+
+    assert yielded == [], "a Sentinel Pin tag must never contribute tracks to the index"
+
+
 # --- N2: tag[N] must be scoped by tag TYPE, not a flat cross-type index --
 
 def test_restore_pairs_correctly_after_deleting_a_preceding_non_pin_tag(sentinel_module):

@@ -482,25 +482,27 @@ def _live_tracks_by_key(node):
     restore can look one up by the identity that survives save/reload
     (``pins.track_key``), never by any live C4D handle.
 
-    A track with zero keys is excluded, mirroring the same filter
-    ``_capture_node_tracks`` applies on the capture side (see its
-    docstring: "nothing to lose, nothing to warn about"). Before this
-    filter existed here, an object with an empty VALUE track (routine in
-    C4D — Add Track, or deleting every key without deleting the track
-    itself) NEVER appeared in ``stored_tracks`` (capture skips it) but
-    ALWAYS appeared in ``live_tracks`` (this function didn't), so
-    ``plan_restore`` put it in ``extra`` on every single restore — a
-    permanent, meaningless "N pistas nuevas sin restaurar" that never
-    clears no matter how many times the artist re-pins."""
+    Every VALUE track is included here, REGARDLESS of its current key
+    count — including one that has been emptied since it was pinned (an
+    artist can select every key in the Timeline and delete them; the
+    CTrack itself survives, empty). An N1 fix once filtered zero-key
+    tracks out of THIS function to silence a permanent false "extra" —
+    but that conflated two different situations: a track that was
+    ALREADY empty when it was pinned (nothing captured, nothing to
+    restore, nothing to warn about — still true) versus a track that WAS
+    captured with keys and has since been emptied (a genuine restore
+    target: ``stored_tracks`` still holds its keys). Filtering the
+    lookup table made the second case invisible to ``plan_restore``, so
+    its pinned keys fell into ``missing`` instead of being applied — a
+    silent failure to apply on exactly the "un-wreck a wrecked animated
+    parameter" case this capture/restore mechanism exists for (N5
+    regression). The zero-key filter belongs on the ``extra`` side only
+    — see ``_restore``, the one place that can tell "empty at pin time"
+    apart from "empty now, captured with keys" by consulting
+    ``stored_tracks`` alongside this table."""
     out = {}
     for owner, track in _iter_node_tracks(node):
         if _track_category_name(track) != pins.TRACK_CATEGORY_VALUE:
-            continue
-        try:
-            curve = track.GetCurve()
-        except Exception:
-            curve = None
-        if not curve or not curve.GetKeyCount():
             continue
         try:
             desc_parts = _track_desc_id_parts(track)
@@ -508,6 +510,26 @@ def _live_tracks_by_key(node):
             continue
         out[pins.track_key(owner, desc_parts)] = track
     return out
+
+
+def _live_track_key_count(track):
+    """0 for anything that isn't a usable live CTrack (``None``, a curve
+    that can't be fetched, or a curve reporting 0). Used only to decide
+    whether a track in ``plan_restore``'s ``extra`` bucket is genuinely
+    NEW animation (has keys, worth reporting) versus a track that was
+    already keyless — never used to gate the restore lookup itself (see
+    ``_live_tracks_by_key``'s docstring for why that distinction lives
+    here, not there)."""
+    try:
+        curve = track.GetCurve()
+    except Exception:
+        curve = None
+    if curve is None:
+        return 0
+    try:
+        return curve.GetKeyCount()
+    except Exception:
+        return 0
 
 
 def _apply_track_keys(track, key_records):
@@ -1135,7 +1157,17 @@ def _restore(node):
                 if track_plan["missing"]:
                     missing_tracks.extend(
                         "%s@%s" % (key, tk) for tk in track_plan["missing"])
-                extra_tracks_total += len(track_plan["extra"])
+                # A track in "extra" with zero keys right now was never
+                # captured (capture skips zero-key tracks — nothing to
+                # lose) and was never a restore target either — it must
+                # not count as "N pistas nuevas sin restaurar" (that was
+                # N1's bug; N5 moved the fix here instead of filtering
+                # it out of ``live_tracks``, which broke restoring an
+                # emptied PINNED track — see ``_live_tracks_by_key``).
+                extra_tracks_total += sum(
+                    1 for tk in track_plan["extra"]
+                    if _live_track_key_count(live_tracks.get(tk)) > 0
+                )
         report = _restore_report_text(len(matched), len(pinned_keys), extra_tracks_total)
         doc.AddUndo(c4d.UNDOTYPE_CHANGE, node)
         _write_last_restore(node, report)
