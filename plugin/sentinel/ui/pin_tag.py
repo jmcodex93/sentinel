@@ -15,10 +15,20 @@ spike de la Tarea 1 (docs/research/2026-07-31-pin-storage-spike.md), no
 suposiciones.
 
 Restaurar un pin sobre la escena está implementado (Tarea 4, con la captura
-real de pistas de animación de la Tarea 6 encima): el botón "Ir" está
-cableado a la descripción y su handler llama a ``_restore`` — ver esa
+real de pistas de animación de la Tarea 6 encima): el botón "Restaurar"
+está cableado a la descripción y su handler llama a ``_restore`` — ver esa
 función más abajo para el contrato completo (red de seguridad, plan de
 reemparejamiento por ubicación, un solo undo).
+
+Segunda pasada de usabilidad (v1.35.2, docs/superpowers/sdd/task-9-report.md):
+verbos que dicen lo que hacen ("Ir" -> "Restaurar", "Pin aquí"/"Re-pin" ->
+"Guardar estado", sin relabel condicional), el Estado partido en dos líneas
+(resumen + advertencia con ⚠, nunca concatenadas detrás del conteo), Color
+reducido a UNA fila que expone los parámetros NATIVOS del tag
+(ID_BASELIST_ICON_COLORIZE_MODE/ID_BASELIST_ICON_COLOR — el picker real de
+C4D, no ocho botones de texto ni una paleta propia), y un separador antes de
+"Quitar todos los pins de este objeto" para que la acción destructiva deje
+de sentarse a ras con el resto de controles.
 """
 
 import datetime
@@ -33,44 +43,71 @@ SENTINEL_PIN_TAG_PLUGIN_ID = 2099078
 SENTINEL_PIN_TAG_DESCRIPTION = "Tsentinelpin"
 
 # --- Description id layout ------------------------------------------------
-# Usability pass (v1.35.1, docs/superpowers/specs/2026-07-31-sentinel-pin-
-# design.md, section "La interfaz del tag"): actions first and side by
-# side (Ir leads — it's the 99% action), then Nombre/Color as SHORTCUTS to
-# the tag's own native parameters (never copies — see GetDParameter/
-# SetDParameter and _apply_pin_color), then Estado, then the remove-all
-# escape hatch. Still a single column of rows/groups — no multi-column
+# Second usability pass (v1.35.2, docs/superpowers/sdd/task-9-report.md):
+# fixes the hierarchy that survived v1.35.1 — Estado (the only feedback
+# this tool gives, read every time) now sits right under the actions,
+# split into a summary line and a SEPARATE binding-warning line; Color
+# drops from eight buttons to one row of the tag's own NATIVE parameters;
+# and a separator sets the destructive "remove all" action apart from
+# everything else. Still a single column of rows/groups — no multi-column
 # grid competing for width, which is what truncated the status text in the
 # original six-slot design this tag replaced.
-ID_GROUP_ACTIONS = 1005  # DTYPE_GROUP, 2 columns, no titlebar — Ir | Pin
-ID_PIN_GO = 1004         # DTYPE_BUTTON     — "Ir" (FIRST in the row: the
+ID_GROUP_ACTIONS = 1005  # DTYPE_GROUP, 2 columns, no titlebar — Restaurar |
+                          # Guardar estado
+ID_PIN_GO = 1004         # DTYPE_BUTTON — "Restaurar" (FIRST in the row: the
                           # button pressed far more than anything else here
-                          # is configured — the exact ordering this pass
-                          # exists to fix, see the design spec's crux)
-ID_PIN_STORE = 1003      # DTYPE_BUTTON     — "Pin aquí" / "Re-pin"
+                          # is configured). Named for what it DOES, not
+                          # "Ir" (go where?).
+ID_PIN_STORE = 1003      # DTYPE_BUTTON — "Guardar estado", ALWAYS this
+                          # label whether the pin is empty or already
+                          # filled — "Re-pin" was jargon a first-time
+                          # artist has no reason to know, and the relabel
+                          # logic it needed is gone (see _handle_command).
+ID_PIN_STATUS = 1002     # DTYPE_STATICTEXT — the summary line only ("12
+                          # objetos · hace 2 h", or a restore's own report
+                          # text): read-only, since a DTYPE_STRING paints a
+                          # box that competes for width with the rest of
+                          # the row, and that's exactly what truncated the
+                          # status text in the v6-slots design.
+ID_PIN_WARNING = 1017    # DTYPE_STATICTEXT — the SEPARATE binding-warning
+                          # line ("⚠ geometría no incluida · N pistas de
+                          # animación"), computed independently of
+                          # ID_PIN_STATUS so it survives every path
+                          # (including after a restore) — see
+                          # _pin_warning_text. Empty string, not a hidden
+                          # row, when there is nothing to warn about (no
+                          # per-row visibility toggle in the description
+                          # API used here).
 ID_PIN_NAME_FIELD = 1006  # DTYPE_STRING — "Nombre". NOT our own data: reads
                            # node.GetName(), writes node.SetName() (see
                            # GetDParameter/SetDParameter below) — the exact
                            # same call the Basic tab's own name field makes,
                            # so editing here or there writes the same place
                            # and neither can revert the other.
-ID_GROUP_COLOR = 1007      # DTYPE_GROUP, one column per pins.PIN_COLOR_PALETTE
-                            # entry — "Color". Each button below writes
-                            # straight to the tag's NATIVE
-                            # ID_BASELIST_ICON_COLORIZE_MODE +
-                            # ID_BASELIST_ICON_COLOR (see _apply_pin_color) —
-                            # the same pair the Basic tab's "Icon Color"
-                            # checkbox + picker already edits.
-ID_PIN_COLOR_BASE = 1008   # DTYPE_BUTTON × len(pins.PIN_COLOR_PALETTE) —
-                            # one id per swatch, contiguous from here.
-ID_PIN_STATUS = 1002    # DTYPE_STATICTEXT — "12 obj · hace 2 h · ..." (solo
-                         # lectura: un DTYPE_STRING pinta una caja que
-                         # compite por ancho con el resto de la fila, y fue
-                         # justo eso lo que truncó el texto en la v6-slots)
+ID_GROUP_COLOR = 1007      # DTYPE_GROUP, 2 columns, no titlebar — "Color".
+                            # ONE row exposing the tag's NATIVE
+                            # ID_BASELIST_ICON_COLORIZE_MODE (checkbox) +
+                            # ID_BASELIST_ICON_COLOR (swatch/picker)
+                            # DIRECTLY — the exact ids the Basic tab's own
+                            # "Icon Color" checkbox + picker already edit,
+                            # so this gives C4D's real color picker instead
+                            # of a fixed set of words. No command handler
+                            # and no data of our own: GetDParameter/
+                            # SetDParameter never intercept these ids, so
+                            # the base class's default read/write handles
+                            # them (see the "Color" section of
+                            # GetDDescription).
+ID_PIN_SEPARATOR = 1018   # DTYPE_SEPARATOR — sets "Quitar todos los pins de
+                           # este objeto" apart from every other control:
+                           # that button is destructive (deletes every
+                           # Sentinel Pin tag on the host), everything above
+                           # it is not.
 ID_PIN_REMOVE_ALL = 1016  # DTYPE_BUTTON — "Quitar todos los pins de este
                            # objeto": deletes EVERY Sentinel Pin tag on the
                            # host (this one, every sibling pin, AND the
                            # safety net) in one undo step. Recall has the
-                           # equivalent ("Remove All Recall Tags").
+                           # equivalent ("Remove All Recall Tags"). Always
+                           # LAST, below the separator above.
 
 # Task 5 tried a per-pin icon (colored GeClipMap bitmap + badge letter,
 # generated on MSG_GETCUSTOMICON) so several pins on one object would be
@@ -129,15 +166,16 @@ ID_PIN_LAST_RESTORE = 20001
 ID_PIN_IS_SAFETY = 20002
 
 #: The tag's NATIVE icon-tint parameters (Basic tab's "Icon Color" group) —
-#: never our own storage. Numeric fallbacks are the values measured live
-#: in the design spec's spike (mode became 1, colour became
-#: Vector(0.85, 0.3, 0.25)); ``getattr`` only matters for a C4D build old
-#: enough that the symbol is missing from the ``c4d`` module, not for the
-#: test harness (whose permissive fake auto-vivifies any attribute).
+#: never our own storage, and exposed DIRECTLY in this tag's own
+#: description since v1.35.2 (see GetDDescription's "Color" section), not
+#: through a command handler writing to them by hand. Numeric fallbacks are
+#: the values measured live in the design spec's spike (mode became 1,
+#: colour became Vector(0.85, 0.3, 0.25)); ``getattr`` only matters for a
+#: C4D build old enough that the symbol is missing from the ``c4d`` module,
+#: not for the test harness (whose permissive fake auto-vivifies any
+#: attribute).
 _ICON_COLORIZE_MODE_ID = getattr(c4d, "ID_BASELIST_ICON_COLORIZE_MODE", 1041670)
 _ICON_COLOR_ID = getattr(c4d, "ID_BASELIST_ICON_COLOR", 1041671)
-_ICON_COLORIZE_MODE_NONE = getattr(c4d, "ID_BASELIST_ICON_COLORIZE_MODE_NONE", 0)
-_ICON_COLORIZE_MODE_CUSTOM = getattr(c4d, "ID_BASELIST_ICON_COLORIZE_MODE_CUSTOM", 1)
 
 #: Se sube solo si cambia la forma del payload. Un pin cuyo esquema esta
 #: build no reconoce se IGNORA con una nota en su fila — nunca se aplica a
@@ -679,50 +717,25 @@ def _clear_last_restore(node):
     _write_last_restore(node, "")
 
 
-def _pin_status_text(node):
-    """Text for the row's status cell, built from ``pins.pin_summary`` per
-    el spec: conteo + tiempo relativo, y — OBLIGATORIO, no opcional — una
-    nota de "geometría no incluida" siempre que algún nodo pineado tenga
-    geometría editable (los puntos/polígonos viven fuera del contenedor del
-    objeto y no vuelven al restaurar). Desde la Tarea 6, las pistas
-    CTRACK_CATEGORY_VALUE se capturan y restauran de verdad — la fila lo
-    refleja con "N pistas" — y solo lo que sigue sin poder capturarse
-    (categoría DATA/PLUGIN, o un pin de una build anterior a esta que solo
-    guardó el bool viejo) se avisa como "no incluidas", nunca en silencio.
+def _pin_entries_summary(node):
+    """Shared read: the stored pin's schema state plus (when valid)
+    ``pins.pin_summary`` and the raw payload — used by BOTH
+    ``_pin_status_text`` (the count+time line) and ``_pin_warning_text``
+    (the binding geometry/tracks notes) so neither re-walks the payload's
+    entries on its own, and so the two rows can never drift apart on what
+    counts as "this pin's entries".
 
-    Las dos notas de advertencia (geometría, pistas NO incluidas) son un
-    compromiso vinculante del spec, no decoración del resumen de pineo —
-    así que se calculan y se anexan SIEMPRE, tanto si la fila abre con el
-    resumen del pin como si abre con el resultado de la última
-    restauración (``last_restore``). Antes de este fix, un ``last_restore``
-    no vacío retornaba de inmediato y las notas desaparecían de la fila
-    para siempre en cuanto se pulsaba "Ir" una vez — justo cuando más
-    importan, porque es el momento en que el artista más necesita saber
-    qué NO se restauró.
-
-    La línea "· N pistas" es distinta: es metadata del PIN (cuántas pistas
-    capturó), no una advertencia, así que solo se antepone al resumen de
-    pineo — nunca al texto de un ``last_restore``, donde leería raro junto
-    al titular de una restauración ("N restaurados · N pistas" sugiere que
-    la restauración tocó N pistas nuevas, cuando en realidad es cuántas
-    capturó el pin original).
-
-    Esto se SINTETIZA, nunca se guarda: ``GetDParameter`` llama a esto en
-    cada lectura en vez de que la celda de estado tenga un valor escrito en
-    el contenedor propio del nodo (verificado en vivo —
-    ``GetDataInstance().GetString(id)`` para este id lee vacío, que es
-    correcto, no un bug). Guardar el texto dejaría que la parte de tiempo
-    relativo ("hace 2 h") se quedara obsoleta en cuanto el AM dejara de
-    repintarla; derivarlo la mantiene honesta gratis."""
+    Returns ``None`` when the tag has no pin at all. Otherwise a dict
+    ``{"schema_ok": bool, "summary": dict|None, "payload": BaseContainer}``
+    — ``summary`` is ``None`` when the schema doesn't match this build's
+    ``PIN_SCHEMA`` (a payload that will never be applied has nothing
+    meaningful to summarize either)."""
     payload = _read_payload_bc(node)
     if payload is None:
-        return ""
+        return None
     schema = payload.GetInt32(_PAYLOAD_SCHEMA, 0)
     if schema != PIN_SCHEMA:
-        # Checked before the last-restore note on purpose: a mismatched
-        # schema is never applied, so this message must win over whatever
-        # a previous (older-build) restore happened to leave behind.
-        return "pin de una versión anterior — no se aplicará"
+        return {"schema_ok": False, "summary": None, "payload": payload}
     count = payload.GetInt32(_PAYLOAD_COUNT, 0)
     entries_bc = payload.GetContainerInstance(_PAYLOAD_ENTRIES)
     entries = []
@@ -745,23 +758,74 @@ def _pin_status_text(node):
             "tracks_skipped": tracks_skipped,
         })
     summary = pins.pin_summary({"label": "", "entries": entries})
+    return {"schema_ok": True, "summary": summary, "payload": payload}
+
+
+def _pin_status_text(node):
+    """Text for the row's SUMMARY line only: the pin's count + relative
+    time ("12 objetos · hace 2 h"), or a restore's own report text once
+    one has run from this tag (``_read_last_restore``). The binding
+    geometry/tracks-not-included notes used to be appended here too — see
+    ``_pin_warning_text`` below, which computes them independently on its
+    OWN description row now, so they read as a warning instead of trivia
+    stapled behind the count with a middle dot.
+
+    This is SYNTHESIZED, never stored: ``GetDParameter`` calls this on
+    every read instead of the status cell having a value written into the
+    node's own container (verified live — ``GetDataInstance().GetString(id)``
+    for this id reads empty, which is correct, not a bug). Storing the text
+    would let the relative-time part ("hace 2 h") go stale the moment the
+    AM stops repainting it; deriving it keeps it honest for free."""
+    info = _pin_entries_summary(node)
+    if info is None:
+        return ""
+    if not info["schema_ok"]:
+        # Checked before the last-restore note on purpose: a mismatched
+        # schema is never applied, so this message must win over whatever
+        # a previous (older-build) restore happened to leave behind.
+        return "pin de una versión anterior — no se aplicará"
     last_restore = _read_last_restore(node)
     if last_restore:
-        text = last_restore
-    else:
-        text = "%d obj · %s" % (
-            summary["count"], _relative_time_es(payload.GetString(_PAYLOAD_TIMESTAMP, "")))
+        return last_restore
+    summary = info["summary"]
+    payload = info["payload"]
+    return "%d objetos · %s" % (
+        summary["count"], _relative_time_es(payload.GetString(_PAYLOAD_TIMESTAMP, "")))
+
+
+def _pin_warning_text(node):
+    """Text for the row's SEPARATE warning line — never concatenated
+    behind the count, so it reads as a warning instead of trivia. Both
+    notes are a binding compromise of the spec, not decoration of the pin
+    summary, so they are computed the SAME way regardless of what
+    ``_pin_status_text`` is currently showing (the pin's own summary, or a
+    restore's report text): before this split, a non-empty
+    ``last_restore`` made the single status string return early and the
+    notes disappeared from the row for good the moment "Restaurar" was
+    pressed once — exactly when the artist most needs to know what did
+    NOT come back.
+
+    "geometría no incluida" fires whenever any pinned node has editable
+    geometry (points/polygons live outside the object container and never
+    round-trip). "N pistas de animación" fires whenever any pinned node
+    has an animation track this build could not capture (category
+    DATA/PLUGIN, or a pin from a build old enough to have only written the
+    deprecated bool) — VALUE tracks are captured and restored for real
+    since Task 6, so they are never counted here. Empty string, never
+    ``None``, when there is nothing to warn about — the description row
+    reads blank rather than being hidden (see ID_PIN_WARNING)."""
+    info = _pin_entries_summary(node)
+    if info is None or not info["schema_ok"]:
+        return ""
+    summary = info["summary"]
+    parts = []
     if summary["has_geometry"]:
-        text += " · geometría no incluida"
-    if not last_restore and summary["tracks_captured"]:
-        text += " · %d pistas" % summary["tracks_captured"]
+        parts.append("geometría no incluida")
     if summary["has_keyframes"]:
-        text += " · %d pistas no incluidas" % summary["tracks_skipped"]
-    return text
-
-
-def _store_button_label(filled):
-    return "Re-pin" if filled else "Pin aquí"
+        parts.append("%d pistas de animación" % summary["tracks_skipped"])
+    if not parts:
+        return ""
+    return "⚠ " + " · ".join(parts)
 
 
 def _store_pin(node):
@@ -986,36 +1050,17 @@ def _capture_safety_pin(node, obj, doc):
     return _store_pin(tag)
 
 
-# --- Color shortcut and "remove all" escape hatch (usability pass) --------
-
-def _apply_pin_color(node, entry):
-    """Write ONE swatch's choice straight to the tag's NATIVE icon-tint
-    parameters — never our own data. ``node[id] = value`` goes through the
-    same ``SetParameter``/description path the Basic tab's own "Icon
-    Color" checkbox + picker use (measured live, see the module's ID
-    layout comment), so a color picked here and one picked in Basic write
-    the identical place; neither can compete with or revert the other.
-
-    ``entry`` is one row of ``pins.PIN_COLOR_PALETTE``. The "sin color"
-    entry (``key == pins.PIN_COLOR_NONE_KEY``, ``rgb is None``) clears the
-    tint back to ``ID_BASELIST_ICON_COLORIZE_MODE_NONE`` instead of writing
-    a color at all."""
-    doc = _doc_from_node(node)
-    if doc is None:
-        return False
-    doc.StartUndo()
-    try:
-        doc.AddUndo(c4d.UNDOTYPE_CHANGE, node)
-        if entry.get("key") == pins.PIN_COLOR_NONE_KEY:
-            node[_ICON_COLORIZE_MODE_ID] = _ICON_COLORIZE_MODE_NONE
-        else:
-            rgb = entry.get("rgb") or (0.6, 0.6, 0.6)
-            node[_ICON_COLORIZE_MODE_ID] = _ICON_COLORIZE_MODE_CUSTOM
-            node[_ICON_COLOR_ID] = c4d.Vector(*rgb)
-    finally:
-        doc.EndUndo()
-    return True
-
+# --- "Remove all" escape hatch (usability pass) ---------------------------
+#
+# The color shortcut this section used to hold (``_apply_pin_color``, a
+# command handler dispatching one of ``pins.PIN_COLOR_PALETTE``'s eight
+# swatches) is gone in v1.35.2: the Color row now declares
+# ID_BASELIST_ICON_COLORIZE_MODE/ID_BASELIST_ICON_COLOR directly in the
+# description (see GetDDescription) and neither GetDParameter nor
+# SetDParameter intercept those ids — the base class's own default
+# read/write handles them exactly the same way it already does for the
+# Basic tab's "Icon Color" checkbox + picker, so there is no command to
+# dispatch and nothing left to write by hand.
 
 def _pin_tags_on_host(obj):
     """Every Sentinel Pin tag on ``obj`` — ordinary pins AND the safety
@@ -1379,34 +1424,51 @@ class SentinelPinTag(_TagDataBase):
 
         root = c4d.DescID(c4d.DescLevel(c4d.ID_TAGPROPERTIES))
 
-        # Target layout (usability pass, design spec section "La interfaz
-        # del tag"):
-        #   [ Ir ]   [ Pin ]
+        # Target layout (second usability pass, v1.35.2):
+        #   [ Restaurar ]   [ Guardar estado ]
+        #      12 objetos · hace 2 h
+        #      ⚠ geometría no incluida · N pistas de animación
         #   Nombre   [ ... ]
-        #   Color    o * * * * * * *
-        #   Estado     12 obj · hace 2 h · ...
+        #   Color    ☑ [███]
+        #   ────────────────────────────────
         #   [ Quitar todos los pins de este objeto ]
-        # A single column of rows/groups — no multi-column grid competing
-        # for width across UNRELATED fields, which is what truncated the
-        # status text in the six-slot design this tag replaced. The two
-        # groups below (Actions, Color) are each internally multi-column,
-        # but every field inside a group is the SAME kind of control, so
-        # there is nothing to desalign.
+        # Estado moved right under the actions — it is the ONLY feedback
+        # this tool gives and the thing read every time, so it no longer
+        # sits below a whole color block reading like the more important
+        # control. Color drops to a single row of the tag's own native
+        # parameters (see the ID layout comment). A single column of
+        # rows/groups throughout — no multi-column grid competing for
+        # width across UNRELATED fields, which is what truncated the
+        # status text in the six-slot design this tag replaced.
 
-        # --- Actions: Ir first, side by side, no titlebar -----------------
+        # --- Actions: Restaurar first, side by side, no titlebar ----------
         actions_group = _description_parent(ID_GROUP_ACTIONS, c4d.DTYPE_GROUP, node)
         if not self._set_description_group(
             node, description, ID_GROUP_ACTIONS, "", root, columns=2, titlebar=False
         ):
             return False
         if not self._set_description_parameter(
-            node, description, ID_PIN_GO, c4d.DTYPE_BUTTON, "Ir", actions_group,
+            node, description, ID_PIN_GO, c4d.DTYPE_BUTTON, "Restaurar", actions_group,
             animatable=False
         ):
             return False
         if not self._set_description_parameter(
             node, description, ID_PIN_STORE, c4d.DTYPE_BUTTON,
-            _store_button_label(_pin_is_filled(node)), actions_group, animatable=False
+            "Guardar estado", actions_group, animatable=False
+        ):
+            return False
+
+        # --- Estado: summary line, then a SEPARATE warning line — see ----
+        # --- _pin_status_text / _pin_warning_text for why they must never
+        # --- be one concatenated string again ------------------------------
+        if not self._set_description_parameter(
+            node, description, ID_PIN_STATUS, c4d.DTYPE_STATICTEXT, "Estado", root,
+            animatable=False
+        ):
+            return False
+        if not self._set_description_parameter(
+            node, description, ID_PIN_WARNING, c4d.DTYPE_STATICTEXT, "", root,
+            animatable=False
         ):
             return False
 
@@ -1418,25 +1480,30 @@ class SentinelPinTag(_TagDataBase):
         ):
             return False
 
-        # --- Color: one button per pins.PIN_COLOR_PALETTE entry, each a --
-        # --- shortcut to the tag's NATIVE icon-tint parameters (see ------
-        # --- _apply_pin_color) — never our own color data -----------------
+        # --- Color: ONE row, the tag's NATIVE icon-tint parameters -------
+        # --- exposed directly — C4D's real picker, not a palette of our --
+        # --- own (see the ID layout comment and pins.py's "Icon color" ---
+        # --- section) -------------------------------------------------------
         color_group = _description_parent(ID_GROUP_COLOR, c4d.DTYPE_GROUP, node)
         if not self._set_description_group(
-            node, description, ID_GROUP_COLOR, "Color", root,
-            columns=len(pins.PIN_COLOR_PALETTE), titlebar=False
+            node, description, ID_GROUP_COLOR, "Color", root, columns=2, titlebar=False
         ):
             return False
-        for index, entry in enumerate(pins.PIN_COLOR_PALETTE):
-            if not self._set_description_parameter(
-                node, description, ID_PIN_COLOR_BASE + index, c4d.DTYPE_BUTTON,
-                entry.get("label", ""), color_group, animatable=False
-            ):
-                return False
-
-        # --- Estado: unchanged (see _pin_status_text) ---------------------
         if not self._set_description_parameter(
-            node, description, ID_PIN_STATUS, c4d.DTYPE_STATICTEXT, "Estado", root,
+            node, description, _ICON_COLORIZE_MODE_ID, c4d.DTYPE_BOOL, "", color_group,
+            animatable=False
+        ):
+            return False
+        if not self._set_description_parameter(
+            node, description, _ICON_COLOR_ID, c4d.DTYPE_COLOR, "", color_group,
+            animatable=False
+        ):
+            return False
+
+        # --- Separator: sets the destructive action apart from every -----
+        # --- ordinary control above it --------------------------------------
+        if not self._set_description_parameter(
+            node, description, ID_PIN_SEPARATOR, c4d.DTYPE_SEPARATOR, "", root,
             animatable=False
         ):
             return False
@@ -1458,6 +1525,13 @@ class SentinelPinTag(_TagDataBase):
         parameter_id = _desc_level_id(id)
         if parameter_id == ID_PIN_STATUS:
             return True, _pin_status_text(node), flags | c4d.DESCFLAGS_GET_PARAM_GET
+        if parameter_id == ID_PIN_WARNING:
+            # Same derived-field pattern as ID_PIN_STATUS, computed by its
+            # OWN function (_pin_warning_text) so the two lines can never
+            # be accidentally recombined into one concatenated string
+            # again — see that function's docstring for why they must
+            # stay independent.
+            return True, _pin_warning_text(node), flags | c4d.DESCFLAGS_GET_PARAM_GET
         if parameter_id == ID_PIN_NAME_FIELD:
             # Proxy read, not a mirror: this IS node.GetName(), the exact
             # same data the Basic tab's name field shows — see the ID
@@ -1468,8 +1542,8 @@ class SentinelPinTag(_TagDataBase):
 
     def SetDParameter(self, node, id, data, flags):
         parameter_id = _desc_level_id(id)
-        if parameter_id == ID_PIN_STATUS:
-            # Read-only derived string: swallow writes.
+        if parameter_id == ID_PIN_STATUS or parameter_id == ID_PIN_WARNING:
+            # Read-only derived strings: swallow writes.
             return True, flags | c4d.DESCFLAGS_SET_PARAM_SET
         if parameter_id == ID_PIN_NAME_FIELD:
             # Proxy write: node.SetName(), the SAME call the Basic tab's
@@ -1533,10 +1607,11 @@ class SentinelPinTag(_TagDataBase):
         elif command_id == ID_PIN_REMOVE_ALL:
             if _remove_all_pins(node):
                 _event_add()
-        elif ID_PIN_COLOR_BASE <= command_id < ID_PIN_COLOR_BASE + len(pins.PIN_COLOR_PALETTE):
-            entry = pins.PIN_COLOR_PALETTE[command_id - ID_PIN_COLOR_BASE]
-            if _apply_pin_color(node, entry):
-                _event_add()
+        # No color branch here anymore: ID_BASELIST_ICON_COLORIZE_MODE/
+        # ID_BASELIST_ICON_COLOR are native BOOL/COLOR description
+        # parameters (see GetDDescription's "Color" section), not buttons
+        # — they never reach MSG_DESCRIPTION_COMMAND at all, the base
+        # class's own SetParameter handles them.
         return True
 
     def Message(self, node, mid, data):
@@ -1547,7 +1622,7 @@ class SentinelPinTag(_TagDataBase):
         if edit_message is not None and mid == edit_message:
             # Double-click shortcut (Recall's UX, id 21) — NOT known to
             # reach a TagData in C4D 2026 (unmeasured in the Task 1 spike).
-            # The "Ir" button above is the guaranteed path; this is only an
+            # The "Restaurar" button above is the guaranteed path; this is only an
             # accelerator on top of it, so a silent no-op here if the
             # message never arrives costs nothing but the shortcut itself.
             if _is_main_thread() and _pin_is_filled(node):

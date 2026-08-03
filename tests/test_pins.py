@@ -195,50 +195,8 @@ def test_track_key_of_a_root_level_track_has_no_nesting_ambiguity():
     assert key != empty_key
 
 
-# --- Color palette (usability pass, v1.35.1) -------------------------------
-
-def test_pin_color_palette_has_eight_swatches_sin_color_first():
-    """Matches the design spec's row: ``○ ● ● ● ● ● ● ●`` — one "sin
-    color" plus seven hues."""
-    assert len(pins.PIN_COLOR_PALETTE) == 8
-    assert pins.PIN_COLOR_PALETTE[0]["key"] == pins.PIN_COLOR_NONE_KEY
-    assert pins.PIN_COLOR_PALETTE[0]["rgb"] is None
-
-
-def test_pin_color_palette_keys_are_unique():
-    keys = [entry["key"] for entry in pins.PIN_COLOR_PALETTE]
-    assert len(keys) == len(set(keys))
-
-
-def test_pin_color_palette_rgb_channels_are_in_unit_range():
-    for entry in pins.PIN_COLOR_PALETTE[1:]:
-        rgb = entry["rgb"]
-        assert rgb is not None
-        assert len(rgb) == 3
-        for channel in rgb:
-            assert 0.0 <= channel <= 1.0
-
-
-def test_pin_color_palette_is_legible_on_dark_background():
-    assert pins.pin_color_palette_is_legible_on_dark() is True
-
-
-def test_pin_color_palette_legibility_check_actually_detects_bad_colors(monkeypatch):
-    """The legibility helper must not be a rubber stamp: swap in a palette
-    with a genuinely too-dark entry and confirm it flags it, then a
-    too-bright one — proving the check actually inspects every entry
-    rather than always returning True."""
-    monkeypatch.setattr(pins, "PIN_COLOR_PALETTE", (
-        {"key": "black", "label": "x", "rgb": (0.02, 0.02, 0.02)},
-    ))
-    assert pins.pin_color_palette_is_legible_on_dark() is False
-
-    monkeypatch.setattr(pins, "PIN_COLOR_PALETTE", (
-        {"key": "white", "label": "x", "rgb": (0.99, 0.99, 0.99)},
-    ))
-    assert pins.pin_color_palette_is_legible_on_dark() is False
-
-    monkeypatch.setattr(pins, "PIN_COLOR_PALETTE", (
-        {"key": "mid", "label": "x", "rgb": (0.5, 0.5, 0.5)},
-    ))
-    assert pins.pin_color_palette_is_legible_on_dark() is True
+# Color palette tests removed (v1.35.2): PIN_COLOR_PALETTE and
+# pin_color_palette_is_legible_on_dark are gone — the color row now exposes
+# the tag's native ID_BASELIST_ICON_COLORIZE_MODE/ID_BASELIST_ICON_COLOR
+# directly (see pins.py's "Icon color" section and pin_tag.py's
+# GetDDescription), so there is no palette of our own left to test.

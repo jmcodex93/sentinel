@@ -618,10 +618,12 @@ def test_restore_report_text_partial_match_format(sentinel_module):
     assert pin_tag._restore_report_text(3, 3) == "3 restaurados"
 
 
-def test_pin_status_text_warns_about_geometry(sentinel_module):
-    """Direct coverage of the "geometría no incluida" string — before
+def test_pin_warning_text_warns_about_geometry(sentinel_module):
+    """Direct coverage of the "⚠ geometría no incluida" string — before
     this test, nothing in the suite asserted it appears when a pinned
-    entry actually has geometry."""
+    entry actually has geometry. v1.35.2: this note lives on its OWN
+    derived row (_pin_warning_text), separate from the count+time summary
+    (_pin_status_text) — see both functions' docstrings for why."""
     pin_tag = importlib.import_module("sentinel.ui.pin_tag")
     import c4d
 
@@ -632,15 +634,20 @@ def test_pin_status_text_warns_about_geometry(sentinel_module):
     entries = payload.GetContainerInstance(pin_tag._PAYLOAD_ENTRIES)
     entries.GetContainerInstance(0).SetBool(pin_tag._ENTRY_GEOMETRY, True)
 
-    text = pin_tag._pin_status_text(tag)
+    text = pin_tag._pin_warning_text(tag)
 
+    assert text.startswith("⚠ ")
     assert "geometría no incluida" in text
+    # And the summary line stays clean — no warning text bleeding into it.
+    assert "geometría" not in pin_tag._pin_status_text(tag)
 
 
-def test_pin_status_text_keeps_geometry_warning_after_a_restore(sentinel_module):
-    """C3: those notes are binding, not decoration — they must not
-    disappear from the row just because a restore already happened once
-    and left its own "N restaurados" text behind."""
+def test_pin_warning_text_keeps_geometry_warning_after_a_restore(sentinel_module):
+    """C3 (carried into v1.35.2): those notes are binding, not decoration
+    — they must not disappear just because a restore already happened
+    once and _pin_status_text is now showing its own "N restaurados"
+    text. _pin_warning_text is computed independently of last-restore
+    state, so it must keep warning regardless."""
     pin_tag = importlib.import_module("sentinel.ui.pin_tag")
     import c4d
 
@@ -652,59 +659,55 @@ def test_pin_status_text_keeps_geometry_warning_after_a_restore(sentinel_module)
     entries.GetContainerInstance(0).SetBool(pin_tag._ENTRY_GEOMETRY, True)
 
     pin_tag._write_last_restore(tag, "1 restaurados")
+
+    assert pin_tag._pin_status_text(tag) == "1 restaurados"
+    assert "geometría no incluida" in pin_tag._pin_warning_text(tag)
+
+
+def test_pin_status_text_spells_out_objetos(sentinel_module):
+    """Target copy: "12 objetos · hace 2 h", not the abbreviated "obj" —
+    part of reading as a real sentence rather than cryptic shorthand."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+    tag = _make_pin_tag(host, pin_tag, c4d)
+
     text = pin_tag._pin_status_text(tag)
 
-    assert text.startswith("1 restaurados")
-    assert "geometría no incluida" in text
+    assert text.startswith("1 objetos · ")
 
 
-# --- Usability pass (v1.35.1): Nombre/Color as shortcuts to native --------
+# --- Usability pass (v1.35.1/.2): Nombre/Color as shortcuts to native -----
 # --- parameters, and "Quitar todos los pins de este objeto" --------------
 
-def test_apply_pin_color_writes_the_native_baselist_parameters_not_our_own(sentinel_module):
-    """The crux of the pass: a swatch must write ID_BASELIST_ICON_COLORIZE_
-    MODE + ID_BASELIST_ICON_COLOR (node[id] = value, modeled by FakeTag's
-    ``_baselist`` — see its class docstring), never a key of our own in
-    GetDataInstance()."""
+def test_color_ids_are_never_intercepted_by_get_set_dparameter(sentinel_module):
+    """v1.35.2: the Color row now declares the tag's NATIVE
+    ID_BASELIST_ICON_COLORIZE_MODE/ID_BASELIST_ICON_COLOR directly in the
+    description (see GetDDescription's "Color" section) — the exact ids
+    the Basic tab's own "Icon Color" checkbox + picker already edit, so
+    C4D's real picker handles them. There must be NO special-casing for
+    either id in GetDParameter/SetDParameter (unlike Nombre/Estado, which
+    genuinely proxy/derive) — both must fall through (return False) so the
+    base class's default read/write is what actually runs, or a future
+    edit could silently reintroduce a duplicate store of data C4D already
+    owns, exactly the mistake this pass exists to undo."""
     pin_tag = importlib.import_module("sentinel.ui.pin_tag")
-    from sentinel import pins
     import c4d
 
     doc = FakeDoc()
     host = FakeObject("rig", c4d, doc)
     tag = host.MakeTag(pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID)
 
-    entry = next(e for e in pins.PIN_COLOR_PALETTE if e["key"] == "red")
-    ok = pin_tag._apply_pin_color(tag, entry)
+    instance = pin_tag.SentinelPinTag()
+    mode_id = c4d.DescID(c4d.DescLevel(pin_tag._ICON_COLORIZE_MODE_ID))
+    color_id = c4d.DescID(c4d.DescLevel(pin_tag._ICON_COLOR_ID))
 
-    assert ok is True
-    assert tag[pin_tag._ICON_COLORIZE_MODE_ID] == pin_tag._ICON_COLORIZE_MODE_CUSTOM
-    written = tag[pin_tag._ICON_COLOR_ID]
-    assert (written.x, written.y, written.z) == entry["rgb"]
-    # Never a competing entry under the SAME numeric id in our own data —
-    # that would be the mistake this pass exists to undo, just moved one
-    # level deeper (same id, wrong container).
-    assert pin_tag._ICON_COLOR_ID not in tag.GetDataInstance()
-
-
-def test_apply_pin_color_none_clears_the_colorize_mode(sentinel_module):
-    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
-    from sentinel import pins
-    import c4d
-
-    doc = FakeDoc()
-    host = FakeObject("rig", c4d, doc)
-    tag = host.MakeTag(pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID)
-    tag[pin_tag._ICON_COLORIZE_MODE_ID] = pin_tag._ICON_COLORIZE_MODE_CUSTOM
-    tag[pin_tag._ICON_COLOR_ID] = c4d.Vector(0.85, 0.3, 0.25)
-
-    none_entry = pins.PIN_COLOR_PALETTE[0]
-    assert none_entry["key"] == pins.PIN_COLOR_NONE_KEY
-
-    ok = pin_tag._apply_pin_color(tag, none_entry)
-
-    assert ok is True
-    assert tag[pin_tag._ICON_COLORIZE_MODE_ID] == pin_tag._ICON_COLORIZE_MODE_NONE
+    assert instance.GetDParameter(tag, mode_id, 0) is False
+    assert instance.GetDParameter(tag, color_id, 0) is False
+    assert instance.SetDParameter(tag, mode_id, True, 0) is False
+    assert instance.SetDParameter(tag, color_id, c4d.Vector(0.1, 0.2, 0.3), 0) is False
 
 
 def test_pin_name_field_get_set_proxy_the_real_tag_name(sentinel_module):

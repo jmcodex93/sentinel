@@ -368,7 +368,10 @@ def test_capture_node_tracks_round_trips_every_key_field(sentinel_module):
 
 # --- Store + status row --------------------------------------------------
 
-def test_store_pin_writes_track_counts_and_status_reports_them(sentinel_module):
+def test_store_pin_writes_track_counts_and_warning_reports_them(sentinel_module):
+    """v1.35.2: the skipped-track note lives on _pin_warning_text now, as
+    "N pistas de animación" (no captured-track count on the row anymore —
+    see the target layout in pin_tag.py's GetDDescription)."""
     pin_tag = importlib.import_module("sentinel.ui.pin_tag")
     import c4d
 
@@ -380,10 +383,12 @@ def test_store_pin_writes_track_counts_and_status_reports_them(sentinel_module):
     fake_tag = FakeTag(host, pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID, c4d, doc)
 
     assert pin_tag._store_pin(fake_tag) is True
-    text = pin_tag._pin_status_text(fake_tag)
+    warning = pin_tag._pin_warning_text(fake_tag)
 
-    assert "1 pistas" in text
-    assert "1 pistas no incluidas" in text
+    assert warning.startswith("⚠ ")
+    assert "1 pistas de animación" in warning
+    # And the summary line carries no track metadata at all anymore.
+    assert "pistas" not in pin_tag._pin_status_text(fake_tag)
 
 
 def test_store_pin_with_only_captured_tracks_has_no_skip_warning(sentinel_module):
@@ -397,10 +402,8 @@ def test_store_pin_with_only_captured_tracks_has_no_skip_warning(sentinel_module
     fake_tag = FakeTag(host, pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID, c4d, doc)
 
     pin_tag._store_pin(fake_tag)
-    text = pin_tag._pin_status_text(fake_tag)
 
-    assert "1 pistas" in text
-    assert "no incluidas" not in text
+    assert pin_tag._pin_warning_text(fake_tag) == ""
 
 
 # --- Restore: the actual "un-wreck an animated parameter" case -----------
@@ -540,9 +543,9 @@ def test_legacy_bool_only_pin_still_warns_without_new_track_fields(sentinel_modu
     payload.SetContainer(pin_tag._PAYLOAD_ENTRIES, entries)
     fake_tag.GetDataInstance().SetContainer(pin_tag.ID_PIN_PAYLOAD, payload)
 
-    text = pin_tag._pin_status_text(fake_tag)
+    warning = pin_tag._pin_warning_text(fake_tag)
 
-    assert "no incluidas" in text
+    assert "pistas de animación" in warning
 
 
 # --- _apply_key_setter: the (single) call shape production actually uses -
@@ -900,15 +903,16 @@ def test_restore_pairs_correctly_after_adding_a_new_tag_ahead(sentinel_module):
 
 
 # --- N4: the pin-summary "pistas" count is not restore-report metadata ---
+#
+# v1.35.2 superseded the original N4 fix: the captured-track count no
+# longer appears on the row at all (the target layout only shows count +
+# time, plus the separate binding-warning line) — so there is no
+# "N restaurados · N pistas" concatenation left to guard against. The test
+# below now checks the summary line never carries track metadata, before
+# OR after a restore, and that a captured-only pin (nothing skipped) never
+# trips the warning line either.
 
-def test_pin_status_text_drops_the_pistas_count_after_a_restore(sentinel_module):
-    """N4: "· N pistas" is pin-summary metadata (how many tracks THIS PIN
-    captured), not a warning — the two mandatory warning notes (geometry,
-    tracks NOT included) stay unconditional per C3, but this count read
-    oddly stapled onto a restore's own headline ("N restaurados · N
-    pistas" implies the restore itself touched N NEW tracks). It belongs
-    on the pin-summary line and must drop once the row is showing a
-    restore's own report text."""
+def test_pin_status_text_never_carries_track_metadata(sentinel_module):
     pin_tag = importlib.import_module("sentinel.ui.pin_tag")
     import c4d
 
@@ -920,10 +924,13 @@ def test_pin_status_text_drops_the_pistas_count_after_a_restore(sentinel_module)
     assert pin_tag._store_pin(fake_tag) is True
 
     before = pin_tag._pin_status_text(fake_tag)
-    assert "1 pistas" in before
+    assert "pistas" not in before
+    assert pin_tag._pin_warning_text(fake_tag) == ""
 
     pin_tag._write_last_restore(fake_tag, "1 restaurados")
     after = pin_tag._pin_status_text(fake_tag)
 
-    assert after.startswith("1 restaurados")
+    assert after == "1 restaurados"
     assert "pistas" not in after
+    # The (empty) warning line is independent of last-restore state too.
+    assert pin_tag._pin_warning_text(fake_tag) == ""
