@@ -200,3 +200,59 @@ def test_track_key_of_a_root_level_track_has_no_nesting_ambiguity():
 # the tag's native ID_BASELIST_ICON_COLORIZE_MODE/ID_BASELIST_ICON_COLOR
 # directly (see pins.py's "Icon color" section and pin_tag.py's
 # GetDDescription), so there is no palette of our own left to test.
+
+
+# --- Tag owner keys: type + NAME + position among homonyms ---------------
+
+def test_tag_owner_key_shape():
+    assert pins.tag_owner_key(1011, "arriba", 0) == "tag[1011:arriba:0]"
+
+
+def test_tag_owner_key_distinguishes_same_type_tags_by_name():
+    """The whole point of the name entering the key: two tags of the SAME
+    type re-pair by name, so swapping their order no longer swaps which
+    track each one's pinned keys land on."""
+    assert pins.tag_owner_key(1011, "arriba", 0) != pins.tag_owner_key(1011, "abajo", 0)
+
+
+def test_tag_owner_key_escapes_names_that_mimic_the_key_syntax():
+    """A tag name is artist text and can contain the very characters the
+    key format uses (``[`` for the index suffix, ``/`` for nesting, ``\\``
+    for the escape itself) — the same class of collision
+    ``location_keys`` was fixed for. Names are run through the SAME
+    escaper, so a tag literally named ``ctrl[0]`` never reads as the
+    auto-index of a plain ``ctrl``.
+
+    Honest about what this test can and cannot prove: the distinctness
+    assertion below ALSO holds with the escaping removed (verified by
+    mutation). That is not a gap in the test — this key format happens to
+    be injective on its own, because the index is written unconditionally
+    and terminates the string, so the last ``:`` always splits name from
+    index unambiguously no matter what the name contains. The escaping is
+    therefore consistency with ``location_keys`` plus insurance against a
+    future format change, not the thing holding collisions off today; the
+    assertion that actually fails when it is removed is the literal-shape
+    one at the end."""
+    keys = {
+        pins.tag_owner_key(1011, "ctrl[0]", 0),
+        pins.tag_owner_key(1011, "ctrl", 0),
+        pins.tag_owner_key(1011, "ctrl", 1),
+        pins.tag_owner_key(1011, "a/b", 0),
+        pins.tag_owner_key(1011, "a\\b", 0),
+        pins.tag_owner_key(1011, "a\\/b", 0),
+    }
+    assert len(keys) == 6
+    assert pins.tag_owner_key(1011, "ctrl[0]", 0) == "tag[1011:ctrl\\[0]:0]"
+    assert pins.tag_owner_key(1011, "a/b", 0) == "tag[1011:a\\/b:0]"
+
+
+def test_tag_owner_key_indexes_unconditionally():
+    """Same rule, same reason as ``location_keys``: a lone tag is already
+    ``:0``, so the key it was pinned under does not rewrite itself the day
+    a homonym appears."""
+    assert pins.tag_owner_key(1011, "ctrl", 0).endswith(":0]")
+
+
+def test_tag_owner_key_of_an_unnamed_tag_is_still_valid():
+    assert pins.tag_owner_key(1011, "", 0) == "tag[1011::0]"
+    assert pins.tag_owner_key(1011, None, 0) == "tag[1011::0]"

@@ -396,8 +396,9 @@ def _children_of(obj):
 def _iter_node_tracks(node):
     """Yield ``(owner, track)`` for every CTrack belonging to ``node``
     itself (owner ``""``) and every one of its TAGS (owner
-    ``"tag[<type>:N]"``, N = position among the node's NON-Sentinel-Pin
-    tags of that SAME type, at capture time) — the same two sources
+    ``pins.tag_owner_key(...)`` = ``"tag[<type>:<escaped name>:N]"``,
+    N = position among the node's NON-Sentinel-Pin tags sharing that same
+    (type, name) pair, at capture time) — the same two sources
     ``keyframes.py`` walks for offset/stagger (v1.30, see
     ``_shift_track_list``): a rig desyncs silently if only the
     object-level tracks are considered, because constraints/XPresso/
@@ -412,10 +413,10 @@ def _iter_node_tracks(node):
     sits in ``GetTags()`` — and the same shift happens permanently the
     moment an artist adds a second Sentinel Pin tag to the same object.
 
-    The index is additionally scoped to tags of the SAME type (rather than
-    a flat position among ALL non-pin tags), closing a second, narrower
-    but real mis-pairing that the type-blind ``tag[N]`` left open — both
-    reproduced live, and neither had a test before this fix:
+    The index is additionally scoped to tags sharing the same TYPE and
+    NAME (rather than a flat position among ALL non-pin tags), closing
+    narrower but real mis-pairings that the type-blind ``tag[N]`` left
+    open — all reproduced, none of which had a test before their fix:
 
     - Deleting a non-pin tag that sits BEFORE the animated ones (e.g. a
       Phong tag ahead of two constraint tags) shifts every later tag's
@@ -426,11 +427,18 @@ def _iter_node_tracks(node):
       (``scene_tools.py``) or ABC Retime (``scene_tools.py``) — has the
       exact same effect for any pin already sitting on that host.
 
-    Neither of those touches how many tags of the SAME type exist, so
-    keying by (type, position-within-type) makes the index invariant to
-    both. The residual case — reordering or inserting among tags of the
-    SAME type — remains genuinely ambiguous from position alone; see
-    ``pins.track_key`` for what that means for a restore's honesty."""
+    - Reordering two tags of the SAME type (two Constraint tags on one
+      host swapping order) shifted each one's position-within-type, so
+      each track's pinned keys were applied to the OTHER tag and the
+      report still read as a clean success.
+
+    Neither of the first two touches how many tags of the SAME type
+    exist, so keying by type made the index invariant to both; the third
+    is closed by the NAME entering the key ahead of the index. The
+    residual case — two tags of the same type AND the same name,
+    reordered — is genuinely ambiguous from position alone, and renaming
+    a tag re-arms its tracks; see ``pins.track_key`` for what both mean
+    for a restore's honesty."""
     try:
         for track in node.GetCTracks() or []:
             yield "", track
@@ -448,19 +456,31 @@ def _iter_node_tracks(node):
         except Exception:
             pass
         non_pin_tags.append(tag)
-    type_counts = {}
+    counts = {}
     for tag in non_pin_tags:
         try:
             tag_type = tag.GetType()
         except Exception:
             tag_type = 0
-        index = type_counts.get(tag_type, 0)
-        type_counts[tag_type] = index + 1
+        try:
+            tag_name = tag.GetName()
+        except Exception:
+            tag_name = ""
+        # Counted per (type, name) pair, not per type: that is what makes
+        # a tag's index independent of how many OTHER tags of its type
+        # exist, where they sit, and whether one of them is deleted.
+        # Grouping on the raw name is equivalent to grouping on the
+        # escaped one — ``_escape_name_for_key`` is injective (it escapes
+        # the backslash first) — so the pair below and the string
+        # ``tag_owner_key`` builds always agree.
+        pair = (tag_type, tag_name)
+        index = counts.get(pair, 0)
+        counts[pair] = index + 1
         try:
             tag_tracks = tag.GetCTracks() or []
         except Exception:
             continue
-        owner = "tag[%d:%d]" % (tag_type, index)
+        owner = pins.tag_owner_key(tag_type, tag_name, index)
         for track in tag_tracks:
             yield owner, track
 
