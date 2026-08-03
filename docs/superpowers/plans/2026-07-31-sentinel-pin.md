@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A `Sentinel Pin` tag that stores up to six named states of its object and every descendant, and restores any of them in one undo step — per `docs/superpowers/specs/2026-07-31-sentinel-pin-design.md`.
+**Goal:** A `Sentinel Pin` tag, one tag per saved state, that stores its object and every descendant and restores it in one undo step — per `docs/superpowers/specs/2026-07-31-sentinel-pin-design.md`.
+
+> **NOTA (2026-07-31, a media ejecución).** El Goal y las Global Constraints de abajo describían el modelo original — seis slots dentro de un tag — y se dejaron sin corregir cuando ese modelo se abandonó. El cambio real ocurrió en la Task 3 (marcada REHECHA más abajo): la primera implementación (commit `6f0fcea`) construyó un grid de seis filas dentro de un solo tag, y al verlo en vivo el texto de estado se truncaba (`4 obj · hace`) — y con él desaparecía el aviso de geometría, que el spec declara obligatorio, porque las columnas del Attribute Manager reparten ancho entre campos que compiten. Ver además la interfaz real de Recall (captura del usuario) mostró que su modelo es **un tag por estado**, lo cual además cumple mejor la promesa que justificaba usar un tag en primer lugar — ver los estados en el Object Manager sin abrir nada — que seis slots dentro de UN tag rompía. El texto de esta cabecera queda corregido al modelo final; el registro de por qué cambió vive aquí y en la Task 3.
 
 **Architecture:** A pure engine (`pins.py`, no `import c4d`) owns everything decidable without a scene: the deterministic traversal order, the location key used to re-pair objects on restore, and the restore plan (matched / missing / extra). A thin TagData adapter (`ui/pin_tag.py`) reads and writes the live objects and renders the Attribute Manager rows. Storage is the tag's own `BaseContainer`, so pins travel inside the `.c4d` with no sidecar.
 
@@ -12,7 +14,7 @@
 
 ## Global Constraints
 
-- **Six artist slots + one reserved** ("Before restore"), written by the tool on every restore. Never more, never fewer.
+- **One tag = one pin.** Several pins on the same object are several tags, each with its own name. Plus one reserved tag (`↩ Antes de restaurar`, "Before restore"), written by the tool on every restore, never by the artist.
 - **Captures**: each covered object's own `BaseContainer`, its local matrix, and its name — for the tag's object AND all descendants.
 - **Does NOT capture** editable geometry (points/polygons) or maxon node graphs. Where a covered object has editable geometry the row says so, at store time, in the UI — never only in docs.
 - **Re-pairing on restore is BY LOCATION, never by any C4D id**: no native id survives a save (`GetGUID()` and `FindUniqueID(MAXON_CREATOR_ID)` are both regenerated — measured, and the cause of the v1.34.1 baseline bug). The key is the name path from the tag's object down to the node, plus the index among same-named siblings, defined INSIDE the pin's subtree so moving the whole rig does not invalidate its pins.
