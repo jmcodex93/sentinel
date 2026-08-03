@@ -1134,3 +1134,139 @@ def test_restore_reports_a_renamed_tags_tracks_as_not_found(sentinel_module):
         "never silently skipped")
     assert track.GetCurve()._keys[0].value == -2.0, (
         "and nothing must be written onto the renamed tag's track")
+
+
+# --- Homonym tags: the residual ambiguity, declared on the row ------------
+
+def _pinned_host_with_tags(c4d, doc, tags):
+    host = FakeTrackObject("ctrl", c4d, tags=tags, doc=doc)
+    return FakeTag(host, importlib.import_module(
+        "sentinel.ui.pin_tag").SENTINEL_PIN_TAG_PLUGIN_ID, c4d, doc)
+
+
+def _animated_tag(c4d, tag_type, name):
+    return FakeTagWithTracks(
+        tracks=[FakeTrack([(1000, 19, 5000)], c4d.CTRACK_CATEGORY_VALUE,
+                          keys=[FakeKey(c4d.BaseTime(0), 1.0)])],
+        tag_type=tag_type, name=name)
+
+
+def test_warning_declares_two_homonym_tags(sentinel_module):
+    """Two same-type, same-named tags with tracks: position is all that
+    tells them apart, so reordering them swaps their animation and the
+    report still reads "1 restaurado". The ambiguity can't be closed —
+    it must be SAID, on the row, per this feature's honesty rule."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    fake_tag = _pinned_host_with_tags(c4d, doc, [
+        _animated_tag(c4d, 5616, "mat"),
+        _animated_tag(c4d, 5616, "mat"),
+    ])
+
+    assert pin_tag._store_pin(fake_tag) is True
+
+    assert pin_tag._pin_warning_text(fake_tag) == (
+        "⚠ 1 tag homónimo (renómbralos para restaurar exacto)")
+
+
+def test_warning_is_silent_for_differently_named_tags(sentinel_module):
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    fake_tag = _pinned_host_with_tags(c4d, doc, [
+        _animated_tag(c4d, 5616, "arriba"),
+        _animated_tag(c4d, 5616, "abajo"),
+    ])
+
+    assert pin_tag._store_pin(fake_tag) is True
+    assert pin_tag._pin_warning_text(fake_tag) == ""
+
+
+def test_warning_counts_homonym_groups_not_tags(sentinel_module):
+    """Three homonyms are ONE group; two separate pairs are two."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    three = _pinned_host_with_tags(c4d, doc, [
+        _animated_tag(c4d, 5616, "mat"),
+        _animated_tag(c4d, 5616, "mat"),
+        _animated_tag(c4d, 5616, "mat"),
+    ])
+    assert pin_tag._store_pin(three) is True
+    assert "1 tag homónimo" in pin_tag._pin_warning_text(three)
+
+    two_pairs = _pinned_host_with_tags(c4d, FakeDoc(), [
+        _animated_tag(c4d, 5616, "mat"),
+        _animated_tag(c4d, 5616, "mat"),
+        _animated_tag(c4d, 1019364, "ctrl"),
+        _animated_tag(c4d, 1019364, "ctrl"),
+    ])
+    assert pin_tag._store_pin(two_pairs) is True
+    assert "2 tags homónimos" in pin_tag._pin_warning_text(two_pairs)
+
+
+def test_warning_coexists_with_the_geometry_and_skipped_track_notes(sentinel_module):
+    """The third note joins the other two on the same row instead of
+    replacing either — the failure mode a single-note row would have."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeTrackObject("ctrl", c4d, doc=doc, tags=[
+        _animated_tag(c4d, 5616, "mat"),
+        _animated_tag(c4d, 5616, "mat"),
+    ], tracks=[
+        FakeTrack([(2000, 0, 5000)], c4d.CTRACK_CATEGORY_DATA,
+                  keys=[FakeKey(c4d.BaseTime(0), 1.0)]),
+    ])
+    fake_tag = FakeTag(host, pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID, c4d, doc)
+    assert pin_tag._store_pin(fake_tag) is True
+    # Geometry can't come from this fake object, so it is forced on the
+    # stored entry directly — the note is read from the payload.
+    payload = fake_tag.GetDataInstance().GetContainerInstance(pin_tag.ID_PIN_PAYLOAD)
+    payload.GetContainerInstance(pin_tag._PAYLOAD_ENTRIES) \
+        .GetContainerInstance(0).SetBool(pin_tag._ENTRY_GEOMETRY, True)
+
+    warning = pin_tag._pin_warning_text(fake_tag)
+
+    assert "geometría no incluida" in warning
+    assert "1 pista de animación" in warning
+    assert "1 tag homónimo (renómbralos para restaurar exacto)" in warning
+
+
+def test_read_pinned_track_keys_keeps_one_list_per_entry(sentinel_module):
+    """The per-NODE shape ``pins.homonym_tag_group_count`` depends on: two
+    covered objects each carrying the same homonym pair produce identical
+    key strings, so a flattened list would count their two naming problems
+    as one. Built by hand because this file's object fake has no children
+    (``GetDown()`` is always ``None``), so ``_store_pin`` can never write a
+    multi-entry payload here."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+    from sentinel import pins
+
+    pair = [pins.track_key(pins.tag_owner_key(5616, "mat", i), [(1000, 19, 5000)])
+            for i in (0, 1)]
+    entries = c4d.BaseContainer()
+    for e in range(2):
+        entry = c4d.BaseContainer()
+        tracks = c4d.BaseContainer()
+        for t, key in enumerate(pair):
+            track_bc = c4d.BaseContainer()
+            track_bc.SetString(pin_tag._TRACK_KEY, key)
+            tracks.SetContainer(t, track_bc)
+        entry.SetContainer(pin_tag._ENTRY_TRACKS, tracks)
+        entry.SetInt32(pin_tag._ENTRY_TRACKS_COUNT, len(pair))
+        entries.SetContainer(e, entry)
+    payload = c4d.BaseContainer()
+    payload.SetInt32(pin_tag._PAYLOAD_COUNT, 2)
+    payload.SetContainer(pin_tag._PAYLOAD_ENTRIES, entries)
+
+    per_entry = pin_tag._read_pinned_track_keys(payload)
+
+    assert per_entry == [pair, pair]
+    assert pins.homonym_tag_group_count(per_entry) == 2

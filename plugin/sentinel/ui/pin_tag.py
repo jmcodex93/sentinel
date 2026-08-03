@@ -964,6 +964,16 @@ def _pin_warning_text(node):
     if summary["has_keyframes"]:
         parts.append(pins.pluralize_es(
             summary["tracks_skipped"], "pista de animación", "pistas de animación"))
+    homonyms = pins.homonym_tag_group_count(
+        _read_pinned_track_keys(info["payload"]))
+    if homonyms:
+        # Last: unlike the notes above it, this one doesn't say something
+        # was left out — it says the tracks that WERE captured may come
+        # back on the wrong tag if the artist reorders two identically
+        # named ones. Nothing can close that (see
+        # pins.homonym_tag_group_count), so the row declares it.
+        parts.append("%s (renómbralos para restaurar exacto)" % pins.pluralize_es(
+            homonyms, "tag homónimo", "tags homónimos"))
     if not parts:
         return ""
     return "⚠ " + " · ".join(parts)
@@ -1084,6 +1094,35 @@ def _read_pinned_keys(payload_bc):
             continue
         keys.append(entry_bc.GetString(_ENTRY_KEY, ""))
     return keys
+
+
+def _read_pinned_track_keys(payload_bc):
+    """One list of stored ``pins.track_key`` strings PER ENTRY — the track
+    identities only, none of their key records.
+
+    Per node rather than flattened because that is what
+    ``pins.homonym_tag_group_count`` needs to keep two objects' identical
+    homonym pairs from collapsing into one. Light on purpose, for the same
+    reason ``_read_pinned_keys`` exists: this runs from
+    ``_pin_warning_text`` on every AM repaint, and ``_read_pinned_tracks``
+    would build a dict per animation key of every track of every node just
+    to have its keys read."""
+    count = payload_bc.GetInt32(_PAYLOAD_COUNT, 0)
+    entries_container = payload_bc.GetContainerInstance(_PAYLOAD_ENTRIES)
+    per_entry = []
+    for i in range(count):
+        entry_bc = entries_container.GetContainerInstance(i) if entries_container is not None else None
+        if entry_bc is None:
+            continue
+        tracks_container = entry_bc.GetContainerInstance(_ENTRY_TRACKS)
+        keys = []
+        for t in range(entry_bc.GetInt32(_ENTRY_TRACKS_COUNT, 0)):
+            track_bc = tracks_container.GetContainerInstance(t) if tracks_container is not None else None
+            if track_bc is None:
+                continue
+            keys.append(track_bc.GetString(_TRACK_KEY, ""))
+        per_entry.append(keys)
+    return per_entry
 
 
 def _read_pinned_entries(payload_bc):

@@ -241,6 +241,68 @@ def track_key(owner, desc_id_parts):
     return "%s::%s" % (owner, desc_key)
 
 
+def _split_tag_owner(track_key_str):
+    """``("<type>:<escaped name>", "<index>")`` for a track key whose owner
+    is a TAG, or ``None`` for anything else (an object-level track, or a
+    string that isn't one of our keys at all).
+
+    Parsed against the REAL format, never against a raw name: the name is
+    artist text that goes through ``_escape_name_for_key``, and ``:`` is
+    NOT one of the escaped characters, so neither end of the owner can be
+    found by scanning for the first ``:``. What makes it decidable is that
+    both discriminators terminate: the owner ends at the LAST ``]`` in the
+    key (the description half after ``::`` is only digits, dots and
+    slashes, so it can never contribute one), and the index is the last
+    ``:``-delimited field inside it. Hence ``rfind``/``rpartition`` rather
+    than a scan from the left — a left-to-right parse reads the name of a
+    tag called ``a:0`` as ``a`` and merges it with the unrelated tags
+    genuinely named ``a``."""
+    key = track_key_str or ""
+    end = key.rfind("]")
+    if end < 0 or not key.startswith("tag[") or key[end + 1:end + 3] != "::":
+        return None
+    prefix, sep, index = key[4:end].rpartition(":")
+    if not sep or not index.isdigit():
+        return None
+    return prefix, index
+
+
+def homonym_tag_group_count(track_keys_per_node):
+    """How many groups of same-type, same-NAME tags with captured tracks
+    the pin holds — summed over the nodes it covers, one list of that
+    node's track keys per node.
+
+    This is the ONE ambiguity ``track_key`` cannot close and does not
+    claim to (see its docstring): two tags alike in type and name are
+    told apart only by position, so reordering them swaps their animation,
+    and ``plan_restore`` sees a clean match either way. Stamping an id of
+    our own into a foreign tag's container is rejected — it would write
+    into tags that aren't ours, break "saving a pin does not alter your
+    scene", ride along into any clone, and contradict the
+    identity-by-location decision the whole feature rests on. So the fix
+    is not to remove the ambiguity but to DECLARE it, in the tag's row,
+    where this feature shows its limits.
+
+    Derived from the SAVED payload — the keys already written — never from
+    a walk of the live scene: a node whose tracks weren't captured has
+    nothing at stake in a restore and so contributes nothing here. Groups
+    are per node, because two objects each carrying their own pair of
+    homonyms are two separate naming problems whose keys are literally the
+    same strings. A group counts only from two members up: the index is
+    written unconditionally, so being keyed ``:0`` is not being ambiguous.
+    """
+    total = 0
+    for keys in track_keys_per_node or []:
+        groups = {}
+        for key in keys or []:
+            parsed = _split_tag_owner(key)
+            if parsed is None:
+                continue
+            groups.setdefault(parsed[0], set()).add(parsed[1])
+        total += sum(1 for members in groups.values() if len(members) > 1)
+    return total
+
+
 # --- Icon color (usability pass, v1.35.2) --------------------------------
 #
 # "Color" in the tag's own row is NOT a color of our own — it is the tag's

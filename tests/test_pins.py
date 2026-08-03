@@ -256,3 +256,103 @@ def test_tag_owner_key_indexes_unconditionally():
 def test_tag_owner_key_of_an_unnamed_tag_is_still_valid():
     assert pins.tag_owner_key(1011, "", 0) == "tag[1011::0]"
     assert pins.tag_owner_key(1011, None, 0) == "tag[1011::0]"
+
+
+# --- Homonym tag groups (the residual ambiguity, declared on the row) ----
+
+def _tk(tag_type, name, index, desc=((1000, 19, 5616),)):
+    """A track key exactly as ``_capture_node_tracks`` writes one."""
+    return pins.track_key(pins.tag_owner_key(tag_type, name, index), list(desc))
+
+
+def test_homonym_tag_group_count_flags_two_same_named_tags():
+    """Two tags of the same type AND the same name are only told apart by
+    their position, and a reorder swaps their animation silently — the row
+    has to say so."""
+    node = [_tk(5616, "mat", 0), _tk(5616, "mat", 1)]
+    assert pins.homonym_tag_group_count([node]) == 1
+
+
+def test_homonym_tag_group_count_ignores_differently_named_tags():
+    """The NAME in the key already disambiguates these — nothing to warn
+    about (that is exactly what 761cbef bought)."""
+    node = [_tk(5616, "arriba", 0), _tk(5616, "abajo", 0)]
+    assert pins.homonym_tag_group_count([node]) == 0
+
+
+def test_homonym_tag_group_count_groups_by_type_as_well_as_name():
+    """A group is (type, name), and the assertion has to be built so a
+    type-BLIND implementation actually fails it. Two tags of different
+    types sharing a name are both index 0 — a name-only grouping dedupes
+    them back to one member and reports 0 either way, so that shape proves
+    nothing. Two same-named PAIRS of different types do: the honest answer
+    is two independent naming problems, while name-only grouping merges
+    the four keys into a single ``{0, 1}`` bucket and reports 1."""
+    ok = [_tk(5616, "mat", 0), _tk(1019364, "mat", 0)]
+    assert pins.homonym_tag_group_count([ok]) == 0
+
+    two_typed_pairs = [_tk(5616, "mat", 0), _tk(5616, "mat", 1),
+                       _tk(1019364, "mat", 0), _tk(1019364, "mat", 1)]
+    assert pins.homonym_tag_group_count([two_typed_pairs]) == 2
+
+
+def test_homonym_tag_group_count_counts_groups_not_members():
+    """Three homonyms are ONE ambiguous group, not three: the artist has
+    one naming problem to fix, not three."""
+    node = [_tk(5616, "mat", 0), _tk(5616, "mat", 1), _tk(5616, "mat", 2)]
+    assert pins.homonym_tag_group_count([node]) == 1
+
+
+def test_homonym_tag_group_count_adds_up_distinct_groups():
+    node = [_tk(5616, "mat", 0), _tk(5616, "mat", 1),
+            _tk(1019364, "ctrl", 0), _tk(1019364, "ctrl", 1)]
+    assert pins.homonym_tag_group_count([node]) == 2
+
+
+def test_homonym_tag_group_count_sums_over_nodes():
+    """Groups are per NODE: two objects each carrying their own pair of
+    homonyms are two problems, not one — a flat count over all keys would
+    merge them because their keys are literally identical strings."""
+    node = [_tk(5616, "mat", 0), _tk(5616, "mat", 1)]
+    assert pins.homonym_tag_group_count([node, list(node)]) == 2
+
+
+def test_homonym_tag_group_count_ignores_a_single_tag_and_object_tracks():
+    """A lone tag is already keyed ``:0`` (unconditional index) — being
+    indexed is not being ambiguous. Object-level tracks (owner ``""``)
+    have no tag identity at all and never form a group."""
+    assert pins.homonym_tag_group_count([[_tk(5616, "mat", 0)]]) == 0
+    assert pins.homonym_tag_group_count(
+        [[pins.track_key("", [(903, 23, 5155)]),
+          pins.track_key("", [(904, 23, 5155)])]]) == 0
+
+
+def test_homonym_tag_group_count_survives_names_made_of_key_syntax():
+    """Names are artist text and may contain the very characters the key
+    format uses (``:`` is not even escaped). Same collision discipline as
+    ``location_keys``: no name may invent a group it doesn't have, and no
+    name may hide a real one.
+
+    ``"a:0"`` vs ``"a"`` is the sharp pair: naive parsing that takes the
+    FIRST ``:`` after the type reads ``a:0``'s index as ``0`` and its name
+    as ``a``, merging it with the genuinely different ``a`` tags."""
+    # No false group: five distinct names, one tag each.
+    distinct = [_tk(5616, n, 0)
+                for n in ("a:0", "a", "a[0]", "a/b", "a\\b")]
+    assert pins.homonym_tag_group_count([distinct]) == 0
+    # No lost group: the same awkward names, this time genuinely doubled.
+    for name in ("a:0", "a[0]", "a/b", "a\\b", "", "mat:"):
+        assert pins.homonym_tag_group_count(
+            [[_tk(5616, name, 0), _tk(5616, name, 1)]]) == 1, name
+
+
+def test_homonym_tag_group_count_ignores_malformed_and_empty_input():
+    """Never raises on a payload it doesn't recognise — a pin written by
+    another build must degrade to "nothing to warn about", not break the
+    row. ``obj[0]:0]::…`` is deliberately shaped like a key without being
+    one: it reaches the parse and is rejected by the ``tag[`` prefix."""
+    assert pins.homonym_tag_group_count([]) == 0
+    assert pins.homonym_tag_group_count(None) == 0
+    assert pins.homonym_tag_group_count(
+        [[""], [None], ["garbage"],
+         ["obj[0]:0]::1000.19.5616", "obj[0]:1]::1000.19.5616"]]) == 0
