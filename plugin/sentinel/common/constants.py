@@ -14,7 +14,8 @@ PLUGIN_ID = 2099069
 # CameraFrameDrawer prototype (superseded by Sentinel Frame, not registered
 # anywhere in the current codebase) — skipped anyway to avoid confusion with
 # that history rather than reclaim it. 2099076 is the next id with no
-# reference anywhere in the repo — free.
+# reference anywhere in the repo — free. (2099077 unassigned;
+# SENTINEL_PIN_TAG_PLUGIN_ID=2099078 taken by pin_tag.py, v1.35.)
 SENTINEL_PANEL_SPA_PLUGIN_ID = 2099076
 
 # Preset names - normalized to lowercase with underscores

@@ -24,7 +24,9 @@ from sentinel.ui.panel_spa import SentinelPanelSPACmd, SentinelPaletteCmd
 # PLUGIN_ID/the main panel) so the artist can bind it a shortcut
 # independently via Preferences > Customize Commands. Grepped the 2099xxx
 # range (PLUGIN_ID=2099069, SENTINEL_FRAME_TAG_PLUGIN_ID=2099073, 2099072
-# retired) before picking 2099075 — free.
+# retired, SENTINEL_PANEL_SPA_PLUGIN_ID=2099076, 2099077 unassigned,
+# SENTINEL_PIN_TAG_PLUGIN_ID=2099078 taken by pin_tag.py) before picking
+# 2099075 — free.
 SENTINEL_PALETTE_PLUGIN_ID = 2099075
 
 try:
@@ -44,6 +46,21 @@ try:
     from sentinel.ui import frame_sync as _frame_sync
 except Exception:
     _frame_sync = None
+
+try:
+    from sentinel.ui.pin_tag import (
+        SENTINEL_PIN_TAG_PLUGIN_ID,
+        SentinelPinTag,
+        _SENTINEL_PIN_TAG_AVAILABLE,
+        PIN_TAG_DEFAULT_NAME,
+    )
+    _PIN_TAG_IMPORT_ERROR = None
+except Exception as _exc:
+    SENTINEL_PIN_TAG_PLUGIN_ID = 2099078
+    SentinelPinTag = None
+    _SENTINEL_PIN_TAG_AVAILABLE = False
+    PIN_TAG_DEFAULT_NAME = "Sentinel Pin"
+    _PIN_TAG_IMPORT_ERROR = _exc
 
 # Compatibility surface for tests, fixture runner, and C4D scripts that import
 # sentinel_panel.pyp directly. Keep private helpers too.
@@ -195,6 +212,52 @@ def Register():
     else:
         reason = f" ({_FRAME_TAG_IMPORT_ERROR})" if _FRAME_TAG_IMPORT_ERROR else ""
         safe_print(f"TagData API unavailable{reason} — Sentinel Frame tag disabled")
+
+    # Sentinel Pin (TagData) — one tag = one pin state store (v1.35;
+    # rehecho durante el propio v1.35 desde un modelo de seis slots por
+    # tag tras ver la interfaz real de Recall — ver pin_tag.py).
+    # No TAG_IMPLEMENTS_DRAW_FUNCTION: unlike Sentinel Frame this tag draws
+    # nothing to the viewport, and that flag exists only to make Draw fire
+    # (frame_tag's own comment on the same flag). Failure is non-fatal, same
+    # pattern as the Frame tag registration above.
+    #
+    # TAG_MULTIPLE is REQUIRED, not optional polish: without it, C4D
+    # enforces single-instance-per-object for this tag type, and
+    # BaseObject.MakeTag()/InsertTag() silently EVICTS any existing tag of
+    # the same type when a second one is added — invalidating every
+    # Python reference to the old tag in the process (Maxon SDK docs,
+    # BaseObject.InsertTag). That is the root cause of the Task 4 Critical
+    # live bug: creating the "↩ Antes de restaurar" safety tag on the same
+    # host object as the pin being restored evicted the pin's own tag
+    # mid-restore, so the very next read of its payload came back empty
+    # and nothing got applied. It also would have silently broken the
+    # ordinary case of two artist-added Sentinel Pin tags coexisting on
+    # one object, unrelated to restore.
+    if _SENTINEL_PIN_TAG_AVAILABLE and SentinelPinTag is not None:
+        try:
+            pin_tag_info = c4d.TAG_VISIBLE | c4d.TAG_EXPRESSION | c4d.TAG_MULTIPLE
+            pin_tag_ok = plugins.RegisterTagPlugin(
+                id=SENTINEL_PIN_TAG_PLUGIN_ID,
+                # PIN_TAG_DEFAULT_NAME, not a re-typed literal: pin_tag.py's
+                # display-name sync detects "a load just reset this name"
+                # by comparing against that exact same constant, so this
+                # registration string and that comparison must never drift
+                # apart (see pin_tag.py for the full reasoning).
+                str=PIN_TAG_DEFAULT_NAME,
+                info=pin_tag_info,
+                g=SentinelPinTag,
+                description="Tsentinelpin",
+                icon=icon,
+            )
+            if pin_tag_ok:
+                safe_print("Sentinel Pin (TagData) registered")
+            else:
+                safe_print("Failed to register Sentinel Pin TagData")
+        except Exception as e:
+            safe_print(f"Sentinel Pin registration crashed: {e}")
+    else:
+        reason = f" ({_PIN_TAG_IMPORT_ERROR})" if _PIN_TAG_IMPORT_ERROR else ""
+        safe_print(f"TagData API unavailable{reason} — Sentinel Pin tag disabled")
 
     # Frame v2 auto-sync pump (MessageData): drains the debounced per-tag sync
     # queue on main thread. Non-fatal on failure — the tag still works, just
