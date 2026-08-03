@@ -1855,11 +1855,15 @@ class SentinelPinTag(_TagDataBase):
             return self._handle_command(node, data)
         edit_message = getattr(c4d, "MSG_EDIT", None)
         if edit_message is not None and mid == edit_message:
-            # Double-click shortcut (Recall's UX, id 21) — NOT known to
-            # reach a TagData in C4D 2026 (unmeasured in the Task 1 spike).
-            # The "Restaurar" button above is the guaranteed path; this is only an
-            # accelerator on top of it, so a silent no-op here if the
-            # message never arrives costs nothing but the shortcut itself.
+            # Double-click shortcut (Recall's UX, id 21). MEASURED in C4D
+            # 2026.303: double-clicking the tag in the Object Manager DOES
+            # route here and restores — verified by the user on a cube
+            # parked far from its pinned origin, which snapped back. So
+            # this is a real shortcut, not a hopeful one. The "Restaurar"
+            # button above remains the guaranteed path; keep the
+            # main-thread and filled-pin guards, since this fires from
+            # C4D's own gesture handling rather than from a button whose
+            # enable state already gates it.
             if _is_main_thread() and _pin_is_filled(node):
                 _restore(node)
             return True
