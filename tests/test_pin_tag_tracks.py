@@ -371,7 +371,13 @@ def test_capture_node_tracks_round_trips_every_key_field(sentinel_module):
 def test_store_pin_writes_track_counts_and_warning_reports_them(sentinel_module):
     """v1.35.2: the skipped-track note lives on _pin_warning_text now, as
     "N pistas de animación" (no captured-track count on the row anymore —
-    see the target layout in pin_tag.py's GetDDescription)."""
+    see the target layout in pin_tag.py's GetDDescription).
+
+    "1 pista de animación" (singular), not "1 pistas de animación" — copy
+    fix from the live-geometry brief's Cambio 2
+    (pin-live-geometry-brief.md): this scene really does have exactly one
+    DATA-category track that could not be captured, so the correct
+    singular is what a real row must show."""
     pin_tag = importlib.import_module("sentinel.ui.pin_tag")
     import c4d
 
@@ -386,7 +392,7 @@ def test_store_pin_writes_track_counts_and_warning_reports_them(sentinel_module)
     warning = pin_tag._pin_warning_text(fake_tag)
 
     assert warning.startswith("⚠ ")
-    assert "1 pistas de animación" in warning
+    assert "1 pista de animación" in warning
     # And the summary line carries no track metadata at all anymore.
     assert "pistas" not in pin_tag._pin_status_text(fake_tag)
 
@@ -439,7 +445,11 @@ def test_restore_rewrites_a_wrecked_animated_parameter_back_to_the_pinned_keys(s
     assert curve.GetKeyCount() == 2, "restore must reproduce the EXACT pinned key set, not merge"
     values = sorted(k.value for k in curve._keys)
     assert values == [5.0, 20.0]
-    assert "restaurados" in report
+    # "restaurado" (not "restaurados") — substring-safe for both the
+    # singular and the plural, and this particular restore matches
+    # exactly ONE object, which the live-geometry brief's Cambio 2 fix
+    # now reports as singular.
+    assert "restaurado" in report
 
 
 def test_restore_never_touches_an_out_of_scope_track(sentinel_module):
@@ -485,7 +495,11 @@ def test_restore_reports_missing_track_without_crashing(sentinel_module):
 
     report = pin_tag._restore(fake_tag)
 
-    assert "restaurados" in report  # the object itself still restores fine
+    # "restaurado" (not "restaurados") — substring-safe for both the
+    # singular and the plural, and this particular restore matches
+    # exactly ONE object, which the live-geometry brief's Cambio 2 fix
+    # now reports as singular.
+    assert "restaurado" in report  # the object itself still restores fine
 
 
 def test_restore_captures_a_fresh_safety_pin_including_its_own_tracks(sentinel_module):
@@ -519,7 +533,14 @@ def test_legacy_bool_only_pin_still_warns_without_new_track_fields(sentinel_modu
     """A pin written by the PREVIOUS build only ever set the deprecated
     bool _ENTRY_KEYFRAMES — no _ENTRY_TRACKS_COUNT/_SKIPPED at all. The row
     must still warn (folded into "skipped"), not go silent just because
-    this build now looks for fields that pin never wrote."""
+    this build now looks for fields that pin never wrote.
+
+    "pista de animación" (singular), not "pistas de animación" — this
+    single legacy entry folds into exactly ONE skipped track (live-
+    geometry brief, Cambio 2), and unlike "restaurado"/"restaurados"
+    singular is not a plain string-prefix of the plural here ("pista de"
+    vs "pistas de" diverge at the very next character), so the assertion
+    is the exact singular text rather than a substring check."""
     pin_tag = importlib.import_module("sentinel.ui.pin_tag")
     import c4d
 
@@ -545,7 +566,7 @@ def test_legacy_bool_only_pin_still_warns_without_new_track_fields(sentinel_modu
 
     warning = pin_tag._pin_warning_text(fake_tag)
 
-    assert "pistas de animación" in warning
+    assert "pista de animación" in warning
 
 
 # --- _apply_key_setter: the (single) call shape production actually uses -
@@ -648,7 +669,11 @@ def test_restore_reports_tracks_added_after_pinning(sentinel_module):
     ``plan_restore`` and thrown away — worse, the ``if stored_tracks:``
     guard skipped computing it AT ALL when the node had nothing pinned in
     the first place, which is exactly the case here (pinned with zero
-    tracks, animated afterwards). The restore must surface the count."""
+    tracks, animated afterwards). The restore must surface the count.
+
+    "1 pista nueva sin restaurar" (singular), not "1 pistas nuevas sin
+    restaurar" — copy fix from the live-geometry brief's Cambio 2
+    (pin-live-geometry-brief.md): exactly one track was added here."""
     pin_tag = importlib.import_module("sentinel.ui.pin_tag")
     import c4d
 
@@ -665,7 +690,7 @@ def test_restore_reports_tracks_added_after_pinning(sentinel_module):
 
     report = pin_tag._restore(fake_tag)
 
-    assert "1 pistas nuevas sin restaurar" in report
+    assert "1 pista nueva sin restaurar" in report
 
 
 # --- N1: an empty VALUE track must never become a permanent false alarm --
@@ -696,7 +721,11 @@ def test_restore_never_reports_an_empty_value_track_as_extra(sentinel_module):
     report = pin_tag._restore(fake_tag)
 
     assert "pistas nuevas sin restaurar" not in report
-    assert "restaurados" in report
+    # "restaurado" (not "restaurados") — substring-safe for both the
+    # singular and the plural, and this particular restore matches
+    # exactly ONE object, which the live-geometry brief's Cambio 2 fix
+    # now reports as singular.
+    assert "restaurado" in report
 
 
 # --- N5: an emptied PINNED track must still be a restore target ----------
@@ -735,7 +764,11 @@ def test_restore_rewrites_a_track_that_was_emptied_since_it_was_pinned(sentinel_
     assert curve.GetKeyCount() == 2, "the pinned keys must be rewritten onto the emptied track"
     values = sorted(k.value for k in curve._keys)
     assert values == [1.0, 2.0]
-    assert "restaurados" in report
+    # "restaurado" (not "restaurados") — substring-safe for both the
+    # singular and the plural, and this particular restore matches
+    # exactly ONE object, which the live-geometry brief's Cambio 2 fix
+    # now reports as singular.
+    assert "restaurado" in report
     assert "pistas nuevas sin restaurar" not in report
 
 
@@ -913,6 +946,12 @@ def test_restore_pairs_correctly_after_adding_a_new_tag_ahead(sentinel_module):
 # trips the warning line either.
 
 def test_pin_status_text_never_carries_track_metadata(sentinel_module):
+    """Uses "1 restaurado" (singular) as the last-restore text below —
+    live-geometry brief Cambio 2 (pin-live-geometry-brief.md): matches
+    what a real single-object restore now reports, even though this
+    particular assertion is only checking that _pin_status_text echoes
+    whatever was written verbatim (not exercising the pluralization
+    helper itself)."""
     pin_tag = importlib.import_module("sentinel.ui.pin_tag")
     import c4d
 
@@ -927,10 +966,10 @@ def test_pin_status_text_never_carries_track_metadata(sentinel_module):
     assert "pistas" not in before
     assert pin_tag._pin_warning_text(fake_tag) == ""
 
-    pin_tag._write_last_restore(fake_tag, "1 restaurados")
+    pin_tag._write_last_restore(fake_tag, "1 restaurado")
     after = pin_tag._pin_status_text(fake_tag)
 
-    assert after == "1 restaurados"
+    assert after == "1 restaurado"
     assert "pistas" not in after
     # The (empty) warning line is independent of last-restore state too.
     assert pin_tag._pin_warning_text(fake_tag) == ""

@@ -789,8 +789,52 @@ def _pin_status_text(node):
         return last_restore
     summary = info["summary"]
     payload = info["payload"]
-    return "%d objetos · %s" % (
-        summary["count"], _relative_time_es(payload.GetString(_PAYLOAD_TIMESTAMP, "")))
+    return "%s · %s" % (
+        pins.pluralize_es(summary["count"], "objeto", "objetos"),
+        _relative_time_es(payload.GetString(_PAYLOAD_TIMESTAMP, "")))
+
+
+def _matched_live_nodes(node, payload):
+    """The live nodes a restore FROM ``payload`` would actually touch
+    right now — the object-tree walk (``_restore``'s step 1) intersected
+    with the pin's own matched keys (``_restore``'s step 4), via the same
+    ``pins.plan_restore`` a real restore uses. Never the whole live
+    subtree: a brand-new child the pin never captured is not something
+    this restore will ever touch, so it is not this function's business
+    (see the live-geometry brief's Cambio 1, "Precisión requerida").
+
+    Returns ``[]`` — never raises — whenever the object or document can't
+    be resolved, mirroring ``_restore``'s own guards for the same two
+    reads."""
+    obj = node.GetObject()
+    if obj is None:
+        return []
+    doc = _doc_from_node(node)
+    if doc is None:
+        return []
+    current_tree, current_flat_nodes = _walk_object_tree(obj)
+    current_keys = pins.location_keys(current_tree)
+    current_by_key = dict(zip(current_keys, current_flat_nodes))
+    pinned_keys, _ = _read_pinned_entries(payload)
+    matched = pins.plan_restore(pinned_keys, current_keys)["matched"]
+    return [current_by_key[key] for key in matched if key in current_by_key]
+
+
+def _live_geometry_among_matched(node, payload):
+    """Whether any node a restore would actually touch is EDITABLE
+    geometry right now (``isinstance(obj, c4d.PointObject)`` — the same
+    test ``_walk_object_tree``/``_store_pin`` use, measured live in the
+    Task 1 spike). Short-circuits on the first hit. Never raises: an
+    unexpected shape from the live scene degrades to "no live geometry
+    found" rather than breaking the row — the payload-derived flag this
+    is only ever OR'd with already covers the common case."""
+    try:
+        for live_obj in _matched_live_nodes(node, payload):
+            if isinstance(live_obj, c4d.PointObject):
+                return True
+    except Exception:
+        return False
+    return False
 
 
 def _pin_warning_text(node):
@@ -805,24 +849,37 @@ def _pin_warning_text(node):
     pressed once — exactly when the artist most needs to know what did
     NOT come back.
 
-    "geometría no incluida" fires whenever any pinned node has editable
-    geometry (points/polygons live outside the object container and never
-    round-trip). "N pistas de animación" fires whenever any pinned node
-    has an animation track this build could not capture (category
-    DATA/PLUGIN, or a pin from a build old enough to have only written the
-    deprecated bool) — VALUE tracks are captured and restored for real
-    since Task 6, so they are never counted here. Empty string, never
-    ``None``, when there is nothing to warn about — the description row
-    reads blank rather than being hidden (see ID_PIN_WARNING)."""
+    "geometría no incluida" fires whenever any pinned entry's SAVED
+    payload has editable geometry, OR — live-geometry brief, Cambio 1 —
+    any live node the restore would actually touch is editable geometry
+    RIGHT NOW even though it wasn't at pin time (measured live in C4D
+    2026.303: a parametric object pinned, then made editable via
+    CallCommand MAKEEDITABLE, then restored, silently keeps its wrecked
+    shape while the row still says "N restaurados" — the payload-only
+    check missed this because the object genuinely wasn't geometry when
+    it was captured). The live check only runs when the payload alone
+    didn't already answer yes — walking the scene on every AM repaint is
+    wasted work the common case doesn't need. "N pistas de animación"
+    fires whenever any pinned node has an animation track this build
+    could not capture (category DATA/PLUGIN, or a pin from a build old
+    enough to have only written the deprecated bool) — VALUE tracks are
+    captured and restored for real since Task 6, so they are never
+    counted here. Empty string, never ``None``, when there is nothing to
+    warn about — the description row reads blank rather than being
+    hidden (see ID_PIN_WARNING)."""
     info = _pin_entries_summary(node)
     if info is None or not info["schema_ok"]:
         return ""
     summary = info["summary"]
+    has_geometry = summary["has_geometry"]
+    if not has_geometry:
+        has_geometry = _live_geometry_among_matched(node, info["payload"])
     parts = []
-    if summary["has_geometry"]:
+    if has_geometry:
         parts.append("geometría no incluida")
     if summary["has_keyframes"]:
-        parts.append("%d pistas de animación" % summary["tracks_skipped"])
+        parts.append(pins.pluralize_es(
+            summary["tracks_skipped"], "pista de animación", "pistas de animación"))
     if not parts:
         return ""
     return "⚠ " + " · ".join(parts)
@@ -944,10 +1001,16 @@ def _read_pinned_entries(payload_bc):
 def _restore_report_text(matched_count, total_count, extra_tracks_count=0):
     missing_count = total_count - matched_count
     if missing_count <= 0:
-        text = "%d restaurados" % matched_count
+        text = pins.pluralize_es(matched_count, "restaurado", "restaurados")
     else:
-        text = "%d de %d restaurados · %d no encontrados" % (
-            matched_count, total_count, missing_count)
+        # "N de M restaurados" always keeps the plural "restaurados" here
+        # regardless of N or M (live-geometry brief, Cambio 2: forcing a
+        # concordance on this compound form reads worse, not better) —
+        # only the trailing "no encontrado(s)" clause concords with its
+        # own count.
+        text = "%d de %d restaurados · %s" % (
+            matched_count, total_count,
+            pins.pluralize_es(missing_count, "no encontrado", "no encontrados"))
     if extra_tracks_count:
         # Animation added to a covered node AFTER it was pinned — tracks
         # ``plan_restore`` puts in its "extra" bucket, which nothing in
@@ -958,7 +1021,8 @@ def _restore_report_text(matched_count, total_count, extra_tracks_count=0):
         # on the very next frame — the same silent-no-op failure mode
         # Task 6 fixed for the opposite direction (a wrecked track), just
         # facing the other way.
-        text += " · %d pistas nuevas sin restaurar" % extra_tracks_count
+        text += " · %s sin restaurar" % pins.pluralize_es(
+            extra_tracks_count, "pista nueva", "pistas nuevas")
     return text
 
 

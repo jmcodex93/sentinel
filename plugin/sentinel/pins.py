@@ -203,6 +203,25 @@ def track_key(owner, desc_id_parts):
 # the native picker is exposed there is no copy left to keep.
 
 
+def pluralize_es(count, singular, plural=None):
+    """``"%d %s" % (count, singular if count == 1 else plural)`` — the
+    single source of truth for Spanish count/word agreement across every
+    row string in ``pin_tag.py`` ("1 objeto" vs "N objetos", "1
+    restaurado" vs "N restaurados", "1 pista de animación" vs "N pistas
+    de animación", "1 pista nueva sin restaurar" vs "N pistas nuevas sin
+    restaurar"). Lives here, not in ``pin_tag.py``, for the same reason
+    ``location_keys``/``plan_restore`` do: pure and c4d-free, so it is
+    tested directly (pin-live-geometry-brief.md, Cambio 2) instead of
+    only indirectly through a live tag.
+
+    ``plural`` defaults to ``singular + "s"`` for the common regular
+    case; callers with an irregular or multi-word plural (e.g. "pista
+    nueva" -> "pistas nuevas") always pass it explicitly."""
+    if plural is None:
+        plural = singular + "s"
+    return "%d %s" % (count, singular if count == 1 else plural)
+
+
 def track_capture_counts(track_categories):
     """Split a flat list of (normalized) categories — one per CTrack a
     node actually had something to say about — into captured vs

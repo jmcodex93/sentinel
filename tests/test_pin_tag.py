@@ -128,15 +128,24 @@ class FakeTag:
 
 class FakeObject:
     """Doubles as a c4d.BaseObject: a tag list + MakeTag that ALWAYS adds
-    (the contract c4d.TAG_MULTIPLE is meant to guarantee), no children —
-    these tests are about tag identity/attachment, not subtree traversal.
+    (the contract c4d.TAG_MULTIPLE is meant to guarantee). Most of this
+    suite is about tag identity/attachment, not subtree traversal, so
+    ``children`` defaults to none (``GetDown()`` returns ``None``, same as
+    before this parameter existed); a handful of live-geometry-warning
+    tests need an actual child to hang off the root, hence the optional
+    linked-list wiring below (``GetNext()`` chains siblings the same way
+    ``pin_tag._children_of`` walks a real C4D object list).
     """
 
-    def __init__(self, name, c4d, doc):
+    def __init__(self, name, c4d, doc, children=None):
         self._name = name
         self._tags = []
         self._c4d = c4d
         self._doc = doc
+        self._children = list(children or [])
+        for i, child in enumerate(self._children):
+            child._next = self._children[i + 1] if i + 1 < len(self._children) else None
+        self._next = None
 
     def GetName(self):
         return self._name
@@ -159,7 +168,10 @@ class FakeObject:
         return tag
 
     def GetDown(self):
-        return None
+        return self._children[0] if self._children else None
+
+    def GetNext(self):
+        return getattr(self, "_next", None)
 
     def GetData(self):
         return self._c4d.BaseContainer()
@@ -254,7 +266,12 @@ def test_restore_from_an_ordinary_pin_adds_the_safety_tag_alongside_it(sentinel_
     Before the fix this ended with exactly ONE tag on the object (the
     safety tag) and the original detached; it must now end with BOTH
     attached, and the restore itself must actually have run (not aborted
-    silently on a payload read that came back empty)."""
+    silently on a payload read that came back empty).
+
+    "1 restaurado" (singular), not "1 restaurados" — this is a real
+    ``_restore`` report for a single-object pin, so the live-geometry
+    brief's Cambio 2 pluralization fix changes what this assertion must
+    read, same as the two test files it names explicitly."""
     pin_tag = importlib.import_module("sentinel.ui.pin_tag")
     import c4d
 
@@ -278,7 +295,7 @@ def test_restore_from_an_ordinary_pin_adds_the_safety_tag_alongside_it(sentinel_
     # restored" half of the bug: before the fix, the eviction invalidated
     # `node` mid-restore and _read_payload_bc came back empty, so _restore
     # bailed out at the schema gate with "" instead of applying anything.
-    assert report == "1 restaurados"
+    assert report == "1 restaurado"
 
 
 def test_restore_from_the_safety_tag_does_not_back_up_itself(sentinel_module):
@@ -611,10 +628,15 @@ def test_store_pin_clears_a_previous_restore_note(sentinel_module):
 def test_restore_report_text_partial_match_format(sentinel_module):
     """Direct coverage of the "N de M restaurados · K no encontrados"
     branch — before this test, nothing in the suite asserted its exact
-    text, only the all-matched "N restaurados" shape."""
+    text, only the all-matched "N restaurados" shape. Also covers the
+    singular "1 no encontrado" concordance the brief spells out
+    explicitly: the compound "N de M restaurados" form always keeps the
+    plural "restaurados" (never forces an odd concordance there), but the
+    trailing "no encontrado(s)" clause DOES concord with its own count."""
     pin_tag = importlib.import_module("sentinel.ui.pin_tag")
 
     assert pin_tag._restore_report_text(2, 5) == "2 de 5 restaurados · 3 no encontrados"
+    assert pin_tag._restore_report_text(4, 5) == "4 de 5 restaurados · 1 no encontrado"
     assert pin_tag._restore_report_text(3, 3) == "3 restaurados"
 
 
@@ -642,12 +664,76 @@ def test_pin_warning_text_warns_about_geometry(sentinel_module):
     assert "geometría" not in pin_tag._pin_status_text(tag)
 
 
+def test_pin_warning_text_warns_about_geometry_from_the_live_object_too(sentinel_module):
+    """Live-geometry brief (pin-live-geometry-brief.md), Cambio 1: measured
+    live in C4D 2026.303 — a parametric cube pinned (payload says
+    ``geometry=False``, correctly, for what it was AT PIN TIME), then made
+    editable (CallCommand MAKEEDITABLE) BEFORE restoring, restores its
+    position but silently keeps the wrecked shape while the row still
+    reports "N restaurados" as if everything came back — the exact silent
+    no-op this feature exists to eliminate. The warning must also
+    consider what the restore would touch RIGHT NOW, not only what the
+    payload said when it was captured."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    class LiveGeometryObject(FakeObject, c4d.PointObject):
+        """The live object turned editable since pinning — geometry now,
+        even though the stored payload entry says otherwise."""
+
+    doc = FakeDoc()
+    host = LiveGeometryObject("rig", c4d, doc)
+    tag = _make_pin_tag(host, pin_tag, c4d)
+    payload = tag.GetDataInstance().GetContainerInstance(pin_tag.ID_PIN_PAYLOAD)
+    entries = payload.GetContainerInstance(pin_tag._PAYLOAD_ENTRIES)
+    # Payload says NO geometry — this is the state at pin time, and it is
+    # exactly what a real parametric-then-made-editable object produces.
+    entries.GetContainerInstance(0).SetBool(pin_tag._ENTRY_GEOMETRY, False)
+
+    text = pin_tag._pin_warning_text(tag)
+
+    assert text.startswith("⚠ ")
+    assert "geometría no incluida" in text
+
+
+def test_pin_warning_text_ignores_geometry_on_an_unpaired_new_child(sentinel_module):
+    """Precisión requerida por el brief: el conjunto a comprobar son
+    exactamente los nodos vivos EMPAREJADOS con el pin (los que
+    ``plan_restore`` mete en ``matched``), no todo el subárbol vivo. Un
+    hijo nuevo que el pin no conoce no se restaura de ninguna forma, así
+    que su geometría no es asunto de este aviso — solo pinea el objeto
+    raíz (entrada única, clave ``""``); un hijo geometry-only añadido
+    DESPUÉS de pinear no debe disparar el aviso."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    class LiveGeometryChild(FakeObject, c4d.PointObject):
+        """A brand-new child the pin never captured."""
+
+    doc = FakeDoc()
+    new_child = LiveGeometryChild("mesh_new", c4d, doc)
+    host = FakeObject("rig", c4d, doc, children=[new_child])
+    tag = _make_pin_tag(host, pin_tag, c4d)
+    payload = tag.GetDataInstance().GetContainerInstance(pin_tag.ID_PIN_PAYLOAD)
+    entries = payload.GetContainerInstance(pin_tag._PAYLOAD_ENTRIES)
+    entries.GetContainerInstance(0).SetBool(pin_tag._ENTRY_GEOMETRY, False)
+
+    assert pin_tag._pin_warning_text(tag) == ""
+
+
 def test_pin_warning_text_keeps_geometry_warning_after_a_restore(sentinel_module):
     """C3 (carried into v1.35.2): those notes are binding, not decoration
     — they must not disappear just because a restore already happened
     once and _pin_status_text is now showing its own "N restaurados"
     text. _pin_warning_text is computed independently of last-restore
-    state, so it must keep warning regardless."""
+    state, so it must keep warning regardless.
+
+    Uses "1 restaurado" (singular), not "1 restaurados" — copy fix
+    explicitly requested in the live-geometry brief
+    (pin-live-geometry-brief.md, Cambio 2): _pin_status_text must simply
+    echo back whatever ``_write_last_restore`` wrote, so this only pins
+    down the REALISTIC singular text a real restore of one object would
+    now produce, not new behaviour of ``_pin_status_text`` itself."""
     pin_tag = importlib.import_module("sentinel.ui.pin_tag")
     import c4d
 
@@ -658,15 +744,21 @@ def test_pin_warning_text_keeps_geometry_warning_after_a_restore(sentinel_module
     entries = payload.GetContainerInstance(pin_tag._PAYLOAD_ENTRIES)
     entries.GetContainerInstance(0).SetBool(pin_tag._ENTRY_GEOMETRY, True)
 
-    pin_tag._write_last_restore(tag, "1 restaurados")
+    pin_tag._write_last_restore(tag, "1 restaurado")
 
-    assert pin_tag._pin_status_text(tag) == "1 restaurados"
+    assert pin_tag._pin_status_text(tag) == "1 restaurado"
     assert "geometría no incluida" in pin_tag._pin_warning_text(tag)
 
 
 def test_pin_status_text_spells_out_objetos(sentinel_module):
-    """Target copy: "12 objetos · hace 2 h", not the abbreviated "obj" —
-    part of reading as a real sentence rather than cryptic shorthand."""
+    """Target copy: "1 objeto · hace 2 h" / "12 objetos · hace 2 h", not
+    the abbreviated "obj" — part of reading as a real sentence rather
+    than cryptic shorthand.
+
+    Was "1 objetos · " until the live-geometry brief's Cambio 2
+    (pin-live-geometry-brief.md) flagged the wrong plural at n=1 as a
+    copy bug to fix, explicitly, not a test to weaken — updated to the
+    correct singular "1 objeto · "."""
     pin_tag = importlib.import_module("sentinel.ui.pin_tag")
     import c4d
 
@@ -676,7 +768,7 @@ def test_pin_status_text_spells_out_objetos(sentinel_module):
 
     text = pin_tag._pin_status_text(tag)
 
-    assert text.startswith("1 objetos · ")
+    assert text.startswith("1 objeto · ")
 
 
 # --- Usability pass (v1.35.1/.2): Nombre/Color as shortcuts to native -----
