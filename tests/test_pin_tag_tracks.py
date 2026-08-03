@@ -495,11 +495,15 @@ def test_restore_reports_missing_track_without_crashing(sentinel_module):
 
     report = pin_tag._restore(fake_tag)
 
-    # "restaurado" (not "restaurados") — substring-safe for both the
-    # singular and the plural, and this particular restore matches
-    # exactly ONE object, which the live-geometry brief's Cambio 2 fix
-    # now reports as singular.
-    assert "restaurado" in report  # the object itself still restores fine
+    # The old assertion here was `"restaurado" in report` alone, which this
+    # test's own title ("must be REPORTED") made a promise the assertion
+    # never checked: it passed identically with the missing track omitted
+    # from the row entirely — which is what the code did, sending it only
+    # to safe_print. An artist who deletes a track, restores expecting the
+    # animation back and reads "1 restaurado" has been told nothing; the
+    # Python console is not a surface they look at. Missing OBJECTS always
+    # reached the row; missing TRACKS must too.
+    assert report == "1 restaurado · 1 pista no encontrada"
 
 
 def test_restore_captures_a_fresh_safety_pin_including_its_own_tracks(sentinel_module):

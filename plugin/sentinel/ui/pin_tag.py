@@ -191,6 +191,18 @@ _PAYLOAD_SCHEMA = 1
 _PAYLOAD_TIMESTAMP = 2
 _PAYLOAD_COUNT = 3
 _PAYLOAD_ENTRIES = 4
+#: Tipo (``obj.GetType()``) y nombre del objeto ANFITRIÓN en el momento de
+#: capturar. Arrastrar un tag de un objeto a otro es trivial en C4D, y la
+#: clave de la raíz del subárbol es la cadena vacía — que empareja con
+#: CUALQUIER anfitrión — así que sin esto un pin de un Cube arrastrado a una
+#: Light restauraría el contenedor y la matriz del cubo sobre la luz
+#: cantando "1 restaurado". Se compara por TIPO, nunca por nombre
+#: (renombrar es normal y el emparejamiento por ubicación ya lo acusa por su
+#: cuenta); el nombre guardado solo alimenta el texto del aviso. ``0`` =
+#: dato ausente (pin de una build anterior, o un anfitrión sin GetType):
+#: nunca se avisa por ausencia del dato, solo por un desajuste real.
+_PAYLOAD_HOST_TYPE = 5
+_PAYLOAD_HOST_NAME = 6
 _ENTRY_KEY = 1
 _ENTRY_NAME = 2
 _ENTRY_GEOMETRY = 3
@@ -314,6 +326,19 @@ def _safe_node_name(node, fallback=""):
         except Exception:
             pass
     return str(fallback or "")
+
+
+def _safe_node_type(node):
+    """``node.GetType()`` or ``0`` when it can't be read. ``0`` is never a
+    real object type in C4D, so it doubles as "type not recorded" for a pin
+    stored by a build older than this field (see ``_PAYLOAD_HOST_TYPE``)."""
+    getter = getattr(node, "GetType", None)
+    if callable(getter):
+        try:
+            return int(getter())
+        except Exception:
+            return 0
+    return 0
 
 
 def _event_add():
@@ -815,7 +840,7 @@ def _matched_live_nodes(node, payload):
     current_tree, current_flat_nodes = _walk_object_tree(obj)
     current_keys = pins.location_keys(current_tree)
     current_by_key = dict(zip(current_keys, current_flat_nodes))
-    pinned_keys, _ = _read_pinned_entries(payload)
+    pinned_keys = _read_pinned_keys(payload)
     matched = pins.plan_restore(pinned_keys, current_keys)["matched"]
     return [current_by_key[key] for key in matched if key in current_by_key]
 
@@ -835,6 +860,36 @@ def _live_geometry_among_matched(node, payload):
     except Exception:
         return False
     return False
+
+
+def _foreign_host_name(node, payload):
+    """The name the pin's host had AT CAPTURE TIME when the tag now sits on
+    an object of a DIFFERENT type — ``None`` when the types agree, when the
+    payload predates this field, or when either type can't be read.
+
+    Dragging a tag from one object to another is trivial and everyday in
+    C4D, and nothing in the location keys catches it: the root of the
+    subtree keys as the empty string, which ``pins.plan_restore`` matches
+    against ANY host. So a pin taken on a Cube, dragged onto a Light,
+    restores the cube's container and matrix onto the light and reports
+    "1 restaurado" — the exact silent-success the honesty contract forbids.
+
+    Type, not name: renaming an object is normal and already re-arms the
+    pairing through the location keys; a different TYPE is what means "this
+    is another object". This only WARNS — it never blocks the restore. The
+    artist may well have dragged it there on purpose, and a pin whose
+    container/matrix are close enough to be worth reusing is their call to
+    make, not ours to veto."""
+    stored_type = payload.GetInt32(_PAYLOAD_HOST_TYPE, 0)
+    if not stored_type:
+        return None
+    obj = node.GetObject()
+    if obj is None:
+        return None
+    live_type = _safe_node_type(obj)
+    if not live_type or live_type == stored_type:
+        return None
+    return payload.GetString(_PAYLOAD_HOST_NAME, "")
 
 
 def _pin_warning_text(node):
@@ -864,8 +919,10 @@ def _pin_warning_text(node):
     could not capture (category DATA/PLUGIN, or a pin from a build old
     enough to have only written the deprecated bool) — VALUE tracks are
     captured and restored for real since Task 6, so they are never
-    counted here. Empty string, never ``None``, when there is nothing to
-    warn about — the description row reads blank rather than being
+    counted here. "pin capturado sobre otro objeto" fires when the tag now
+    sits on an object of a different TYPE than the one it was captured on
+    (see ``_foreign_host_name``) — a warning only, never a block. Empty
+    string, never ``None``, when there is nothing to warn about — the description row reads blank rather than being
     hidden (see ID_PIN_WARNING)."""
     info = _pin_entries_summary(node)
     if info is None or not info["schema_ok"]:
@@ -875,6 +932,13 @@ def _pin_warning_text(node):
     if not has_geometry:
         has_geometry = _live_geometry_among_matched(node, info["payload"])
     parts = []
+    foreign_host = _foreign_host_name(node, info["payload"])
+    if foreign_host is not None:
+        # First on purpose: it reframes every other note on this row — if
+        # the pin was captured over a DIFFERENT object, what "geometría no
+        # incluida" or "N pistas de animación" refer to isn't this host's
+        # state at all.
+        parts.append("pin capturado sobre otro objeto («%s»)" % foreign_host)
     if has_geometry:
         parts.append("geometría no incluida")
     if summary["has_keyframes"]:
@@ -909,6 +973,8 @@ def _store_pin(node):
     payload_bc.SetInt32(_PAYLOAD_SCHEMA, PIN_SCHEMA)
     payload_bc.SetString(_PAYLOAD_TIMESTAMP, _now_iso())
     payload_bc.SetInt32(_PAYLOAD_COUNT, len(entries))
+    payload_bc.SetInt32(_PAYLOAD_HOST_TYPE, _safe_node_type(obj))
+    payload_bc.SetString(_PAYLOAD_HOST_NAME, _safe_node_name(obj, ""))
     entries_bc = c4d.BaseContainer()
     for i, (child_obj, key) in enumerate(entries):
         entry_bc = c4d.BaseContainer()
@@ -975,6 +1041,31 @@ def _read_pinned_tracks(entry_bc):
     return out
 
 
+def _read_pinned_keys(payload_bc):
+    """Just the ORDERED location keys of a stored payload — nothing else
+    read, nothing else built.
+
+    ``_matched_live_nodes`` (the live-geometry warning, which the AM calls
+    on EVERY repaint) only ever needed this list, but used to get it from
+    ``_read_pinned_entries`` and throw the whole ``by_key`` half away —
+    including ``_read_pinned_tracks``, which builds one dict per key of
+    per track of per node. A 300-object rig with 8 tracks of 60 keys meant
+    ~144.000 dicts built and dropped per repaint, and precisely in the
+    common case: the live check only runs when the payload says there is
+    no geometry, i.e. the normal state of a parametric rig.
+    ``_read_pinned_entries`` itself is unchanged — a real restore does
+    need all of it."""
+    count = payload_bc.GetInt32(_PAYLOAD_COUNT, 0)
+    entries_container = payload_bc.GetContainerInstance(_PAYLOAD_ENTRIES)
+    keys = []
+    for i in range(count):
+        entry_bc = entries_container.GetContainerInstance(i) if entries_container is not None else None
+        if entry_bc is None:
+            continue
+        keys.append(entry_bc.GetString(_ENTRY_KEY, ""))
+    return keys
+
+
 def _read_pinned_entries(payload_bc):
     """Unpack a stored payload's entries into an ORDERED key list (the order
     the writer applied in, per the docstring of ``pins.location_keys``) plus
@@ -998,7 +1089,8 @@ def _read_pinned_entries(payload_bc):
     return keys, by_key
 
 
-def _restore_report_text(matched_count, total_count, extra_tracks_count=0):
+def _restore_report_text(matched_count, total_count, extra_tracks_count=0,
+                         missing_tracks_count=0):
     missing_count = total_count - matched_count
     if missing_count <= 0:
         text = pins.pluralize_es(matched_count, "restaurado", "restaurados")
@@ -1023,6 +1115,18 @@ def _restore_report_text(matched_count, total_count, extra_tracks_count=0):
         # facing the other way.
         text += " · %s sin restaurar" % pins.pluralize_es(
             extra_tracks_count, "pista nueva", "pistas nuevas")
+    if missing_tracks_count:
+        # A track the pin KNEW about and the live node no longer has (the
+        # artist deleted the whole Position.Y track in the Timeline, say).
+        # It used to leave the row entirely and go only to ``safe_print``
+        # — so a restore that could not bring the animation back still
+        # read "1 restaurado", and the only mention of what did NOT come
+        # back sat in the Python console, which an artist never opens.
+        # Missing OBJECTS have always reached the row; missing TRACKS now
+        # do too. The full list still goes to ``safe_print`` — it doesn't
+        # fit here.
+        text += " · %s" % pins.pluralize_es(
+            missing_tracks_count, "pista no encontrada", "pistas no encontradas")
     return text
 
 
@@ -1301,8 +1405,24 @@ def _restore(node):
     current_keys = pins.location_keys(current_tree)
     current_by_key = dict(zip(current_keys, current_flat_nodes))
 
-    # 2. Safety net FIRST. Skip only when THIS tag IS the safety net (by
-    # its ID_PIN_IS_SAFETY flag, never its name — see _is_safety_tag) —
+    # 2. Schema gate, BEFORE anything is written anywhere. A payload this
+    # build doesn't recognise is never applied, not even partially — and
+    # the row already says so on every read via ``_pin_status_text``, so
+    # there is nothing further to write. This runs ahead of the safety
+    # capture below on purpose: a path that will apply NOTHING must not
+    # overwrite the safety net either, or the artist's one way back (the
+    # state the previous restore backed up) is gone with no dialog, no
+    # note and no undo.
+    payload = _read_payload_bc(node)
+    if payload is None:
+        return ""
+    schema = payload.GetInt32(_PAYLOAD_SCHEMA, 0)
+    if schema != PIN_SCHEMA:
+        return ""
+
+    # 3. Safety net, still BEFORE the scene is touched — that order IS the
+    # safety property. Skipped only when THIS tag IS the safety net (by its
+    # ID_PIN_IS_SAFETY flag, never its name — see _is_safety_tag):
     # overwriting it here would destroy the one copy of the state the
     # artist is restoring away FROM.
     if not _is_safety_tag(node):
@@ -1311,16 +1431,6 @@ def _restore(node):
             safe_print("Sentinel Pin: %s" % report)
             _write_last_restore(node, report)
             return report
-
-    # 3. Schema gate. A payload this build doesn't recognise is never
-    # applied, not even partially — and the row already says so on every
-    # read via ``_pin_status_text``, so there is nothing further to write.
-    payload = _read_payload_bc(node)
-    if payload is None:
-        return ""
-    schema = payload.GetInt32(_PAYLOAD_SCHEMA, 0)
-    if schema != PIN_SCHEMA:
-        return ""
 
     pinned_keys, pinned_by_key = _read_pinned_entries(payload)
 
@@ -1400,7 +1510,9 @@ def _restore(node):
                     1 for tk in track_plan["extra"]
                     if _live_track_key_count(live_tracks.get(tk)) > 0
                 )
-        report = _restore_report_text(len(matched), len(pinned_keys), extra_tracks_total)
+        report = _restore_report_text(
+            len(matched), len(pinned_keys), extra_tracks_total,
+            len(missing_tracks))
         doc.AddUndo(c4d.UNDOTYPE_CHANGE, node)
         _write_last_restore(node, report)
     finally:

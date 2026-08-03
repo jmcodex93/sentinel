@@ -137,11 +137,28 @@ class FakeObject:
     ``pin_tag._children_of`` walks a real C4D object list).
     """
 
-    def __init__(self, name, c4d, doc, children=None):
+    def __init__(self, name, c4d, doc, children=None, obj_type=5159):
         self._name = name
         self._tags = []
         self._c4d = c4d
         self._doc = doc
+        # RECORDED, not swallowed. SetData/SetMl used to be bare ``pass``,
+        # so deleting either write from ``_restore`` left the whole suite
+        # green — the container and the matrix are the two things a restore
+        # exists to put back, and neither could be asserted on. Same
+        # "coverage follows the shape of the fake, not the contract" trap
+        # this repo has now caught six times (see .superpowers/sdd/
+        # progress.md); note the contrast with SetName, which WAS caught,
+        # because the fake had always recorded it.
+        self._data = c4d.BaseContainer()
+        self._matrix = c4d.Matrix()
+        self.set_data_calls = []
+        self.set_ml_calls = []
+        # A real host has a type, and a pin now records the type it was
+        # captured on so a tag dragged onto a different object says so
+        # (``_foreign_host_name``). Defaults to Ocube — an arbitrary real
+        # object type; tests that care pass their own.
+        self._type = obj_type
         self._children = list(children or [])
         for i, child in enumerate(self._children):
             child._next = self._children[i + 1] if i + 1 < len(self._children) else None
@@ -173,17 +190,22 @@ class FakeObject:
     def GetNext(self):
         return getattr(self, "_next", None)
 
+    def GetType(self):
+        return self._type
+
     def GetData(self):
-        return self._c4d.BaseContainer()
+        return self._data
 
     def SetData(self, bc):
-        pass
+        self._data = bc
+        self.set_data_calls.append(bc)
 
     def GetMl(self):
-        return self._c4d.Matrix()
+        return self._matrix
 
     def SetMl(self, m):
-        pass
+        self._matrix = m
+        self.set_ml_calls.append(m)
 
     def GetDocument(self):
         return self._doc
@@ -638,6 +660,12 @@ def test_restore_report_text_partial_match_format(sentinel_module):
     assert pin_tag._restore_report_text(2, 5) == "2 de 5 restaurados · 3 no encontrados"
     assert pin_tag._restore_report_text(4, 5) == "4 de 5 restaurados · 1 no encontrado"
     assert pin_tag._restore_report_text(3, 3) == "3 restaurados"
+    # Missing TRACKS reach the row too (they used to go only to
+    # safe_print), concording with their own count like every other clause.
+    assert pin_tag._restore_report_text(3, 3, 0, 1) == (
+        "3 restaurados · 1 pista no encontrada")
+    assert pin_tag._restore_report_text(3, 3, 0, 2) == (
+        "3 restaurados · 2 pistas no encontradas")
 
 
 def test_pin_warning_text_warns_about_geometry(sentinel_module):
@@ -910,3 +938,241 @@ def test_remove_all_pins_does_not_touch_an_unrelated_tag(sentinel_module):
     pin_tag._remove_all_pins(original)
 
     assert host.GetTags() == [other]
+
+
+# --- Final review wave: a pin dragged onto another object -------------------
+
+def test_pin_warning_text_flags_a_pin_dragged_onto_another_object(sentinel_module):
+    """A tag is trivially dragged from one object to another in C4D, and
+    NOTHING in the location keys catches it: the subtree root keys as the
+    empty string, which ``plan_restore`` matches against any host. So the
+    cube's container and matrix land on the light and the row reads
+    "1 restaurado". The restore is still allowed (the artist may mean it),
+    but the row must SAY it."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    cube = FakeObject("mi cubo", c4d, doc, obj_type=c4d.Ocube)
+    tag = FakeObject.MakeTag(cube, pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID)
+    assert pin_tag._store_pin(tag) is True
+    assert pin_tag._pin_warning_text(tag) == "", "pinned on its own host: nothing to warn about"
+
+    # The drag: same tag, different host, different TYPE.
+    light = FakeObject("mi luz", c4d, doc, obj_type=c4d.Olight)
+    tag._host = light
+
+    assert pin_tag._pin_warning_text(tag) == (
+        "⚠ pin capturado sobre otro objeto («mi cubo»)"
+    )
+
+
+def test_pin_warning_text_ignores_a_renamed_host_of_the_same_type(sentinel_module):
+    """Compared by TYPE, never by name: renaming is everyday and the
+    location keys already re-arm on it by themselves. Warning on a rename
+    would cry wolf on the most common edit there is."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    cube = FakeObject("mi cubo", c4d, doc, obj_type=c4d.Ocube)
+    tag = FakeObject.MakeTag(cube, pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID)
+    assert pin_tag._store_pin(tag) is True
+
+    cube.SetName("cubo renombrado")
+
+    assert pin_tag._pin_warning_text(tag) == ""
+
+
+def test_pin_warning_text_never_warns_when_the_pin_recorded_no_host_type(sentinel_module):
+    """A pin from a build older than this field has no host type stored —
+    absence of the datum is never evidence of a mismatch, so the row must
+    stay quiet rather than accuse every legacy pin."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc, obj_type=c4d.Ocube)
+    # _make_pin_tag builds the payload by hand, exactly like a pre-field
+    # build did: no _PAYLOAD_HOST_TYPE anywhere in it.
+    tag = _make_pin_tag(host, pin_tag, c4d)
+    payload = tag.GetDataInstance().GetContainerInstance(pin_tag.ID_PIN_PAYLOAD)
+    assert payload.GetInt32(pin_tag._PAYLOAD_HOST_TYPE, 0) == 0
+
+    other = FakeObject("otra cosa", c4d, doc, obj_type=c4d.Olight)
+    tag._host = other
+
+    assert pin_tag._pin_warning_text(tag) == ""
+
+
+# --- Final review wave: the safety net is the restore's own precondition ----
+
+class _StorelessSafetyObject(FakeObject):
+    """The next tag ``MakeTag`` creates comes back orphaned (``GetObject()``
+    is ``None``), which is exactly what makes ``_store_pin`` on it return
+    False — i.e. the safety tag gets created but its state can NOT be
+    written into it. Armed per-call like ``_BrokenSafetyObject`` above, so
+    the artist's own pin tag is created normally first."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._break_next_store = False
+
+    def MakeTag(self, plugin_id):
+        tag = super().MakeTag(plugin_id)
+        if self._break_next_store:
+            self._break_next_store = False
+            tag.GetObject = lambda: None
+        return tag
+
+
+def test_restore_aborts_and_touches_nothing_when_the_safety_net_fails(sentinel_module):
+    """The invariant "if the net fails, the restore ABORTS" had nothing
+    pinning it: two separate mutations (dropping ``_restore``'s ``return
+    report`` on the failure branch, and making ``_capture_safety_pin``
+    return True regardless of what ``_store_pin`` said) both survived the
+    full suite, because every existing test exercised
+    ``_capture_safety_pin`` in isolation and never ``_restore``'s reaction
+    to it. Restoring net-less is the one thing this feature promises never
+    to do — there is no way back from it."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = _StorelessSafetyObject("rig", c4d, doc)
+    original = _make_pin_tag(host, pin_tag, c4d)  # captured name: "rig"
+    host.SetName("renombrado por error")  # something a restore WOULD undo
+    host._break_next_store = True
+
+    report = pin_tag._restore(original)
+
+    assert report == "no se pudo respaldar el estado actual — restauración cancelada"
+    assert pin_tag._read_last_restore(original) == report
+    # NOTHING in the scene may have moved: not the container, not the
+    # matrix, not the name, and no undo entry claiming otherwise.
+    assert host.set_data_calls == []
+    assert host.set_ml_calls == []
+    assert host.GetName() == "renombrado por error"
+    assert (c4d.UNDOTYPE_CHANGE, host) not in doc.undo_ops
+
+
+# --- Final review wave: the restore's own writes, asserted at last ----------
+
+def test_restore_writes_the_pinned_container_matrix_and_undo_entry(sentinel_module):
+    """Three mutations survived the full suite until this test — deleting
+    ``SetData`` (parameters never come back), deleting ``SetMl`` (the
+    transform never comes back) and deleting ``AddUndo(UNDOTYPE_CHANGE,
+    live_obj)`` (Cmd+Z reverts nothing). All three were invisible because
+    ``FakeObject.SetData``/``SetMl`` were bare ``pass``: the code paths
+    could not run under test at all. The fake records them now."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+    original = _make_pin_tag(host, pin_tag, c4d)
+
+    payload = original.GetDataInstance().GetContainerInstance(pin_tag.ID_PIN_PAYLOAD)
+    entry = payload.GetContainerInstance(pin_tag._PAYLOAD_ENTRIES).GetContainerInstance(0)
+    pinned_container = entry.GetContainerInstance(pin_tag._ENTRY_CONTAINER)
+    pinned_matrix = entry.GetMatrix(pin_tag._ENTRY_MATRIX, None)
+
+    pin_tag._restore(original)
+
+    assert host.set_data_calls == [pinned_container], (
+        "the pinned container must be written back onto the live object"
+    )
+    assert host.set_ml_calls == [pinned_matrix], (
+        "the pinned matrix must be written back onto the live object"
+    )
+    assert (c4d.UNDOTYPE_CHANGE, host) in doc.undo_ops, (
+        "without this undo entry a single Cmd+Z reverts nothing"
+    )
+
+
+def test_restore_applies_nothing_at_all_when_the_schema_is_unknown(sentinel_module):
+    """The schema gate mutated to ``if False`` survived the whole suite:
+    an unrecognised payload would then be applied HALF-understood, which
+    is worse than an untouched rig — the one thing PIN_SCHEMA exists to
+    prevent."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+    original = _make_pin_tag(host, pin_tag, c4d)
+    payload = original.GetDataInstance().GetContainerInstance(pin_tag.ID_PIN_PAYLOAD)
+    payload.SetInt32(pin_tag._PAYLOAD_SCHEMA, pin_tag.PIN_SCHEMA + 1)
+    host.SetName("renombrado por error")
+
+    report = pin_tag._restore(original)
+
+    assert report == ""
+    assert host.set_data_calls == []
+    assert host.set_ml_calls == []
+    assert host.GetName() == "renombrado por error"
+
+
+def test_unknown_schema_never_overwrites_the_safety_net(sentinel_module):
+    """The order of the two gates IS a safety property. With the schema
+    check AFTER the safety capture, a restore that applies nothing still
+    overwrote the net with the current state — silently destroying the
+    artist's only way back to what the PREVIOUS restore had backed up, with
+    no dialog, no note and no undo."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+    original = _make_pin_tag(host, pin_tag, c4d)
+    assert pin_tag._capture_safety_pin(original, host, doc) is True
+    safety = pin_tag._find_safety_tag(host)
+    # `_store_pin` always builds a BRAND NEW container, so an overwrite
+    # swaps this reference even when the content would look identical.
+    net_before = safety.GetDataInstance().GetContainerInstance(pin_tag.ID_PIN_PAYLOAD)
+
+    payload = original.GetDataInstance().GetContainerInstance(pin_tag.ID_PIN_PAYLOAD)
+    payload.SetInt32(pin_tag._PAYLOAD_SCHEMA, pin_tag.PIN_SCHEMA + 1)
+
+    assert pin_tag._restore(original) == ""
+
+    net_after = safety.GetDataInstance().GetContainerInstance(pin_tag.ID_PIN_PAYLOAD)
+    assert net_after is net_before, (
+        "a restore that applies nothing must not overwrite the safety net"
+    )
+
+
+# --- Final review wave: the AM repaint path must not unpack tracks ----------
+
+def test_matched_live_nodes_never_unpacks_the_stored_tracks(sentinel_module):
+    """``_matched_live_nodes`` runs on EVERY Attribute Manager repaint (via
+    the live-geometry warning) and needs only the list of location keys —
+    yet it used to build, per repaint, one dict per keyframe of per track
+    of per node and throw the whole lot away. The entry below refuses to
+    answer any track question, so reading a track field at all is a hard
+    failure instead of a silent cost."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    class _TrackTrapContainer(c4d.BaseContainer):
+        def GetInt32(self, key, default=0):
+            if key == pin_tag._ENTRY_TRACKS_COUNT:
+                raise AssertionError(
+                    "reading the location keys must not touch the tracks")
+            return super().GetInt32(key, default)
+
+        def GetContainerInstance(self, key):
+            if key == pin_tag._ENTRY_TRACKS:
+                raise AssertionError(
+                    "reading the location keys must not touch the tracks")
+            return super().GetContainerInstance(key)
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+    tag = _make_pin_tag(host, pin_tag, c4d)
+    payload = tag.GetDataInstance().GetContainerInstance(pin_tag.ID_PIN_PAYLOAD)
+    entries = payload.GetContainerInstance(pin_tag._PAYLOAD_ENTRIES)
+    trap = _TrackTrapContainer(entries.GetContainerInstance(0))
+    entries.SetContainer(0, trap)
+
+    assert pin_tag._matched_live_nodes(tag, payload) == [host]
