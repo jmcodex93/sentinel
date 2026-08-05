@@ -1247,6 +1247,37 @@ def test_get_ddescription_paints_the_summary_and_the_warning_as_two_rows(variant
         variant_tag.ID_GROUP_OPTIONS)
 
 
+def test_the_render_hint_is_painted_and_derived_like_the_other_two(variant_tag):
+    """La fila que dice lo que el recorrido del render deja detrás. Sin
+    pintarla, el aviso vive sólo en el motor puro y el artista no lo lee
+    nunca; sin derivarla en GetDParameter, se queda vacía para siempre."""
+    import c4d
+    from sentinel import variants
+
+    doc, tag, option_b = _scene_with_two_options(variant_tag, c4d)
+
+    description, _ = _describe(variant_tag, tag)
+    assert variant_tag.ID_VARIANTS_RENDER_HINT in [
+        row[0] for row in description.rows]
+
+    tag_data = _tag_data(variant_tag)
+    got = tag_data.GetDParameter(
+        tag, c4d.DescID(c4d.DescLevel(variant_tag.ID_VARIANTS_RENDER_HINT)), 0)
+    assert got[0] is True
+    assert got[1] == variants.render_hint_text(variant_tag.read_state(tag))
+    assert got[1].startswith("renderizar todas: 2 imágenes ·")
+
+    # Y es derivada, como el resumen y la advertencia: una escritura se traga
+    # y no congela el texto.
+    written = tag_data.SetDParameter(
+        tag, c4d.DescID(c4d.DescLevel(variant_tag.ID_VARIANTS_RENDER_HINT)),
+        "basura", 0)
+    assert written[0] is True
+    assert tag_data.GetDParameter(
+        tag, c4d.DescID(c4d.DescLevel(variant_tag.ID_VARIANTS_RENDER_HINT)), 0
+    )[1].startswith("renderizar todas: 2 imágenes ·")
+
+
 def test_get_ddescription_gives_up_when_a_row_cannot_be_declared(variant_tag):
     """Media descripción pintada es peor que ninguna: el Attribute Manager
     enseñaría un conjunto con menos opciones de las que tiene."""

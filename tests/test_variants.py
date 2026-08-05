@@ -204,6 +204,29 @@ def test_warning_is_empty_when_there_is_nothing_to_warn_about():
     assert text == ""
 
 
+# --- Lo que el recorrido del render deja detrás, ANTES de pulsarlo ----------
+
+def test_render_hint_says_how_many_images_and_how_much_undo():
+    """El recorrido deja UN bloque de deshacer y la escena como estaba. Es
+    el único gesto del tag cuyo paso de deshacer no cambia nada, así que es
+    el que sorprende: se dice en la fila, no en los docs."""
+    text = variants.render_hint_text(state(
+        [option("A"), option("B"), option("C")], active=0))
+    assert text == ("renderizar todas: 3 imágenes · un solo bloque de "
+                    "deshacer y la escena queda como estaba")
+
+
+def test_render_hint_uses_the_singular_for_one_option():
+    text = variants.render_hint_text(state([option("A")], active=0))
+    assert text.startswith("renderizar todas: 1 imagen ·")
+
+
+def test_render_hint_is_empty_without_options():
+    """Sin opciones el botón no tiene nada que recorrer: prometer un bloque
+    de deshacer que nunca se abre sería ruido."""
+    assert variants.render_hint_text(state([], active=None)) == ""
+
+
 # --- El parte de un cambio de opción ----------------------------------------
 
 def test_switch_report_says_nothing_when_the_option_was_already_mounted():

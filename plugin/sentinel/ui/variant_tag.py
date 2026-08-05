@@ -110,6 +110,11 @@ ID_VARIANTS_RENDER_ALL = 1005  # DTYPE_BUTTON — "Renderizar todas las opciones
 #: puede saber si está roto o sin hacer. Reservado sólo para que nadie
 #: reutilice el id.
 ID_VARIANTS_SEPARATOR = 1006   # DTYPE_SEPARATOR
+#: DTYPE_STATICTEXT — lo que el recorrido del render deja detrás (un bloque
+#: de deshacer, la escena como estaba), dicho ANTES de pulsarlo. Va pegado a
+#: su botón y no al bloque de estado: es información sobre una acción, no
+#: sobre el conjunto (ver variants.render_hint_text).
+ID_VARIANTS_RENDER_HINT = 1007
 
 #: El payload vive bajo un id de contenedor privado dentro del contenedor
 #: propio del tag, así viaja con el .c4d. Lejos del rango de ids de
@@ -1591,6 +1596,15 @@ class SentinelVariantsTag(_TagDataBase):
         ):
             return False
 
+        # Lo que ese recorrido deja detrás, dicho antes de pulsarlo: un
+        # bloque de deshacer y la escena como estaba. Pegado a su botón
+        # porque habla de la acción, no del conjunto.
+        if not self._set_description_parameter(
+            node, description, ID_VARIANTS_RENDER_HINT, c4d.DTYPE_STATICTEXT,
+            "", root, animatable=False
+        ):
+            return False
+
         # Resumen y límites en DOS filas separadas — nunca concatenadas
         # (lección del Pin: detrás del conteo, la advertencia es lo primero
         # que se trunca).
@@ -1618,6 +1632,9 @@ class SentinelVariantsTag(_TagDataBase):
         if parameter_id == ID_VARIANTS_WARNING:
             return (True, variants.warning_text(read_state(node)),
                     flags | c4d.DESCFLAGS_GET_PARAM_GET)
+        if parameter_id == ID_VARIANTS_RENDER_HINT:
+            return (True, variants.render_hint_text(read_state(node)),
+                    flags | c4d.DESCFLAGS_GET_PARAM_GET)
         row = _option_command(parameter_id, _payload_option_count(node))
         if row is not None and row[1] == _OPTION_ACTION_NAME:
             # El nombre de la OPCIÓN, dato propio del conjunto (el del tag es
@@ -1630,7 +1647,8 @@ class SentinelVariantsTag(_TagDataBase):
 
     def SetDParameter(self, node, id, data, flags):
         parameter_id = _desc_level_id(id)
-        if parameter_id in (ID_VARIANTS_STATUS, ID_VARIANTS_WARNING):
+        if parameter_id in (ID_VARIANTS_STATUS, ID_VARIANTS_WARNING,
+                            ID_VARIANTS_RENDER_HINT):
             # Strings derivados de sólo lectura: se traga la escritura.
             return True, flags | c4d.DESCFLAGS_SET_PARAM_SET
         row = _option_command(parameter_id, _payload_option_count(node))

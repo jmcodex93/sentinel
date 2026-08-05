@@ -408,3 +408,26 @@ def warning_text(state):
     if not parts:
         return ""
     return "⚠ " + " · ".join(parts)
+
+
+def render_hint_text(state):
+    """Lo que "Renderizar todas las opciones" va a hacer, dicho ANTES de
+    pulsarlo. "" cuando el conjunto no tiene opciones (el botón no tiene
+    nada que recorrer).
+
+    Existe por lo único que el recorrido deja detrás: **un** bloque de
+    deshacer. Los otros cinco gestos del tag cambian la escena a propósito y
+    el artista los deshace mirando lo que cambió; éste la deja como estaba
+    (monta cada opción y remonta la de partida dentro del mismo bloque), así
+    que un paso de deshacer que no cambia nada es justo el que sorprende
+    cuando aparece. Se dice cuántos y que la escena vuelve, en la fila, no
+    en los docs.
+
+    Deliberadamente NO dice "no deja nada que deshacer": el bracket es lo
+    que este arnés fija (uno, siempre), no cuántos pasos materializa C4D con
+    él — decir cero sería afirmar lo que no se ha medido en vivo."""
+    options = ((state or {}).get("options") or [])
+    if not options:
+        return ""
+    return "renderizar todas: %s · un solo bloque de deshacer y la escena queda como estaba" % (
+        pluralize_es(len(options), "imagen", "imágenes"))

@@ -1,6 +1,6 @@
 # Sentinel Variants — opciones que conviven, una activa (v1.36)
 
-**Fecha**: 2026-08-05 · **Estado**: diseño aprobado; spike bloqueante **ejecutado y resuelto** (2026-08-05), spec actualizado con el resultado. Listo para plan de implementación.
+**Fecha**: 2026-08-05 · **Estado**: implementado y live-verified en rama `feat/sentinel-variants` (pytest 1383).
 
 **Contexto**: sustituye a la "capa automática" que la v1.35 había anotado como v1.36. Esa idea se **descartó en este mismo brainstorm** y la razón queda registrada abajo, para que nadie la re-derive.
 
