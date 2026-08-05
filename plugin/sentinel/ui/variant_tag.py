@@ -1079,6 +1079,14 @@ def delete_option(tag, index):
 #: para componer.
 _RENDER_EXTENSION = ".png"
 
+#: Las imágenes de las opciones son material de DECISIÓN, no de entrega: no
+#: pueden aparecer sueltas en la carpeta de salida del render, mezcladas con
+#: los beauties que el artista entrega al cliente. Verificado en vivo: con un
+#: preset que guarda en ``.../ENTREGA/shot_beauty``, los PNG de las opciones
+#: aparecían sueltos en ``.../ENTREGA/``. Van en su propia subcarpeta, hija de
+#: la que ya resuelve ``_render_output_folder``.
+_VARIANTS_SUBFOLDER = "variants"
+
 
 def _current_take(doc):
     """El take activo, o ``None``. Hace falta para resolver ``$take`` en la
@@ -1243,6 +1251,13 @@ def render_all_options(tag):
       la restauración de arriba), así que no hay nada que deshacer.
     - Un fallo de una opción **no aborta** el resto (patrón del lote de
       matwire): se anota en ``failed`` y el recorrido sigue.
+    - Las imágenes van en la subcarpeta ``_VARIANTS_SUBFOLDER`` de la carpeta
+      de salida del render, nunca en ella directamente: esa carpeta es la que
+      el artista entrega al cliente, y las opciones son material de
+      decisión, no de entrega (verificado en vivo — sin esto, los PNG de las
+      opciones aparecían sueltos junto a los beauties de la entrega).
+      ``folder`` en el resultado nombra siempre esa subcarpeta, tanto si se
+      escribió en ella como si no se pudo ni crear.
     - Todo lo que el recorrido hace y no se ve **se cuenta**: lo que sacó del
       anclaje (``evacuated``, igual que los otros cuatro gestos que lo
       vacían) y el caso en que la opción de partida NO pudo volver a montarse
@@ -1268,6 +1283,9 @@ def render_all_options(tag):
         # un bracket, ni un cambio de opción. Renderizar a ninguna parte y
         # devolver "ok" sería el no-op silencioso de manual.
         return dict(fail, reason="unsaved_scene")
+    # Subcarpeta propia, nunca la carpeta de salida del render a secas: esa
+    # es la que el artista entrega al cliente (ver ``_VARIANTS_SUBFOLDER``).
+    folder = os.path.join(folder, _VARIANTS_SUBFOLDER)
     try:
         os.makedirs(folder, exist_ok=True)
     except Exception:
@@ -1275,7 +1293,10 @@ def render_all_options(tag):
         # desmontado o de sólo lectura, y decirle al artista "guarda la
         # escena primero" cuando la escena SÍ está guardada le manda a
         # guardarla otra vez y a leer lo mismo. El módulo ya separa
-        # ``render_failed`` de ``save_failed`` por esta misma razón.
+        # ``render_failed`` de ``save_failed`` por esta misma razón. El
+        # ``folder`` que se reporta aquí es la subcarpeta que no se pudo
+        # crear — ninguna imagen llegó a escribirse en ningún sitio, así que
+        # no hay "carpeta donde acabaron" que preferir sobre esta.
         return dict(fail, reason="folder_failed", folder=folder)
 
     stem_scene = _scene_stem(doc)

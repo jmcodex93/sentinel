@@ -2152,7 +2152,13 @@ def test_render_all_options_writes_one_image_per_option_named_after_it(
 ):
     """Una imagen por opción, con el nombre de SU opción y el contenido de SU
     opción: el segundo es lo que distingue "montó las tres" de "renderizó
-    tres veces la misma y les puso tres nombres"."""
+    tres veces la misma y les puso tres nombres".
+
+    Las imágenes caen en la subcarpeta ``variants/``, no en la carpeta de
+    salida del render a secas: esa es la que el artista entrega al cliente, y
+    las opciones son material de decisión, no de entrega (cambio de producto
+    tras verlo en vivo — con un preset guardando en ``.../ENTREGA/shot_beauty``
+    los PNG de las opciones aparecían sueltos en ``.../ENTREGA/``)."""
     import c4d
 
     doc, tag, harness = _renderable_set(variant_tag, c4d, monkeypatch, tmp_path)
@@ -2162,7 +2168,7 @@ def test_render_all_options_writes_one_image_per_option_named_after_it(
     assert result["ok"] is True
     assert result["rendered"] == 3
     assert result["failed"] == []
-    folder = tmp_path / "img"
+    folder = tmp_path / "img" / "variants"
     assert result["folder"] == str(folder)
     # Recorridas en el orden de la LISTA, no en el de aparcado.
     assert harness.renders == ["Opción A", "Opción B", "Opción C"]
@@ -2352,9 +2358,36 @@ def test_render_all_does_not_blame_the_artist_for_an_unwritable_folder(
 
     assert result["reason"] == "folder_failed"
     assert harness.renders == []
+    # La que reventó al crearse es la subcarpeta ``variants/``, no la carpeta
+    # de salida del render a secas — es la que se intentó crear y falló.
+    assert result["folder"] == str(tmp_path / "img" / "variants")
     text = variants.render_report_text(result)
     assert "no se pudo crear la carpeta de salida" in text
     assert "guarda la escena" not in text
+
+
+def test_render_all_options_writes_into_a_variants_subfolder_not_the_delivery_folder(
+    variant_tag, monkeypatch, tmp_path,
+):
+    """Cambio de producto pedido por el artista tras verlo en vivo: con un
+    preset que guarda en ``.../ENTREGA/shot_beauty``, los PNG de las opciones
+    aparecían sueltos en ``.../ENTREGA/`` — junto a los beauties que se
+    entregan al cliente. Las opciones son material de decisión, no de
+    entrega, así que van en su propia subcarpeta ``variants/``, y el parte
+    apunta a donde de verdad acabaron, no a la carpeta de arriba."""
+    import c4d
+
+    doc, tag, harness = _renderable_set(variant_tag, c4d, monkeypatch, tmp_path)
+
+    result = variant_tag.render_all_options(tag)
+
+    delivery_folder = tmp_path / "img"
+    variants_folder = delivery_folder / "variants"
+    assert result["folder"] == str(variants_folder)
+    assert sorted(p.name for p in delivery_folder.iterdir()) == ["variants"], (
+        "ningún PNG de opción debe quedar suelto en la carpeta de entrega")
+    written = sorted(p.name for p in variants_folder.iterdir())
+    assert len(written) == 3
 
 
 def test_two_options_that_want_the_same_file_are_not_both_counted(
@@ -2377,7 +2410,7 @@ def test_two_options_that_want_the_same_file_are_not_both_counted(
 
     assert result["rendered"] == 2
     assert result["failed"] == [("hero_v1", "name_clash")]
-    written = sorted(p.name for p in (tmp_path / "img").iterdir())
+    written = sorted(p.name for p in (tmp_path / "img" / "variants").iterdir())
     assert len(written) == result["rendered"], (
         "se cuenta lo entregado, no lo renderizado")
 
@@ -2407,7 +2440,7 @@ def test_two_untouched_sets_do_not_write_the_same_filenames(
     _RenderHarness(lampara.GetObject()).install(monkeypatch, c4d)
     variant_tag.render_all_options(lampara)
 
-    written = sorted(p.name for p in (tmp_path / "img").iterdir())
+    written = sorted(p.name for p in (tmp_path / "img" / "variants").iterdir())
     assert len(written) == 2, (
         "un archivo por conjunto: el segundo recorrido pisó al primero")
     assert any("sofá" in name for name in written)
