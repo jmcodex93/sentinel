@@ -113,7 +113,7 @@ Misma regla que el Pin: los límites se muestran en la fila del tag, no solo aqu
 
 - **Comparación lado a lado** (ver A y B a la vez): es otro mecanismo — dos subárboles visibles simultáneamente, con su propio problema de posición y de render.
 - **Opciones anidadas** (opciones dentro de opciones): una matriz que nadie sabe leer.
-- **Takes nativos como eje del sistema**: evaluados y descartados. Son el mecanismo de variantes de la casa y renderizan gratis, pero el artista no los usa, su interfaz es pesada para tres pruebas rápidas de intensidad, y chocan con los takes por formato del Frame. Se conservan como *salida*, no como base.
+- **Takes nativos, en cualquier papel.** Se evaluaron primero como eje del sistema y se descartaron por producto (el artista no los usa, su interfaz es pesada para tres pruebas rápidas de intensidad, y chocan con los takes por formato del Frame). Se conservaron como *salida* para enseñar opciones, y el spike los descartó también ahí, esta vez por mecanismo: sobrescriben parámetros, no jerarquía, y una opción inactiva tiene que salir de la jerarquía. No queda ningún papel para ellos en este diseño.
 - **Aligerar el peso de las copias** (instancias, proxies, descarga a disco): optimización sin problema medido detrás.
 
 ---
