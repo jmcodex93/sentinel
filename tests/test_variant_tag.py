@@ -46,6 +46,20 @@ veces esta semana):
   que anota lo pedido. No es un límite del arnés, son funciones llamables:
   toda esta capa estuvo sin ejecutar bajo test y cinco mutaciones que dejaban
   la feature sin UI sobrevivían la suite entera.
+
+OCTAVA RECURRENCIA (Tarea 3, cazada en vivo, no por esta suite): ``FakeObject``
+tiene identidad Python ESTABLE — ``GetUp()``/``GetDown()``/``GetNext()``/
+``doc.GetFirstObject()`` devuelven siempre el MISMO objeto para el mismo
+nodo, porque son punteros directos. C4D real no: cada lectura del mismo
+nodo entrega un envoltorio Python NUEVO (``id()`` distinto, medido en vivo),
+con ``hash()``/``==`` estables entre lecturas. El código de producción
+comparaba con ``id(obj)``/``is`` — que bajo el arnés normal SIEMPRE
+"funciona" (nunca hay dos lecturas distintas del mismo nodo que comparar),
+así que la suite daba verde con el bug ya en el código. ``_Reread`` (más
+abajo) tapa esa brecha, opt-in, sólo donde un test lo usa explícitamente —
+sigue sin modelar que TODAS las lecturas de C4D sean así siempre; sólo
+permite construir el escenario puntual de "dos caminos de lectura del mismo
+nodo" que expone el bug.
 """
 
 import importlib
@@ -204,6 +218,56 @@ class FakeObject:
 
     def __getitem__(self, key):
         return self._params.get(key)
+
+
+class _Reread:
+    """Una lectura NUEVA del mismo nodo — aditivo, sólo para los tests que
+    ejercitan el bug de identidad cazado en vivo en la Tarea 3 (ver
+    ``docs/superpowers/sdd/task-3-report.md``).
+
+    ``FakeObject`` normal tiene identidad Python ESTABLE: ``GetUp()``/
+    ``GetDown()``/``GetNext()``/``doc.GetFirstObject()`` siempre devuelven el
+    MISMO objeto Python para el mismo nodo, porque son punteros directos a
+    ``_parent``/``_children``. C4D real no hace eso — medido en vivo: dos
+    llamadas a ``d.GetFirstObject()`` sobre el MISMO documento devuelven dos
+    envoltorios con ``id()`` distinto del MISMO nodo, con ``hash()`` y
+    ``==`` estables entre ellos. Esa es la brecha exacta que ``FakeObject``
+    solo (identidad Python estable) no puede abrir: bajo el arnés normal,
+    comparar por ``id()`` en vez de por valor siempre "funciona", porque
+    nunca hay dos lecturas distintas del mismo nodo que comparar.
+
+    ``_Reread(node)`` envuelve un ``FakeObject`` YA existente y delega TODO
+    en él vía ``__getattr__``/``__getitem__``/``__setitem__`` — mismo nodo,
+    mismos hijos, mismo padre — salvo identidad: ``id(_Reread(node)) !=
+    id(node)`` siempre (dos objetos Python distintos), pero
+    ``_Reread(node) == node`` y ``hash(_Reread(node)) == hash(node)`` (calca
+    lo medido: hash/== estables, ``is`` no). Se usa envolviendo SÓLO uno de
+    los dos "caminos de lectura" que un test quiere hacer divergir (p.ej. la
+    selección que entra en una función vs. lo que la jerarquía entrega al
+    subir por ``GetUp()``), dejando el otro camino con el ``FakeObject`` raw
+    — igual que en C4D real, donde nunca hay ninguna garantía de qué camino
+    entrega qué envoltorio, sólo la garantía de que sean iguales POR VALOR."""
+
+    def __init__(self, node):
+        self._node = node
+
+    def __getattr__(self, name):
+        return getattr(self._node, name)
+
+    def __getitem__(self, key):
+        return self._node[key]
+
+    def __setitem__(self, key, value):
+        self._node[key] = value
+
+    def __eq__(self, other):
+        return self._node is getattr(other, "_node", other)
+
+    def __hash__(self):
+        return hash(self._node)
+
+    def __repr__(self):
+        return "_Reread(%r)" % (self._node,)
 
 
 class FakeDescription:
@@ -1225,3 +1289,117 @@ def test_message_leaves_messages_that_are_not_ours_alone(variant_tag):
 
     assert _tag_data(variant_tag).Message(tag, c4d.MSG_MENUPREPARE, None) is True
     assert variant_tag.read_state(tag)["active"] == 0
+
+
+# --- Bug de identidad cazado en vivo (Tarea 3) -------------------------------
+# ``id(obj)`` como identidad de nodo funcionaba en el arnés (identidad Python
+# estable) y NUNCA en C4D real (envoltorio nuevo por lectura, medido en
+# vivo). Los tres tests de abajo usan ``_Reread`` para reproducir exactamente
+# eso: dos "caminos de lectura" del MISMO nodo con ``id()`` propio, que es la
+# única forma de que estos tres sitios puedan fallar bajo test.
+
+def test_top_level_only_excludes_a_nested_child_read_via_a_different_wrapper(
+    variant_tag,
+):
+    """El padre entra en ``objects`` como una lectura (``_Reread``); subir
+    por ``GetUp()`` desde el hijo entrega OTRA lectura del mismo padre, con
+    ``id()`` propio. Comparar por ``id()`` no reconoce que son el mismo nodo
+    y deja pasar al hijo como si fuera una raíz propia — el bug medido en
+    vivo, aquí para ``_top_level_only`` en vez de para el orden de escena."""
+    import c4d
+
+    doc = _scene(c4d)
+    parent = _insert(doc, FakeObject("padre", c4d, doc))
+    child = _insert(doc, FakeObject("hijo", c4d, doc), parent)
+
+    result = variant_tag._top_level_only([_Reread(parent), child])
+
+    assert len(result) == 1, (
+        "el hijo se coló como raíz: la comprobación de anidamiento no "
+        "reconoció que _Reread(parent) y el padre real vuelto a leer vía "
+        "GetUp() son el MISMO nodo"
+    )
+    assert result[0] == parent
+
+
+def test_in_scene_order_reads_the_true_scene_order_not_click_order(variant_tag):
+    """Reproduce el caso medido EXACTO del brief: tres luces en la escena en
+    orden ``c, b, a`` y un orden de clic ``a, c, b``. Con ``id()`` la
+    búsqueda en el mapa de ``_document_order`` fallaba siempre (las
+    lecturas de ``roots`` vienen envueltas aparte de las que
+    ``doc.GetFirstObject()``/``GetNext()`` producen), así que TODO caía al
+    "al final" y el ``sorted()`` estable conservaba el orden de clic
+    intacto — el bug live-verified: la opción B salió con las luces en el
+    orden en que se pinchó, no en el que vivían en la escena."""
+    import c4d
+
+    doc = _scene(c4d)
+    luz_c = _insert(doc, FakeObject("luz_c", c4d, doc))
+    luz_b = _insert(doc, FakeObject("luz_b", c4d, doc))
+    luz_a = _insert(doc, FakeObject("luz_a", c4d, doc))
+
+    click_order = [_Reread(luz_a), _Reread(luz_c), _Reread(luz_b)]
+    ordered = variant_tag._in_scene_order(doc, click_order)
+
+    assert [obj.GetName() for obj in ordered] == ["luz_c", "luz_b", "luz_a"], (
+        "el orden de escena se perdió: order.get(id(obj), fallback) nunca "
+        "encontraba una entrada porque el recorrido de doc.GetFirstObject() "
+        "y la selección de roots son lecturas distintas del mismo nodo"
+    )
+
+
+def test_switch_does_not_double_evacuate_the_parked_option_read_via_a_different_wrapper(
+    variant_tag,
+):
+    """La opción A activa se lee dos veces por dos caminos distintos cuando
+    se cambia de opción: como hijo del anclaje (``_children_of``) y como el
+    ``BaseLink`` del payload (``_option_link`` / ``GetLink``). El test fuerza
+    que el segundo camino entregue un ``_Reread`` del mismo nodo — lo que
+    mide el brief como comportamiento real de C4D — y comprueba que NO se
+    reporta como un objeto "evacuado a mano": es la propia opción aparcada,
+    leída dos veces, no algo que el artista arrastrara al anclaje."""
+    import c4d
+
+    doc = _scene(c4d)
+    obj = _insert(doc, FakeObject("cubo", c4d, doc))
+    tag = variant_tag.create_variant_set(doc, [obj])["tag"]
+    anchor = tag.GetObject()
+    option_a = anchor._children[0]
+
+    option_b = _insert(doc, FakeObject("Opción B", c4d, doc))
+    _add_second_option(variant_tag, tag, c4d, doc, "Opción B", option_b)
+
+    # El BaseLink de la opción A pasa a resolver a un ENVOLTORIO nuevo del
+    # mismo nodo que ``anchor._children[0]`` — la lectura por GetLink nunca
+    # tiene por qué compartir wrapper con la lectura por jerarquía.
+    payload = variant_tag._read_payload_bc(tag)
+    opt_a_bc = variant_tag._option_bc(payload, 0)
+    opt_a_bc.SetLink(variant_tag._OPTION_LINK, _Reread(option_a))
+
+    mark = len(doc.events)
+    result = variant_tag.switch_to_option(tag, 1)
+
+    assert result["ok"] is True
+    assert result["evacuated"] == [], (
+        "la opción A activa, leída dos veces por dos caminos, se reportó "
+        "como una fila 'evacuated' fantasma — id()/is no reconoció que "
+        "_children_of(anchor)[0] y el park_node vía GetLink son el mismo nodo"
+    )
+    assert anchor._children == [option_b]
+    assert option_a._parent is not None
+    assert option_a._parent.GetName() == variant_tag.VARIANT_PARK_DEFAULT_NAME
+
+    # La comprobación que de verdad aísla el ``seen``/``id(node)`` del bucle
+    # de dedupe (líneas 649/651 del brief) de la de ``strays`` de más abajo:
+    # ``FakeObject.Remove()`` siempre registra el evento con el nodo CRUDO
+    # subyacente (``_Reread`` delega el método, no lo intercepta), así que
+    # si el bucle NO dedupe por valor, ``option_a`` se mueve DOS veces —
+    # visible aquí aunque ``strays`` (que sí compara por valor) ya saliera
+    # vacío por su cuenta.
+    removes = [e for e in doc.events[mark:]
+               if e[0] == "remove" and e[1] is option_a]
+    assert len(removes) == 1, (
+        "la opción A se reparentó %d veces: el bucle de dedupe de "
+        "'evacuate' no reconoció que el hijo del anclaje y el park_node "
+        "leído por GetLink son el MISMO nodo" % len(removes)
+    )

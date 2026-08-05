@@ -392,22 +392,31 @@ def _top_level_only(objects):
     seleccionado: envolver a un padre y a su hijo por separado metería al
     hijo dos veces. Mismo problema que ``keyframes.collect_shift_set``
     (v1.30) resolvió para el stagger, y con su misma corrección: la
-    pertenencia se comprueba contra el conjunto COMPLETO de ids
-    seleccionados (no contra un barrido hacia delante de "ya vistos"), así
-    que un hijo listado ANTES que su padre tampoco se cuela."""
+    pertenencia se comprueba contra el conjunto COMPLETO de seleccionados
+    (no contra un barrido hacia delante de "ya vistos"), así que un hijo
+    listado ANTES que su padre tampoco se cuela.
+
+    Identidad por VALOR, nunca por ``id()``: C4D devuelve un envoltorio
+    Python NUEVO en cada lectura del mismo nodo (medido en vivo —
+    ``d.GetFirstObject()`` dos veces da ``id()`` distinto del mismo objeto),
+    así que un ``obj`` de la selección y el ``ancestor`` que ``GetUp()``
+    entrega al subir por la jerarquía pueden ser dos envoltorios distintos
+    del MISMO nodo. ``hash()``/``==`` sí coinciden entre lecturas (también
+    medido), así que el propio ``BaseObject`` sirve como elemento de
+    ``set`` — comparar por ``id()`` aquí dejaba pasar hijos anidados como si
+    fueran raíces."""
     roots = [obj for obj in (objects or []) if obj is not None]
-    selected_ids = {id(obj) for obj in roots}
+    selected = set(roots)
     seen = set()
     out = []
     for obj in roots:
-        marker = id(obj)
-        if marker in seen:
+        if obj in seen:
             continue  # entrada duplicada literal en la selección
-        seen.add(marker)
+        seen.add(obj)
         ancestor = _get_up(obj)
         nested = False
         while ancestor is not None:
-            if id(ancestor) in selected_ids:
+            if ancestor in selected:
                 nested = True
                 break
             ancestor = _get_up(ancestor)
@@ -417,8 +426,18 @@ def _top_level_only(objects):
 
 
 def _document_order(doc):
-    """``{id(obj): posición}`` en el recorrido del Object Manager (primero en
+    """``{obj: posición}`` en el recorrido del Object Manager (primero en
     profundidad), para poder ordenar una selección como se LEE la escena.
+
+    Clave por VALOR (``obj`` en sí, no ``id(obj)``): el recorrido lee sus
+    propios envoltorios frescos vía ``GetDown()``/``GetNext()``, y el
+    llamador (``_in_scene_order``) busca en este mapa con los objetos de SU
+    propia selección — una lectura distinta del mismo nodo, con ``id()``
+    propio (medido en vivo). ``hash()``/``==`` sí coinciden entre lecturas,
+    así que el diccionario funciona con el ``BaseObject`` como clave
+    directamente; con ``id()`` la búsqueda fallaba siempre y todo caía al
+    "al final" de abajo, dejando el orden de clic intacto en vez del de
+    escena.
 
     Un objeto que no aparezca en el recorrido (documento que no expone
     ``GetFirstObject``, objeto fuera de él) simplemente no sale en el mapa;
@@ -433,7 +452,7 @@ def _document_order(doc):
         return order
     counter = 0
     while node is not None:
-        order[id(node)] = counter
+        order[node] = counter
         counter += 1
         child = None
         try:
@@ -476,7 +495,7 @@ def _in_scene_order(doc, roots):
     """
     order = _document_order(doc)
     fallback = len(order)
-    return sorted(roots, key=lambda obj: order.get(id(obj), fallback))
+    return sorted(roots, key=lambda obj: order.get(obj, fallback))
 
 
 def _anchor_name(first_object):
@@ -643,12 +662,23 @@ def switch_to_option(tag, index):
     # opciones, invisible para el resumen. El invariante ("el anclaje tiene
     # exactamente un hijo") se impone leyendo la escena, no confiando en el
     # payload.
+    #
+    # Identidad por VALOR en todo este bloque, nunca ``id()``/``is``: los
+    # nodos de ``_children_of(anchor)`` (jerarquía) y ``mount_node``/
+    # ``park_node`` (``GetLink`` sobre el payload) son lecturas DISTINTAS —
+    # C4D entrega un envoltorio Python nuevo cada vez (medido en vivo), así
+    # que la opción ya montada, leída por las dos vías, puede llegar aquí
+    # como dos objetos con ``id()`` propio. ``hash()``/``==`` sí coinciden
+    # entre lecturas: comparar por valor es lo único que dedupa de verdad y
+    # reconoce que ``park_node`` es el mismo nodo que su hijo del anclaje —
+    # con ``is``/``id()`` la opción activa se colaba dos veces en
+    # ``evacuate`` y salía reportada como un "stray" fantasma.
     evacuate = []
     seen = set()
     for node in _children_of(anchor) + ([park_node] if park_node is not None else []):
-        if node is None or node is mount_node or id(node) in seen:
+        if node is None or node == mount_node or node in seen:
             continue
-        seen.add(id(node))
+        seen.add(node)
         evacuate.append(node)
 
     # Lo que sale del anclaje SIN ser la opción que tocaba aparcar: objetos
@@ -656,7 +686,7 @@ def switch_to_option(tag, index):
     # la raíz con la visibilidad apagada. Los nombres se leen ANTES de
     # mover nada, mientras siguen donde el artista los dejó.
     strays = [_safe_node_name(node, "") for node in evacuate
-              if node is not park_node]
+              if node != park_node]
 
     # El cajón se resuelve ANTES de abrir el bracket, igual que los enlaces
     # de arriba: sin él no hay dónde vaciar el anclaje, y montar igual lo
