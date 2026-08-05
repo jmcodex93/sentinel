@@ -709,19 +709,16 @@ def _switch_work(tag, index):
     strays = [_safe_node_name(node, "") for node in evacuate
               if node != park_node]
 
-    # El cajón se resuelve ANTES de abrir el bracket, igual que los enlaces
-    # de arriba: sin él no hay dónde vaciar el anclaje, y montar igual lo
-    # dejaría con DOS hijos — el estado que el invariante existe para
-    # impedir. Comprobarlo dentro del bracket abría y cerraba un paso de
-    # deshacer que no deshacía nada — la misma regla que
-    # ``create_variant_set:517`` ("un paso de deshacer que no deshace nada
-    # es peor que ninguno"), aplicada aquí al revés hasta este fix.
-    container = None
-    if evacuate:
-        container = _ensure_park_container(doc, payload)
-        if container is None:
-            return "no_park_container", None
-
+    # El cajón NO se crea aquí. Aquí sólo se decide si hará falta, que es una
+    # lectura y no toca la escena. Crearlo fuera del bracket dejaba su
+    # ``InsertObject`` y su ``AddUndo(UNDOTYPE_NEWOBJ)`` a profundidad 0, y un
+    # ``AddUndo`` fuera de ``StartUndo``/``EndUndo`` no está definido por la
+    # API: o C4D lo descarta (y un Cmd+Z deja un null oculto huérfano en la
+    # raíz para siempre) o lo materializa como paso propio (y el PRIMER gesto
+    # de cada conjunto cuesta dos Cmd+Z, rompiendo el invariante justo en el
+    # gesto inaugural). ``render_all_options`` era el único que ya lo hacía
+    # bien —ahí ``_switch_work`` corre dentro del bracket— y esa incoherencia
+    # era la señal.
     return "", {
         "doc": doc,
         "anchor": anchor,
@@ -729,7 +726,6 @@ def _switch_work(tag, index):
         "mount": int(plan["mount"]),
         "mount_node": mount_node,
         "evacuate": evacuate,
-        "container": container,
         "strays": strays,
         "name": state["options"][plan["mount"]]["name"],
     }
@@ -737,14 +733,27 @@ def _switch_work(tag, index):
 
 def _apply_switch(tag, work):
     """El movimiento en sí. **No abre bracket**: quien llama decide en qué
-    paso de deshacer cae (ver ``_switch_work``)."""
+    paso de deshacer cae (ver ``_switch_work``).
+
+    Devuelve ``True``/``False``: ``False`` sólo si el cajón hacía falta y no
+    se pudo crear — el único fallo posible aquí, y quien llama lo traduce a
+    su propio motivo."""
     doc = work["doc"]
+    container = None
+    if work["evacuate"]:
+        # DENTRO del bracket que ya abrió quien llama (ver ``_switch_work``),
+        # y ANTES del primer ``AddUndo`` propio: si falla, el bracket se
+        # cierra VACÍO en vez de a medias.
+        container = _ensure_park_container(doc, work["payload"])
+        if container is None:
+            return False
     doc.AddUndo(c4d.UNDOTYPE_CHANGE, tag)
     for node in work["evacuate"]:
-        _reparent(doc, node, work["container"])
+        _reparent(doc, node, container)
     _reparent(doc, work["mount_node"], work["anchor"])
     work["payload"].SetInt32(_PAYLOAD_ACTIVE, work["mount"])
     _store_payload_bc(tag, work["payload"])
+    return True
 
 
 def switch_to_option(tag, index):
@@ -765,9 +774,12 @@ def switch_to_option(tag, index):
     doc = work["doc"]
     doc.StartUndo()
     try:
-        _apply_switch(tag, work)
+        applied = _apply_switch(tag, work)
     finally:
         doc.EndUndo()
+    if not applied:
+        return {"ok": False, "reason": "no_park_container", "name": "",
+                "evacuated": []}
 
     _event_add()
     return {
@@ -803,12 +815,22 @@ def _evacuate_anchor(doc, anchor, container, keep=None):
     confiando en el payload — el anclaje es un null corriente en el Object
     Manager y el artista puede haber arrastrado algo dentro.
 
+    ``keep`` admite un nodo o una lista de nodos: borrar una opción que NO
+    está montada tiene que conservar DOS (la víctima, que se borra justo
+    después, y la que sigue montada, que no se toca).
+
     Identidad por VALOR (``==``, nunca ``is``/``id()``): ``keep`` llega de un
     ``GetLink`` del payload y los hijos de ``_children_of``; en C4D real son
     lecturas distintas del MISMO nodo, con ``id()`` propio."""
+    if keep is None:
+        keeps = []
+    elif isinstance(keep, (list, tuple, set)):
+        keeps = [node for node in keep if node is not None]
+    else:
+        keeps = [keep]
     moved = []
     for node in _children_of(anchor):
-        if node is None or (keep is not None and node == keep):
+        if node is None or any(node == kept for kept in keeps):
             continue
         _reparent(doc, node, container)
         moved.append(node)
@@ -857,8 +879,38 @@ def duplicate_active_option(tag):
     source = _option_link(payload, active, doc)
     if source is None:
         return dict(fail, reason="lost_option")
+
+    # ``AliasTrans`` NO es opcional. ``GetClone`` a secas copia el subárbol
+    # pero deja sus ``BaseLink`` internos apuntando a los nodos del ORIGINAL
+    # — medido en vivo (C4D 2026.303) con una cámara y un Target tag
+    # apuntando a un cubo hermano dentro del mismo subárbol:
+    #
+    #     original             apunta dentro de su subárbol = True
+    #     clon SIN AliasTrans  apunta dentro de su subárbol = False
+    #     clon CON AliasTrans  apunta dentro de su subárbol = True
+    #
+    # y el NOMBRE del enlace es idéntico en los tres casos, así que a simple
+    # vista parece correcto: es un fallo silencioso puro. Con un Cloner en
+    # modo Object, un Effector con lista, una constraint o un XPresso dentro
+    # de la opción, la copia seguiría gobernada por la opción que el artista
+    # acaba de aparcar (oculta y fuera de la jerarquía), y se rompería sola
+    # el día que la borre.
+    #
+    # Si el traductor no se puede construir se ABORTA con ``clone_failed``:
+    # entregar una copia cableada al original es exactamente el resultado
+    # que este bloque existe para impedir, y hacerlo en silencio es peor que
+    # no duplicar.
     try:
-        clone = source.GetClone(c4d.COPYFLAGS_0)
+        alias = c4d.AliasTrans()
+        alias_ready = bool(alias.Init(doc))
+    except Exception:
+        alias, alias_ready = None, False
+    if not alias_ready:
+        return dict(fail, reason="clone_failed")
+    try:
+        clone = source.GetClone(c4d.COPYFLAGS_0, alias)
+        if clone is not None:
+            alias.Translate(True)
     except Exception:
         clone = None
     if clone is None:
@@ -871,17 +923,15 @@ def duplicate_active_option(tag):
     except Exception:
         pass
 
-    # El cajón se resuelve ANTES del bracket, igual que en switch_to_option:
+    # Aquí sólo se DECIDE si hará falta cajón (lectura, no toca la escena):
     # la opción que está puesta tiene que salir del anclaje, y sin sitio
     # donde ponerla montar la copia lo dejaría con DOS hijos. Sólo si hay
     # algo que sacar: un anclaje vacío no justifica un null de más en la
-    # raíz de la escena.
-    container = None
+    # raíz de la escena. Crearlo es cosa del bracket (ver ``_switch_work``:
+    # su ``AddUndo`` fuera del bracket no está definido por la API).
+    needs_container = bool(_children_of(anchor))
     strays = []
-    if _children_of(anchor):
-        container = _ensure_park_container(doc, payload)
-        if container is None:
-            return dict(fail, reason="no_park_container")
+    if needs_container:
         # Los nombres se leen ANTES de mover nada, mientras siguen donde el
         # artista los dejó (mismo patrón que switch_to_option). La opción
         # que se copia no cuenta: aparcarla es el gesto, no una sorpresa.
@@ -891,6 +941,14 @@ def duplicate_active_option(tag):
     index = len(state["options"])
     doc.StartUndo()
     try:
+        container = None
+        if needs_container:
+            container = _ensure_park_container(doc, payload)
+            if container is None:
+                # Se sale con el bracket ABIERTO a cero cambios: el
+                # ``finally`` lo cierra y C4D no ve ningún ``AddUndo``
+                # dentro. Peor sería crear el cajón fuera.
+                return dict(fail, reason="no_park_container")
         doc.AddUndo(c4d.UNDOTYPE_CHANGE, tag)
         if container is not None:
             _evacuate_anchor(doc, anchor, container)
@@ -1001,31 +1059,50 @@ def delete_option(tag, index):
         before = new_active if new_active < target else new_active + 1
         mount_node = _option_link(payload, before, doc)
         if mount_node is None:
-            return dict(fail, reason="lost_option")
+            # Motivo PROPIO: la opción ELEGIDA sí se encuentra (es la que se
+            # está borrando); la que falta es la SUSTITUTA. Es la misma
+            # asimetría que ``variants._RESTORE_REASONS`` ya corrigió para el
+            # render y que aquí decía lo contrario de lo que pasa.
+            return dict(fail, reason="lost_promote")
         mounted_name = state["options"][before]["name"]
 
-    # Lo que cuelga del anclaje sin ser la víctima tiene que salir para poder
-    # montar la que promociona — y sin cajón no hay dónde. Resuelto ANTES del
-    # bracket (misma regla que switch_to_option).
-    container = None
-    stray_names = []
-    if mount_node is not None:
-        strays = [node for node in _children_of(anchor)
-                  if node is not None and (victim is None or node != victim)]
-        if strays:
-            # Nombres leídos ANTES de mover nada, mientras siguen donde el
-            # artista los dejó (mismo patrón que switch_to_option).
-            stray_names = [_safe_node_name(node, "") for node in strays]
-            container = _ensure_park_container(doc, payload)
-            if container is None:
-                return dict(fail, reason="no_park_container")
+    # Lo que cuelga del anclaje sin ser la víctima NI lo que debe quedar
+    # montado tiene que salir: el invariante ("el anclaje tiene exactamente
+    # un hijo") lo imponen los otros cuatro gestos, y borrar una opción NO
+    # montada lo dejaba sin imponer y sin reportar — un objeto que el artista
+    # arrastró al anclaje se quedaba ahí junto a la opción montada, dos hijos
+    # y nadie contándolo.
+    #
+    # Se borra la montada  → ``keep`` es la que promociona (que aún NO está
+    #                         en el anclaje: el filtro es inocuo, y la
+    #                         víctima se excluye porque se borra a
+    #                         continuación).
+    # Se borra otra        → ``keep`` es la que sigue montada, que no se toca.
+    keep_node = mount_node
+    if keep_node is None and state["active"] is not None:
+        keep_node = _option_link(payload, int(state["active"]), doc)
+    strays = [node for node in _children_of(anchor)
+              if node is not None
+              and (victim is None or node != victim)
+              and (keep_node is None or node != keep_node)]
+    # Nombres leídos ANTES de mover nada, mientras siguen donde el artista
+    # los dejó (mismo patrón que switch_to_option).
+    stray_names = [_safe_node_name(node, "") for node in strays]
+    needs_container = bool(strays)
 
     doc.StartUndo()
     try:
+        container = None
+        if needs_container:
+            # DENTRO del bracket (ver ``_switch_work``).
+            container = _ensure_park_container(doc, payload)
+            if container is None:
+                return dict(fail, reason="no_park_container")
         doc.AddUndo(c4d.UNDOTYPE_CHANGE, tag)
+        if container is not None:
+            _evacuate_anchor(doc, anchor, container,
+                             keep=[victim, keep_node])
         if mount_node is not None:
-            if container is not None:
-                _evacuate_anchor(doc, anchor, container, keep=victim)
             _reparent(doc, mount_node, anchor)
         if victim is not None:
             # DELETEOBJ antes del Remove, patrón de fixes.py/scene_tools.py:
@@ -1349,19 +1426,30 @@ def render_all_options(tag):
         # La opción original vuelve a su sitio pase lo que pase, dentro del
         # MISMO bracket: si esto quedara fuera, un fallo a mitad dejaría al
         # artista mirando una opción que él no puso.
+        #
+        # Y el ``EndUndo`` va en un ``finally`` PROPIO: hasta este fix era la
+        # última línea del ``finally`` de fuera, detrás de la restauración y
+        # sin protección, así que cualquier excepción restaurando se llevaba
+        # por delante el cierre del bracket. Un ``StartUndo`` sin cerrar deja
+        # el sistema de undo de C4D fundiendo las operaciones siguientes en
+        # ese paso — el bracket desbalanceado que causó el bug real de
+        # matwire v1.32.
         restore_failed = ""
-        if original is not None:
-            restore_reason, restore_work = _switch_work(tag, original)
-            if restore_reason and restore_reason != "already_active":
-                # No se pudo remontar: la escena se queda en OTRA opción. Es
-                # best-effort por fuerza (con la opción de partida huérfana no
-                # hay nada que remontar), pero callarlo deja al artista con
-                # una escena cambiada y un parte que no lo menciona.
-                restore_failed = restore_reason
-            elif restore_work is not None:
-                _apply_switch(tag, restore_work)
-                evacuated.extend(restore_work["strays"])
-        doc.EndUndo()
+        try:
+            if original is not None:
+                restore_reason, restore_work = _switch_work(tag, original)
+                if restore_reason and restore_reason != "already_active":
+                    # No se pudo remontar: la escena se queda en OTRA opción.
+                    # Es best-effort por fuerza (con la opción de partida
+                    # huérfana no hay nada que remontar), pero callarlo deja
+                    # al artista con una escena cambiada y un parte que no lo
+                    # menciona.
+                    restore_failed = restore_reason
+                elif restore_work is not None:
+                    _apply_switch(tag, restore_work)
+                    evacuated.extend(restore_work["strays"])
+        finally:
+            doc.EndUndo()
 
     _event_add()
     return {
@@ -1639,9 +1727,16 @@ class SentinelVariantsTag(_TagDataBase):
         if row is not None and row[1] == _OPTION_ACTION_NAME:
             # El nombre de la OPCIÓN, dato propio del conjunto (el del tag es
             # el nombre del conjunto y no se toca aquí).
-            state = read_state(node)
-            if 0 <= row[0] < len(state["options"]):
-                return (True, state["options"][row[0]]["name"],
+            #
+            # Leído DIRECTO del payload, nunca vía ``read_state``: ese
+            # recorre el subárbol de TODAS las opciones resueltas, así que
+            # con N opciones el Attribute Manager pagaba O(N × objetos) por
+            # repintado y por fila sólo para sacar un string que está aquí al
+            # lado. Es el mismo recorrido que ``_subtree_object_count`` ya
+            # quitó de un sitio y que había vuelto a entrar por esta puerta.
+            option = _option_bc(_read_payload_bc(node), row[0])
+            if option is not None:
+                return (True, option.GetString(_OPTION_NAME, ""),
                         flags | c4d.DESCFLAGS_GET_PARAM_GET)
         return False
 

@@ -280,16 +280,22 @@ def Register():
     # nada en el viewport. Fallo no fatal, mismo patrón que los dos de
     # arriba.
     #
-    # TAG_MULTIPLE es OBLIGATORIO, no pulido: sin él C4D impone
-    # una-instancia-por-objeto para este tipo de tag y
-    # BaseObject.MakeTag()/InsertTag() EXPULSA en silencio cualquier tag del
-    # mismo tipo al añadir un segundo, invalidando además toda referencia
-    # Python viva al expulsado (Maxon SDK, BaseObject.InsertTag). Eso fue la
-    # causa raíz del Critical en vivo de la v1.35 y aquí rompería el caso
-    # ordinario de dos conjuntos de opciones conviviendo. No lo quites.
+    # SIN TAG_MULTIPLE, a propósito — y al revés que el Pin de arriba, que sí
+    # lo necesita (un Pin = un estado, y varios sobre el MISMO objeto son su
+    # diseño). Aquí un tag = un CONJUNTO, y dos conjuntos viven sobre DOS
+    # anclajes distintos: ``create_variant_set`` fabrica un anclaje nuevo cada
+    # vez, así que el flag no compra nada al flujo real. Lo que sí permitía
+    # era copiar un tag Variants sobre un anclaje que YA tiene uno (Ctrl y
+    # arrastrar el tag a su propio anclaje): los dos payloads apuntan a los
+    # MISMOS nulls de opción, cada tag impone "un solo hijo" contra el otro y
+    # ``read_state`` del segundo sigue viendo su opción como resuelta (está
+    # aparcada, no perdida) — un conjunto gobernado en secreto por otro, sin
+    # que nada lo diga. Sin el flag es el propio C4D quien impide la
+    # configuración, en el gesto y gratis. (El comentario anterior decía
+    # "dos conjuntos conviviendo", que es justo lo que el flag NO gobierna.)
     if _SENTINEL_VARIANT_TAG_AVAILABLE and SentinelVariantsTag is not None:
         try:
-            variant_tag_info = c4d.TAG_VISIBLE | c4d.TAG_EXPRESSION | c4d.TAG_MULTIPLE
+            variant_tag_info = c4d.TAG_VISIBLE | c4d.TAG_EXPRESSION
             variant_tag_ok = plugins.RegisterTagPlugin(
                 id=SENTINEL_VARIANT_TAG_PLUGIN_ID,
                 # VARIANT_TAG_DEFAULT_NAME, nunca un literal retecleado: el

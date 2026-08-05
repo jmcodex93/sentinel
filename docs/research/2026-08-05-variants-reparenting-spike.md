@@ -97,3 +97,22 @@ Save -> 1   existe=True   bytes=1664
 **El caso base era obligatorio**: una escena vacía renderiza un bitmap negro con `result=OK`, exactamente el resultado nulo que parece una respuesta. Solo comparando contra una escena con contenido (0 vs 8058) la medición dice algo.
 
 **Consecuencia**: se implementa la vía 1 (bucle de opciones → `RenderDocument` → `Save`). La segunda vía —ruta de salida por opción + render nativo asíncrono esperando con el predicado de `renderwatch.py`— **no hace falta** y no se explora.
+
+---
+
+## 5. ¿Escribe Redshift a la carpeta de ENTREGA al renderizar las opciones? (resultado NEGATIVO, review final de rama)
+
+**Por qué se midió**: la revisión final de rama levantó un Critical razonando que, con AOVs de Redshift en *direct output*, el motor escribe sus propios archivos por su cuenta — así que el render de las opciones (que corre con el contenedor de ajustes CLONADO y `RDATA_SAVEIMAGE` apagado) dejaría un reguero de EXR en la carpeta que el artista entrega al cliente, aunque el PNG de la opción sí acabe en `variants/`. El razonamiento es plausible: la escritura de AOVs de RS no pasa por el guardado de C4D.
+
+**La medición dice lo contrario.** 11 AOVs de Sentinel aplicados en *direct output* apuntando a una carpeta de entrega, con `RDATA_SAVEIMAGE=True` en el preset del artista, renderizando exactamente como lo hace el código (contenedor clonado, save apagado, `RENDERFLAGS_EXTERNAL`):
+
+```
+en DIRECT OUTPUT: 11
+ruta efectiva ejemplo: '…/ENTREGA/Untitled_8_AOV_Beauty.exr'
+render result=0
+ARCHIVOS ESCRITOS EN LA ENTREGA: NINGUNO
+```
+
+**Veredicto: `RENDERFLAGS_EXTERNAL` con el contenedor clonado también neutraliza la escritura de Redshift.** No hay nada que arreglar y no se tocó nada.
+
+Queda escrito aquí, y no sólo en el hilo de la review, porque en este repo un resultado negativo vale lo mismo que uno positivo: sin esta nota el mismo razonamiento —que sigue siendo plausible— se vuelve a derivar en la próxima revisión y cuesta otra sesión de medición.

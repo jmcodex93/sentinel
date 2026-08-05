@@ -76,6 +76,8 @@ class FakeDoc:
         self.start_undo_count = 0
         self.end_undo_count = 0
         self.undo_ops = []
+        self.undo_depth = 0
+        self.undo_depths = []
         self.root = []
         # Registro ORDENADO de todo lo que pasa (undo + movimientos), para
         # poder afirmar que el AddUndo de un objeto precede a su Remove —
@@ -98,12 +100,21 @@ class FakeDoc:
 
     def StartUndo(self):
         self.start_undo_count += 1
+        self.undo_depth += 1
 
     def EndUndo(self):
         self.end_undo_count += 1
+        self.undo_depth -= 1
 
     def AddUndo(self, undo_type, target):
         self.undo_ops.append((undo_type, target))
+        # La PROFUNDIDAD del bracket en la que cae cada AddUndo — aditivo, y
+        # la única forma de ver la propiedad que el Important 4 pide: un
+        # ``AddUndo`` a profundidad 0 (fuera de todo StartUndo/EndUndo) no
+        # está definido por la API de C4D, así que un gesto que registre ahí
+        # o pierde su undo o se gasta un Cmd+Z de más. ``undo_ops`` afirma
+        # PERTENENCIA y no puede distinguir los dos casos.
+        self.undo_depths.append((undo_type, target, self.undo_depth))
         self.events.append(("undo", undo_type, target))
 
     def GetFirstObject(self):
@@ -125,8 +136,25 @@ class FakeTag:
         self._host = host
         self._type = plugin_id
         self._name = name
+        self._c4d = c4d
         self._bc = c4d.BaseContainer()
         self._doc = doc
+        # Los ``BaseLink`` que un tag guarda hacia OTROS nodos (el objetivo de
+        # un Target tag, la lista de un Effector). Aditivo: es donde vive el
+        # enlace interno del escenario que se midió en vivo para el Critical
+        # 1, y sin modelarlo la rama del AliasTrans no es observable.
+        self._links = {}
+
+    def _clone_onto(self, host, alias=None):
+        clone = FakeTag(host, self._type, self._name, self._c4d, host._doc)
+        clone._bc = self._bc.GetClone()
+        # Los enlaces se copian TAL CUAL, apuntando al ORIGINAL — que es
+        # exactamente lo que hace C4D sin AliasTrans (medido en vivo). Es el
+        # traductor, y sólo él, quien los reapunta después.
+        clone._links = dict(self._links)
+        if alias is not None:
+            alias.register(self, clone)
+        return clone
 
     def GetObject(self):
         return self._host
@@ -156,6 +184,9 @@ class FakeObject:
         self._children = []
         self._tags = []
         self._params = {}
+        # Ver ``FakeTag._links``: un enlace también puede vivir en el objeto
+        # (el objeto que un Cloner en modo Object lee, p.ej.).
+        self._links = {}
         for child in list(children or []):
             self._children.append(child)
             child._parent = self
@@ -220,11 +251,18 @@ class FakeObject:
             self._doc.events.append(("insert_under", self, parent))
 
     # -- copia
-    def GetClone(self, flags=0):
+    def GetClone(self, flags=0, alias=None):
         """Copia PROFUNDA del subárbol — aditivo al arnés, porque sin él la
         rama de duplicar no se puede ejercitar bajo test EN ABSOLUTO
         (``c4d.BaseObject`` ya está parcheado por el fixture; ``GetClone`` no
         existía en ningún sitio).
+
+        Copia también los TAGS (aditivo, cierra el Minor 9 de la review: sin
+        ellos ningún test de duplicar ejercitaba un subárbol con tags, que es
+        el caso ORDINARIO — material, textura, restricción) y los enlaces,
+        éstos apuntando al ORIGINAL, que es lo que C4D hace sin traductor
+        (medido en vivo). Con ``alias``, cada pareja (original, copia) queda
+        registrada y ``AliasTrans.Translate`` reapunta después.
 
         Lo que NO modela, y por eso el límite nº2 del spec se verifica en
         vivo y no aquí: que los tags de material del clon apunten a los
@@ -234,8 +272,13 @@ class FakeObject:
         fichero."""
         clone = FakeObject(self._name, self._c4d, None)
         clone._params = dict(self._params)
+        clone._links = dict(self._links)
+        for tag in self._tags:
+            clone._tags.append(tag._clone_onto(clone, alias))
+        if alias is not None:
+            alias.register(self, clone)
         for child in self._children:
-            child_clone = child.GetClone(flags)
+            child_clone = child.GetClone(flags, alias)
             child_clone._parent = clone
             clone._children.append(child_clone)
         return clone
@@ -1089,6 +1132,7 @@ def test_switch_without_a_park_container_mounts_nothing(variant_tag, monkeypatch
 
     monkeypatch.setattr(variant_tag, "_ensure_park_container",
                         lambda doc_, payload: None)
+    undo_mark = len(doc.undo_ops)
     result = variant_tag.switch_to_option(tag, 1)
 
     assert result["ok"] is False
@@ -1097,14 +1141,32 @@ def test_switch_without_a_park_container_mounts_nothing(variant_tag, monkeypatch
     assert option_b._parent is not anchor
     payload = variant_tag._read_payload_bc(tag)
     assert payload.GetInt32(variant_tag._PAYLOAD_ACTIVE, -1) == 0
-    # CAMBIADA (fixes-3, Minor 3): antes fijaba (2, 2) — un bracket vacío se
-    # abría y cerraba en switch_to_option sin mover nada, el mismo defecto
-    # que create_variant_set:517 prohíbe por escrito ("un paso de deshacer
-    # que no deshace nada es peor que ninguno"). El fix comprueba el cajón
-    # ANTES de abrir el bracket, así que un switch fallido por falta de
-    # cajón ya no gasta un paso de deshacer: sólo el (1, 1) del create.
-    assert (doc.start_undo_count, doc.end_undo_count) == (1, 1), (
-        "sin cajón, switch_to_option no abre bracket — sólo el del create"
+    # CAMBIADA DOS VECES, y la segunda a la fuerza. La primera (fixes-3,
+    # Minor 3) la bajó de (2, 2) a (1, 1): comprobar el cajón ANTES del
+    # bracket evitaba abrir uno vacío. El Important 4 de la review final
+    # midió el precio de esa comprobación —el ``AddUndo(UNDOTYPE_NEWOBJ)``
+    # del cajón caía a profundidad 0, fuera de todo bracket, que la API de
+    # C4D no define— y las dos propiedades son incompatibles: la única forma
+    # de saber si el cajón se puede crear es CREARLO, y crearlo dentro del
+    # bracket significa que un fallo deja el bracket abierto y vacío.
+    #
+    # Se elige la profundidad. La razón no es de estilo: el registro a
+    # profundidad 0 pasa en el PRIMER gesto de CADA conjunto (o pierde el
+    # cajón en el Cmd+Z, o cuesta dos), mientras que esta rama de fallo es
+    # inalcanzable en producción —``_ensure_park_container`` sólo devuelve
+    # None si ``c4d.BaseObject`` lo devuelve, y ahí ya habría reventado— y
+    # aquí sólo existe monkeypatcheada.
+    #
+    # Lo que NO se relaja: el bracket abortado no puede llevar NADA dentro.
+    # Un paso vacío es discutible; uno a medias no.
+    assert (doc.start_undo_count, doc.end_undo_count) == (2, 2), (
+        "el bracket se abre antes de intentar crear el cajón, y se cierra"
+    )
+    assert doc.undo_ops[undo_mark:] == [], (
+        "el bracket abortado no registra ni un solo undo"
+    )
+    assert [depth for _t, _target, depth in doc.undo_depths if depth < 1] == [], (
+        "ningún AddUndo cae fuera de un bracket"
     )
     assert variants.switch_report_text(result) == (
         "no se cambió de opción — no se pudo crear el contenedor de aparcado"
@@ -2546,3 +2608,330 @@ def test_the_render_all_button_is_painted(variant_tag):
     description, _ = _describe(variant_tag, tag)
 
     assert description.bc_of(variant_tag.ID_VARIANTS_RENDER_ALL) is not None
+
+
+# --- Ola final de la review: enlaces internos, profundidad del bracket -------
+#
+# Los dos primeros bloques de aquí abajo sólo existen porque el arnés se
+# amplió para poder VERLOS (``FakeObject._links`` + ``GetClone(alias)`` +
+# ``FakeTag._clone_onto`` + ``c4d.AliasTrans`` en conftest, y
+# ``FakeDoc.undo_depths``). Sin esas ampliaciones los dos caminos —el cableado
+# interno de una copia y la profundidad a la que se registra un ``AddUndo``—
+# no eran observables bajo test, que es exactamente por qué los dos bugs
+# llegaron verdes hasta la review final.
+
+
+def _subtree(node):
+    out = []
+    for child in node._children:
+        out.append(child)
+        out.extend(_subtree(child))
+    return out
+
+
+def test_duplicating_rewires_internal_links_to_the_copy(variant_tag):
+    """El Critical 1, medido en vivo antes de escribirse este test: ``GetClone``
+    sin ``AliasTrans`` deja los ``BaseLink`` internos del subárbol apuntando a
+    los nodos del ORIGINAL, con el MISMO nombre de enlace — un Cloner en modo
+    Object dentro de la copia seguiría leyendo el spline de la opción que el
+    artista acaba de aparcar (oculta, fuera de la jerarquía), y se rompería
+    sola el día que la borre."""
+    import c4d
+
+    doc, tag = _one_option_set(variant_tag, c4d)
+    option_a = tag.GetObject()._children[0]
+    target = _insert(doc, FakeObject("objetivo", c4d, doc), option_a)
+    reader = _insert(doc, FakeObject("cloner", c4d, doc), option_a)
+    reader._links["object"] = target
+
+    assert variant_tag.duplicate_active_option(tag)["ok"] is True
+
+    clone = tag.GetObject()._children[0]
+    clone_reader = [node for node in _subtree(clone)
+                    if node.GetName() == "cloner"][0]
+    linked = clone_reader._links["object"]
+    assert linked is not target, (
+        "la copia no puede quedar leyendo el subárbol de la opción original"
+    )
+    assert linked in _subtree(clone), "el enlace apunta DENTRO de la copia"
+
+
+def test_duplicating_copies_the_tags_of_the_subtree(variant_tag):
+    """El Minor 9, que es la misma raíz que el Critical 1: hasta este fix
+    ``FakeObject.GetClone`` no copiaba ``_tags``, así que ningún test de
+    duplicar ejercitaba un subárbol CON tags — el caso ordinario (material,
+    textura, restricción).
+
+    HONESTIDAD: esta aserción fija el ARNÉS, no C4D. Que ``GetClone`` real se
+    lleve los tags es un hecho de C4D. Lo que compra es que el test de arriba
+    y el de abajo puedan correr sobre un enlace que vive en un TAG, que es
+    donde vive en el escenario medido en vivo."""
+    import c4d
+
+    doc, tag = _one_option_set(variant_tag, c4d)
+    option_a = tag.GetObject()._children[0]
+    camera = _insert(doc, FakeObject("cámara", c4d, doc), option_a)
+    camera.MakeTag(123456)
+
+    assert variant_tag.duplicate_active_option(tag)["ok"] is True
+
+    clone = tag.GetObject()._children[0]
+    clone_camera = [node for node in _subtree(clone)
+                    if node.GetName() == "cámara"][0]
+    assert [t.GetType() for t in clone_camera.GetTags()] == [123456]
+    assert clone_camera.GetTags()[0] is not camera.GetTags()[0]
+
+
+def test_duplicating_rewires_a_link_that_lives_in_a_tag(variant_tag):
+    """El escenario EXACTO que se midió en vivo (una cámara con un Target tag
+    apuntando a un hermano del mismo subárbol): el enlace no vive en el
+    objeto, vive en su tag, y es el que se ve idéntico por nombre estando
+    mal."""
+    import c4d
+
+    doc, tag = _one_option_set(variant_tag, c4d)
+    option_a = tag.GetObject()._children[0]
+    target = _insert(doc, FakeObject("objetivo", c4d, doc), option_a)
+    camera = _insert(doc, FakeObject("cámara", c4d, doc), option_a)
+    target_tag = camera.MakeTag(123456)
+    target_tag._links["target"] = target
+
+    assert variant_tag.duplicate_active_option(tag)["ok"] is True
+
+    clone = tag.GetObject()._children[0]
+    clone_camera = [node for node in _subtree(clone)
+                    if node.GetName() == "cámara"][0]
+    linked = clone_camera.GetTags()[0]._links["target"]
+    assert linked is not target
+    assert linked in _subtree(clone)
+    assert linked.GetName() == target.GetName(), (
+        "el nombre coincide en los dos casos — por eso el fallo es silencioso"
+    )
+
+
+def test_duplicating_gives_up_rather_than_delivering_a_miswired_copy(variant_tag):
+    """Si el traductor de enlaces no se puede construir se ABORTA. Degradar a
+    un ``GetClone`` pelado entregaría en silencio justo la copia que el fix
+    existe para impedir."""
+    import c4d
+    from sentinel import variants
+
+    doc, tag = _one_option_set(variant_tag, c4d)
+
+    class _Broken:
+        def Init(self, doc_):
+            return False
+
+    monkey = c4d.AliasTrans
+    c4d.AliasTrans = _Broken
+    try:
+        result = variant_tag.duplicate_active_option(tag)
+    finally:
+        c4d.AliasTrans = monkey
+
+    assert result["ok"] is False and result["reason"] == "clone_failed"
+    assert len(variant_tag.read_state(tag)["options"]) == 1
+    assert variants.action_report_text(result) == (
+        "no se duplicó la opción — no se pudo copiar la opción"
+    )
+
+
+def _park_depths(doc, c4d, park):
+    return [depth for kind, target, depth in doc.undo_depths
+            if kind == c4d.UNDOTYPE_NEWOBJ and target is park]
+
+
+def test_switching_creates_the_park_container_inside_the_bracket(variant_tag):
+    """El Important 4. ``AddUndo`` a profundidad 0 no está definido por la
+    API: o C4D lo descarta (y el Cmd+Z deja un null oculto huérfano en la raíz
+    para siempre) o lo materializa como paso propio (y el PRIMER gesto de cada
+    conjunto cuesta dos Cmd+Z). ``undo_ops`` sólo afirma pertenencia y no
+    distingue los dos casos; ``undo_depths`` sí."""
+    import c4d
+
+    doc, tag, option_b = _two_option_set(variant_tag, c4d)
+    option_a = tag.GetObject()._children[0]
+
+    variant_tag.switch_to_option(tag, 1)
+
+    park = option_a._parent
+    assert park.GetName() == variant_tag.VARIANT_PARK_DEFAULT_NAME
+    assert _park_depths(doc, c4d, park) == [1]
+
+
+def test_duplicating_creates_the_park_container_inside_the_bracket(variant_tag):
+    """Mismo Important 4, segundo de los tres gestos manuales."""
+    import c4d
+
+    doc, tag = _one_option_set(variant_tag, c4d)
+    option_a = tag.GetObject()._children[0]
+
+    assert variant_tag.duplicate_active_option(tag)["ok"] is True
+
+    park = option_a._parent
+    assert park.GetName() == variant_tag.VARIANT_PARK_DEFAULT_NAME
+    assert _park_depths(doc, c4d, park) == [1]
+
+
+def test_deleting_creates_the_park_container_inside_the_bracket(variant_tag):
+    """Mismo Important 4, tercero de los tres gestos manuales. Hace falta algo
+    que evacuar para que el cajón llegue a existir: borrar la opción montada
+    NO lo pide por sí solo (la víctima se borra, no se aparca), así que el
+    escenario es el de un objeto que el artista arrastró al anclaje."""
+    import c4d
+
+    doc, tag, option_b = _two_option_set(variant_tag, c4d)
+    anchor = tag.GetObject()
+    stray = _insert(doc, FakeObject("intruso", c4d, doc), anchor)
+
+    assert variant_tag.delete_option(tag, 0)["ok"] is True
+
+    park = stray._parent
+    assert park is not None and park.GetName() == \
+        variant_tag.VARIANT_PARK_DEFAULT_NAME
+    assert _park_depths(doc, c4d, park) == [1]
+
+
+def test_no_gesture_registers_an_undo_outside_a_bracket(variant_tag):
+    """La propiedad general, no una por gesto: ningún ``AddUndo`` de ningún
+    camino cae a profundidad 0."""
+    import c4d
+
+    doc, tag, option_b = _two_option_set(variant_tag, c4d)
+    variant_tag.switch_to_option(tag, 1)
+    variant_tag.duplicate_active_option(tag)
+    variant_tag.delete_option(tag, 0)
+
+    assert [entry for entry in doc.undo_depths if entry[2] < 1] == []
+
+
+def test_deleting_the_mounted_option_names_the_missing_substitute(variant_tag):
+    """El Minor 7: la que falta es la SUSTITUTA, no la elegida. Decir "la
+    opción elegida no se encuentra" nombra justo la que sí está — la que se
+    iba a borrar."""
+    import c4d
+    from sentinel import variants
+
+    doc, tag, option_b = _two_option_set(variant_tag, c4d)
+    # La opción que debe promocionar pierde su enlace.
+    payload = variant_tag._read_payload_bc(tag)
+    options = payload.GetContainerInstance(variant_tag._PAYLOAD_OPTIONS)
+    options.GetContainerInstance(1).SetLink(variant_tag._OPTION_LINK, None)
+    variant_tag._store_payload_bc(tag, payload)
+
+    result = variant_tag.delete_option(tag, 0)
+
+    assert result["ok"] is False
+    assert result["reason"] == "lost_promote"
+    assert variants.action_report_text(result) == (
+        "no se borró la opción — la opción que debía montarse en su lugar no "
+        "se encuentra en la escena"
+    )
+
+
+def test_deleting_an_unmounted_option_still_enforces_the_invariant(variant_tag):
+    """El Minor 8: con la opción borrada NO montada no se evacuaba nada, así
+    que un objeto que el artista arrastró al anclaje se quedaba ahí junto a la
+    opción montada —DOS hijos— sin que nadie lo contara. Los otros cuatro
+    gestos sí lo hacen y lo reportan."""
+    import c4d
+    from sentinel import variants
+
+    doc, tag, option_b = _two_option_set(variant_tag, c4d)
+    anchor = tag.GetObject()
+    option_a = anchor._children[0]
+    stray = _insert(doc, FakeObject("intruso", c4d, doc), anchor)
+    assert len(anchor._children) == 2
+
+    result = variant_tag.delete_option(tag, 1)
+
+    assert result["ok"] is True
+    assert anchor._children == [option_a], (
+        "el anclaje vuelve a tener exactamente un hijo: la opción montada"
+    )
+    assert stray._parent is not anchor
+    assert stray._parent.GetName() == variant_tag.VARIANT_PARK_DEFAULT_NAME
+    assert result["evacuated"] == ["intruso"]
+    assert "intruso" in variants.action_report_text(result)
+
+
+def test_deleting_an_unmounted_option_never_evacuates_the_mounted_one(variant_tag):
+    """El riesgo del fix de arriba, fijado aparte: la opción MONTADA es un
+    hijo del anclaje como cualquier otro, y evacuar "todo lo que no sea la
+    víctima" la sacaría de su sitio dejando el anclaje VACÍO.
+
+    Hace falta un intruso para que la evacuación LLEGUE A CORRER: sin él no
+    hay nada que sacar, no se pide cajón y el bucle no se ejecuta — el test
+    pasaría sin tocar el código que dice proteger."""
+    import c4d
+
+    doc, tag, option_b = _two_option_set(variant_tag, c4d)
+    anchor = tag.GetObject()
+    option_a = anchor._children[0]
+    _insert(doc, FakeObject("intruso", c4d, doc), anchor)
+
+    assert variant_tag.delete_option(tag, 1)["ok"] is True
+
+    assert anchor._children == [option_a]
+    assert option_a._parent is anchor
+
+
+def test_the_option_name_row_does_not_walk_the_scene(variant_tag, monkeypatch):
+    """El Minor 6: ``read_state`` recorre el subárbol de TODAS las opciones
+    resueltas, así que con N opciones el Attribute Manager pagaba O(N ×
+    objetos) por repintado y por fila para sacar un string que está en el
+    payload. El propio módulo había quitado un recorrido por este motivo y
+    luego lo reintrodujo por esta puerta."""
+    import c4d
+
+    doc, tag, option_b = _scene_with_two_options(variant_tag, c4d)
+    tag_data = _tag_data(variant_tag)
+    name_id = (variant_tag.ID_OPTION_BASE + variant_tag.ID_OPTION_STRIDE
+               + variant_tag._OPTION_ACTION_NAME)
+    desc_id = c4d.DescID(c4d.DescLevel(name_id))
+
+    calls = []
+    real = variant_tag.read_state
+    monkeypatch.setattr(variant_tag, "read_state",
+                        lambda node: calls.append(node) or real(node))
+
+    got = tag_data.GetDParameter(tag, desc_id, 0)
+
+    assert got[0] is True and got[1] == "Opción B", "y sigue diciendo la verdad"
+    assert calls == [], "la fila de nombre no recorre la escena"
+
+
+def test_render_all_closes_the_bracket_when_the_restore_blows_up(variant_tag,
+                                                                 monkeypatch,
+                                                                 tmp_path):
+    """El Important 3: ``EndUndo`` era la última línea del ``finally``, detrás
+    de la restauración y sin protección propia, así que una excepción
+    restaurando se llevaba por delante el cierre. Un ``StartUndo`` sin cerrar
+    deja el sistema de undo de C4D fundiendo las operaciones siguientes en ese
+    paso — el bracket desbalanceado que causó el bug real de matwire v1.32."""
+    import c4d
+
+    doc, tag, option_b = _two_option_set(variant_tag, c4d)
+    doc.doc_path = str(tmp_path)
+    doc.doc_name = "escena.c4d"
+    monkeypatch.setattr(variant_tag, "_render_to_file",
+                        lambda doc_, path: "")
+
+    real_switch = variant_tag._switch_work
+    state = {"n": 0}
+
+    def _boom(tag_, index):
+        state["n"] += 1
+        if state["n"] > 2:      # las dos del recorrido pasan; la de restaurar no
+            raise RuntimeError("restauración rota")
+        return real_switch(tag_, index)
+
+    monkeypatch.setattr(variant_tag, "_switch_work", _boom)
+
+    with pytest.raises(RuntimeError):
+        variant_tag.render_all_options(tag)
+
+    assert doc.start_undo_count == doc.end_undo_count, (
+        "el bracket se cierra aunque la restauración reviente"
+    )
+    assert doc.undo_depth == 0

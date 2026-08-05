@@ -220,6 +220,12 @@ _ACTION_REASONS = {
     "clone_failed": "no se pudo copiar la opción",
     "last_option": "es la única opción del conjunto",
     "lost_option": "la opción elegida no se encuentra en la escena",
+    # Borrar la opción montada obliga a montar OTRA, y es ESA la que puede
+    # faltar. Decir "la opción elegida no se encuentra" ahí nombra la
+    # equivocada (la elegida es justo la que sí está, la que se iba a
+    # borrar) — misma asimetría que ``_RESTORE_REASONS`` corrige abajo.
+    "lost_promote": "la opción que debía montarse en su lugar no se "
+                    "encuentra en la escena",
     "no_active": "no hay ninguna opción montada",
     "no_anchor": "el tag no está sobre un objeto",
     "no_document": "sin documento",
