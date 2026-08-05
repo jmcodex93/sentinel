@@ -113,8 +113,31 @@ def test_deleting_the_last_remaining_option_is_refused():
     """Un conjunto sin ninguna opción no es un estado que el sistema sepa
     representar — el anclaje se quedaría vacío y el tag mintiendo."""
     plan = variants.plan_delete(1, 0, 0)
-    assert plan["ok"] is False
-    assert plan["reason"] == "last_option"
+    assert plan == {"ok": False, "reason": "last_option",
+                    "delete": None, "new_active": None}
+
+
+def test_deleting_an_index_out_of_range_is_refused():
+    plan = variants.plan_delete(3, 0, 5)
+    assert plan == {"ok": False, "reason": "bad_index",
+                    "delete": None, "new_active": None}
+
+
+def test_deleting_with_no_target_index_is_refused():
+    """``target_index=None`` es un estado real (nada seleccionado en la
+    lista) — sin esta guarda, ``int(None)`` revienta con TypeError en vez
+    de devolver un rechazo legible."""
+    plan = variants.plan_delete(3, 0, None)
+    assert plan == {"ok": False, "reason": "bad_index",
+                    "delete": None, "new_active": None}
+
+
+def test_deleting_with_an_orphaned_active_index_falls_back_cleanly():
+    """La activa apunta fuera de la lista (enlace perdido) — mismo caso que
+    ``plan_switch`` ya cubre. Sin la guarda, ``new_active`` puede acabar
+    apuntando fuera de la lista resultante tras el borrado."""
+    plan = variants.plan_delete(3, 5, 0)
+    assert plan == {"ok": True, "reason": "", "delete": 0, "new_active": 0}
 
 
 # --- nombres de archivo del render ---------------------------------------

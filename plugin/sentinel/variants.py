@@ -66,8 +66,15 @@ def dedupe_option_name(name, existing_names):
     return "%s (%d)" % (text, suffix)
 
 
-def _bad(reason):
-    return {"ok": False, "reason": reason, "park": None, "mount": None}
+def _bad(reason, **fields):
+    """Dict de rechazo compartido por ``plan_switch`` y ``plan_delete`` — cada
+    llamador pasa las claves de datos que su plan usa (``park``/``mount`` o
+    ``delete``/``new_active``), todas puestas a ``None``, para que un test
+    que compare el dict entero no pueda colarse comparando solo ``ok`` y
+    ``reason``."""
+    result = {"ok": False, "reason": reason}
+    result.update(fields)
+    return result
 
 
 def plan_switch(option_count, active_index, target_index):
@@ -79,10 +86,10 @@ def plan_switch(option_count, active_index, target_index):
     Cmd+Z del artista se lo gasta sin que la escena cambie."""
     count = int(option_count or 0)
     if target_index is None or not (0 <= int(target_index) < count):
-        return _bad("bad_index")
+        return _bad("bad_index", park=None, mount=None)
     target = int(target_index)
     if active_index is not None and int(active_index) == target:
-        return _bad("already_active")
+        return _bad("already_active", park=None, mount=None)
     park = int(active_index) if active_index is not None else None
     if park is not None and not (0 <= park < count):
         # La activa apunta fuera de la lista (enlace perdido, lista
@@ -101,13 +108,16 @@ def plan_delete(option_count, active_index, target_index):
     opción distinta de la que estaba puesta, en silencio."""
     count = int(option_count or 0)
     if target_index is None or not (0 <= int(target_index) < count):
-        return {"ok": False, "reason": "bad_index",
-                "delete": None, "new_active": None}
+        return _bad("bad_index", delete=None, new_active=None)
     if count <= 1:
-        return {"ok": False, "reason": "last_option",
-                "delete": None, "new_active": None}
+        return _bad("last_option", delete=None, new_active=None)
     target = int(target_index)
     active = int(active_index) if active_index is not None else None
+    if active is not None and not (0 <= active < count):
+        # La activa apunta fuera de la lista (mismo enlace perdido que
+        # plan_switch ya contempla): tratarla como "sin activa" en vez de
+        # aritmética sobre un índice fantasma.
+        active = None
     if active is None:
         new_active = 0
     elif active == target:
