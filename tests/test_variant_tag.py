@@ -64,6 +64,7 @@ nodo" que expone el bug.
 """
 
 import importlib
+import os
 
 import pytest
 
@@ -2035,14 +2036,20 @@ def test_pressing_delete_delivers_the_report_instead_of_dropping_it(
 # la opción original vuelva a su sitio pase lo que pase.
 
 class FakeRenderData:
-    """Los dos datos que el writer lee del render data: la ruta de salida
-    (para deducir la carpeta) y la resolución (para dimensionar el bitmap)."""
+    """El render data del artista. Además de la ruta de salida y la
+    resolución, trae los ajustes que un shot de producción tiene puestos y
+    que este recorrido NO puede honrar: guardar a disco (beauty y multipass)
+    y un rango de animación. Renderizar con este contenedor tal cual
+    escribiría en las rutas de entrega reales."""
 
     def __init__(self, c4d, path="", xres=160, yres=120):
         self._path = path
         self._bc = c4d.BaseContainer()
         self._bc[c4d.RDATA_XRES] = xres
         self._bc[c4d.RDATA_YRES] = yres
+        self._bc[c4d.RDATA_SAVEIMAGE] = True
+        self._bc[c4d.RDATA_MULTIPASS_SAVEIMAGE] = True
+        self._bc[c4d.RDATA_FRAMESEQUENCE] = c4d.RDATA_FRAMESEQUENCE_ALLFRAMES
         self._c4d = c4d
 
     def __getitem__(self, key):
@@ -2069,6 +2076,7 @@ class _RenderHarness:
         self.boom = set(boom)   # nombres de opción cuyo render revienta
         self.renders = []       # nombre montado en cada llamada, en orden
         self.saved = []         # (ruta, contenido)
+        self.settings = []      # el contenedor con el que se renderizó
 
     def mounted_name(self):
         children = self.anchor._children
@@ -2093,6 +2101,7 @@ class _RenderHarness:
         def render_document(doc, settings, bitmap, flags):
             name = harness.mounted_name()
             harness.renders.append(name)
+            harness.settings.append(settings)
             if name in harness.boom:
                 raise RuntimeError("el motor se cayó")
             bitmap.payload = name
@@ -2157,8 +2166,14 @@ def test_render_all_options_writes_one_image_per_option_named_after_it(
     assert result["folder"] == str(folder)
     # Recorridas en el orden de la LISTA, no en el de aparcado.
     assert harness.renders == ["Opción A", "Opción B", "Opción C"]
+    # El conjunto entra en el nombre por su ANCLAJE ("cubo") y no por el
+    # nombre de fábrica del tag: ningún conjunto nace nombrado, así que dos
+    # conjuntos sin renombrar escribirían los mismos archivos (ver
+    # ``test_two_untouched_sets_do_not_write_the_same_filenames``).
+    assert tag.GetName() == variant_tag.VARIANT_TAG_DEFAULT_NAME
+    assert tag.GetObject().GetName() == "Opciones · cubo"
     for name in ("Opción A", "Opción B", "Opción C"):
-        image = folder / ("SHOT_18_%s_%s.png" % (tag.GetName(), name))
+        image = folder / ("SHOT_18_Opciones · cubo_%s.png" % name)
         assert image.exists(), "falta la imagen de %s" % name
         assert image.read_text(encoding="utf-8") == name, (
             "la imagen de %s se renderizó con otra opción montada" % name)
@@ -2240,6 +2255,222 @@ def test_pressing_render_all_delivers_the_report_instead_of_dropping_it(
 
     assert harness.renders == ["Opción A", "Opción B", "Opción C"]
     assert said and "3 opciones renderizadas" in said[0]
+
+
+def test_render_all_never_renders_with_the_artists_live_render_settings(
+    variant_tag, monkeypatch, tmp_path,
+):
+    """RIESGO DE PRODUCCIÓN, no estilo: el contenedor vivo del shot lleva
+    ``RDATA_SAVEIMAGE``/``RDATA_MULTIPASS_SAVEIMAGE`` y su rango de
+    fotogramas. Renderizar con él escribiría N veces sobre las rutas de
+    entrega REALES (pisando beauties y AOVs) y, en rango de animación,
+    arrancaría una secuencia entera por opción."""
+    import c4d
+
+    doc, tag, harness = _renderable_set(variant_tag, c4d, monkeypatch, tmp_path)
+    live = doc.render_data.GetDataInstance()
+
+    variant_tag.render_all_options(tag)
+
+    assert len(harness.settings) == 3
+    for settings in harness.settings:
+        assert settings is not live, (
+            "se renderizó con el contenedor VIVO del artista, no con una copia")
+        assert settings[c4d.RDATA_SAVEIMAGE] is False
+        assert settings[c4d.RDATA_MULTIPASS_SAVEIMAGE] is False
+        assert settings[c4d.RDATA_FRAMESEQUENCE] == \
+            c4d.RDATA_FRAMESEQUENCE_CURRENTFRAME
+        # La copia sigue siendo LA del artista en todo lo demás: recortarla
+        # de más renderizaría algo que no es lo que él configuró.
+        assert settings[c4d.RDATA_XRES] == 160
+    # Y el contenedor del artista queda exactamente como estaba.
+    assert live[c4d.RDATA_SAVEIMAGE] is True
+    assert live[c4d.RDATA_MULTIPASS_SAVEIMAGE] is True
+    assert live[c4d.RDATA_FRAMESEQUENCE] == c4d.RDATA_FRAMESEQUENCE_ALLFRAMES
+
+
+def test_render_all_reports_what_it_pulled_out_of_the_anchor(
+    variant_tag, monkeypatch, tmp_path,
+):
+    """El recorrido es el QUINTO gesto que vacía el anclaje y era el único
+    que no lo contaba: la luz que el artista arrastró ahí acaba en un null
+    oculto de la raíz, sale en la primera imagen y no en las otras dos, y el
+    parte no decía nada."""
+    import c4d
+    from sentinel import variants
+
+    doc, tag, harness = _renderable_set(variant_tag, c4d, monkeypatch, tmp_path)
+    anchor = tag.GetObject()
+    _insert(doc, FakeObject("luz_key", c4d, doc), anchor)
+
+    result = variant_tag.render_all_options(tag)
+
+    assert result["evacuated"] == ["luz_key"]
+    assert "1 objeto suelto sacado del anclaje: luz_key" in \
+        variants.render_report_text(result)
+
+
+def test_render_all_says_when_it_left_the_scene_on_another_option(
+    variant_tag, monkeypatch, tmp_path,
+):
+    """Con la opción de partida huérfana, el artista empieza con el anclaje
+    vacío y termina con OTRA opción montada. Remontarla es imposible; callarlo
+    no: el parte decía que A no se renderizó y no que la escena cambió."""
+    import c4d
+    from sentinel import variants
+
+    doc, tag, harness = _renderable_set(variant_tag, c4d, monkeypatch, tmp_path)
+    payload = variant_tag._read_payload_bc(tag)
+    variant_tag._option_bc(payload, 0).SetLink(variant_tag._OPTION_LINK, None)
+
+    result = variant_tag.render_all_options(tag)
+
+    assert result["failed"] == [("Opción A", "lost_option")]
+    assert result["restore_failed"] == "lost_option"
+    assert variant_tag.read_state(tag)["active"] == 2, (
+        "la escena SÍ quedó en otra opción — el parte tiene que decirlo")
+    assert "la escena quedó en otra opción" in variants.render_report_text(result)
+
+
+def test_render_all_does_not_blame_the_artist_for_an_unwritable_folder(
+    variant_tag, monkeypatch, tmp_path,
+):
+    """``os.makedirs`` reventando es un share desmontado o de sólo lectura, no
+    una escena sin guardar. El parte mandaba a guardar una escena que YA está
+    guardada, así que el artista la guarda, vuelve a pulsar y lee lo mismo."""
+    import c4d
+    from sentinel import variants
+
+    doc, tag, harness = _renderable_set(variant_tag, c4d, monkeypatch, tmp_path)
+
+    def boom(path, exist_ok=False):
+        raise OSError("Read-only file system")
+
+    monkeypatch.setattr(variant_tag.os, "makedirs", boom)
+
+    result = variant_tag.render_all_options(tag)
+
+    assert result["reason"] == "folder_failed"
+    assert harness.renders == []
+    text = variants.render_report_text(result)
+    assert "no se pudo crear la carpeta de salida" in text
+    assert "guarda la escena" not in text
+
+
+def test_two_options_that_want_the_same_file_are_not_both_counted(
+    variant_tag, monkeypatch, tmp_path,
+):
+    """``render_image_stem`` mapea ``/`` a "_", así que "hero/v1" y "hero_v1"
+    —distintos para ``dedupe_option_name``— piden el MISMO archivo. Antes
+    salía ``rendered=3, failed=[]`` con 2 archivos en disco: el parte contaba
+    renders, no entregas."""
+    import c4d
+
+    doc, tag, harness = _renderable_set(variant_tag, c4d, monkeypatch, tmp_path)
+    payload = variant_tag._read_payload_bc(tag)
+    variant_tag._option_bc(payload, 1).SetString(
+        variant_tag._OPTION_NAME, "hero/v1")
+    variant_tag._option_bc(payload, 2).SetString(
+        variant_tag._OPTION_NAME, "hero_v1")
+
+    result = variant_tag.render_all_options(tag)
+
+    assert result["rendered"] == 2
+    assert result["failed"] == [("hero_v1", "name_clash")]
+    written = sorted(p.name for p in (tmp_path / "img").iterdir())
+    assert len(written) == result["rendered"], (
+        "se cuenta lo entregado, no lo renderizado")
+
+
+def test_two_untouched_sets_do_not_write_the_same_filenames(
+    variant_tag, monkeypatch, tmp_path,
+):
+    """``create_variant_set`` nunca nombra el tag, así que los dos conjuntos
+    del caso de uso del spec (el sofá y la lámpara) nacían con el MISMO nombre
+    y con opciones "Opción A/B": el segundo recorrido pisaba las imágenes del
+    primero y los dos partes decían lo mismo."""
+    import c4d
+
+    doc = _scene(c4d)
+    doc.doc_path = str(tmp_path)
+    doc.doc_name = "SHOT_18.c4d"
+    doc.render_data = FakeRenderData(c4d, path=str(tmp_path / "img" / "beauty"))
+    sofa = variant_tag.create_variant_set(
+        doc, [_insert(doc, FakeObject("sofá", c4d, doc))])["tag"]
+    lampara = variant_tag.create_variant_set(
+        doc, [_insert(doc, FakeObject("lámpara", c4d, doc))])["tag"]
+    assert sofa.GetName() == lampara.GetName() == \
+        variant_tag.VARIANT_TAG_DEFAULT_NAME
+
+    _RenderHarness(sofa.GetObject()).install(monkeypatch, c4d)
+    variant_tag.render_all_options(sofa)
+    _RenderHarness(lampara.GetObject()).install(monkeypatch, c4d)
+    variant_tag.render_all_options(lampara)
+
+    written = sorted(p.name for p in (tmp_path / "img").iterdir())
+    assert len(written) == 2, (
+        "un archivo por conjunto: el segundo recorrido pisó al primero")
+    assert any("sofá" in name for name in written)
+    assert any("lámpara" in name for name in written)
+
+
+# --- La carpeta de salida: los tokens se resuelven, no se esquivan -----------
+
+def _folder_for(variant_tag, c4d, tmp_path, path):
+    doc = _scene(c4d)
+    doc.doc_path = str(tmp_path)
+    doc.doc_name = "SHOT_18.c4d"
+    doc.render_data = FakeRenderData(c4d, path=path)
+    return doc
+
+
+def test_render_output_folder_resolves_the_tokens_of_the_render_path(
+    variant_tag, monkeypatch, tmp_path,
+):
+    """El caso con token es el NORMAL, no el raro: la QC #9 de este mismo
+    plugin suspende cualquier preset cuya ruta no lleve ``$prj`` o ``$take``,
+    así que toda escena que pasa la QC de Sentinel llega aquí con tokens. Sin
+    resolverlos, la carpeta de render se ignoraba SIEMPRE y los PNG caían
+    junto al ``.c4d``."""
+    import c4d
+
+    doc = _folder_for(variant_tag, c4d, tmp_path, "$prj/images/beauty")
+    monkeypatch.setattr(
+        c4d.modules.tokensystem, "StringConvertTokens",
+        lambda path, rpd: path.replace("$prj", str(tmp_path / "proyecto")))
+
+    assert variant_tag._render_output_folder(doc) == \
+        os.path.join(str(tmp_path / "proyecto"), "images")
+
+
+def test_render_output_folder_joins_a_relative_render_path_to_the_document(
+    variant_tag, monkeypatch, tmp_path,
+):
+    """Una ruta de salida relativa es relativa AL DOCUMENTO. Devolverla tal
+    cual la haría relativa al directorio de trabajo del proceso, que no es un
+    sitio que el artista pueda encontrar."""
+    import c4d
+
+    doc = _folder_for(variant_tag, c4d, tmp_path, "images/beauty")
+
+    assert variant_tag._render_output_folder(doc) == \
+        os.path.join(str(tmp_path), "images")
+
+
+def test_render_output_folder_gives_up_on_a_token_this_c4d_cannot_resolve(
+    variant_tag, monkeypatch, tmp_path,
+):
+    """Último recurso, no primera opción: sólo si tras pasar por el sistema de
+    tokens SIGUE habiendo un ``$`` se cae a la carpeta del documento. Crear
+    una carpeta llamada literalmente ``$loquesea`` sería escribir donde el
+    artista no pidió."""
+    import c4d
+
+    doc = _folder_for(variant_tag, c4d, tmp_path, "$noexiste/images/beauty")
+    monkeypatch.setattr(c4d.modules.tokensystem, "StringConvertTokens",
+                        lambda path, rpd: path)
+
+    assert variant_tag._render_output_folder(doc) == str(tmp_path)
 
 
 def test_the_render_all_button_is_painted(variant_tag):

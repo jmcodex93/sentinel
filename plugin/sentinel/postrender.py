@@ -603,6 +603,31 @@ def report_path_for_doc(doc_path, audit_folder):
     return os.path.join(audit_folder, "sentinel_render_report.json")
 
 
+def resolve_render_tokens(doc, path, render_data, take=None, frame=0):
+    """Resolve C4D render tokens (``$prj``, ``$take``, ``$camera``...) in an
+    output path against a document, returning the path untouched when the
+    token system is unavailable or rejects it.
+
+    Module level (not a closure) because it is the ONE place Sentinel talks to
+    the token system: ``variant_tag`` needs the same resolution to know which
+    folder a render preset really writes to, and re-deriving token syntax
+    there would be a second, drifting implementation of C4D's own system."""
+    import c4d
+
+    path = path or ""
+    try:
+        rpd = {
+            "_doc": doc,
+            "_rData": render_data,
+            "_rBc": render_data.GetDataInstance(),
+            "_frame": int(frame),
+            "_take": take,
+        }
+        return c4d.modules.tokensystem.StringConvertTokens(path, rpd) or path
+    except Exception:
+        return path
+
+
 def _read_scene_render_state(doc):
     """Read C4D/Redshift render state into flat JSON-serializable dictionaries."""
     import c4d
@@ -653,18 +678,7 @@ def _read_scene_render_state(doc):
             return ""
 
     def _resolve_tokens(path, rd, take, frame):
-        path = path or ""
-        try:
-            rpd = {
-                "_doc": doc,
-                "_rData": rd,
-                "_rBc": rd.GetDataInstance(),
-                "_frame": int(frame),
-                "_take": take,
-            }
-            return c4d.modules.tokensystem.StringConvertTokens(path, rpd) or path
-        except Exception:
-            return path
+        return resolve_render_tokens(doc, path, rd, take, frame)
 
     def _resolve_path_and_frame_token(path, rd, take, frame):
         current = _resolve_tokens(path, rd, take, frame)

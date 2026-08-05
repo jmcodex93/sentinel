@@ -43,6 +43,7 @@ import os
 import c4d
 from c4d import plugins
 
+from sentinel import postrender
 from sentinel import variants
 from sentinel.common.helpers import safe_print
 
@@ -1079,16 +1080,43 @@ def delete_option(tag, index):
 _RENDER_EXTENSION = ".png"
 
 
+def _current_take(doc):
+    """El take activo, o ``None``. Hace falta para resolver ``$take`` en la
+    ruta de salida — un preset con ``$take`` en la parte de directorio es
+    exactamente el caso que la QC #9 de este mismo plugin EXIGE."""
+    try:
+        take_data = doc.GetTakeData()
+        return take_data.GetCurrentTake() if take_data is not None else None
+    except Exception:
+        return None
+
+
+def _current_frame(doc):
+    try:
+        return int(doc.GetTime().GetFrame(doc.GetFps()))
+    except Exception:
+        return 0
+
+
 def _render_output_folder(doc):
     """Dónde van las imágenes: la carpeta de salida del render de la escena;
     si no hay ninguna configurada, la del propio documento; y "" si el
     documento no está guardado — sin sitio donde escribir no se renderiza
     nada (el llamador lo reporta como ``unsaved_scene``).
 
-    Una ruta de salida con tokens (``$prj``, ``$take``...) cae a la carpeta
-    del documento a propósito: resolverlos aquí duplicaría el sistema de
-    tokens, y NO resolverlos crearía una carpeta llamada literalmente
-    ``$prj`` que el artista no pidió."""
+    Los tokens de la ruta (``$prj``, ``$take``, ``$camera``...) se resuelven
+    con el sistema de tokens DE C4D (``postrender.resolve_render_tokens``, la
+    misma pieza que usa la validación post-render): no se duplica el sistema,
+    se llama. Importa porque el caso con token es el NORMAL, no el raro — la
+    QC #9 de este mismo plugin (``checks/render.py``) suspende cualquier
+    preset cuya ruta no lleve ``$prj`` o ``$take``, así que toda escena que
+    pasa la QC de Sentinel llega aquí con tokens, y en cuanto el token está
+    en la parte de directorio (``$prj/images/…``) una carpeta sin resolver se
+    descartaría SIEMPRE.
+
+    Sólo si tras resolver SIGUE habiendo un ``$`` (token que este C4D no
+    conoce) se cae a la carpeta del documento: crear una carpeta llamada
+    literalmente ``$prj`` sería escribir donde el artista no pidió."""
     doc_path = ""
     getter = getattr(doc, "GetDocumentPath", None)
     if callable(getter):
@@ -1107,6 +1135,10 @@ def _render_output_folder(doc):
             raw = render_data[c4d.RDATA_PATH] or ""
         except Exception:
             raw = ""
+        if raw:
+            raw = postrender.resolve_render_tokens(
+                doc, str(raw), render_data,
+                _current_take(doc), _current_frame(doc))
     folder = os.path.dirname(str(raw)) if raw else ""
     if folder and "$" not in folder:
         if os.path.isabs(folder):
@@ -1126,6 +1158,31 @@ def _scene_stem(doc):
         return ""
 
 
+def _preview_render_settings(doc):
+    """Una COPIA de los ajustes de render del artista, recortada a lo que
+    esta herramienta necesita: un fotograma, en memoria, sin escribir nada
+    por su cuenta.
+
+    Renderizar con el contenedor VIVO (``GetDataInstance()`` a secas) es un
+    riesgo de producción, no una cuestión de estilo: ese contenedor lleva los
+    ``RDATA_SAVEIMAGE``/``RDATA_MULTIPASS_SAVEIMAGE`` y el rango de
+    fotogramas del shot, así que en una escena configurada para entregar a
+    disco el recorrido escribiría N veces sobre las rutas de entrega REALES
+    —pisando beauties y AOVs— y, con el preset en rango de animación, cada
+    opción arrancaría una secuencia entera en vez de un fotograma.
+
+    El idiom es el oficial de Maxon (``GetClone(COPYFLAGS_NONE)`` sobre el
+    contenedor del render data, ver los ejemplos ``render_document_*`` del
+    SDK): la única imagen que se escribe es la que escribe ``Save`` aquí, con
+    el nombre de la opción."""
+    settings = doc.GetActiveRenderData().GetDataInstance().GetClone(
+        c4d.COPYFLAGS_NONE)
+    settings[c4d.RDATA_SAVEIMAGE] = False
+    settings[c4d.RDATA_MULTIPASS_SAVEIMAGE] = False
+    settings[c4d.RDATA_FRAMESEQUENCE] = c4d.RDATA_FRAMESEQUENCE_CURRENTFRAME
+    return settings
+
+
 def _render_to_file(doc, path):
     """Renderiza el documento TAL COMO ESTÁ y escribe la imagen. Devuelve ""
     si salió bien, o el motivo del fallo.
@@ -1134,8 +1191,7 @@ def _render_to_file(doc, path):
     ``save_failed``) porque son problemas distintos del artista: uno es la
     escena o el motor, el otro es la carpeta o el disco."""
     try:
-        render_data = doc.GetActiveRenderData()
-        settings = render_data.GetDataInstance()
+        settings = _preview_render_settings(doc)
         width = int(settings[c4d.RDATA_XRES])
         height = int(settings[c4d.RDATA_YRES])
         bitmap = c4d.bitmaps.BaseBitmap()
@@ -1154,6 +1210,25 @@ def _render_to_file(doc, path):
     return ""
 
 
+def _render_set_name(tag, anchor):
+    """Con qué nombre entra el CONJUNTO en el de sus imágenes.
+
+    El del tag, salvo que sea exactamente el de fábrica: ``create_variant_set``
+    no nombra el tag, así que **todo conjunto nace llamándose
+    ``VARIANT_TAG_DEFAULT_NAME``** y con sus opciones llamadas "Opción A/B/C".
+    Dos conjuntos sin renombrar en la misma escena (el sofá y la lámpara, el
+    caso de uso del spec) daban EXACTAMENTE los mismos nombres de archivo: el
+    segundo recorrido pisaba las imágenes del primero y los dos partes decían
+    "3 opciones renderizadas".
+
+    El anclaje es lo que distingue a esos dos conjuntos sin pedirle nada al
+    artista: es el objeto que él sí nombró."""
+    name = _safe_node_name(tag, "")
+    if name and name != VARIANT_TAG_DEFAULT_NAME:
+        return name
+    return _safe_node_name(anchor, "")
+
+
 def render_all_options(tag):
     """Una imagen por opción, sin que el artista monte ninguna a mano.
 
@@ -1168,10 +1243,17 @@ def render_all_options(tag):
       la restauración de arriba), así que no hay nada que deshacer.
     - Un fallo de una opción **no aborta** el resto (patrón del lote de
       matwire): se anota en ``failed`` y el recorrido sigue.
+    - Todo lo que el recorrido hace y no se ve **se cuenta**: lo que sacó del
+      anclaje (``evacuated``, igual que los otros cuatro gestos que lo
+      vacían) y el caso en que la opción de partida NO pudo volver a montarse
+      (``restore_failed``). La restricción "pase lo que pase" no se puede
+      cumplir cuando no hay nada que remontar —una opción de partida
+      huérfana, p.ej.—, pero sí se puede DECIR, que es lo que faltaba.
 
-    Devuelve ``{"ok", "reason", "rendered", "failed", "folder"}``, con
-    ``failed`` como lista de ``(nombre, motivo)``."""
-    fail = {"ok": False, "rendered": 0, "failed": [], "folder": ""}
+    Devuelve ``{"ok", "reason", "rendered", "failed", "folder", "evacuated",
+    "restore_failed"}``, con ``failed`` como lista de ``(nombre, motivo)``."""
+    fail = {"ok": False, "rendered": 0, "failed": [], "folder": "",
+            "evacuated": [], "restore_failed": ""}
     state = read_state(tag)
     options = state["options"]
     if not options:
@@ -1189,14 +1271,27 @@ def render_all_options(tag):
     try:
         os.makedirs(folder, exist_ok=True)
     except Exception:
-        return dict(fail, reason="unsaved_scene", folder=folder)
+        # Motivo PROPIO, no ``unsaved_scene``: el fallo de aquí es un share
+        # desmontado o de sólo lectura, y decirle al artista "guarda la
+        # escena primero" cuando la escena SÍ está guardada le manda a
+        # guardarla otra vez y a leer lo mismo. El módulo ya separa
+        # ``render_failed`` de ``save_failed`` por esta misma razón.
+        return dict(fail, reason="folder_failed", folder=folder)
 
     stem_scene = _scene_stem(doc)
-    set_name = _safe_node_name(tag, "")
+    set_name = _render_set_name(tag, anchor)
     original = state["active"]
 
     rendered = 0
     failed = []
+    evacuated = []
+    #: Un destino por opción. Sin esto ``rendered`` cuenta RENDERS, no
+    #: archivos: dos opciones cuyos nombres colapsan al mismo stem
+    #: (``render_image_stem`` mapea ``/ \\ : * ? " < > |`` a "_", así que
+    #: ``hero/v1`` y ``hero_v1`` colisionan) daban "3 opciones renderizadas"
+    #: con 2 archivos en disco. Una opción sin destino propio no se da por
+    #: entregada: se dice.
+    taken = set()
     doc.StartUndo()
     try:
         for index, option in enumerate(options):
@@ -1212,7 +1307,12 @@ def render_all_options(tag):
                 continue
             if work is not None:
                 _apply_switch(tag, work)
+                evacuated.extend(work["strays"])
             stem = variants.render_image_stem(stem_scene, set_name, name)
+            if stem in taken:
+                failed.append((name, "name_clash"))
+                continue
+            taken.add(stem)
             problem = _render_to_file(
                 doc, os.path.join(folder, stem + _RENDER_EXTENSION))
             if problem:
@@ -1223,10 +1323,18 @@ def render_all_options(tag):
         # La opción original vuelve a su sitio pase lo que pase, dentro del
         # MISMO bracket: si esto quedara fuera, un fallo a mitad dejaría al
         # artista mirando una opción que él no puso.
+        restore_failed = ""
         if original is not None:
             restore_reason, restore_work = _switch_work(tag, original)
-            if not restore_reason and restore_work is not None:
+            if restore_reason and restore_reason != "already_active":
+                # No se pudo remontar: la escena se queda en OTRA opción. Es
+                # best-effort por fuerza (con la opción de partida huérfana no
+                # hay nada que remontar), pero callarlo deja al artista con
+                # una escena cambiada y un parte que no lo menciona.
+                restore_failed = restore_reason
+            elif restore_work is not None:
                 _apply_switch(tag, restore_work)
+                evacuated.extend(restore_work["strays"])
         doc.EndUndo()
 
     _event_add()
@@ -1236,6 +1344,8 @@ def render_all_options(tag):
         "rendered": rendered,
         "failed": failed,
         "folder": folder,
+        "evacuated": evacuated,
+        "restore_failed": restore_failed,
     }
 
 

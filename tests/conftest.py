@@ -137,6 +137,14 @@ class BaseContainer(dict):
     def SetMatrix(self, key, value):
         self[key] = value
 
+    def GetClone(self, flags=0):
+        """Shallow copy, like the real BaseContainer.GetClone(COPYFLAGS_*).
+        Honest about what it is NOT: the real one deep-copies nested
+        containers, this one shares them. What a test CAN claim with it is
+        the thing it exists for — that code wrote into a copy and left the
+        live container alone."""
+        return BaseContainer(self)
+
 
 class BaseDocument(dict):
     def __init__(self, render_datas=None):
@@ -232,6 +240,17 @@ def _install_fake_c4d():
     bitmaps.BaseBitmap = _BaseBitmap
     bitmaps.ShowBitmap = lambda *args, **kwargs: None
 
+    # c4d.modules.tokensystem — a real submodule chain, not a
+    # _PermissiveModule auto-int, so code under test actually REACHES
+    # StringConvertTokens instead of tripping AttributeError on an int and
+    # silently taking its own except branch. The default resolves nothing
+    # (identity): a test that cares about token expansion monkeypatches it.
+    modules = _PermissiveModule("c4d.modules")
+    tokensystem = _PermissiveModule("c4d.modules.tokensystem")
+    tokensystem.StringConvertTokens = lambda path, rpd: path
+    modules.tokensystem = tokensystem
+
+    c4d.modules = modules
     c4d.gui = gui
     c4d.plugins = plugins
     c4d.documents = documents
@@ -266,6 +285,8 @@ def _install_fake_c4d():
         setattr(c4d, key, value)
 
     sys.modules["c4d"] = c4d
+    sys.modules["c4d.modules"] = modules
+    sys.modules["c4d.modules.tokensystem"] = tokensystem
     sys.modules["c4d.gui"] = gui
     sys.modules["c4d.plugins"] = plugins
     sys.modules["c4d.documents"] = documents

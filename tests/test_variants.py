@@ -309,3 +309,61 @@ def test_render_report_explains_an_unsaved_scene():
         "ok": False, "reason": "unsaved_scene", "rendered": 0, "failed": [],
         "folder": "",
     }) == "no se renderizó — guarda la escena primero: no hay dónde escribir"
+
+
+def test_render_report_does_not_blame_the_artist_for_an_unwritable_folder():
+    """Un share desmontado o de sólo lectura NO es una escena sin guardar.
+    Decirle "guarda la escena primero" a quien la tiene guardada le manda a
+    guardarla otra vez y a leer exactamente el mismo parte."""
+    text = variants.render_report_text({
+        "ok": False, "reason": "folder_failed", "rendered": 0, "failed": [],
+        "folder": "/vol/entrega/img",
+    })
+    assert text == "no se renderizó — no se pudo crear la carpeta de salida"
+    assert "guarda la escena" not in text
+
+
+def test_render_report_says_the_scene_was_left_on_another_option():
+    """La opción de partida no siempre se puede remontar (huérfana, sin
+    contenedor de aparcado). Lo que no vale es que la escena quede en OTRA
+    opción y el parte no lo mencione."""
+    assert variants.render_report_text({
+        "ok": True, "reason": "", "rendered": 2, "failed": [],
+        "folder": "/proy/img", "restore_failed": "lost_option",
+    }) == ("2 opciones renderizadas en /proy/img · la escena quedó en otra "
+           "opción — la opción de partida no se encuentra en la escena")
+
+
+def test_render_report_says_what_it_pulled_out_of_the_anchor():
+    """El recorrido vacía el anclaje igual que los otros cuatro gestos, y era
+    el único que no lo contaba."""
+    assert variants.render_report_text({
+        "ok": True, "reason": "", "rendered": 3, "failed": [],
+        "folder": "/proy/img", "evacuated": ["luz_key"],
+    }) == ("3 opciones renderizadas en /proy/img · "
+           "1 objeto suelto sacado del anclaje: luz_key")
+
+
+def test_render_report_says_which_option_lost_its_own_destination():
+    """Dos opciones cuyos nombres colapsan al mismo archivo: la segunda no se
+    entrega, y el parte dice por qué en vez de contar un archivo de más."""
+    assert variants.render_report_text({
+        "ok": True, "reason": "", "rendered": 1,
+        "failed": [("hero_v1", "name_clash")], "folder": "/proy/img",
+    }) == ("1 opción renderizada en /proy/img · "
+           "fuera: hero_v1 (su imagen se llamaría igual que la de otra opción)")
+
+
+def test_render_report_still_reports_side_effects_when_nothing_rendered():
+    """Un recorrido que falla entero puede haber movido cosas igual: el
+    anclaje ya está vaciado cuando el primer render revienta."""
+    text = variants.render_report_text({
+        "ok": False, "reason": "all_failed", "rendered": 0,
+        "failed": [("Opción A", "render_failed")], "folder": "/proy/img",
+        "evacuated": ["luz_key"], "restore_failed": "no_park_container",
+    })
+    assert text == (
+        "no se renderizó — ninguna opción llegó a renderizar · "
+        "fuera: Opción A (el render no terminó) · "
+        "la escena quedó en otra opción — no se pudo crear el contenedor de "
+        "aparcado · 1 objeto suelto sacado del anclaje: luz_key")

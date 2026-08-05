@@ -161,8 +161,9 @@ def _evacuated_part(result):
     """Lo que salió del anclaje sin ser la opción que tocaba mover, o "" si
     no salió nada.
 
-    Compartido por los CUATRO gestos que vacían el anclaje (cambiar de
-    opción, duplicar y borrar): los tres hacen la misma evacuación
+    Compartido por TODOS los gestos que vacían el anclaje (cambiar de
+    opción, duplicar, borrar y el recorrido de "renderizar todas"): hacen la
+    misma evacuación
     silenciosa —un objeto que el artista había arrastrado ahí a mano acaba en
     un contenedor de la raíz con la visibilidad apagada— y ninguna otra
     superficie lo cuenta (``read_state`` sólo suma subárboles de opciones
@@ -272,6 +273,11 @@ def action_report_text(result):
 #: sólo motivos que el artista puede entender y, si acaso, arreglar.
 _RENDER_REASONS = {
     "all_failed": "ninguna opción llegó a renderizar",
+    # Motivo propio, separado de ``unsaved_scene``: la carpeta existe en la
+    # configuración pero no se pudo crear (share desmontado, sólo lectura).
+    # Mandar a guardar una escena que ya está guardada no arregla nada y el
+    # artista lee el mismo parte la segunda vez.
+    "folder_failed": "no se pudo crear la carpeta de salida",
     "no_anchor": "el tag no está sobre un objeto",
     "no_document": "sin documento",
     "no_options": "el conjunto no tiene opciones",
@@ -279,11 +285,23 @@ _RENDER_REASONS = {
     "unsaved_scene": "guarda la escena primero: no hay dónde escribir",
 }
 
+#: Por qué la opción de partida NO volvió a montarse. Misma tabla que
+#: ``_SWITCH_REASONS`` salvo los dos motivos que aquí hablan de OTRA opción
+#: (la de partida, no la elegida) y sonarían al revés reutilizados tal cual.
+_RESTORE_REASONS = dict(
+    _SWITCH_REASONS,
+    bad_index="la opción de partida ya no está en la lista",
+    lost_option="la opción de partida no se encuentra en la escena",
+)
+
 #: Por qué se quedó fuera UNA opción concreta. Se dice el motivo por opción
 #: porque las causas son distintas y sólo una es culpa del artista: una
 #: opción perdida se arregla en la escena, un render que falla no.
 _RENDER_OPTION_REASONS = {
     "lost_option": "no se encuentra en la escena",
+    # Su imagen se llamaría igual que la de otra opción del mismo recorrido:
+    # entregarla sería pisar la anterior y contar dos archivos donde hay uno.
+    "name_clash": "su imagen se llamaría igual que la de otra opción",
     "render_failed": "el render no terminó",
     "save_failed": "no se pudo escribir la imagen",
     "switch_failed": "no se pudo montar",
@@ -296,7 +314,13 @@ def render_report_text(result):
     Un recorrido que renderiza N opciones y se deja M por el camino tiene que
     decir AMBAS mitades: contar sólo los archivos escritos es exactamente el
     modo de fallo silencioso contra el que existe esta política (v1.35) — el
-    artista se lleva 2 imágenes de 3 y no se entera de cuál falta."""
+    artista se lleva 2 imágenes de 3 y no se entera de cuál falta.
+
+    Las otras dos mitades invisibles del recorrido salen por aquí igual: lo
+    que sacó del anclaje (``_evacuated_part``, el mismo canal que los otros
+    cuatro gestos que lo vacían — éste era el quinto y el único que no lo
+    contaba) y una escena que quedó en OTRA opción porque la de partida no se
+    pudo remontar."""
     result = result or {}
     failed = list(result.get("failed") or [])
     if not result.get("ok"):
@@ -306,6 +330,7 @@ def render_report_text(result):
         parts = ["no se renderizó — %s" % text]
         if failed:
             parts.append(_failed_part(failed))
+        parts.extend(_render_side_effects(result))
         return " · ".join(parts)
     parts = ["%s en %s" % (
         pluralize_es(int(result.get("rendered") or 0), "opción renderizada",
@@ -313,7 +338,23 @@ def render_report_text(result):
         result.get("folder") or "")]
     if failed:
         parts.append(_failed_part(failed))
+    parts.extend(_render_side_effects(result))
     return " · ".join(parts)
+
+
+def _render_side_effects(result):
+    """Lo que el recorrido cambió en la escena sin que se vea, en el orden en
+    que le importa al artista: primero dónde quedó la escena, luego qué salió
+    del anclaje."""
+    parts = []
+    restore = result.get("restore_failed") or ""
+    if restore:
+        parts.append("la escena quedó en otra opción — %s"
+                     % _RESTORE_REASONS.get(restore, restore))
+    extra = _evacuated_part(result)
+    if extra:
+        parts.append(extra)
+    return parts
 
 
 def _failed_part(failed):
