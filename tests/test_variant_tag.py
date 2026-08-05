@@ -80,6 +80,20 @@ class FakeDoc:
         # poder afirmar que el AddUndo de un objeto precede a su Remove —
         # el orden ES la propiedad que el spike midió.
         self.events = []
+        # Identidad en disco. Vacías por defecto = documento SIN GUARDAR,
+        # que es el caso que ``render_all_options`` tiene que rechazar.
+        self.doc_path = ""
+        self.doc_name = ""
+        self.render_data = None
+
+    def GetDocumentPath(self):
+        return self.doc_path
+
+    def GetDocumentName(self):
+        return self.doc_name
+
+    def GetActiveRenderData(self):
+        return self.render_data
 
     def StartUndo(self):
         self.start_undo_count += 1
@@ -2008,3 +2022,232 @@ def test_pressing_delete_delivers_the_report_instead_of_dropping_it(
 
     assert said and 'borrada "Opción A"' in said[0]
     assert status and 'borrada "Opción A"' in status[0]
+
+
+# --- Tarea 5: renderizar todas las opciones ----------------------------------
+#
+# LO QUE ESTE ARNÉS NO PUEDE PROBAR, otra vez dicho aquí: que
+# ``RenderDocument`` devuelva píxeles, que Redshift responda, que ``Save``
+# escriba un PNG legible, ni cuántos pasos de deshacer deja el recorrido en
+# C4D. Eso está MEDIDO en vivo (spike §4) o se mide en el Step 4 del brief.
+# Lo que sí se fija aquí: QUÉ se renderiza, en qué ORDEN se monta cada
+# opción, con qué NOMBRE sale cada archivo, cuántos brackets se abren, y que
+# la opción original vuelva a su sitio pase lo que pase.
+
+class FakeRenderData:
+    """Los dos datos que el writer lee del render data: la ruta de salida
+    (para deducir la carpeta) y la resolución (para dimensionar el bitmap)."""
+
+    def __init__(self, c4d, path="", xres=160, yres=120):
+        self._path = path
+        self._bc = c4d.BaseContainer()
+        self._bc[c4d.RDATA_XRES] = xres
+        self._bc[c4d.RDATA_YRES] = yres
+        self._c4d = c4d
+
+    def __getitem__(self, key):
+        if key == self._c4d.RDATA_PATH:
+            return self._path
+        return None
+
+    def GetDataInstance(self):
+        return self._bc
+
+
+class _RenderHarness:
+    """Sustituye ``RenderDocument`` + ``BaseBitmap`` por algo que anota QUÉ
+    opción estaba montada en el momento del render y escribe ESE nombre en
+    el archivo.
+
+    El detalle importa: un recorrido que renderizara tres veces la misma
+    opción y le pusiera tres nombres de archivo distintos pasaría cualquier
+    comprobación que sólo cuente archivos. Aquí el contenido delata la
+    opción que de verdad estaba en la escena."""
+
+    def __init__(self, anchor, boom=()):
+        self.anchor = anchor
+        self.boom = set(boom)   # nombres de opción cuyo render revienta
+        self.renders = []       # nombre montado en cada llamada, en orden
+        self.saved = []         # (ruta, contenido)
+
+    def mounted_name(self):
+        children = self.anchor._children
+        return children[0].GetName() if children else ""
+
+    def install(self, monkeypatch, c4d):
+        harness = self
+
+        class FakeBitmap:
+            def __init__(self):
+                self.payload = ""
+
+            def Init(self, width, height, depth):
+                return 1
+
+            def Save(self, path, filter_id, data, flags):
+                harness.saved.append((path, self.payload))
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(self.payload)
+                return 1
+
+        def render_document(doc, settings, bitmap, flags):
+            name = harness.mounted_name()
+            harness.renders.append(name)
+            if name in harness.boom:
+                raise RuntimeError("el motor se cayó")
+            bitmap.payload = name
+            return c4d.RENDERRESULT_OK
+
+        monkeypatch.setattr(c4d.bitmaps, "BaseBitmap", FakeBitmap,
+                            raising=False)
+        monkeypatch.setattr(c4d.documents, "RenderDocument", render_document,
+                            raising=False)
+        return self
+
+
+def _renderable_set(variant_tag, c4d, monkeypatch, tmp_path, boom=()):
+    """Tres opciones (A montada, B y C aparcadas), escena guardada y una
+    carpeta de salida real en ``tmp_path``."""
+    doc, tag, option_b, option_c = _three_option_set(variant_tag, c4d)
+    doc.doc_path = str(tmp_path)
+    doc.doc_name = "SHOT_18.c4d"
+    doc.render_data = FakeRenderData(c4d, path=str(tmp_path / "img" / "beauty"))
+    harness = _RenderHarness(tag.GetObject(), boom=boom).install(monkeypatch, c4d)
+    return doc, tag, harness
+
+
+def test_render_all_options_on_an_unsaved_scene_renders_nothing(
+    variant_tag, monkeypatch, tmp_path,
+):
+    """Sin documento guardado no hay dónde escribir. Renderizar igual a una
+    carpeta cualquiera (la de trabajo del proceso, p.ej.) sería peor que no
+    renderizar: el artista se lleva un "ok" y no encuentra las imágenes."""
+    import c4d
+
+    doc, tag, option_b, option_c = _three_option_set(variant_tag, c4d)
+    harness = _RenderHarness(tag.GetObject()).install(monkeypatch, c4d)
+    doc.start_undo_count = 0
+    doc.end_undo_count = 0
+
+    result = variant_tag.render_all_options(tag)
+
+    assert result["ok"] is False
+    assert result["reason"] == "unsaved_scene"
+    assert result["rendered"] == 0
+    assert harness.renders == [], "no se renderiza nada sin sitio donde escribir"
+    assert (doc.start_undo_count, doc.end_undo_count) == (0, 0)
+
+
+def test_render_all_options_writes_one_image_per_option_named_after_it(
+    variant_tag, monkeypatch, tmp_path,
+):
+    """Una imagen por opción, con el nombre de SU opción y el contenido de SU
+    opción: el segundo es lo que distingue "montó las tres" de "renderizó
+    tres veces la misma y les puso tres nombres"."""
+    import c4d
+
+    doc, tag, harness = _renderable_set(variant_tag, c4d, monkeypatch, tmp_path)
+
+    result = variant_tag.render_all_options(tag)
+
+    assert result["ok"] is True
+    assert result["rendered"] == 3
+    assert result["failed"] == []
+    folder = tmp_path / "img"
+    assert result["folder"] == str(folder)
+    # Recorridas en el orden de la LISTA, no en el de aparcado.
+    assert harness.renders == ["Opción A", "Opción B", "Opción C"]
+    for name in ("Opción A", "Opción B", "Opción C"):
+        image = folder / ("SHOT_18_%s_%s.png" % (tag.GetName(), name))
+        assert image.exists(), "falta la imagen de %s" % name
+        assert image.read_text(encoding="utf-8") == name, (
+            "la imagen de %s se renderizó con otra opción montada" % name)
+
+
+def test_render_all_options_remounts_the_original_option_when_a_render_blows_up(
+    variant_tag, monkeypatch, tmp_path,
+):
+    """La opción que estaba puesta queda puesta al terminar, pase lo que
+    pase. Una herramienta de enseñar opciones que deja la escena en la última
+    obliga al artista a arreglarla a mano cada vez."""
+    import c4d
+
+    doc, tag, harness = _renderable_set(
+        variant_tag, c4d, monkeypatch, tmp_path, boom=("Opción C",))
+    variant_tag.switch_to_option(tag, 1)   # el artista estaba en la B
+    assert variant_tag.read_state(tag)["active"] == 1
+
+    result = variant_tag.render_all_options(tag)
+
+    assert result["rendered"] == 2
+    assert result["failed"] == [("Opción C", "render_failed")]
+    assert result["ok"] is True, "un fallo de una opción no aborta el resto"
+    state = variant_tag.read_state(tag)
+    assert state["active"] == 1
+    anchor = tag.GetObject()
+    assert [child.GetName() for child in anchor._children] == ["Opción B"]
+
+
+def test_render_all_options_opens_exactly_one_undo_bracket(
+    variant_tag, monkeypatch, tmp_path,
+):
+    """Los cambios del recorrido NO son gestos del artista: van todos en UN
+    bloque. Con un bracket por opción, deshacer después de renderizar tres
+    opciones serían cuatro Cmd+Z que no cambian nada visible."""
+    import c4d
+
+    doc, tag, harness = _renderable_set(variant_tag, c4d, monkeypatch, tmp_path)
+    doc.start_undo_count = 0
+    doc.end_undo_count = 0
+
+    variant_tag.render_all_options(tag)
+
+    assert (doc.start_undo_count, doc.end_undo_count) == (1, 1)
+
+
+def test_render_all_options_keeps_going_past_an_option_it_cannot_find(
+    variant_tag, monkeypatch, tmp_path,
+):
+    """Una opción cuyo enlace no resuelve sale en ``failed`` y el recorrido
+    SIGUE: abortar ahí dejaría sin imagen a opciones perfectamente sanas por
+    culpa de una rota."""
+    import c4d
+
+    doc, tag, harness = _renderable_set(variant_tag, c4d, monkeypatch, tmp_path)
+    payload = variant_tag._read_payload_bc(tag)
+    variant_tag._option_bc(payload, 1).SetLink(variant_tag._OPTION_LINK, None)
+
+    result = variant_tag.render_all_options(tag)
+
+    assert result["failed"] == [("Opción B", "lost_option")]
+    assert result["rendered"] == 2
+    assert harness.renders == ["Opción A", "Opción C"]
+
+
+def test_pressing_render_all_delivers_the_report_instead_of_dropping_it(
+    variant_tag, monkeypatch, tmp_path,
+):
+    """El botón está cableado y el resultado se dice: un recorrido que
+    renderiza en silencio es indistinguible de uno que no hizo nada."""
+    import c4d
+
+    doc, tag, harness = _renderable_set(variant_tag, c4d, monkeypatch, tmp_path)
+    said = []
+    monkeypatch.setattr(variant_tag, "safe_print", said.append)
+
+    _tag_data(variant_tag)._handle_command(
+        tag, {"id": variant_tag.ID_VARIANTS_RENDER_ALL})
+
+    assert harness.renders == ["Opción A", "Opción B", "Opción C"]
+    assert said and "3 opciones renderizadas" in said[0]
+
+
+def test_the_render_all_button_is_painted(variant_tag):
+    """Sin declararlo, renderizar existe en el módulo y no en la pantalla."""
+    import c4d
+
+    doc, tag, option_b = _scene_with_two_options(variant_tag, c4d)
+
+    description, _ = _describe(variant_tag, tag)
+
+    assert description.bc_of(variant_tag.ID_VARIANTS_RENDER_ALL) is not None

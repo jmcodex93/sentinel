@@ -283,3 +283,29 @@ def test_action_report_says_nothing_when_the_name_did_not_change():
         {"ok": False, "reason": "unchanged", "action": "rename",
          "name": "hero"}
     ) == ""
+
+
+# --- el parte de renderizar todas las opciones ----------------------------
+
+def test_render_report_counts_what_was_written_and_where():
+    assert variants.render_report_text({
+        "ok": True, "reason": "", "rendered": 3, "failed": [],
+        "folder": "/proy/img",
+    }) == "3 opciones renderizadas en /proy/img"
+
+
+def test_render_report_names_the_options_it_left_out():
+    """Contar sólo los archivos escritos es el modo de fallo silencioso: el
+    artista se lleva 2 imágenes de 3 y no se entera de cuál falta."""
+    assert variants.render_report_text({
+        "ok": True, "reason": "", "rendered": 2,
+        "failed": [("Opción C", "render_failed")], "folder": "/proy/img",
+    }) == ("2 opciones renderizadas en /proy/img · "
+           "fuera: Opción C (el render no terminó)")
+
+
+def test_render_report_explains_an_unsaved_scene():
+    assert variants.render_report_text({
+        "ok": False, "reason": "unsaved_scene", "rendered": 0, "failed": [],
+        "folder": "",
+    }) == "no se renderizó — guarda la escena primero: no hay dónde escribir"

@@ -268,6 +268,61 @@ def action_report_text(result):
     return " · ".join(parts)
 
 
+#: Por qué NO se renderizó nada. Mismo criterio que los dos mapas de arriba:
+#: sólo motivos que el artista puede entender y, si acaso, arreglar.
+_RENDER_REASONS = {
+    "all_failed": "ninguna opción llegó a renderizar",
+    "no_anchor": "el tag no está sobre un objeto",
+    "no_document": "sin documento",
+    "no_options": "el conjunto no tiene opciones",
+    "no_payload": "el conjunto no tiene datos",
+    "unsaved_scene": "guarda la escena primero: no hay dónde escribir",
+}
+
+#: Por qué se quedó fuera UNA opción concreta. Se dice el motivo por opción
+#: porque las causas son distintas y sólo una es culpa del artista: una
+#: opción perdida se arregla en la escena, un render que falla no.
+_RENDER_OPTION_REASONS = {
+    "lost_option": "no se encuentra en la escena",
+    "render_failed": "el render no terminó",
+    "save_failed": "no se pudo escribir la imagen",
+    "switch_failed": "no se pudo montar",
+}
+
+
+def render_report_text(result):
+    """Lo que hay que decirle al artista tras renderizar todas las opciones.
+
+    Un recorrido que renderiza N opciones y se deja M por el camino tiene que
+    decir AMBAS mitades: contar sólo los archivos escritos es exactamente el
+    modo de fallo silencioso contra el que existe esta política (v1.35) — el
+    artista se lleva 2 imágenes de 3 y no se entera de cuál falta."""
+    result = result or {}
+    failed = list(result.get("failed") or [])
+    if not result.get("ok"):
+        text = _RENDER_REASONS.get(result.get("reason") or "")
+        if not text:
+            return ""
+        parts = ["no se renderizó — %s" % text]
+        if failed:
+            parts.append(_failed_part(failed))
+        return " · ".join(parts)
+    parts = ["%s en %s" % (
+        pluralize_es(int(result.get("rendered") or 0), "opción renderizada",
+                     "opciones renderizadas"),
+        result.get("folder") or "")]
+    if failed:
+        parts.append(_failed_part(failed))
+    return " · ".join(parts)
+
+
+def _failed_part(failed):
+    return "fuera: %s" % ", ".join(
+        "%s (%s)" % (name or "(sin nombre)",
+                     _RENDER_OPTION_REASONS.get(reason, reason or ""))
+        for name, reason in failed)
+
+
 def _active_option(state):
     options = (state or {}).get("options") or []
     index = (state or {}).get("active")

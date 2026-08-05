@@ -38,6 +38,8 @@ en ``sentinel/variants.py`` y no importa c4d. Aquí vive todo lo que toca
 escena viva.
 """
 
+import os
+
 import c4d
 from c4d import plugins
 
@@ -98,16 +100,15 @@ ID_VARIANTS_WARNING = 1003  # DTYPE_STATICTEXT — límites (variants.warning_te
                             # Pin: concatenada detrás del conteo, la
                             # advertencia es lo primero que se trunca).
 ID_VARIANTS_NEW = 1004         # DTYPE_BUTTON — "Duplicar opción activa"
-# --- Ids RESERVADOS, todavía sin pintar -----------------------------------
-# Reservados aquí para que nadie los reutilice, pero NO se declaran en la
-# descripción todavía: su acción es de la Tarea 5, y un botón pintado que no
-# hace nada es peor que un botón ausente (el artista lo pulsa en la
-# verificación en vivo y no pasa nada, sin forma de saber si está roto o sin
-# hacer). Van POR DEBAJO de ID_OPTION_BASE por necesidad: un id por encima
-# quedaría inerte hasta que el conjunto tuviera bastantes opciones y
-# entonces se lo tragaría el bloque de filas.
-ID_VARIANTS_RENDER_ALL = 1005  # DTYPE_BUTTON — "Renderizar todas" (T5)
-ID_VARIANTS_SEPARATOR = 1006   # DTYPE_SEPARATOR — antes de lo destructivo (T5)
+# Ambos POR DEBAJO de ID_OPTION_BASE por necesidad: un id por encima quedaría
+# inerte hasta que el conjunto tuviera bastantes opciones y entonces se lo
+# tragaría el bloque de filas.
+ID_VARIANTS_RENDER_ALL = 1005  # DTYPE_BUTTON — "Renderizar todas las opciones"
+#: RESERVADO, todavía sin pintar — un botón (o un separador) que no hace nada
+#: es peor que uno ausente: el artista lo ve en la verificación en vivo y no
+#: puede saber si está roto o sin hacer. Reservado sólo para que nadie
+#: reutilice el id.
+ID_VARIANTS_SEPARATOR = 1006   # DTYPE_SEPARATOR
 
 #: El payload vive bajo un id de contenedor privado dentro del contenedor
 #: propio del tag, así viaja con el .c4d. Lejos del rango de ids de
@@ -630,42 +631,39 @@ def _reparent(doc, node, new_parent):
     node.InsertUnder(new_parent)
 
 
-def switch_to_option(tag, index):
-    """Cambia la opción montada. UN solo paso de deshacer para el par
-    completo (aparcar la activa + montar la elegida): son medio gesto cada
-    una y deshacer sólo la mitad deja el anclaje vacío o con dos opciones
-    dentro, que es un estado que el invariante no admite.
+def _switch_work(tag, index):
+    """``(reason, work)`` — TODO lo que un cambio de opción necesita resolver
+    ANTES de abrir un bracket de deshacer, sin tocar la escena. ``reason`` es
+    "" cuando el cambio se puede hacer.
 
-    Devuelve ``{"ok", "reason", "name", "evacuated"}``. ``already_active`` no
-    es un error: no se dice nada y no se toca nada. ``evacuated`` lleva los
-    NOMBRES de lo que salió del anclaje sin ser la opción aparcada — lo
-    único que este gesto hace y no se ve (ver ``variants.switch_report_text``).
-    """
+    Existe separado de ``switch_to_option`` porque hay DOS llamadores con
+    brackets distintos: un cambio a mano abre el suyo (un gesto = un paso de
+    deshacer) y el recorrido de ``render_all_options`` mete todos los suyos
+    en UNO solo (sus cambios no son gestos del artista, y N+1 pasos que
+    deshacer uno a uno serían inaceptables). La preparación y la aplicación
+    son las MISMAS en los dos casos: duplicarlas era garantizar que un fix en
+    una no llegara a la otra."""
     state = read_state(tag)
     plan = variants.plan_switch(len(state["options"]), state["active"], index)
     if not plan["ok"]:
-        return {"ok": False, "reason": plan["reason"], "name": "",
-                "evacuated": []}
+        return plan["reason"], None
 
     anchor = tag.GetObject()
     if anchor is None:
-        return {"ok": False, "reason": "no_anchor", "name": "", "evacuated": []}
+        return "no_anchor", None
     doc = _doc_from_node(tag)
     if doc is None:
-        return {"ok": False, "reason": "no_document", "name": "",
-                "evacuated": []}
+        return "no_document", None
     payload = _read_payload_bc(tag)
     if payload is None:
-        return {"ok": False, "reason": "no_payload", "name": "",
-                "evacuated": []}
+        return "no_payload", None
 
     # Los enlaces se resuelven ANTES de abrir el bracket. Si el de la
     # opción a montar no resuelve no se toca NADA: mejor un conjunto que no
     # cambia y lo dice, que un anclaje vacío.
     mount_node = _option_link(payload, plan["mount"], doc)
     if mount_node is None:
-        return {"ok": False, "reason": "lost_option", "name": "",
-                "evacuated": []}
+        return "lost_option", None
     park_node = None
     if plan["park"] is not None:
         park_node = _option_link(payload, plan["park"], doc)
@@ -716,18 +714,52 @@ def switch_to_option(tag, index):
     if evacuate:
         container = _ensure_park_container(doc, payload)
         if container is None:
-            return {"ok": False, "reason": "no_park_container",
-                    "name": "", "evacuated": []}
+            return "no_park_container", None
 
+    return "", {
+        "doc": doc,
+        "anchor": anchor,
+        "payload": payload,
+        "mount": int(plan["mount"]),
+        "mount_node": mount_node,
+        "evacuate": evacuate,
+        "container": container,
+        "strays": strays,
+        "name": state["options"][plan["mount"]]["name"],
+    }
+
+
+def _apply_switch(tag, work):
+    """El movimiento en sí. **No abre bracket**: quien llama decide en qué
+    paso de deshacer cae (ver ``_switch_work``)."""
+    doc = work["doc"]
+    doc.AddUndo(c4d.UNDOTYPE_CHANGE, tag)
+    for node in work["evacuate"]:
+        _reparent(doc, node, work["container"])
+    _reparent(doc, work["mount_node"], work["anchor"])
+    work["payload"].SetInt32(_PAYLOAD_ACTIVE, work["mount"])
+    _store_payload_bc(tag, work["payload"])
+
+
+def switch_to_option(tag, index):
+    """Cambia la opción montada. UN solo paso de deshacer para el par
+    completo (aparcar la activa + montar la elegida): son medio gesto cada
+    una y deshacer sólo la mitad deja el anclaje vacío o con dos opciones
+    dentro, que es un estado que el invariante no admite.
+
+    Devuelve ``{"ok", "reason", "name", "evacuated"}``. ``already_active`` no
+    es un error: no se dice nada y no se toca nada. ``evacuated`` lleva los
+    NOMBRES de lo que salió del anclaje sin ser la opción aparcada — lo
+    único que este gesto hace y no se ve (ver ``variants.switch_report_text``).
+    """
+    reason, work = _switch_work(tag, index)
+    if reason:
+        return {"ok": False, "reason": reason, "name": "", "evacuated": []}
+
+    doc = work["doc"]
     doc.StartUndo()
     try:
-        doc.AddUndo(c4d.UNDOTYPE_CHANGE, tag)
-        if evacuate:
-            for node in evacuate:
-                _reparent(doc, node, container)
-        _reparent(doc, mount_node, anchor)
-        payload.SetInt32(_PAYLOAD_ACTIVE, int(plan["mount"]))
-        _store_payload_bc(tag, payload)
+        _apply_switch(tag, work)
     finally:
         doc.EndUndo()
 
@@ -735,8 +767,8 @@ def switch_to_option(tag, index):
     return {
         "ok": True,
         "reason": "",
-        "name": state["options"][plan["mount"]]["name"],
-        "evacuated": strays,
+        "name": work["name"],
+        "evacuated": work["strays"],
     }
 
 
@@ -1028,6 +1060,185 @@ def delete_option(tag, index):
             "mounted": mounted_name, "evacuated": stray_names}
 
 
+# --- Renderizar todas las opciones ------------------------------------------
+#
+# Sustituye a la salida a Takes que el spike descartó por mecanismo. La vía
+# es la SÍNCRONA, y no por elegancia: está MEDIDA en vivo con el motor real
+# de trabajo (Redshift, ``docs/research/2026-08-05-variants-reparenting-spike.md``
+# §4) — ``RenderDocument`` devuelve ``RENDERRESULT_OK``, el bitmap trae
+# píxeles reales (escena vacía 0 vs. escena con un cubo 8058: el caso base
+# era obligatorio, porque un bitmap negro con OK es exactamente el resultado
+# nulo que parece una respuesta), ``Save`` escribe, y tres llamadas seguidas
+# no cuelgan C4D. La vía asíncrona (ruta por opción + render nativo +
+# espera) no hizo falta y no se exploró.
+
+#: La extensión y el filtro van juntos SIEMPRE: escribir un PNG con nombre
+#: ``.exr`` (o al revés) produce un archivo que ningún visor abre. PNG
+#: porque estas imágenes son para MIRAR las opciones una al lado de otra, no
+#: para componer.
+_RENDER_EXTENSION = ".png"
+
+
+def _render_output_folder(doc):
+    """Dónde van las imágenes: la carpeta de salida del render de la escena;
+    si no hay ninguna configurada, la del propio documento; y "" si el
+    documento no está guardado — sin sitio donde escribir no se renderiza
+    nada (el llamador lo reporta como ``unsaved_scene``).
+
+    Una ruta de salida con tokens (``$prj``, ``$take``...) cae a la carpeta
+    del documento a propósito: resolverlos aquí duplicaría el sistema de
+    tokens, y NO resolverlos crearía una carpeta llamada literalmente
+    ``$prj`` que el artista no pidió."""
+    doc_path = ""
+    getter = getattr(doc, "GetDocumentPath", None)
+    if callable(getter):
+        try:
+            doc_path = getter() or ""
+        except Exception:
+            doc_path = ""
+
+    raw = ""
+    try:
+        render_data = doc.GetActiveRenderData()
+    except Exception:
+        render_data = None
+    if render_data is not None:
+        try:
+            raw = render_data[c4d.RDATA_PATH] or ""
+        except Exception:
+            raw = ""
+    folder = os.path.dirname(str(raw)) if raw else ""
+    if folder and "$" not in folder:
+        if os.path.isabs(folder):
+            return folder
+        if doc_path:
+            return os.path.join(doc_path, folder)
+    return doc_path
+
+
+def _scene_stem(doc):
+    getter = getattr(doc, "GetDocumentName", None)
+    if not callable(getter):
+        return ""
+    try:
+        return os.path.splitext(getter() or "")[0]
+    except Exception:
+        return ""
+
+
+def _render_to_file(doc, path):
+    """Renderiza el documento TAL COMO ESTÁ y escribe la imagen. Devuelve ""
+    si salió bien, o el motivo del fallo.
+
+    Los dos pasos se reportan por separado (``render_failed`` /
+    ``save_failed``) porque son problemas distintos del artista: uno es la
+    escena o el motor, el otro es la carpeta o el disco."""
+    try:
+        render_data = doc.GetActiveRenderData()
+        settings = render_data.GetDataInstance()
+        width = int(settings[c4d.RDATA_XRES])
+        height = int(settings[c4d.RDATA_YRES])
+        bitmap = c4d.bitmaps.BaseBitmap()
+        bitmap.Init(width, height, 24)
+        result = c4d.documents.RenderDocument(
+            doc, settings, bitmap, c4d.RENDERFLAGS_EXTERNAL)
+    except Exception:
+        return "render_failed"
+    if result != c4d.RENDERRESULT_OK:
+        return "render_failed"
+    try:
+        if not bitmap.Save(path, c4d.FILTER_PNG, None, c4d.SAVEBIT_0):
+            return "save_failed"
+    except Exception:
+        return "save_failed"
+    return ""
+
+
+def render_all_options(tag):
+    """Una imagen por opción, sin que el artista monte ninguna a mano.
+
+    Contrato, y cada punto está por una razón:
+
+    - La opción que estaba puesta **queda puesta al terminar**, pase lo que
+      pase (``try/finally``). Una herramienta de enseñar opciones que deja la
+      escena en la última no es aceptable.
+    - Las opciones se recorren en el orden de la LISTA, no en el de aparcado.
+    - Los cambios del recorrido **no son gestos del artista**: van todos en
+      UN bracket de deshacer, y al terminar la escena está como estaba (por
+      la restauración de arriba), así que no hay nada que deshacer.
+    - Un fallo de una opción **no aborta** el resto (patrón del lote de
+      matwire): se anota en ``failed`` y el recorrido sigue.
+
+    Devuelve ``{"ok", "reason", "rendered", "failed", "folder"}``, con
+    ``failed`` como lista de ``(nombre, motivo)``."""
+    fail = {"ok": False, "rendered": 0, "failed": [], "folder": ""}
+    state = read_state(tag)
+    options = state["options"]
+    if not options:
+        return dict(fail, reason="no_options")
+    anchor, doc, payload, reason = _tag_context(tag)
+    if reason:
+        return dict(fail, reason=reason)
+
+    folder = _render_output_folder(doc)
+    if not folder:
+        # Sin carpeta no hay dónde escribir: se dice y no se toca NADA — ni
+        # un bracket, ni un cambio de opción. Renderizar a ninguna parte y
+        # devolver "ok" sería el no-op silencioso de manual.
+        return dict(fail, reason="unsaved_scene")
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except Exception:
+        return dict(fail, reason="unsaved_scene", folder=folder)
+
+    stem_scene = _scene_stem(doc)
+    set_name = _safe_node_name(tag, "")
+    original = state["active"]
+
+    rendered = 0
+    failed = []
+    doc.StartUndo()
+    try:
+        for index, option in enumerate(options):
+            name = option.get("name") or ""
+            if not option.get("resolved"):
+                failed.append((name, "lost_option"))
+                continue
+            switch_reason, work = _switch_work(tag, index)
+            if switch_reason and switch_reason != "already_active":
+                # ``already_active`` no es un fallo: es la opción que ya está
+                # montada, que es exactamente la que toca renderizar ahora.
+                failed.append((name, "switch_failed"))
+                continue
+            if work is not None:
+                _apply_switch(tag, work)
+            stem = variants.render_image_stem(stem_scene, set_name, name)
+            problem = _render_to_file(
+                doc, os.path.join(folder, stem + _RENDER_EXTENSION))
+            if problem:
+                failed.append((name, problem))
+            else:
+                rendered += 1
+    finally:
+        # La opción original vuelve a su sitio pase lo que pase, dentro del
+        # MISMO bracket: si esto quedara fuera, un fallo a mitad dejaría al
+        # artista mirando una opción que él no puso.
+        if original is not None:
+            restore_reason, restore_work = _switch_work(tag, original)
+            if not restore_reason and restore_work is not None:
+                _apply_switch(tag, restore_work)
+        doc.EndUndo()
+
+    _event_add()
+    return {
+        "ok": rendered > 0,
+        "reason": "" if rendered else "all_failed",
+        "rendered": rendered,
+        "failed": failed,
+        "folder": folder,
+    }
+
+
 # --- Nombre del conjunto: sobrevivir a cargar -------------------------------
 
 def _sync_display_name(node):
@@ -1239,6 +1450,16 @@ class SentinelVariantsTag(_TagDataBase):
         ):
             return False
 
+        # Una imagen por opción, sin montar ninguna a mano. Va DESPUÉS de
+        # duplicar y antes del resumen: es la única acción del conjunto que
+        # no cambia la escena (al terminar queda como estaba), así que no
+        # compite por atención con las que sí.
+        if not self._set_description_parameter(
+            node, description, ID_VARIANTS_RENDER_ALL, c4d.DTYPE_BUTTON,
+            "Renderizar todas las opciones", root, animatable=False
+        ):
+            return False
+
         # Resumen y límites en DOS filas separadas — nunca concatenadas
         # (lección del Pin: detrás del conteo, la advertencia es lo primero
         # que se trunca).
@@ -1336,6 +1557,9 @@ class SentinelVariantsTag(_TagDataBase):
         command_id = _command_id_from_data(data)
         if command_id == ID_VARIANTS_NEW:
             _report(variants.action_report_text(duplicate_active_option(node)))
+            return True
+        if command_id == ID_VARIANTS_RENDER_ALL:
+            _report(variants.render_report_text(render_all_options(node)))
             return True
         row = _option_command(command_id, _payload_option_count(node))
         if row is not None and row[1] == _OPTION_ACTION_MOUNT:
