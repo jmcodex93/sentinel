@@ -13,11 +13,12 @@ veces esta semana):
 - **Que el undo del menú revierta en un paso.** Aquí sólo se cuenta que se
   abra exactamente un bracket ``StartUndo``/``EndUndo``, que el ``AddUndo``
   de **cada uno** de los objetos movidos se registre ANTES de moverlo (en LOS
-  DOS caminos que mueven: crear el conjunto y cambiar de opción, y en los dos
-  con **más de un** objeto en movimiento — con uno solo, un ``AddUndo`` fijado
-  fuera del bucle pasa por bueno, que es el modo de fallo exacto que costó un
-  bug real en matwire v1.32), y que cada objeto creado y el payload lleven el
-  suyo. Si C4D realmente colapsa eso en un paso es cosa de C4D y se verifica
+  TRES caminos que mueven: crear el conjunto, cambiar de opción, y vaciar el
+  anclaje al duplicar o al borrar la opción montada —``_evacuate_anchor``—, y
+  en los tres con **más de un** objeto en movimiento — con uno solo, un
+  ``AddUndo`` fijado fuera del bucle pasa por bueno, que es el modo de fallo
+  exacto que costó un bug real en matwire v1.32), y que cada objeto creado y
+  el payload lleven el suyo. Si C4D realmente colapsa eso en un paso es cosa de C4D y se verifica
   en vivo (Step 8 del brief).
 - **Que los ``BaseLink`` sobrevivan a guardar+cargar.** El fake guarda el
   objeto tal cual (ver ``BaseContainer.SetLink`` en conftest). Un enlace
@@ -1636,6 +1637,266 @@ def test_deleting_the_only_option_is_refused_without_a_bracket(variant_tag):
     assert (doc.start_undo_count, doc.end_undo_count) == (0, 0)
     assert anchor._children == [option_a]
     assert len(variant_tag.read_state(tag)["options"]) == 1
+
+
+def test_deleting_the_mounted_option_at_index_zero_leaves_one_child_mounted(
+    variant_tag,
+):
+    """El caso discriminante del ajuste de índice: ``plan_delete`` devuelve
+    ``new_active`` en la numeración de DESPUÉS de borrar, y borrar la
+    montada cuando es la primera lo deja en 0 — que en la numeración de AHORA
+    es la propia víctima. Leerlo sin el ``+1`` monta la víctima, la borra a
+    continuación y deja el anclaje con CERO hijos: el estado exacto que el
+    invariante existe para impedir. El resto de tests no lo ve porque el que
+    borra una no montada no calcula ``mount_node``, y el que borra la montada
+    usa el índice 2, donde las dos ramas coinciden."""
+    import c4d
+
+    doc, tag, option_b, option_c = _three_option_set(variant_tag, c4d)
+    anchor = tag.GetObject()
+    option_a = anchor._children[0]
+    assert variant_tag.read_state(tag)["active"] == 0, "A es la montada"
+
+    result = variant_tag.delete_option(tag, 0)
+
+    assert result["ok"] is True
+    assert result["name"] == "Opción A"
+    assert result["mounted"] == "Opción B"
+    assert len(anchor._children) == 1, (
+        "el anclaje quedó con %d hijos: se montó la propia víctima antes de "
+        "borrarla" % len(anchor._children)
+    )
+    state = variant_tag.read_state(tag)
+    assert [opt["name"] for opt in state["options"]] == ["Opción B", "Opción C"]
+    assert state["options"][state["active"]]["name"] == "Opción B"
+    assert anchor._children == [option_b], (
+        "el hijo del anclaje no es el que dice el payload"
+    )
+    assert option_a._parent is None, "la opción borrada sale de la escena"
+
+
+def _two_loose_objects_in(doc, anchor, c4d):
+    """Dos objetos que el artista arrastró al anclaje a mano. DOS y no uno:
+    con uno solo, un ``AddUndo`` fijado fuera del bucle pasa por bueno (el
+    modo de fallo de matwire v1.32)."""
+    loose_a = FakeObject("luz_key", c4d, doc)
+    loose_b = FakeObject("luz_fill", c4d, doc)
+    loose_a.InsertUnder(anchor)
+    loose_b.InsertUnder(anchor)
+    return loose_a, loose_b
+
+
+def test_duplicating_undoes_each_evacuated_object_before_moving_it(variant_tag):
+    """``_evacuate_anchor`` es el TERCER camino que mueve objetos, y mover sin
+    ``AddUndo`` por objeto es literalmente el bug de matwire v1.32: el Cmd+Z
+    no devuelve a su sitio lo que el artista tenía dentro del anclaje."""
+    import c4d
+
+    doc, tag = _one_option_set(variant_tag, c4d)
+    anchor = tag.GetObject()
+    option_a = anchor._children[0]
+    loose_a, loose_b = _two_loose_objects_in(doc, anchor, c4d)
+    mark = len(doc.events)
+
+    result = variant_tag.duplicate_active_option(tag)
+
+    assert result["ok"] is True
+    for node in (loose_a, loose_b, option_a):
+        assert _first_touch(doc, node, mark) == ("undo", c4d.UNDOTYPE_CHANGE), (
+            "%s se movió sin su AddUndo delante" % node.GetName()
+        )
+    assert len(anchor._children) == 1, "el anclaje se vació entero menos la copia"
+    park_names = [c.GetName() for c in loose_a._parent._children]
+    assert loose_a._parent.GetName() == variant_tag.VARIANT_PARK_DEFAULT_NAME
+    assert "luz_fill" in park_names
+
+
+def test_duplicating_reports_what_it_pulled_out_of_the_anchor(variant_tag):
+    """Duplicar hace la MISMA evacuación silenciosa que cambiar de opción:
+    sin este canal, ``luz_key`` acaba en un null oculto de la raíz y ninguna
+    superficie lo dice (``read_state`` sólo suma subárboles de opciones
+    resueltas, así que ``warning_text`` tampoco lo ve)."""
+    import c4d
+    from sentinel import variants
+
+    doc, tag = _one_option_set(variant_tag, c4d)
+    anchor = tag.GetObject()
+    _two_loose_objects_in(doc, anchor, c4d)
+
+    result = variant_tag.duplicate_active_option(tag)
+
+    assert result["evacuated"] == ["luz_fill", "luz_key"], (
+        "la opción copiada no es una sorpresa y no se reporta; los objetos "
+        "sueltos del artista, sí"
+    )
+    text = variants.action_report_text(result)
+    assert 'duplicada como "Opción B"' in text
+    assert "2 objetos sueltos sacados del anclaje: luz_fill, luz_key" in text
+
+
+def test_deleting_the_mounted_option_undoes_each_evacuated_object(variant_tag):
+    """El camino ``keep=victim`` de ``_evacuate_anchor``: hay que vaciar el
+    anclaje para montar la que promociona, sin llevarse por delante a la
+    víctima (que se borra un momento después)."""
+    import c4d
+    from sentinel import variants
+
+    doc, tag, option_b, option_c = _three_option_set(variant_tag, c4d)
+    anchor = tag.GetObject()
+    option_a = anchor._children[0]
+    loose_a, loose_b = _two_loose_objects_in(doc, anchor, c4d)
+    mark = len(doc.events)
+
+    result = variant_tag.delete_option(tag, 0)
+
+    assert result["ok"] is True
+    for node in (loose_a, loose_b):
+        assert _first_touch(doc, node, mark) == ("undo", c4d.UNDOTYPE_CHANGE), (
+            "%s se movió sin su AddUndo delante" % node.GetName()
+        )
+    assert anchor._children == [option_b], (
+        "el anclaje no se vació antes de montar la que promociona"
+    )
+    assert loose_a._parent.GetName() == variant_tag.VARIANT_PARK_DEFAULT_NAME
+    assert option_a._parent is None
+    assert result["evacuated"] == ["luz_fill", "luz_key"]
+    text = variants.action_report_text(result)
+    assert 'borrada "Opción A" · montada "Opción B"' in text
+    assert "2 objetos sueltos sacados del anclaje: luz_fill, luz_key" in text
+
+
+def test_duplicate_registers_the_undo_of_the_tag_and_of_the_clone(variant_tag):
+    """Los dos ``AddUndo`` que hacen de duplicar UN paso de deshacer, y no
+    medio: sin el del tag, Cmd+Z revierte la escena pero no el payload (el
+    conjunto lista una "Opción B" cuyo null ya no existe); sin el del clon,
+    Cmd+Z deja el clon montado mientras el payload dice que no existe."""
+    import c4d
+
+    doc, tag = _one_option_set(variant_tag, c4d)
+    anchor = tag.GetObject()
+    doc.undo_ops = []
+
+    assert variant_tag.duplicate_active_option(tag)["ok"] is True
+
+    clone = anchor._children[0]
+    assert (c4d.UNDOTYPE_CHANGE, tag) in doc.undo_ops, (
+        "el payload cambia y no lleva su AddUndo: Cmd+Z lo deja divergente "
+        "de la escena"
+    )
+    assert (c4d.UNDOTYPE_NEWOBJ, clone) in doc.undo_ops, (
+        "el clon se inserta sin su AddUndo: Cmd+Z lo deja montado"
+    )
+
+
+def test_rename_registers_the_undo_of_the_tag_and_of_the_null(variant_tag):
+    """Renombrar escribe en DOS sitios (payload y null) y los dos tienen que
+    volver con el mismo Cmd+Z: sin el ``AddUndo`` del null, la fila dice
+    "Opción A" y el Object Manager dice "hero", divergentes para siempre."""
+    import c4d
+
+    doc, tag = _one_option_set(variant_tag, c4d)
+    option_a = tag.GetObject()._children[0]
+    doc.undo_ops = []
+
+    assert variant_tag.rename_option(tag, 0, "hero")["ok"] is True
+
+    assert (c4d.UNDOTYPE_CHANGE, tag) in doc.undo_ops
+    assert (c4d.UNDOTYPE_CHANGE, option_a) in doc.undo_ops, (
+        "el null se renombra sin su AddUndo: Cmd+Z revierte el payload y "
+        "deja el nombre del null"
+    )
+
+
+# Identidad por VALOR en los dos sitios nuevos de la Tarea 4 — el mismo bug
+# que la Tarea 3 cazó en vivo: la víctima llega por ``GetLink`` y sus hijos
+# por ``_children_of``, que en C4D real son lecturas DISTINTAS del mismo nodo
+# (envoltorio Python nuevo cada vez). ``_Reread`` construye ese escenario.
+
+def test_deleting_the_mounted_option_does_not_park_the_victim_itself(variant_tag):
+    """``_evacuate_anchor(keep=victim)`` con ``is`` en vez de ``==`` no
+    reconocería a la víctima entre los hijos del anclaje y la aparcaría antes
+    de borrarla — un movimiento de más, dentro del mismo paso de deshacer,
+    sobre el objeto que ya iba a desaparecer."""
+    import c4d
+
+    doc, tag, option_b, option_c = _three_option_set(variant_tag, c4d)
+    anchor = tag.GetObject()
+    option_a = anchor._children[0]
+    _two_loose_objects_in(doc, anchor, c4d)  # obliga a crear el cajón
+    payload = variant_tag._read_payload_bc(tag)
+    opt_a_bc = variant_tag._option_bc(payload, 0)
+    opt_a_bc.SetLink(variant_tag._OPTION_LINK, _Reread(option_a))
+    mark = len(doc.events)
+
+    assert variant_tag.delete_option(tag, 0)["ok"] is True
+
+    parked = [event for event in doc.events[mark:]
+              if event[0] == "insert_under" and event[1] is option_a]
+    assert parked == [], (
+        "la víctima se aparcó antes de borrarla: el keep de _evacuate_anchor "
+        "no reconoció que el hijo del anclaje y la víctima leída por GetLink "
+        "son el MISMO nodo"
+    )
+    assert anchor._children == [option_b]
+
+
+def test_deleting_the_mounted_option_without_strays_creates_no_park_container(
+    variant_tag,
+):
+    """El otro lado de la misma comparación: con ``is not``, la víctima
+    contaría SIEMPRE como objeto suelto, así que cada borrado de la montada
+    crearía un null de aparcado en la raíz de la escena sin nada que
+    aparcar."""
+    import c4d
+
+    doc, tag, option_b, option_c = _three_option_set(variant_tag, c4d)
+    anchor = tag.GetObject()
+    option_a = anchor._children[0]
+    payload = variant_tag._read_payload_bc(tag)
+    opt_a_bc = variant_tag._option_bc(payload, 0)
+    opt_a_bc.SetLink(variant_tag._OPTION_LINK, _Reread(option_a))
+
+    result = variant_tag.delete_option(tag, 0)
+
+    assert result["ok"] is True
+    assert result["evacuated"] == []
+    park_names = [obj.GetName() for obj in doc.root
+                  if obj.GetName() == variant_tag.VARIANT_PARK_DEFAULT_NAME]
+    assert park_names == [], (
+        "se creó un contenedor de aparcado sin nada que aparcar: la víctima "
+        "se contó como objeto suelto"
+    )
+    assert anchor._children == [option_b]
+
+
+def test_deleting_next_to_a_missing_option_entry_leaves_no_gap(variant_tag):
+    """Una entrada que no existe se descarta y las siguientes se compactan.
+    Saltarse su posición al reconstruir la lista deja un hueco dentro de
+    ``0..count-2``: una fila vacía y no resuelta, permanente, que el artista
+    no puede ni elegir ni borrar."""
+    import c4d
+
+    doc, tag = _one_option_set(variant_tag, c4d)
+    payload = variant_tag._read_payload_bc(tag)
+    options = payload.GetContainerInstance(variant_tag._PAYLOAD_OPTIONS)
+    # Índice 1 SIN contenedor (payload a medias) y el 2 poblado.
+    ghost = _insert(doc, FakeObject("Opción C", c4d, doc))
+    option_c_bc = c4d.BaseContainer()
+    option_c_bc.SetString(variant_tag._OPTION_NAME, "Opción C")
+    option_c_bc.SetLink(variant_tag._OPTION_LINK, ghost)
+    options.SetContainer(2, option_c_bc)
+    payload.SetInt32(variant_tag._PAYLOAD_COUNT, 3)
+    variant_tag._store_payload_bc(tag, payload)
+
+    result = variant_tag.delete_option(tag, 2)
+
+    assert result["ok"] is True
+    state = variant_tag.read_state(tag)
+    assert [opt["name"] for opt in state["options"]] == ["Opción A"], (
+        "quedó una fila fantasma del hueco: la lista no se compactó"
+    )
+    assert state["orphans"] == 0
+    assert state["options"][state["active"]]["name"] == "Opción A"
 
 
 # --- El cableado de la UI de la Tarea 4 --------------------------------------

@@ -800,8 +800,14 @@ def duplicate_active_option(tag):
     Manager no engorda) — hecho a verificar en vivo, no aquí: el arnés de
     tests no tiene materiales que compartir.
 
-    Devuelve ``{"ok", "reason", "action", "name"}``."""
-    fail = {"ok": False, "action": "duplicate", "name": ""}
+    Devuelve ``{"ok", "reason", "action", "name", "evacuated"}``.
+    ``evacuated`` lleva los NOMBRES de lo que salió del anclaje sin ser la
+    opción que se copia — este gesto hace la MISMA evacuación silenciosa que
+    ``switch_to_option`` (un objeto que el artista había arrastrado al
+    anclaje acaba en un null oculto de la raíz), y sin este canal no aparece
+    en ninguna superficie: ``read_state`` sólo suma subárboles de opciones
+    resueltas, así que ``warning_text`` tampoco lo ve."""
+    fail = {"ok": False, "action": "duplicate", "name": "", "evacuated": []}
     state = read_state(tag)
     active = state["active"]
     if active is None:
@@ -833,10 +839,16 @@ def duplicate_active_option(tag):
     # algo que sacar: un anclaje vacío no justifica un null de más en la
     # raíz de la escena.
     container = None
+    strays = []
     if _children_of(anchor):
         container = _ensure_park_container(doc, payload)
         if container is None:
             return dict(fail, reason="no_park_container")
+        # Los nombres se leen ANTES de mover nada, mientras siguen donde el
+        # artista los dejó (mismo patrón que switch_to_option). La opción
+        # que se copia no cuenta: aparcarla es el gesto, no una sorpresa.
+        strays = [_safe_node_name(node, "") for node in _children_of(anchor)
+                  if node is not None and node != source]
 
     index = len(state["options"])
     doc.StartUndo()
@@ -854,7 +866,8 @@ def duplicate_active_option(tag):
         doc.EndUndo()
 
     _event_add()
-    return {"ok": True, "reason": "", "action": "duplicate", "name": name}
+    return {"ok": True, "reason": "", "action": "duplicate", "name": name,
+            "evacuated": strays}
 
 
 def rename_option(tag, index, name):
@@ -918,10 +931,14 @@ def delete_option(tag, index):
     segunda mitad es la que se equivoca sola, porque borrar una opción
     anterior a la activa desplaza su índice.
 
-    Devuelve ``{"ok", "reason", "action", "name", "mounted"}``; ``mounted``
-    lleva el nombre de la que quedó puesta cuando el borrado obligó a montar
-    otra, y "" cuando no cambió nada más."""
-    fail = {"ok": False, "action": "delete", "name": "", "mounted": ""}
+    Devuelve ``{"ok", "reason", "action", "name", "mounted", "evacuated"}``;
+    ``mounted`` lleva el nombre de la que quedó puesta cuando el borrado
+    obligó a montar otra, y "" cuando no cambió nada más. ``evacuated`` lleva
+    los NOMBRES de lo que salió del anclaje para hacerle sitio — la misma
+    evacuación silenciosa que reporta ``switch_to_option``, y que sin este
+    canal no aparecería en ninguna superficie."""
+    fail = {"ok": False, "action": "delete", "name": "", "mounted": "",
+            "evacuated": []}
     state = read_state(tag)
     count = len(state["options"])
     plan = variants.plan_delete(count, state["active"], index)
@@ -953,10 +970,14 @@ def delete_option(tag, index):
     # montar la que promociona — y sin cajón no hay dónde. Resuelto ANTES del
     # bracket (misma regla que switch_to_option).
     container = None
+    stray_names = []
     if mount_node is not None:
         strays = [node for node in _children_of(anchor)
                   if node is not None and (victim is None or node != victim)]
         if strays:
+            # Nombres leídos ANTES de mover nada, mientras siguen donde el
+            # artista los dejó (mismo patrón que switch_to_option).
+            stray_names = [_safe_node_name(node, "") for node in strays]
             container = _ensure_park_container(doc, payload)
             if container is None:
                 return dict(fail, reason="no_park_container")
@@ -975,20 +996,36 @@ def delete_option(tag, index):
             victim.Remove()
         kept = [_option_bc(payload, position) for position in range(count)
                 if position != target]
+        # La lista se COMPACTA: una entrada que no existe (payload escrito a
+        # mano, esquema a medias) se descarta y las siguientes bajan de
+        # índice. Saltarse su posición dejaría un hueco dentro de
+        # ``0..count-2`` donde ``_option_bc`` devuelve None y la fila sale
+        # vacía y no resuelta para siempre — protegerse del None sin
+        # manejarlo después.
         options = c4d.BaseContainer()
+        written = 0
+        active_after = 0
         for position, option in enumerate(kept):
-            if option is not None:
-                options.SetContainer(position, option)
+            if position == int(new_active):
+                # Dónde acaba la que el plan deja activa: su índice en
+                # ``kept`` deja de ser el suyo en cuanto se descarta algo
+                # por delante.
+                active_after = written
+            if option is None:
+                continue
+            options.SetContainer(written, option)
+            written += 1
         payload.SetContainer(_PAYLOAD_OPTIONS, options)
-        payload.SetInt32(_PAYLOAD_COUNT, count - 1)
-        payload.SetInt32(_PAYLOAD_ACTIVE, int(new_active))
+        payload.SetInt32(_PAYLOAD_COUNT, written)
+        payload.SetInt32(_PAYLOAD_ACTIVE,
+                         min(active_after, written - 1) if written else -1)
         _store_payload_bc(tag, payload)
     finally:
         doc.EndUndo()
 
     _event_add()
     return {"ok": True, "reason": "", "action": "delete", "name": name,
-            "mounted": mounted_name}
+            "mounted": mounted_name, "evacuated": stray_names}
 
 
 # --- Nombre del conjunto: sobrevivir a cargar -------------------------------

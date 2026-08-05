@@ -157,6 +157,25 @@ _SWITCH_REASONS = {
 }
 
 
+def _evacuated_part(result):
+    """Lo que salió del anclaje sin ser la opción que tocaba mover, o "" si
+    no salió nada.
+
+    Compartido por los CUATRO gestos que vacían el anclaje (cambiar de
+    opción, duplicar y borrar): los tres hacen la misma evacuación
+    silenciosa —un objeto que el artista había arrastrado ahí a mano acaba en
+    un contenedor de la raíz con la visibilidad apagada— y ninguna otra
+    superficie lo cuenta (``read_state`` sólo suma subárboles de opciones
+    resueltas, así que ``warning_text`` no lo ve)."""
+    evacuated = list((result or {}).get("evacuated") or [])
+    if not evacuated:
+        return ""
+    return "%s del anclaje: %s" % (
+        pluralize_es(len(evacuated), "objeto suelto sacado",
+                     "objetos sueltos sacados"),
+        ", ".join(name or "(sin nombre)" for name in evacuated))
+
+
 def switch_report_text(result):
     """Lo que hay que decirle al artista después de un cambio de opción, o
     "" si no hay nada que decir.
@@ -176,12 +195,9 @@ def switch_report_text(result):
             return ""
         return "no se cambió de opción — %s" % text
     parts = ['montada "%s"' % (result.get("name") or "")]
-    evacuated = [name for name in (result.get("evacuated") or [])]
-    if evacuated:
-        parts.append("%s del anclaje: %s" % (
-            pluralize_es(len(evacuated), "objeto suelto sacado",
-                         "objetos sueltos sacados"),
-            ", ".join(name or "(sin nombre)" for name in evacuated)))
+    extra = _evacuated_part(result)
+    if extra:
+        parts.append(extra)
     return " · ".join(parts)
 
 
@@ -219,7 +235,11 @@ def action_report_text(result):
     escena de formas que no se ven enteras — duplicar monta OTRA cosa
     (la copia), borrar se lleva un subárbol entero, y renombrar puede
     entregar un nombre distinto del pedido por deduplicación. Política de la
-    casa fijada en la v1.35: el resultado siempre se reporta."""
+    casa fijada en la v1.35: el resultado siempre se reporta.
+
+    Duplicar y borrar VACÍAN el anclaje además de lo suyo, exactamente igual
+    que cambiar de opción, así que lo evacuado sale por el mismo canal (ver
+    ``_evacuated_part``)."""
     result = result or {}
     action = result.get("action") or ""
     name = result.get("name") or ""
@@ -230,15 +250,22 @@ def action_report_text(result):
             return ""
         return "%s — %s" % (prefix, text)
     if action == "duplicate":
-        return 'duplicada como "%s" · montada' % name
-    if action == "rename":
+        parts = ['duplicada como "%s" · montada' % name]
+    elif action == "rename":
+        # Renombrar no mueve nada: no hay nada que evacuar ni que reportar.
         return 'renombrada a "%s"' % name
-    if action == "delete":
+    elif action == "delete":
         mounted = result.get("mounted") or ""
         if mounted:
-            return 'borrada "%s" · montada "%s"' % (name, mounted)
-        return 'borrada "%s"' % name
-    return ""
+            parts = ['borrada "%s" · montada "%s"' % (name, mounted)]
+        else:
+            parts = ['borrada "%s"' % name]
+    else:
+        return ""
+    extra = _evacuated_part(result)
+    if extra:
+        parts.append(extra)
+    return " · ".join(parts)
 
 
 def _active_option(state):
