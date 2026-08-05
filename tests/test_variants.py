@@ -202,3 +202,29 @@ def test_warning_reports_lost_options_ahead_of_the_weight():
 def test_warning_is_empty_when_there_is_nothing_to_warn_about():
     text = variants.warning_text(state([option("A", objects=2)], active=0))
     assert text == ""
+
+
+# --- El parte de un cambio de opción ----------------------------------------
+
+def test_switch_report_says_nothing_when_the_option_was_already_mounted():
+    """``already_active`` no es un error: se pidió lo que ya estaba puesto.
+    Decirlo sería ruido en el gesto más frecuente de la herramienta."""
+    assert variants.switch_report_text(
+        {"ok": False, "reason": "already_active", "name": "", "evacuated": []}
+    ) == ""
+
+
+def test_switch_report_names_the_mounted_option():
+    assert variants.switch_report_text(
+        {"ok": True, "reason": "", "name": "sin bend", "evacuated": []}
+    ) == 'montada "sin bend"'
+
+
+def test_switch_report_lists_what_was_pulled_out_of_the_anchor():
+    """Lo único que un cambio hace y no se ve: lo que colgaba del anclaje sin
+    ser una opción acaba en un contenedor de la raíz, oculto."""
+    text = variants.switch_report_text(
+        {"ok": True, "reason": "", "name": "B",
+         "evacuated": ["luz suelta", "cámara"]})
+    assert text == ('montada "B" · 2 objetos sueltos sacados del anclaje: '
+                    "luz suelta, cámara")

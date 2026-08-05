@@ -12,22 +12,40 @@ veces esta semana):
   no algo que estos tests observen.
 - **Que el undo del menú revierta en un paso.** Aquí sólo se cuenta que se
   abra exactamente un bracket ``StartUndo``/``EndUndo``, que el ``AddUndo``
-  de cada objeto movido se registre ANTES de moverlo (en LOS DOS caminos que
-  mueven: crear el conjunto y cambiar de opción — el segundo no estaba
-  cubierto y la mutación sobrevivía la suite entera), y que cada objeto
-  creado y el payload lleven el suyo. Si C4D realmente colapsa eso en un paso
-  es cosa de C4D y se verifica en vivo (Step 8 del brief).
+  de **cada uno** de los objetos movidos se registre ANTES de moverlo (en LOS
+  DOS caminos que mueven: crear el conjunto y cambiar de opción, y en los dos
+  con **más de un** objeto en movimiento — con uno solo, un ``AddUndo`` fijado
+  fuera del bucle pasa por bueno, que es el modo de fallo exacto que costó un
+  bug real en matwire v1.32), y que cada objeto creado y el payload lleven el
+  suyo. Si C4D realmente colapsa eso en un paso es cosa de C4D y se verifica
+  en vivo (Step 8 del brief).
 - **Que los ``BaseLink`` sobrevivan a guardar+cargar.** El fake guarda el
   objeto tal cual (ver ``BaseContainer.SetLink`` en conftest). Un enlace
   "perdido" se modela poniendo ``None``: eso prueba cómo REACCIONA el
   código a un enlace que no resuelve, nunca cuándo un enlace real deja de
   resolver.
-- **Que C4D entregue los mensajes y las consultas de la descripción.** Que
-  ``MSG_DESCRIPTION_COMMAND`` llegue con el id de la fila pulsada, o que el
-  Attribute Manager llame a ``GetDEnabling`` por cada control, es contrato de
-  C4D. Lo que sí se prueba aquí es qué hace este módulo CON ese mensaje y con
-  esa consulta, llamando a ``Message``/``_handle_command``/``GetDEnabling``
-  directamente — no es un límite del arnés, son funciones llamables.
+- **Que ``MakeTag`` ponga de verdad el tag, y que dos conjuntos puedan
+  convivir sobre el mismo objeto.** ``FakeObject.MakeTag`` fabrica un
+  ``FakeTag`` y lo mete en una lista; el ``TAG_MULTIPLE`` del registro (sin
+  él C4D EXPULSA el segundo tag del mismo tipo — medido en vivo en la v1.35)
+  vive en ``sentinel_panel.pyp`` y no lo ejercita nada de aquí.
+- **Que los ids de visibilidad sean los de C4D.**
+  ``_PermissiveModule.__getattr__`` (``tests/conftest.py:25``) auto-vivifica
+  ``ID_BASEOBJECT_VISIBILITY_EDITOR``/``_RENDER`` como enteros inventados, así
+  que la aserción del contenedor de aparcado prueba que se escribió *algo* en
+  dos claves y ``OBJECT_OFF`` en ellas — nunca que sean los parámetros que
+  apagan la visibilidad en C4D.
+- **Que C4D entregue los mensajes y las consultas de la descripción, y que
+  pinte lo que se le pide.** Que ``MSG_DESCRIPTION_COMMAND`` llegue con el id
+  de la fila pulsada, que el Attribute Manager llame a ``GetDEnabling`` por
+  cada control, o que una fila declarada salga dibujada, es contrato de C4D.
+  Lo que sí se prueba aquí es qué hace este módulo CON ese mensaje y con esa
+  consulta, y QUÉ pide pintar — llamando a
+  ``Message``/``_handle_command``/``GetDEnabling``/``GetDDescription``/
+  ``GetDParameter``/``Execute`` directamente contra un ``FakeDescription``
+  que anota lo pedido. No es un límite del arnés, son funciones llamables:
+  toda esta capa estuvo sin ejecutar bajo test y cinco mutaciones que dejaban
+  la feature sin UI sobrevivían la suite entera.
 """
 
 import importlib
@@ -186,6 +204,52 @@ class FakeObject:
 
     def __getitem__(self, key):
         return self._params.get(key)
+
+
+class FakeDescription:
+    """Anota lo que la descripción del tag PIDE pintar, igual que
+    ``FakeDoc.undo_ops`` anota los undos.
+
+    Lo que NO modela: que C4D acepte esos ids o esos dtypes, el dibujo real,
+    el ancho de nada, ni ``LoadDescription`` (que aquí sólo se apunta). Lo
+    que sí fija: qué filas se declaran, con qué etiqueta, de qué tipo y
+    colgando de qué grupo — que es lo único de esta capa decidible sin C4D.
+    """
+
+    def __init__(self, reject=()):
+        self.loaded = []
+        self.rows = []          # (param_id, dtype, name, parent_id)
+        self.reject = set(reject)  # ids cuyo SetParameter falla
+
+    def LoadDescription(self, type_id):
+        self.loaded.append(type_id)
+        return True
+
+    def SetParameter(self, desc_id, bc, parent):
+        import c4d
+
+        param_id = desc_id[0].id
+        if param_id in self.reject:
+            return False
+        self.rows.append((
+            param_id,
+            desc_id[0].dtype,
+            bc.GetString(c4d.DESC_NAME, ""),
+            parent[0].id,
+        ))
+        return True
+
+    def names_under(self, parent_id):
+        return [row[2] for row in self.rows if row[3] == parent_id]
+
+    def row_ids_under(self, parent_id):
+        return [row[0] for row in self.rows if row[3] == parent_id]
+
+    def name_of(self, param_id):
+        for row in self.rows:
+            if row[0] == param_id:
+                return row[2]
+        return None
 
 
 @pytest.fixture
@@ -748,3 +812,354 @@ def test_switch_evacuates_anything_the_artist_dropped_under_the_anchor(variant_t
     assert anchor._children == [option_b], "el anclaje tiene exactamente un hijo"
     park = option_a._parent
     assert stray._parent is park, "lo arrastrado sale con lo aparcado, no se queda"
+
+
+# --- La cadena de undo con MÁS DE UN objeto en movimiento --------------------
+# Con uno solo, un AddUndo fijado fuera del bucle pasa por bueno: es el modo
+# de fallo exacto de matwire v1.32 (validado con un material, roto con dos).
+
+def test_create_variant_set_registers_a_move_undo_for_EVERY_object_it_moves(variant_tag):
+    """Tres luces envueltas de una vez: si sólo la primera lleva su
+    ``AddUndo``, un Cmd+Z revierte el movimiento de una y deja las otras dos
+    dentro de la opción mientras el anclaje desaparece con su ``NEWOBJ`` —
+    dos luces enterradas en un null suelto."""
+    import c4d
+
+    doc = _scene(c4d)
+    roots = [_insert(doc, FakeObject(name, c4d, doc))
+             for name in ("luz_a", "luz_b", "luz_c")]
+
+    mark = len(doc.events)
+    assert variant_tag.create_variant_set(doc, roots)["ok"] is True
+
+    for obj in roots:
+        assert _first_touch(doc, obj, mark) == ("undo", c4d.UNDOTYPE_CHANGE), (
+            "%s se movió sin su AddUndo delante" % obj.GetName()
+        )
+    assert (doc.start_undo_count, doc.end_undo_count) == (1, 1)
+
+
+def test_switch_registers_a_move_undo_for_EVERY_object_it_evacuates(variant_tag):
+    """Un cambio con varios objetos colgando del anclaje (la opción activa
+    más lo que el artista arrastró ahí) mueve N cosas. Si sólo la primera
+    pasa por ``_reparent``, el Cmd+Z revierte una y el resto se queda
+    aparcado e invisible sin que nada lo diga."""
+    import c4d
+
+    doc = _scene(c4d)
+    obj = _insert(doc, FakeObject("cubo", c4d, doc))
+    tag = variant_tag.create_variant_set(doc, [obj])["tag"]
+    anchor = tag.GetObject()
+    option_a = anchor._children[0]
+    stray_one = _insert(doc, FakeObject("arrastrado 1", c4d, doc), anchor)
+    stray_two = _insert(doc, FakeObject("arrastrado 2", c4d, doc), anchor)
+    option_b = _insert(doc, FakeObject("Opción B", c4d, doc))
+    _add_second_option(variant_tag, tag, c4d, doc, "Opción B", option_b)
+
+    doc.start_undo_count = 0
+    doc.end_undo_count = 0
+    mark = len(doc.events)
+    assert variant_tag.switch_to_option(tag, 1)["ok"] is True
+
+    for moved in (option_a, stray_one, stray_two, option_b):
+        assert _first_touch(doc, moved, mark) == ("undo", c4d.UNDOTYPE_CHANGE), (
+            "%s se movió sin su AddUndo delante" % moved.GetName()
+        )
+    assert (doc.start_undo_count, doc.end_undo_count) == (1, 1)
+
+
+# --- La evacuación se dice, y sin cajón no se monta --------------------------
+
+def test_switch_reports_what_it_pulled_out_of_the_anchor(variant_tag):
+    """Un objeto que el artista arrastró bajo el anclaje acaba en un
+    contenedor de la raíz con la visibilidad apagada: desaparece de su sitio.
+    Política de la casa (v1.35): el resultado siempre se reporta."""
+    import c4d
+    from sentinel import variants
+
+    doc = _scene(c4d)
+    obj = _insert(doc, FakeObject("cubo", c4d, doc))
+    tag = variant_tag.create_variant_set(doc, [obj])["tag"]
+    anchor = tag.GetObject()
+    _insert(doc, FakeObject("arrastrado a mano", c4d, doc), anchor)
+    option_b = _insert(doc, FakeObject("Opción B", c4d, doc))
+    _add_second_option(variant_tag, tag, c4d, doc, "Opción B", option_b)
+
+    result = variant_tag.switch_to_option(tag, 1)
+
+    assert result["evacuated"] == ["arrastrado a mano"], (
+        "la opción aparcada es esperada y ya va en 'name'; lo que hay que "
+        "decir es lo OTRO que salió"
+    )
+    assert variants.switch_report_text(result) == (
+        'montada "Opción B" · 1 objeto suelto sacados del anclaje: '
+        "arrastrado a mano"
+    )
+
+
+def test_pressing_a_row_delivers_the_report_instead_of_dropping_it(variant_tag, monkeypatch):
+    """``_handle_command`` descartaba el retorno entero — con él, la
+    evacuación silenciosa y también un ``lost_option``."""
+    import c4d
+
+    doc = _scene(c4d)
+    obj = _insert(doc, FakeObject("cubo", c4d, doc))
+    tag = variant_tag.create_variant_set(doc, [obj])["tag"]
+    _insert(doc, FakeObject("arrastrado a mano", c4d, doc), tag.GetObject())
+    option_b = _insert(doc, FakeObject("Opción B", c4d, doc))
+    _add_second_option(variant_tag, tag, c4d, doc, "Opción B", option_b)
+
+    said = []
+    monkeypatch.setattr(variant_tag, "safe_print", said.append)
+
+    row_id = variant_tag.ID_OPTION_BASE + 1 * variant_tag.ID_OPTION_STRIDE
+    _tag_data(variant_tag)._handle_command(tag, {"id": row_id})
+
+    assert said and "arrastrado a mano" in said[0]
+
+
+def test_pressing_a_row_says_why_when_the_option_is_lost(variant_tag, monkeypatch):
+    import c4d
+
+    doc = _scene(c4d)
+    obj = _insert(doc, FakeObject("cubo", c4d, doc))
+    tag = variant_tag.create_variant_set(doc, [obj])["tag"]
+    _add_second_option(variant_tag, tag, c4d, doc, "Opción B", None)
+
+    said = []
+    monkeypatch.setattr(variant_tag, "safe_print", said.append)
+
+    row_id = variant_tag.ID_OPTION_BASE + 1 * variant_tag.ID_OPTION_STRIDE
+    _tag_data(variant_tag)._handle_command(tag, {"id": row_id})
+
+    assert said and "no se encuentra" in said[0]
+
+
+def test_switch_without_a_park_container_mounts_nothing(variant_tag, monkeypatch):
+    """Sin cajón, el bucle de evacuación no corre; montar igual dejaría el
+    anclaje con DOS hijos, justo el estado que el invariante impide. Se
+    aborta y se dice, en vez de romperlo callando."""
+    import c4d
+    from sentinel import variants
+
+    doc = _scene(c4d)
+    obj = _insert(doc, FakeObject("cubo", c4d, doc))
+    tag = variant_tag.create_variant_set(doc, [obj])["tag"]
+    anchor = tag.GetObject()
+    option_a = anchor._children[0]
+    option_b = _insert(doc, FakeObject("Opción B", c4d, doc))
+    _add_second_option(variant_tag, tag, c4d, doc, "Opción B", option_b)
+
+    monkeypatch.setattr(variant_tag, "_ensure_park_container",
+                        lambda doc_, payload: None)
+    result = variant_tag.switch_to_option(tag, 1)
+
+    assert result["ok"] is False
+    assert result["reason"] == "no_park_container"
+    assert anchor._children == [option_a], "el anclaje sigue con exactamente un hijo"
+    assert option_b._parent is not anchor
+    payload = variant_tag._read_payload_bc(tag)
+    assert payload.GetInt32(variant_tag._PAYLOAD_ACTIVE, -1) == 0
+    assert (doc.start_undo_count, doc.end_undo_count) == (2, 2), (
+        "el bracket abierto se cierra igual: uno del create y uno de este"
+    )
+    assert variants.switch_report_text(result) == (
+        "no se cambió de opción — no se pudo crear el contenedor de aparcado"
+    )
+
+
+# --- La descripción: lo que el tag PIDE pintar -------------------------------
+# Toda esta capa (GetDDescription/GetDParameter/SetDParameter/Init/Execute y
+# la rama de fallback de Message) era código que ningún test ejecutaba, y
+# cinco mutaciones que dejan la feature sin UI sobrevivían la suite entera.
+
+def _describe(variant_tag, tag, reject=()):
+    description = FakeDescription(reject=reject)
+    result = _tag_data(variant_tag).GetDDescription(tag, description, 0)
+    return description, result
+
+
+def _scene_with_two_options(variant_tag, c4d):
+    """Conjunto de dos opciones con contenido a los DOS lados, para que el
+    resumen y la advertencia salgan los dos no vacíos y DISTINTOS."""
+    doc = _scene(c4d)
+    obj = _insert(doc, FakeObject("cubo", c4d, doc))
+    tag = variant_tag.create_variant_set(doc, [obj])["tag"]
+    option_b = _insert(doc, FakeObject("Opción B", c4d, doc))
+    _insert(doc, FakeObject("cubo_b", c4d, doc), option_b)
+    _add_second_option(variant_tag, tag, c4d, doc, "Opción B", option_b)
+    return doc, tag, option_b
+
+
+def test_get_ddescription_paints_one_row_per_option(variant_tag):
+    """Sin fila por opción el tag no tiene UI: la feature entera es
+    invisible y no hay nada que pulsar."""
+    import c4d
+
+    doc, tag, option_b = _scene_with_two_options(variant_tag, c4d)
+
+    description, result = _describe(variant_tag, tag)
+
+    assert result[0] is True
+    row_ids = description.row_ids_under(variant_tag.ID_GROUP_OPTIONS)
+    assert row_ids == [
+        variant_tag.ID_OPTION_BASE,
+        variant_tag.ID_OPTION_BASE + variant_tag.ID_OPTION_STRIDE,
+    ]
+    # Y son botones, no celdas de texto.
+    dtypes = {row[1] for row in description.rows if row[0] in row_ids}
+    assert dtypes == {c4d.DTYPE_BUTTON}
+
+
+def test_the_option_row_marked_with_a_dot_is_the_MOUNTED_one(variant_tag):
+    """Con el marcador invertido, el ● señala todas las opciones menos la
+    que está puesta — y el artista pulsa la que ya tiene."""
+    import c4d
+
+    doc, tag, option_b = _scene_with_two_options(variant_tag, c4d)
+
+    description, _ = _describe(variant_tag, tag)
+
+    assert description.names_under(variant_tag.ID_GROUP_OPTIONS) == [
+        "● Opción A", "○ Opción B",
+    ]
+
+    # Y tras cambiar, el ● se mueve con la opción montada.
+    assert variant_tag.switch_to_option(tag, 1)["ok"] is True
+    description, _ = _describe(variant_tag, tag)
+    assert description.names_under(variant_tag.ID_GROUP_OPTIONS) == [
+        "○ Opción A", "● Opción B",
+    ]
+
+
+def test_a_lost_option_says_so_in_its_own_row(variant_tag):
+    import c4d
+
+    doc = _scene(c4d)
+    obj = _insert(doc, FakeObject("cubo", c4d, doc))
+    tag = variant_tag.create_variant_set(doc, [obj])["tag"]
+    _add_second_option(variant_tag, tag, c4d, doc, "Opción B", None)
+
+    description, _ = _describe(variant_tag, tag)
+
+    assert description.names_under(variant_tag.ID_GROUP_OPTIONS) == [
+        "● Opción A", "⚠ Opción B (no encontrada)",
+    ]
+
+
+def test_get_ddescription_paints_the_summary_and_the_warning_as_two_rows(variant_tag):
+    """SEPARADAS a propósito (lección del Pin): concatenada detrás del
+    conteo, la advertencia es lo primero que se trunca."""
+    import c4d
+
+    doc, tag, option_b = _scene_with_two_options(variant_tag, c4d)
+
+    description, _ = _describe(variant_tag, tag)
+
+    painted = [row[0] for row in description.rows]
+    assert variant_tag.ID_VARIANTS_STATUS in painted
+    assert variant_tag.ID_VARIANTS_WARNING in painted
+    assert description.name_of(variant_tag.ID_VARIANTS_STATUS) == "Estado"
+    # Las dos cuelgan de la raíz de la descripción, no del grupo de opciones.
+    assert variant_tag.ID_VARIANTS_STATUS not in description.row_ids_under(
+        variant_tag.ID_GROUP_OPTIONS)
+
+
+def test_get_ddescription_gives_up_when_a_row_cannot_be_declared(variant_tag):
+    """Media descripción pintada es peor que ninguna: el Attribute Manager
+    enseñaría un conjunto con menos opciones de las que tiene."""
+    import c4d
+
+    doc, tag, option_b = _scene_with_two_options(variant_tag, c4d)
+
+    _, result = _describe(
+        variant_tag, tag,
+        reject=[variant_tag.ID_OPTION_BASE + variant_tag.ID_OPTION_STRIDE])
+
+    assert result is False
+
+
+def test_get_dparameter_puts_the_summary_and_the_warning_in_their_own_rows(variant_tag):
+    """Intercambiados, la fila "Estado" enseña la advertencia y la
+    advertencia el resumen — y el tag miente en las dos."""
+    import c4d
+
+    doc, tag, option_b = _scene_with_two_options(variant_tag, c4d)
+    tag_data = _tag_data(variant_tag)
+
+    def value(param_id):
+        got = tag_data.GetDParameter(
+            tag, c4d.DescID(c4d.DescLevel(param_id)), 0)
+        assert got[0] is True
+        return got[1]
+
+    assert value(variant_tag.ID_VARIANTS_STATUS) == (
+        "Opción A · 2 opciones · 1 objeto montado")
+    assert value(variant_tag.ID_VARIANTS_WARNING).startswith("⚠ 1 objeto aparcado")
+    # Un id que no es nuestro se deja pasar al host.
+    assert tag_data.GetDParameter(
+        tag, c4d.DescID(c4d.DescLevel(variant_tag.ID_GROUP_OPTIONS)), 0) is False
+
+
+def test_set_dparameter_swallows_writes_to_the_derived_rows(variant_tag):
+    """Son texto derivado: si la escritura llegara al dato real, el resumen
+    se quedaría congelado en lo que se escribió."""
+    import c4d
+
+    doc, tag, option_b = _scene_with_two_options(variant_tag, c4d)
+    tag_data = _tag_data(variant_tag)
+
+    for param_id in (variant_tag.ID_VARIANTS_STATUS, variant_tag.ID_VARIANTS_WARNING):
+        got = tag_data.SetDParameter(
+            tag, c4d.DescID(c4d.DescLevel(param_id)), "basura", 0)
+        assert got[0] is True
+    assert tag_data.SetDParameter(
+        tag, c4d.DescID(c4d.DescLevel(variant_tag.ID_GROUP_OPTIONS)), "x", 0) is False
+
+    # Y el resumen sigue derivándose de la escena, no de lo escrito.
+    assert tag_data.GetDParameter(
+        tag, c4d.DescID(c4d.DescLevel(variant_tag.ID_VARIANTS_STATUS)), 0
+    )[1] == "Opción A · 2 opciones · 1 objeto montado"
+
+
+def test_execute_is_what_keeps_the_set_name_alive_across_a_reload(variant_tag):
+    """Hay dos tests de ``_sync_display_name`` que dan la sensación de que la
+    supervivencia del nombre está fijada, y nadie comprobaba el ÚNICO
+    cableado que la hace correr: quitar la llamada de ``Execute`` deja el
+    nombre del conjunto muriendo en cada carga con la suite en verde."""
+    import c4d
+
+    doc = _scene(c4d)
+    obj = _insert(doc, FakeObject("cubo", c4d, doc))
+    tag = variant_tag.create_variant_set(doc, [obj])["tag"]
+    tag_data = _tag_data(variant_tag)
+
+    tag.SetName("con y sin bend")
+    tag_data.Execute(tag, doc, tag.GetObject(), None, 0, 0)  # el espejo se llena
+
+    tag.SetName(variant_tag.VARIANT_TAG_DEFAULT_NAME)  # lo que hace una carga
+    assert tag_data.Execute(tag, doc, tag.GetObject(), None, 0, 0) == (
+        c4d.EXECUTIONRESULT_OK)
+
+    assert tag.GetName() == "con y sin bend"
+
+
+def test_init_accepts_the_tag(variant_tag):
+    import c4d
+
+    doc = _scene(c4d)
+    obj = _insert(doc, FakeObject("cubo", c4d, doc))
+    tag = variant_tag.create_variant_set(doc, [obj])["tag"]
+
+    assert _tag_data(variant_tag).Init(tag) is True
+
+
+def test_message_leaves_messages_that_are_not_ours_alone(variant_tag):
+    """La rama de fallback: un mensaje ajeno no puede acabar despachado como
+    si fuera el clic de una fila."""
+    import c4d
+
+    doc, tag, option_b = _two_option_set(variant_tag, c4d)
+
+    assert _tag_data(variant_tag).Message(tag, c4d.MSG_MENUPREPARE, None) is True
+    assert variant_tag.read_state(tag)["active"] == 0

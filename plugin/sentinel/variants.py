@@ -144,6 +144,46 @@ def render_image_stem(scene_stem, set_name, option_name):
     return stem
 
 
+#: Por qué NO se cambió de opción, en palabras. ``already_active`` no está:
+#: no es un error (se pidió lo que ya estaba puesto), así que no se dice
+#: nada — decirlo sería ruido en el gesto más frecuente de la herramienta.
+_SWITCH_REASONS = {
+    "bad_index": "esa opción ya no está en la lista",
+    "lost_option": "la opción elegida no se encuentra en la escena",
+    "no_anchor": "el tag no está sobre un objeto",
+    "no_document": "sin documento",
+    "no_payload": "el conjunto no tiene datos",
+    "no_park_container": "no se pudo crear el contenedor de aparcado",
+}
+
+
+def switch_report_text(result):
+    """Lo que hay que decirle al artista después de un cambio de opción, o
+    "" si no hay nada que decir.
+
+    Existe porque un cambio hace DOS cosas y sólo una es visible: monta la
+    opción elegida (se ve) y saca del anclaje todo lo demás que colgara de
+    él (no se ve — acaba en un contenedor de la raíz con la visibilidad
+    apagada). Un objeto que el artista había arrastrado ahí a mano
+    desaparecía de su sitio sin una palabra. Política de la casa fijada en
+    la v1.35: el resultado siempre se reporta.
+    """
+    result = result or {}
+    if not result.get("ok"):
+        reason = result.get("reason") or ""
+        text = _SWITCH_REASONS.get(reason)
+        if not text:
+            return ""
+        return "no se cambió de opción — %s" % text
+    parts = ['montada "%s"' % (result.get("name") or "")]
+    evacuated = [name for name in (result.get("evacuated") or [])]
+    if evacuated:
+        parts.append("%s sacados del anclaje: %s" % (
+            pluralize_es(len(evacuated), "objeto suelto", "objetos sueltos"),
+            ", ".join(name or "(sin nombre)" for name in evacuated)))
+    return " · ".join(parts)
+
+
 def _active_option(state):
     options = (state or {}).get("options") or []
     index = (state or {}).get("active")

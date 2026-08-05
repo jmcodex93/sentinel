@@ -42,6 +42,7 @@ import c4d
 from c4d import plugins
 
 from sentinel import variants
+from sentinel.common.helpers import safe_print
 
 SENTINEL_VARIANT_TAG_PLUGIN_ID = 2099079
 SENTINEL_VARIANT_TAG_DESCRIPTION = "Tsentinelvariants"
@@ -196,6 +197,22 @@ def _safe_node_name(node, fallback=""):
         except Exception:
             pass
     return str(fallback or "")
+
+
+def _report(text):
+    """Entrega el resultado de un gesto al artista. Barra de estado primero
+    (entrega primaria in-C4D, lección de la v1.30: los banners del sistema
+    se los traga macOS en silencio) y consola siempre, que es donde cabe el
+    detalle. Best-effort las dos: reportar nunca puede tumbar el gesto que
+    ya se hizo."""
+    if not text:
+        return
+    message = "Sentinel Variants: %s" % text
+    try:
+        c4d.gui.StatusSetText(message)
+    except Exception:
+        pass
+    safe_print(message)
 
 
 def _event_add():
@@ -583,30 +600,36 @@ def switch_to_option(tag, index):
     una y deshacer sólo la mitad deja el anclaje vacío o con dos opciones
     dentro, que es un estado que el invariante no admite.
 
-    Devuelve ``{"ok", "reason", "name"}``. ``already_active`` no es un
-    error: no se dice nada y no se toca nada.
+    Devuelve ``{"ok", "reason", "name", "evacuated"}``. ``already_active`` no
+    es un error: no se dice nada y no se toca nada. ``evacuated`` lleva los
+    NOMBRES de lo que salió del anclaje sin ser la opción aparcada — lo
+    único que este gesto hace y no se ve (ver ``variants.switch_report_text``).
     """
     state = read_state(tag)
     plan = variants.plan_switch(len(state["options"]), state["active"], index)
     if not plan["ok"]:
-        return {"ok": False, "reason": plan["reason"], "name": ""}
+        return {"ok": False, "reason": plan["reason"], "name": "",
+                "evacuated": []}
 
     anchor = tag.GetObject()
     if anchor is None:
-        return {"ok": False, "reason": "no_anchor", "name": ""}
+        return {"ok": False, "reason": "no_anchor", "name": "", "evacuated": []}
     doc = _doc_from_node(tag)
     if doc is None:
-        return {"ok": False, "reason": "no_document", "name": ""}
+        return {"ok": False, "reason": "no_document", "name": "",
+                "evacuated": []}
     payload = _read_payload_bc(tag)
     if payload is None:
-        return {"ok": False, "reason": "no_payload", "name": ""}
+        return {"ok": False, "reason": "no_payload", "name": "",
+                "evacuated": []}
 
     # Los enlaces se resuelven ANTES de abrir el bracket. Si el de la
     # opción a montar no resuelve no se toca NADA: mejor un conjunto que no
     # cambia y lo dice, que un anclaje vacío.
     mount_node = _option_link(payload, plan["mount"], doc)
     if mount_node is None:
-        return {"ok": False, "reason": "lost_option", "name": ""}
+        return {"ok": False, "reason": "lost_option", "name": "",
+                "evacuated": []}
     park_node = None
     if plan["park"] is not None:
         park_node = _option_link(payload, plan["park"], doc)
@@ -628,14 +651,27 @@ def switch_to_option(tag, index):
         seen.add(id(node))
         evacuate.append(node)
 
+    # Lo que sale del anclaje SIN ser la opción que tocaba aparcar: objetos
+    # que el artista puso ahí a mano y que van a acabar en un contenedor de
+    # la raíz con la visibilidad apagada. Los nombres se leen ANTES de
+    # mover nada, mientras siguen donde el artista los dejó.
+    strays = [_safe_node_name(node, "") for node in evacuate
+              if node is not park_node]
+
     doc.StartUndo()
     try:
         doc.AddUndo(c4d.UNDOTYPE_CHANGE, tag)
         if evacuate:
             container = _ensure_park_container(doc, payload)
-            if container is not None:
-                for node in evacuate:
-                    _reparent(doc, node, container)
+            if container is None:
+                # Sin cajón no hay dónde vaciar el anclaje, y montar igual
+                # lo dejaría con DOS hijos — exactamente el estado que el
+                # invariante existe para impedir. Se aborta antes de mover
+                # nada y se dice, en vez de romper el invariante callando.
+                return {"ok": False, "reason": "no_park_container",
+                        "name": "", "evacuated": []}
+            for node in evacuate:
+                _reparent(doc, node, container)
         _reparent(doc, mount_node, anchor)
         payload.SetInt32(_PAYLOAD_ACTIVE, int(plan["mount"]))
         _store_payload_bc(tag, payload)
@@ -647,6 +683,7 @@ def switch_to_option(tag, index):
         "ok": True,
         "reason": "",
         "name": state["options"][plan["mount"]]["name"],
+        "evacuated": strays,
     }
 
 
@@ -897,7 +934,7 @@ class SentinelVariantsTag(_TagDataBase):
         command_id = _command_id_from_data(data)
         row = _option_command(command_id, _payload_option_count(node))
         if row is not None and row[1] == 0:
-            switch_to_option(node, row[0])
+            _report(variants.switch_report_text(switch_to_option(node, row[0])))
         return True
 
     def Message(self, node, mid, data):
