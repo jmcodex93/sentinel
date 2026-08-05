@@ -658,18 +658,24 @@ def switch_to_option(tag, index):
     strays = [_safe_node_name(node, "") for node in evacuate
               if node is not park_node]
 
+    # El cajón se resuelve ANTES de abrir el bracket, igual que los enlaces
+    # de arriba: sin él no hay dónde vaciar el anclaje, y montar igual lo
+    # dejaría con DOS hijos — el estado que el invariante existe para
+    # impedir. Comprobarlo dentro del bracket abría y cerraba un paso de
+    # deshacer que no deshacía nada — la misma regla que
+    # ``create_variant_set:517`` ("un paso de deshacer que no deshace nada
+    # es peor que ninguno"), aplicada aquí al revés hasta este fix.
+    container = None
+    if evacuate:
+        container = _ensure_park_container(doc, payload)
+        if container is None:
+            return {"ok": False, "reason": "no_park_container",
+                    "name": "", "evacuated": []}
+
     doc.StartUndo()
     try:
         doc.AddUndo(c4d.UNDOTYPE_CHANGE, tag)
         if evacuate:
-            container = _ensure_park_container(doc, payload)
-            if container is None:
-                # Sin cajón no hay dónde vaciar el anclaje, y montar igual
-                # lo dejaría con DOS hijos — exactamente el estado que el
-                # invariante existe para impedir. Se aborta antes de mover
-                # nada y se dice, en vez de romper el invariante callando.
-                return {"ok": False, "reason": "no_park_container",
-                        "name": "", "evacuated": []}
             for node in evacuate:
                 _reparent(doc, node, container)
         _reparent(doc, mount_node, anchor)

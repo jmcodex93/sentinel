@@ -218,7 +218,7 @@ class FakeDescription:
 
     def __init__(self, reject=()):
         self.loaded = []
-        self.rows = []          # (param_id, dtype, name, parent_id)
+        self.rows = []          # (param_id, dtype, name, parent_id, bc)
         self.reject = set(reject)  # ids cuyo SetParameter falla
 
     def LoadDescription(self, type_id):
@@ -236,6 +236,7 @@ class FakeDescription:
             desc_id[0].dtype,
             bc.GetString(c4d.DESC_NAME, ""),
             parent[0].id,
+            bc,
         ))
         return True
 
@@ -249,6 +250,18 @@ class FakeDescription:
         for row in self.rows:
             if row[0] == param_id:
                 return row[2]
+        return None
+
+    def bc_of(self, param_id):
+        """El ``BaseContainer`` que se le pasó a ``SetParameter`` para esta
+        fila — lo que ANTES este fake descartaba. Sin él, un test sólo podía
+        afirmar el ``dtype`` de una fila, nunca las claves (``DESC_CUSTOMGUI``,
+        ``DESC_ANIMATE``, ``DESC_COLUMNS``...) que C4D exige además del
+        dtype para que la fila se pinte/comporte como el código dice que
+        debe."""
+        for row in self.rows:
+            if row[0] == param_id:
+                return row[4]
         return None
 
 
@@ -891,15 +904,29 @@ def test_switch_reports_what_it_pulled_out_of_the_anchor(variant_tag):
         "la opción aparcada es esperada y ya va en 'name'; lo que hay que "
         "decir es lo OTRO que salió"
     )
+    # CAMBIADA (fixes-3, Minor 4): antes fijaba "1 objeto suelto sacados"
+    # (concordancia rota — participio en plural fijo con sustantivo
+    # singular). El fix mete el participio DENTRO de pluralize_es
+    # ("objeto suelto sacado" / "objetos sueltos sacados"), así que el
+    # caso de un objeto ahora concuerda en singular.
     assert variants.switch_report_text(result) == (
-        'montada "Opción B" · 1 objeto suelto sacados del anclaje: '
+        'montada "Opción B" · 1 objeto suelto sacado del anclaje: '
         "arrastrado a mano"
     )
 
 
 def test_pressing_a_row_delivers_the_report_instead_of_dropping_it(variant_tag, monkeypatch):
     """``_handle_command`` descartaba el retorno entero — con él, la
-    evacuación silenciosa y también un ``lost_option``."""
+    evacuación silenciosa y también un ``lost_option``.
+
+    Se afirman LOS DOS canales que ``_report`` promete (docstring: "barra
+    de estado primero — entrega primaria in-C4D — y consola siempre"),
+    no sólo ``safe_print``. Sin un ``StatusSetText`` de mentira, esa línea
+    era inejecutable bajo este arnés: ``c4d.gui`` es un módulo permisivo
+    que auto-vivifica ``StatusSetText`` a un ``int``, llamarlo lanza
+    ``TypeError`` y el ``except Exception: pass`` de ``_report`` se lo
+    traga en silencio — el canal que el docstring vende como el primario
+    nunca se ejecutaba bajo test (fixes-3, Minor 2)."""
     import c4d
 
     doc = _scene(c4d)
@@ -911,14 +938,20 @@ def test_pressing_a_row_delivers_the_report_instead_of_dropping_it(variant_tag, 
 
     said = []
     monkeypatch.setattr(variant_tag, "safe_print", said.append)
+    status = []
+    monkeypatch.setattr(c4d.gui, "StatusSetText", status.append)
 
     row_id = variant_tag.ID_OPTION_BASE + 1 * variant_tag.ID_OPTION_STRIDE
     _tag_data(variant_tag)._handle_command(tag, {"id": row_id})
 
     assert said and "arrastrado a mano" in said[0]
+    assert status and "arrastrado a mano" in status[0]
 
 
 def test_pressing_a_row_says_why_when_the_option_is_lost(variant_tag, monkeypatch):
+    """Mismo par de canales que el test anterior — barra de estado
+    (primaria) + consola — para no dejar cubierta sólo la mitad del
+    contrato de ``_report`` en este segundo camino (fixes-3, Minor 2)."""
     import c4d
 
     doc = _scene(c4d)
@@ -928,11 +961,14 @@ def test_pressing_a_row_says_why_when_the_option_is_lost(variant_tag, monkeypatc
 
     said = []
     monkeypatch.setattr(variant_tag, "safe_print", said.append)
+    status = []
+    monkeypatch.setattr(c4d.gui, "StatusSetText", status.append)
 
     row_id = variant_tag.ID_OPTION_BASE + 1 * variant_tag.ID_OPTION_STRIDE
     _tag_data(variant_tag)._handle_command(tag, {"id": row_id})
 
     assert said and "no se encuentra" in said[0]
+    assert status and "no se encuentra" in status[0]
 
 
 def test_switch_without_a_park_container_mounts_nothing(variant_tag, monkeypatch):
@@ -960,8 +996,14 @@ def test_switch_without_a_park_container_mounts_nothing(variant_tag, monkeypatch
     assert option_b._parent is not anchor
     payload = variant_tag._read_payload_bc(tag)
     assert payload.GetInt32(variant_tag._PAYLOAD_ACTIVE, -1) == 0
-    assert (doc.start_undo_count, doc.end_undo_count) == (2, 2), (
-        "el bracket abierto se cierra igual: uno del create y uno de este"
+    # CAMBIADA (fixes-3, Minor 3): antes fijaba (2, 2) — un bracket vacío se
+    # abría y cerraba en switch_to_option sin mover nada, el mismo defecto
+    # que create_variant_set:517 prohíbe por escrito ("un paso de deshacer
+    # que no deshace nada es peor que ninguno"). El fix comprueba el cajón
+    # ANTES de abrir el bracket, así que un switch fallido por falta de
+    # cajón ya no gasta un paso de deshacer: sólo el (1, 1) del create.
+    assert (doc.start_undo_count, doc.end_undo_count) == (1, 1), (
+        "sin cajón, switch_to_option no abre bracket — sólo el del create"
     )
     assert variants.switch_report_text(result) == (
         "no se cambió de opción — no se pudo crear el contenedor de aparcado"
@@ -1000,15 +1042,35 @@ def test_get_ddescription_paints_one_row_per_option(variant_tag):
 
     description, result = _describe(variant_tag, tag)
 
-    assert result[0] is True
+    assert result == (True, 0 | c4d.DESCFLAGS_DESC_LOADED)
+    assert description.loaded == [tag.GetType()], (
+        "sin LoadDescription el Attribute Manager no tiene base sobre la "
+        "que pintar filas propias del tag"
+    )
     row_ids = description.row_ids_under(variant_tag.ID_GROUP_OPTIONS)
     assert row_ids == [
         variant_tag.ID_OPTION_BASE,
         variant_tag.ID_OPTION_BASE + variant_tag.ID_OPTION_STRIDE,
     ]
-    # Y son botones, no celdas de texto.
-    dtypes = {row[1] for row in description.rows if row[0] in row_ids}
-    assert dtypes == {c4d.DTYPE_BUTTON}
+    # Y son botones PULSABLES, no sólo filas con dtype-botón: el propio
+    # código (variant_tag.py:811) dice por escrito que sin CUSTOMGUI_BUTTON
+    # un DTYPE_BUTTON se pinta como celda vacía en vez de botón
+    # (frame_tag.py:1775, confirmado en vivo — no re-descubrir), así que
+    # DTYPE_BUTTON solo no basta para afirmar "son botones". Se afirma
+    # también DESC_ANIMATE_OFF (ninguna fila de opción es keyframeable —
+    # un rombo por fila fue el mayor coste de ancho medido en el Frame
+    # v1.29) porque las tres propiedades juntas son lo que hace la fila
+    # REAL, no sólo nombrada así.
+    for row_id in row_ids:
+        bc = description.bc_of(row_id)
+        assert bc is not None
+        assert bc.GetInt32(c4d.DESC_CUSTOMGUI, None) == c4d.CUSTOMGUI_BUTTON
+        assert bc.GetInt32(c4d.DESC_ANIMATE, None) == c4d.DESC_ANIMATE_OFF
+    # El grupo de opciones se pinta a una sola columna, para que cada fila
+    # de opción no comparta ancho con nada.
+    options_group_bc = description.bc_of(variant_tag.ID_GROUP_OPTIONS)
+    assert options_group_bc is not None
+    assert options_group_bc.GetInt32(c4d.DESC_COLUMNS, None) == 1
 
 
 def test_the_option_row_marked_with_a_dot_is_the_MOUNTED_one(variant_tag):

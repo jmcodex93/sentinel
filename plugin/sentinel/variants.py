@@ -178,8 +178,9 @@ def switch_report_text(result):
     parts = ['montada "%s"' % (result.get("name") or "")]
     evacuated = [name for name in (result.get("evacuated") or [])]
     if evacuated:
-        parts.append("%s sacados del anclaje: %s" % (
-            pluralize_es(len(evacuated), "objeto suelto", "objetos sueltos"),
+        parts.append("%s del anclaje: %s" % (
+            pluralize_es(len(evacuated), "objeto suelto sacado",
+                         "objetos sueltos sacados"),
             ", ".join(name or "(sin nombre)" for name in evacuated)))
     return " · ".join(parts)
 
