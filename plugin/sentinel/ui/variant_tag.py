@@ -74,23 +74,40 @@ VARIANT_PARK_DEFAULT_NAME = "Sentinel Variants (aparcadas)"
 # revertía los renombrados un tick después.
 ID_GROUP_OPTIONS = 1100   # DTYPE_GROUP, 1 columna — la lista de opciones
 ID_OPTION_BASE = 1200     # primer id de fila; stride ID_OPTION_STRIDE
-ID_OPTION_STRIDE = 10     # +0 botón "montar", +1 nombre, +2 duplicar,
-                          # +3 borrar (Tarea 4). Stride 10 deja sitio sin
-                          # tocar los ids de arriba si una fila crece.
+ID_OPTION_STRIDE = 10     # +0 botón "montar", +1 nombre, +2 borrar, +9 el
+                          # grupo de la fila. Stride 10 deja sitio sin tocar
+                          # los ids de arriba si una fila crece.
+
+#: Offsets DENTRO del stride de una fila. Duplicar NO está aquí: es un solo
+#: botón para todo el conjunto (``ID_VARIANTS_NEW``), porque lo que se
+#: duplica es la opción MONTADA — la que el artista está mirando — y un
+#: botón por fila prometería duplicar una que ni siquiera está en la escena.
+_OPTION_ACTION_MOUNT = 0
+_OPTION_ACTION_NAME = 1
+_OPTION_ACTION_DELETE = 2
+#: El grupo que mete los tres controles de una opción EN UNA LÍNEA. Va en el
+#: último hueco del stride para dejar los primeros a controles de verdad. El
+#: grupo de opciones sigue a UNA columna (ver ID_GROUP_OPTIONS): quien
+#: reparte ancho es este sub-grupo, dentro de la fila, así que el texto de
+#: estado —que cuelga de la raíz— no compite con nada (la lección del Pin
+#: era sobre el estado, no sobre las filas).
+_OPTION_ACTION_GROUP = 9
 ID_VARIANTS_STATUS = 1002   # DTYPE_STATICTEXT — resumen (variants.status_text)
 ID_VARIANTS_WARNING = 1003  # DTYPE_STATICTEXT — límites (variants.warning_text),
                             # SEPARADO del resumen a propósito (lección del
                             # Pin: concatenada detrás del conteo, la
                             # advertencia es lo primero que se trunca).
+ID_VARIANTS_NEW = 1004         # DTYPE_BUTTON — "Duplicar opción activa"
 # --- Ids RESERVADOS, todavía sin pintar -----------------------------------
 # Reservados aquí para que nadie los reutilice, pero NO se declaran en la
-# descripción todavía: sus acciones son de las Tareas 4 y 5, y un botón
-# pintado que no hace nada es peor que un botón ausente (el artista lo
-# pulsa en la verificación en vivo y no pasa nada, sin forma de saber si
-# está roto o sin hacer).
-ID_VARIANTS_NEW = 1004         # DTYPE_BUTTON — "Duplicar opción activa" (T4)
+# descripción todavía: su acción es de la Tarea 5, y un botón pintado que no
+# hace nada es peor que un botón ausente (el artista lo pulsa en la
+# verificación en vivo y no pasa nada, sin forma de saber si está roto o sin
+# hacer). Van POR DEBAJO de ID_OPTION_BASE por necesidad: un id por encima
+# quedaría inerte hasta que el conjunto tuviera bastantes opciones y
+# entonces se lo tragaría el bloque de filas.
 ID_VARIANTS_RENDER_ALL = 1005  # DTYPE_BUTTON — "Renderizar todas" (T5)
-ID_VARIANTS_SEPARATOR = 1006   # DTYPE_SEPARATOR — antes de lo destructivo (T4)
+ID_VARIANTS_SEPARATOR = 1006   # DTYPE_SEPARATOR — antes de lo destructivo (T5)
 
 #: El payload vive bajo un id de contenedor privado dentro del contenedor
 #: propio del tag, así viaja con el .c4d. Lejos del rango de ids de
@@ -723,6 +740,257 @@ def switch_to_option(tag, index):
     }
 
 
+# --- Duplicar, renombrar y borrar -------------------------------------------
+
+def _tag_context(tag):
+    """``(anchor, doc, payload, reason)`` — las tres piezas que todo gesto que
+    toca la escena necesita, resueltas ANTES de abrir ningún bracket (misma
+    regla que ``switch_to_option``: un paso de deshacer que no deshace nada
+    es peor que ninguno). ``reason`` es "" cuando las tres están."""
+    anchor = tag.GetObject() if tag is not None else None
+    if anchor is None:
+        return None, None, None, "no_anchor"
+    doc = _doc_from_node(tag)
+    if doc is None:
+        return anchor, None, None, "no_document"
+    payload = _read_payload_bc(tag)
+    if payload is None:
+        return anchor, doc, None, "no_payload"
+    return anchor, doc, payload, ""
+
+
+def _evacuate_anchor(doc, anchor, container, keep=None):
+    """Saca del anclaje todo lo que no sea ``keep``. El invariante ("el
+    anclaje tiene exactamente un hijo") se impone leyendo la escena, no
+    confiando en el payload — el anclaje es un null corriente en el Object
+    Manager y el artista puede haber arrastrado algo dentro.
+
+    Identidad por VALOR (``==``, nunca ``is``/``id()``): ``keep`` llega de un
+    ``GetLink`` del payload y los hijos de ``_children_of``; en C4D real son
+    lecturas distintas del MISMO nodo, con ``id()`` propio."""
+    moved = []
+    for node in _children_of(anchor):
+        if node is None or (keep is not None and node == keep):
+            continue
+        _reparent(doc, node, container)
+        moved.append(node)
+    return moved
+
+
+def _write_option(payload, index, name, node):
+    options = payload.GetContainerInstance(_PAYLOAD_OPTIONS)
+    if options is None:
+        options = c4d.BaseContainer()
+        payload.SetContainer(_PAYLOAD_OPTIONS, options)
+        options = payload.GetContainerInstance(_PAYLOAD_OPTIONS)
+    option = c4d.BaseContainer()
+    option.SetString(_OPTION_NAME, name)
+    option.SetLink(_OPTION_LINK, node)
+    options.SetContainer(int(index), option)
+
+
+def duplicate_active_option(tag):
+    """Copia la opción montada CON su subárbol y deja al artista trabajando
+    sobre la copia — es el gesto que sustituye al "Cmd+C y arrastrar al
+    backup" de hoy, y dejar montada la original haría que el artista editara
+    justo la que quería conservar.
+
+    ``GetClone`` se lleva jerarquía, parámetros, pistas de animación y los
+    tags de material apuntando a los MISMOS materiales (por eso el Material
+    Manager no engorda) — hecho a verificar en vivo, no aquí: el arnés de
+    tests no tiene materiales que compartir.
+
+    Devuelve ``{"ok", "reason", "action", "name"}``."""
+    fail = {"ok": False, "action": "duplicate", "name": ""}
+    state = read_state(tag)
+    active = state["active"]
+    if active is None:
+        return dict(fail, reason="no_active")
+    anchor, doc, payload, reason = _tag_context(tag)
+    if reason:
+        return dict(fail, reason=reason)
+
+    source = _option_link(payload, active, doc)
+    if source is None:
+        return dict(fail, reason="lost_option")
+    try:
+        clone = source.GetClone(c4d.COPYFLAGS_0)
+    except Exception:
+        clone = None
+    if clone is None:
+        return dict(fail, reason="clone_failed")
+
+    names = [option["name"] for option in state["options"]]
+    name = variants.dedupe_option_name(variants.next_option_name(names), names)
+    try:
+        clone.SetName(name)
+    except Exception:
+        pass
+
+    # El cajón se resuelve ANTES del bracket, igual que en switch_to_option:
+    # la opción que está puesta tiene que salir del anclaje, y sin sitio
+    # donde ponerla montar la copia lo dejaría con DOS hijos. Sólo si hay
+    # algo que sacar: un anclaje vacío no justifica un null de más en la
+    # raíz de la escena.
+    container = None
+    if _children_of(anchor):
+        container = _ensure_park_container(doc, payload)
+        if container is None:
+            return dict(fail, reason="no_park_container")
+
+    index = len(state["options"])
+    doc.StartUndo()
+    try:
+        doc.AddUndo(c4d.UNDOTYPE_CHANGE, tag)
+        if container is not None:
+            _evacuate_anchor(doc, anchor, container)
+        doc.InsertObject(clone, anchor, None)
+        doc.AddUndo(c4d.UNDOTYPE_NEWOBJ, clone)
+        _write_option(payload, index, name, clone)
+        payload.SetInt32(_PAYLOAD_COUNT, index + 1)
+        payload.SetInt32(_PAYLOAD_ACTIVE, index)
+        _store_payload_bc(tag, payload)
+    finally:
+        doc.EndUndo()
+
+    _event_add()
+    return {"ok": True, "reason": "", "action": "duplicate", "name": name}
+
+
+def rename_option(tag, index, name):
+    """Escribe el nombre de la opción en el payload Y en su null a la vez —
+    el segundo es lo que el artista ve en el Object Manager.
+
+    El nombre del CONJUNTO es el del tag y no se toca aquí (lección del Pin:
+    un campo propio compitiendo con el nativo revertía los renombrados un
+    tick después). El de la opción es dato propio, y sí.
+
+    Pasa siempre por ``dedupe_option_name`` contra las DEMÁS opciones: dos
+    con el mismo nombre son indistinguibles en la fila y en los nombres de
+    archivo del render."""
+    fail = {"ok": False, "action": "rename", "name": ""}
+    state = read_state(tag)
+    count = len(state["options"])
+    if index is None or not (0 <= int(index) < count):
+        return dict(fail, reason="bad_index")
+    index = int(index)
+    anchor, doc, payload, reason = _tag_context(tag)
+    if reason:
+        return dict(fail, reason=reason)
+
+    others = [option["name"] for position, option in enumerate(state["options"])
+              if position != index]
+    final = variants.dedupe_option_name(name, others)
+    if final == state["options"][index]["name"]:
+        # Se pidió el nombre que ya tenía. El Attribute Manager reescribe el
+        # campo con lo que acaba de leer en cada repintado, así que abrir un
+        # bracket aquí gastaría un paso de deshacer por repintado.
+        return {"ok": False, "reason": "unchanged", "action": "rename",
+                "name": final}
+
+    node = _option_link(payload, index, doc)
+    doc.StartUndo()
+    try:
+        doc.AddUndo(c4d.UNDOTYPE_CHANGE, tag)
+        option = _option_bc(payload, index)
+        if option is not None:
+            option.SetString(_OPTION_NAME, final)
+        _store_payload_bc(tag, payload)
+        if node is not None:
+            doc.AddUndo(c4d.UNDOTYPE_CHANGE, node)
+            try:
+                node.SetName(final)
+            except Exception:
+                pass
+    finally:
+        doc.EndUndo()
+
+    _event_add()
+    return {"ok": True, "reason": "", "action": "rename", "name": final}
+
+
+def delete_option(tag, index):
+    """Borra una opción y su contenido. SIN confirmación: es revertible con
+    un Cmd+Z como todo lo demás, y un diálogo por borrado convierte el gesto
+    en una ceremonia.
+
+    ``variants.plan_delete`` decide qué se borra y QUÉ QUEDA ACTIVO — la
+    segunda mitad es la que se equivoca sola, porque borrar una opción
+    anterior a la activa desplaza su índice.
+
+    Devuelve ``{"ok", "reason", "action", "name", "mounted"}``; ``mounted``
+    lleva el nombre de la que quedó puesta cuando el borrado obligó a montar
+    otra, y "" cuando no cambió nada más."""
+    fail = {"ok": False, "action": "delete", "name": "", "mounted": ""}
+    state = read_state(tag)
+    count = len(state["options"])
+    plan = variants.plan_delete(count, state["active"], index)
+    if not plan["ok"]:
+        return dict(fail, reason=plan["reason"])
+    anchor, doc, payload, reason = _tag_context(tag)
+    if reason:
+        return dict(fail, reason=reason)
+
+    target = plan["delete"]
+    new_active = plan["new_active"]
+    victim = _option_link(payload, target, doc)
+    name = state["options"][target]["name"]
+
+    # Se borra la que está puesta: hay que montar otra ANTES, o el anclaje se
+    # queda vacío. El índice del plan es el de DESPUÉS de borrar; el nodo hay
+    # que buscarlo con el de AHORA (los índices por debajo del borrado no se
+    # desplazan, los de encima sí).
+    mount_node = None
+    mounted_name = ""
+    if state["active"] is not None and int(state["active"]) == target:
+        before = new_active if new_active < target else new_active + 1
+        mount_node = _option_link(payload, before, doc)
+        if mount_node is None:
+            return dict(fail, reason="lost_option")
+        mounted_name = state["options"][before]["name"]
+
+    # Lo que cuelga del anclaje sin ser la víctima tiene que salir para poder
+    # montar la que promociona — y sin cajón no hay dónde. Resuelto ANTES del
+    # bracket (misma regla que switch_to_option).
+    container = None
+    if mount_node is not None:
+        strays = [node for node in _children_of(anchor)
+                  if node is not None and (victim is None or node != victim)]
+        if strays:
+            container = _ensure_park_container(doc, payload)
+            if container is None:
+                return dict(fail, reason="no_park_container")
+
+    doc.StartUndo()
+    try:
+        doc.AddUndo(c4d.UNDOTYPE_CHANGE, tag)
+        if mount_node is not None:
+            if container is not None:
+                _evacuate_anchor(doc, anchor, container, keep=victim)
+            _reparent(doc, mount_node, anchor)
+        if victim is not None:
+            # DELETEOBJ antes del Remove, patrón de fixes.py/scene_tools.py:
+            # sin él un Cmd+Z no trae de vuelta el subárbol borrado.
+            doc.AddUndo(c4d.UNDOTYPE_DELETEOBJ, victim)
+            victim.Remove()
+        kept = [_option_bc(payload, position) for position in range(count)
+                if position != target]
+        options = c4d.BaseContainer()
+        for position, option in enumerate(kept):
+            if option is not None:
+                options.SetContainer(position, option)
+        payload.SetContainer(_PAYLOAD_OPTIONS, options)
+        payload.SetInt32(_PAYLOAD_COUNT, count - 1)
+        payload.SetInt32(_PAYLOAD_ACTIVE, int(new_active))
+        _store_payload_bc(tag, payload)
+    finally:
+        doc.EndUndo()
+
+    _event_add()
+    return {"ok": True, "reason": "", "action": "delete", "name": name,
+            "mounted": mounted_name}
+
+
 # --- Nombre del conjunto: sobrevivir a cargar -------------------------------
 
 def _sync_display_name(node):
@@ -896,12 +1164,43 @@ class SentinelVariantsTag(_TagDataBase):
         ):
             return False
         for index, option in enumerate(state["options"]):
-            if not self._set_description_parameter(
-                node, description, ID_OPTION_BASE + index * ID_OPTION_STRIDE,
-                c4d.DTYPE_BUTTON, _option_row_label(option, index == state["active"]),
-                options_group, animatable=False
+            base = ID_OPTION_BASE + index * ID_OPTION_STRIDE
+            # Los tres controles de una opción, EN UNA LÍNEA: montar (la
+            # etiqueta dice cuál está puesta), el nombre editable y borrar.
+            # El sub-grupo es lo que reparte el ancho dentro de la fila; el
+            # grupo de opciones sigue a una columna, así que nada de esto
+            # compite con el texto de estado (que cuelga de la raíz).
+            row_group = _description_parent(
+                base + _OPTION_ACTION_GROUP, c4d.DTYPE_GROUP, node)
+            if not self._set_description_group(
+                node, description, base + _OPTION_ACTION_GROUP, "",
+                options_group, columns=3, titlebar=False
             ):
                 return False
+            if not self._set_description_parameter(
+                node, description, base + _OPTION_ACTION_MOUNT,
+                c4d.DTYPE_BUTTON, _option_row_label(option, index == state["active"]),
+                row_group, animatable=False
+            ):
+                return False
+            if not self._set_description_parameter(
+                node, description, base + _OPTION_ACTION_NAME,
+                c4d.DTYPE_STRING, "", row_group, animatable=False
+            ):
+                return False
+            if not self._set_description_parameter(
+                node, description, base + _OPTION_ACTION_DELETE,
+                c4d.DTYPE_BUTTON, "Borrar", row_group, animatable=False
+            ):
+                return False
+
+        # Duplicar la opción MONTADA: un solo botón para todo el conjunto, no
+        # uno por fila — se duplica lo que el artista está mirando.
+        if not self._set_description_parameter(
+            node, description, ID_VARIANTS_NEW, c4d.DTYPE_BUTTON,
+            "Duplicar opción activa", root, animatable=False
+        ):
+            return False
 
         # Resumen y límites en DOS filas separadas — nunca concatenadas
         # (lección del Pin: detrás del conteo, la advertencia es lo primero
@@ -930,6 +1229,14 @@ class SentinelVariantsTag(_TagDataBase):
         if parameter_id == ID_VARIANTS_WARNING:
             return (True, variants.warning_text(read_state(node)),
                     flags | c4d.DESCFLAGS_GET_PARAM_GET)
+        row = _option_command(parameter_id, _payload_option_count(node))
+        if row is not None and row[1] == _OPTION_ACTION_NAME:
+            # El nombre de la OPCIÓN, dato propio del conjunto (el del tag es
+            # el nombre del conjunto y no se toca aquí).
+            state = read_state(node)
+            if 0 <= row[0] < len(state["options"]):
+                return (True, state["options"][row[0]]["name"],
+                        flags | c4d.DESCFLAGS_GET_PARAM_GET)
         return False
 
     def SetDParameter(self, node, id, data, flags):
@@ -937,12 +1244,29 @@ class SentinelVariantsTag(_TagDataBase):
         if parameter_id in (ID_VARIANTS_STATUS, ID_VARIANTS_WARNING):
             # Strings derivados de sólo lectura: se traga la escritura.
             return True, flags | c4d.DESCFLAGS_SET_PARAM_SET
+        row = _option_command(parameter_id, _payload_option_count(node))
+        if row is not None and row[1] == _OPTION_ACTION_NAME:
+            text = str(data) if data is not None else ""
+            result = rename_option(node, row[0], text)
+            # ``unchanged`` (el Attribute Manager reescribiendo lo que acaba
+            # de leer) no dice nada — ver variants.action_report_text.
+            _report(variants.action_report_text(result))
+            return True, flags | c4d.DESCFLAGS_SET_PARAM_SET
         return False
 
     def GetDEnabling(self, node, cid, t_data, flags, itemdesc):
         parameter_id = _desc_level_id(cid)
-        row = _option_command(parameter_id, _payload_option_count(node))
-        if row is not None and row[1] == 0:
+        count = _payload_option_count(node)
+        if parameter_id == ID_VARIANTS_NEW:
+            # Sin opción montada (o con su enlace perdido) no hay nada que
+            # copiar: el botón lo dice apagándose.
+            state = read_state(node)
+            active = state["active"]
+            if active is None:
+                return False
+            return bool(state["options"][active]["resolved"])
+        row = _option_command(parameter_id, count)
+        if row is not None and row[1] == _OPTION_ACTION_MOUNT:
             state = read_state(node)
             index = row[0]
             if not (0 <= index < len(state["options"])):
@@ -952,6 +1276,11 @@ class SentinelVariantsTag(_TagDataBase):
             # aceptar el clic y no hacer nada.
             option = state["options"][index]
             return bool(option["resolved"]) and index != state["active"]
+        if row is not None and row[1] == _OPTION_ACTION_DELETE:
+            # ``plan_delete`` rechaza borrar la última opción del conjunto —
+            # misma política que arriba: el botón se apaga en vez de aceptar
+            # el clic y no hacer nada.
+            return count > 1
         return True
 
     def Execute(self, tag, doc, op, bt, priority, flags):
@@ -968,9 +1297,14 @@ class SentinelVariantsTag(_TagDataBase):
         if not _is_main_thread():
             return True
         command_id = _command_id_from_data(data)
+        if command_id == ID_VARIANTS_NEW:
+            _report(variants.action_report_text(duplicate_active_option(node)))
+            return True
         row = _option_command(command_id, _payload_option_count(node))
-        if row is not None and row[1] == 0:
+        if row is not None and row[1] == _OPTION_ACTION_MOUNT:
             _report(variants.switch_report_text(switch_to_option(node, row[0])))
+        elif row is not None and row[1] == _OPTION_ACTION_DELETE:
+            _report(variants.action_report_text(delete_option(node, row[0])))
         return True
 
     def Message(self, node, mid, data):

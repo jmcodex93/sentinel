@@ -203,6 +203,27 @@ class FakeObject:
         if self._doc is not None:
             self._doc.events.append(("insert_under", self, parent))
 
+    # -- copia
+    def GetClone(self, flags=0):
+        """Copia PROFUNDA del subárbol — aditivo al arnés, porque sin él la
+        rama de duplicar no se puede ejercitar bajo test EN ABSOLUTO
+        (``c4d.BaseObject`` ya está parcheado por el fixture; ``GetClone`` no
+        existía en ningún sitio).
+
+        Lo que NO modela, y por eso el límite nº2 del spec se verifica en
+        vivo y no aquí: que los tags de material del clon apunten a los
+        MISMOS materiales que el original (la razón por la que el Material
+        Manager no engorda al duplicar). En este arnés no hay materiales que
+        compartir, así que ese hecho no lo prueba ningún test de este
+        fichero."""
+        clone = FakeObject(self._name, self._c4d, None)
+        clone._params = dict(self._params)
+        for child in self._children:
+            child_clone = child.GetClone(flags)
+            child_clone._parent = clone
+            clone._children.append(child_clone)
+        return clone
+
     # -- tags
     def GetTags(self):
         return list(self._tags)
@@ -1097,6 +1118,22 @@ def _scene_with_two_options(variant_tag, c4d):
     return doc, tag, option_b
 
 
+def _row_group_id(variant_tag, index):
+    return (variant_tag.ID_OPTION_BASE + index * variant_tag.ID_OPTION_STRIDE
+            + variant_tag._OPTION_ACTION_GROUP)
+
+
+def _mount_labels(variant_tag, description, count=2):
+    """Las etiquetas de los botones de MONTAR, en orden de opción. Antes se
+    leían con ``names_under(ID_GROUP_OPTIONS)`` porque los botones colgaban
+    directamente del grupo; desde la Tarea 4 cada opción tiene su sub-grupo
+    de fila (montar · nombre · borrar en una línea), así que hay que mirar
+    dentro de él."""
+    return [description.name_of(
+        variant_tag.ID_OPTION_BASE + index * variant_tag.ID_OPTION_STRIDE)
+        for index in range(count)]
+
+
 def test_get_ddescription_paints_one_row_per_option(variant_tag):
     """Sin fila por opción el tag no tiene UI: la feature entera es
     invisible y no hay nada que pulsar."""
@@ -1111,11 +1148,18 @@ def test_get_ddescription_paints_one_row_per_option(variant_tag):
         "sin LoadDescription el Attribute Manager no tiene base sobre la "
         "que pintar filas propias del tag"
     )
-    row_ids = description.row_ids_under(variant_tag.ID_GROUP_OPTIONS)
-    assert row_ids == [
-        variant_tag.ID_OPTION_BASE,
-        variant_tag.ID_OPTION_BASE + variant_tag.ID_OPTION_STRIDE,
+    # CAMBIADA (Tarea 4): lo que cuelga del grupo de opciones ya no son los
+    # botones de montar sino un SUB-GRUPO por opción (montar · nombre ·
+    # borrar en una línea). El botón de montar sigue existiendo con el mismo
+    # id, un nivel más adentro — se comprueba igual, ahora dentro de su fila.
+    assert description.row_ids_under(variant_tag.ID_GROUP_OPTIONS) == [
+        _row_group_id(variant_tag, 0),
+        _row_group_id(variant_tag, 1),
     ]
+    row_ids = [variant_tag.ID_OPTION_BASE,
+               variant_tag.ID_OPTION_BASE + variant_tag.ID_OPTION_STRIDE]
+    for index, row_id in enumerate(row_ids):
+        assert row_id in description.row_ids_under(_row_group_id(variant_tag, index))
     # Y son botones PULSABLES, no sólo filas con dtype-botón: el propio
     # código (variant_tag.py:811) dice por escrito que sin CUSTOMGUI_BUTTON
     # un DTYPE_BUTTON se pinta como celda vacía en vez de botón
@@ -1146,16 +1190,12 @@ def test_the_option_row_marked_with_a_dot_is_the_MOUNTED_one(variant_tag):
 
     description, _ = _describe(variant_tag, tag)
 
-    assert description.names_under(variant_tag.ID_GROUP_OPTIONS) == [
-        "● Opción A", "○ Opción B",
-    ]
+    assert _mount_labels(variant_tag, description) == ["● Opción A", "○ Opción B"]
 
     # Y tras cambiar, el ● se mueve con la opción montada.
     assert variant_tag.switch_to_option(tag, 1)["ok"] is True
     description, _ = _describe(variant_tag, tag)
-    assert description.names_under(variant_tag.ID_GROUP_OPTIONS) == [
-        "○ Opción A", "● Opción B",
-    ]
+    assert _mount_labels(variant_tag, description) == ["○ Opción A", "● Opción B"]
 
 
 def test_a_lost_option_says_so_in_its_own_row(variant_tag):
@@ -1168,7 +1208,7 @@ def test_a_lost_option_says_so_in_its_own_row(variant_tag):
 
     description, _ = _describe(variant_tag, tag)
 
-    assert description.names_under(variant_tag.ID_GROUP_OPTIONS) == [
+    assert _mount_labels(variant_tag, description) == [
         "● Opción A", "⚠ Opción B (no encontrada)",
     ]
 
@@ -1403,3 +1443,307 @@ def test_switch_does_not_double_evacuate_the_parked_option_read_via_a_different_
         "'evacuate' no reconoció que el hijo del anclaje y el park_node "
         "leído por GetLink son el MISMO nodo" % len(removes)
     )
+
+
+# --- Tarea 4: duplicar, renombrar y borrar -----------------------------------
+
+def _add_option(variant_tag, tag, c4d, name, node):
+    """Añade una opción APARCADA al final del payload, a mano — la versión
+    general de ``_add_second_option`` (que fija el índice 1), para poder
+    montar escenarios de tres opciones."""
+    payload = variant_tag._read_payload_bc(tag)
+    options = payload.GetContainerInstance(variant_tag._PAYLOAD_OPTIONS)
+    count = payload.GetInt32(variant_tag._PAYLOAD_COUNT, 0)
+    option = c4d.BaseContainer()
+    option.SetString(variant_tag._OPTION_NAME, name)
+    option.SetLink(variant_tag._OPTION_LINK, node)
+    options.SetContainer(count, option)
+    payload.SetInt32(variant_tag._PAYLOAD_COUNT, count + 1)
+    return payload
+
+
+def _one_option_set(variant_tag, c4d):
+    doc = _scene(c4d)
+    obj = _insert(doc, FakeObject("cubo", c4d, doc))
+    tag = variant_tag.create_variant_set(doc, [obj])["tag"]
+    return doc, tag
+
+
+def _three_option_set(variant_tag, c4d):
+    """A montada, B y C aparcadas — el estado mínimo donde un borrado puede
+    desplazar índices y equivocarse de opción montada."""
+    doc, tag = _one_option_set(variant_tag, c4d)
+    option_b = _insert(doc, FakeObject("Opción B", c4d, doc))
+    option_c = _insert(doc, FakeObject("Opción C", c4d, doc))
+    _add_option(variant_tag, tag, c4d, "Opción B", option_b)
+    _add_option(variant_tag, tag, c4d, "Opción C", option_c)
+    return doc, tag, option_b, option_c
+
+
+def test_duplicate_makes_option_b_and_leaves_the_artist_working_on_it(variant_tag):
+    """El gesto sustituye al "Cmd+C y arrastrar al backup" de hoy: si dejara
+    montada la original, el artista editaría la que quería conservar."""
+    import c4d
+
+    doc, tag = _one_option_set(variant_tag, c4d)
+    anchor = tag.GetObject()
+    option_a = anchor._children[0]
+    doc.start_undo_count = 0
+    doc.end_undo_count = 0
+
+    result = variant_tag.duplicate_active_option(tag)
+
+    assert result["ok"] is True
+    assert result["name"] == "Opción B"
+    assert (doc.start_undo_count, doc.end_undo_count) == (1, 1)
+
+    state = variant_tag.read_state(tag)
+    assert [opt["name"] for opt in state["options"]] == ["Opción A", "Opción B"]
+    assert state["active"] == 1
+    assert len(anchor._children) == 1, "el anclaje sigue teniendo un solo hijo"
+    clone = anchor._children[0]
+    assert clone is not option_a, "se montó la original, no la copia"
+    assert clone.GetName() == "Opción B"
+    assert [c.GetName() for c in clone._children] == ["cubo"], (
+        "el clon se lleva el subárbol: sin él la copia está vacía"
+    )
+    assert option_a._parent is not None
+    assert option_a._parent.GetName() == variant_tag.VARIANT_PARK_DEFAULT_NAME
+    assert state["options"][1]["objects"] == 1
+
+
+def test_duplicating_twice_gives_option_c_not_a_second_b(variant_tag):
+    import c4d
+
+    doc, tag = _one_option_set(variant_tag, c4d)
+
+    variant_tag.duplicate_active_option(tag)
+    result = variant_tag.duplicate_active_option(tag)
+
+    assert result["name"] == "Opción C"
+    assert [opt["name"] for opt in variant_tag.read_state(tag)["options"]] == [
+        "Opción A", "Opción B", "Opción C",
+    ]
+
+
+def test_rename_dedupes_against_the_other_options_in_payload_and_null(variant_tag):
+    """Dos opciones con el mismo nombre son indistinguibles en la fila Y en
+    los nombres de archivo del render. El null se renombra con el payload
+    porque es lo que el artista ve en el Object Manager."""
+    import c4d
+
+    doc, tag = _one_option_set(variant_tag, c4d)
+    option_b = _insert(doc, FakeObject("Opción B", c4d, doc))
+    _add_option(variant_tag, tag, c4d, "Opción B", option_b)
+
+    assert variant_tag.rename_option(tag, 0, "hero")["ok"] is True
+    doc.start_undo_count = 0
+    doc.end_undo_count = 0
+    result = variant_tag.rename_option(tag, 1, "hero")
+
+    assert result["ok"] is True
+    assert result["name"] == "hero (2)"
+    assert (doc.start_undo_count, doc.end_undo_count) == (1, 1)
+    names = [opt["name"] for opt in variant_tag.read_state(tag)["options"]]
+    assert names == ["hero", "hero (2)"]
+    assert option_b.GetName() == "hero (2)", (
+        "el null de la opción es lo que el artista ve en el Object Manager"
+    )
+
+
+def test_renaming_an_option_to_its_own_name_opens_no_bracket(variant_tag):
+    """El Attribute Manager reescribe el campo con lo que acaba de leer: un
+    paso de deshacer por repintado se comería los Cmd+Z del artista."""
+    import c4d
+
+    doc, tag = _one_option_set(variant_tag, c4d)
+    doc.start_undo_count = 0
+    doc.end_undo_count = 0
+
+    result = variant_tag.rename_option(tag, 0, "Opción A")
+
+    assert result["ok"] is False
+    assert result["reason"] == "unchanged"
+    assert (doc.start_undo_count, doc.end_undo_count) == (0, 0)
+
+
+def test_deleting_the_option_before_the_active_one_keeps_the_same_one_mounted(
+    variant_tag,
+):
+    """Por NOMBRE, no por índice: borrar una opción anterior a la activa
+    desplaza los índices, y sin el ajuste de ``plan_delete`` quedaría montada
+    otra opción en silencio."""
+    import c4d
+
+    doc, tag, option_b, option_c = _three_option_set(variant_tag, c4d)
+    assert variant_tag.switch_to_option(tag, 2)["ok"] is True  # C montada
+    anchor = tag.GetObject()
+    doc.start_undo_count = 0
+    doc.end_undo_count = 0
+
+    result = variant_tag.delete_option(tag, 0)
+
+    assert result["ok"] is True
+    assert result["name"] == "Opción A"
+    assert (doc.start_undo_count, doc.end_undo_count) == (1, 1)
+    state = variant_tag.read_state(tag)
+    assert [opt["name"] for opt in state["options"]] == ["Opción B", "Opción C"]
+    assert state["options"][state["active"]]["name"] == "Opción C"
+    assert anchor._children == [option_c]
+
+
+def test_deleting_the_mounted_option_mounts_the_promoted_one_and_removes_it(
+    variant_tag,
+):
+    """El anclaje no puede quedarse vacío: se monta primero la que promociona
+    el plan y se borra después, todo en el mismo paso de deshacer."""
+    import c4d
+
+    doc, tag, option_b, option_c = _three_option_set(variant_tag, c4d)
+    assert variant_tag.switch_to_option(tag, 2)["ok"] is True  # C montada
+    anchor = tag.GetObject()
+    mark = len(doc.events)
+
+    result = variant_tag.delete_option(tag, 2)
+
+    assert result["ok"] is True
+    assert result["name"] == "Opción C"
+    assert result["mounted"] == "Opción B"
+    assert anchor._children == [option_b]
+    assert option_c._parent is None, "la opción borrada sale de la escena"
+    state = variant_tag.read_state(tag)
+    assert [opt["name"] for opt in state["options"]] == ["Opción A", "Opción B"]
+    assert state["options"][state["active"]]["name"] == "Opción B"
+    # El undo de borrado va ANTES del Remove, igual que el de movimiento
+    # (patrón de fixes.py/scene_tools.py): sin él un Cmd+Z no trae de vuelta
+    # el subárbol borrado.
+    assert _first_touch(doc, option_c, mark) == ("undo", c4d.UNDOTYPE_DELETEOBJ)
+
+
+def test_deleting_the_only_option_is_refused_without_a_bracket(variant_tag):
+    import c4d
+
+    doc, tag = _one_option_set(variant_tag, c4d)
+    anchor = tag.GetObject()
+    option_a = anchor._children[0]
+    doc.start_undo_count = 0
+    doc.end_undo_count = 0
+
+    result = variant_tag.delete_option(tag, 0)
+
+    assert result["ok"] is False
+    assert result["reason"] == "last_option"
+    assert (doc.start_undo_count, doc.end_undo_count) == (0, 0)
+    assert anchor._children == [option_a]
+    assert len(variant_tag.read_state(tag)["options"]) == 1
+
+
+# --- El cableado de la UI de la Tarea 4 --------------------------------------
+
+def test_each_option_row_carries_its_name_field_and_its_delete_button(variant_tag):
+    """Sin declararlos, renombrar y borrar existen en el módulo y no en la
+    pantalla: el artista no tiene nada que pulsar ni donde escribir."""
+    import c4d
+
+    doc, tag, option_b = _scene_with_two_options(variant_tag, c4d)
+
+    description, _ = _describe(variant_tag, tag)
+
+    for index in (0, 1):
+        base = variant_tag.ID_OPTION_BASE + index * variant_tag.ID_OPTION_STRIDE
+        row_group = base + variant_tag._OPTION_ACTION_GROUP
+        assert description.bc_of(row_group) is not None, "falta el grupo de fila"
+        painted = description.row_ids_under(row_group)
+        assert base in painted
+        assert base + variant_tag._OPTION_ACTION_NAME in painted
+        assert base + variant_tag._OPTION_ACTION_DELETE in painted
+    # Y el botón de duplicar la activa, uno solo para todo el conjunto.
+    assert description.bc_of(variant_tag.ID_VARIANTS_NEW) is not None
+
+
+def test_pressing_the_delete_button_of_a_row_deletes_that_option(variant_tag):
+    import c4d
+
+    doc, tag, option_b = _scene_with_two_options(variant_tag, c4d)
+    row_id = (variant_tag.ID_OPTION_BASE + 1 * variant_tag.ID_OPTION_STRIDE
+              + variant_tag._OPTION_ACTION_DELETE)
+
+    _tag_data(variant_tag)._handle_command(tag, {"id": row_id})
+
+    assert [opt["name"] for opt in variant_tag.read_state(tag)["options"]] == [
+        "Opción A",
+    ]
+
+
+def test_pressing_the_duplicate_button_duplicates_the_active_option(variant_tag):
+    import c4d
+
+    doc, tag = _one_option_set(variant_tag, c4d)
+
+    _tag_data(variant_tag)._handle_command(
+        tag, {"id": variant_tag.ID_VARIANTS_NEW})
+
+    assert [opt["name"] for opt in variant_tag.read_state(tag)["options"]] == [
+        "Opción A", "Opción B",
+    ]
+
+
+def test_the_delete_button_is_off_when_there_is_nothing_left_to_delete(variant_tag):
+    """``plan_delete`` rechaza borrar la última opción: el botón lo dice
+    apagándose, en vez de aceptar el clic y no hacer nada."""
+    import c4d
+
+    doc, tag = _one_option_set(variant_tag, c4d)
+    tag_data = _tag_data(variant_tag)
+    delete_id = variant_tag.ID_OPTION_BASE + variant_tag._OPTION_ACTION_DELETE
+
+    assert tag_data.GetDEnabling(tag, delete_id, None, 0, None) is False
+
+    option_b = _insert(doc, FakeObject("Opción B", c4d, doc))
+    _add_option(variant_tag, tag, c4d, "Opción B", option_b)
+    assert tag_data.GetDEnabling(tag, delete_id, None, 0, None) is True
+
+
+def test_the_row_name_field_reads_and_writes_the_option_name(variant_tag):
+    """El campo es el dato PROPIO de la opción (no el nombre del tag, que es
+    el del conjunto y no se toca aquí)."""
+    import c4d
+
+    doc, tag = _one_option_set(variant_tag, c4d)
+    option_a = tag.GetObject()._children[0]
+    tag_data = _tag_data(variant_tag)
+    name_id = variant_tag.ID_OPTION_BASE + variant_tag._OPTION_ACTION_NAME
+    desc_id = c4d.DescID(c4d.DescLevel(name_id))
+
+    got = tag_data.GetDParameter(tag, desc_id, 0)
+    assert got[0] is True and got[1] == "Opción A"
+
+    assert tag_data.SetDParameter(tag, desc_id, "sin bend", 0)[0] is True
+
+    assert variant_tag.read_state(tag)["options"][0]["name"] == "sin bend"
+    assert option_a.GetName() == "sin bend"
+    assert tag.GetName() == variant_tag.VARIANT_TAG_DEFAULT_NAME, (
+        "el nombre del CONJUNTO es el del tag y no se toca al renombrar una "
+        "opción (lección del Pin)"
+    )
+
+
+def test_pressing_delete_delivers_the_report_instead_of_dropping_it(
+    variant_tag, monkeypatch,
+):
+    """Borrar se lleva contenido y puede cambiar lo que está montado: los dos
+    canales de ``_report`` (barra de estado primero, consola siempre)."""
+    import c4d
+
+    doc, tag, option_b, option_c = _three_option_set(variant_tag, c4d)
+    said = []
+    monkeypatch.setattr(variant_tag, "safe_print", said.append)
+    status = []
+    monkeypatch.setattr(c4d.gui, "StatusSetText", status.append)
+
+    row_id = (variant_tag.ID_OPTION_BASE + 0 * variant_tag.ID_OPTION_STRIDE
+              + variant_tag._OPTION_ACTION_DELETE)
+    _tag_data(variant_tag)._handle_command(tag, {"id": row_id})
+
+    assert said and 'borrada "Opción A"' in said[0]
+    assert status and 'borrada "Opción A"' in status[0]

@@ -185,6 +185,62 @@ def switch_report_text(result):
     return " · ".join(parts)
 
 
+#: Prefijo del parte de un gesto que NO se hizo, por acción. Va delante del
+#: motivo porque un parte que dijera sólo "es la única opción del conjunto"
+#: no dice qué se intentó hacer.
+_ACTION_FAILED = {
+    "duplicate": "no se duplicó la opción",
+    "rename": "no se renombró la opción",
+    "delete": "no se borró la opción",
+}
+
+#: Por qué no se hizo. ``unchanged`` no está a propósito (mismo criterio que
+#: ``already_active`` arriba): renombrar al nombre que ya tenía no es un
+#: fallo, y el Attribute Manager reescribe el campo con lo que acaba de leer
+#: en cada repintado — decirlo sería ruido constante.
+_ACTION_REASONS = {
+    "bad_index": "esa opción ya no está en la lista",
+    "clone_failed": "no se pudo copiar la opción",
+    "last_option": "es la única opción del conjunto",
+    "lost_option": "la opción elegida no se encuentra en la escena",
+    "no_active": "no hay ninguna opción montada",
+    "no_anchor": "el tag no está sobre un objeto",
+    "no_document": "sin documento",
+    "no_park_container": "no se pudo crear el contenedor de aparcado",
+    "no_payload": "el conjunto no tiene datos",
+}
+
+
+def action_report_text(result):
+    """Lo que hay que decirle al artista tras duplicar, renombrar o borrar, o
+    "" si no hay nada que decir.
+
+    Mismo motivo que ``switch_report_text``: estos tres gestos cambian la
+    escena de formas que no se ven enteras — duplicar monta OTRA cosa
+    (la copia), borrar se lleva un subárbol entero, y renombrar puede
+    entregar un nombre distinto del pedido por deduplicación. Política de la
+    casa fijada en la v1.35: el resultado siempre se reporta."""
+    result = result or {}
+    action = result.get("action") or ""
+    name = result.get("name") or ""
+    if not result.get("ok"):
+        prefix = _ACTION_FAILED.get(action)
+        text = _ACTION_REASONS.get(result.get("reason") or "")
+        if not prefix or not text:
+            return ""
+        return "%s — %s" % (prefix, text)
+    if action == "duplicate":
+        return 'duplicada como "%s" · montada' % name
+    if action == "rename":
+        return 'renombrada a "%s"' % name
+    if action == "delete":
+        mounted = result.get("mounted") or ""
+        if mounted:
+            return 'borrada "%s" · montada "%s"' % (name, mounted)
+        return 'borrada "%s"' % name
+    return ""
+
+
 def _active_option(state):
     options = (state or {}).get("options") or []
     index = (state or {}).get("active")

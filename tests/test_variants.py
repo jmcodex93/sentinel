@@ -228,3 +228,58 @@ def test_switch_report_lists_what_was_pulled_out_of_the_anchor():
          "evacuated": ["luz suelta", "cámara"]})
     assert text == ('montada "B" · 2 objetos sueltos sacados del anclaje: '
                     "luz suelta, cámara")
+
+
+# --- El parte de duplicar, renombrar y borrar (Tarea 4) ----------------------
+# Un gesto que cambia la escena y no lo dice es la mitad del bug del "objeto
+# suelto evacuado" que switch_report_text existe para no repetir: aquí borrar
+# se lleva contenido y duplicar monta otra cosa, así que los tres hablan.
+
+def test_action_report_names_the_duplicate_it_mounted():
+    assert variants.action_report_text(
+        {"ok": True, "reason": "", "action": "duplicate", "name": "Opción B"}
+    ) == 'duplicada como "Opción B" · montada'
+
+
+def test_action_report_names_the_new_name_after_a_rename():
+    assert variants.action_report_text(
+        {"ok": True, "reason": "", "action": "rename", "name": "hero (2)"}
+    ) == 'renombrada a "hero (2)"'
+
+
+def test_action_report_of_a_delete_says_what_took_its_place():
+    """Borrar la opción montada monta otra: si el parte sólo dijera qué se
+    borró, el artista no sabría qué está viendo ahora."""
+    assert variants.action_report_text(
+        {"ok": True, "reason": "", "action": "delete", "name": "Opción B",
+         "mounted": "Opción A"}
+    ) == 'borrada "Opción B" · montada "Opción A"'
+
+
+def test_action_report_of_a_delete_that_changed_nothing_else():
+    assert variants.action_report_text(
+        {"ok": True, "reason": "", "action": "delete", "name": "Opción B",
+         "mounted": ""}
+    ) == 'borrada "Opción B"'
+
+
+def test_action_report_says_which_gesture_failed_and_why():
+    """El prefijo lo pone la ACCIÓN y el motivo la razón: un parte que dijera
+    sólo "es la única opción del conjunto" no dice qué se intentó hacer."""
+    assert variants.action_report_text(
+        {"ok": False, "reason": "last_option", "action": "delete", "name": ""}
+    ) == "no se borró la opción — es la única opción del conjunto"
+    assert variants.action_report_text(
+        {"ok": False, "reason": "clone_failed", "action": "duplicate",
+         "name": ""}
+    ) == "no se duplicó la opción — no se pudo copiar la opción"
+
+
+def test_action_report_says_nothing_when_the_name_did_not_change():
+    """Mismo criterio que ``already_active`` en un cambio de opción: se pidió
+    lo que ya había. Decirlo sería ruido en cada repintado del Attribute
+    Manager, que reescribe el campo de nombre tal cual lo lee."""
+    assert variants.action_report_text(
+        {"ok": False, "reason": "unchanged", "action": "rename",
+         "name": "hero"}
+    ) == ""
