@@ -1,0 +1,180 @@
+# -*- coding: utf-8 -*-
+"""Motor puro de Sentinel Variants: nombres de opción, plan de cambio y de
+borrado, nombres de archivo del render por opción, y los textos de la fila
+del tag. Nunca importa c4d — todo lo de aquí es decidible sin escena, así
+que se prueba directamente (misma división que pins.py, su hermano).
+
+Lo que este módulo NO decide, a propósito: dónde vive una opción aparcada y
+cómo se mueve. Eso es escena viva y vive en ui/variant_tag.py."""
+
+from sentinel.pins import pluralize_es
+
+#: Prefijo de los nombres automáticos. El artista renombra en cuanto la
+#: opción significa algo ("sin bend, subdiv 3"), que es la mitad del valor
+#: de la herramienta; esto solo tiene que ser un sitio donde empezar.
+DEFAULT_OPTION_PREFIX = "Opción"
+
+#: Caracteres que un nombre de archivo no puede llevar en ninguno de los dos
+#: sistemas donde corre esto (macOS y Windows). Se sustituyen por "_" al
+#: componer el nombre de la imagen de un render — nunca se recorta el nombre,
+#: que es lo que identifica la opción para quien mira las imágenes.
+_UNSAFE_PATH_CHARS = '/\\:*?"<>|'
+
+
+def _letters(index):
+    """"A", "B", ... "Z", "AA", "AB", ... — base 26 con letras, para que
+    pasar de la Z siga dando un nombre legible en vez de un número."""
+    out = ""
+    index = int(index)
+    while True:
+        out = chr(ord("A") + index % 26) + out
+        index = index // 26 - 1
+        if index < 0:
+            return out
+
+
+def next_option_name(existing_names):
+    """El primer "Opción X" que no esté cogido.
+
+    Mira solo los nombres automáticos: una opción renombrada a mano no
+    reserva ninguna letra, porque el artista ya no la piensa como "la B"."""
+    taken = {(name or "").strip().lower() for name in (existing_names or [])}
+    index = 0
+    while True:
+        candidate = "%s %s" % (DEFAULT_OPTION_PREFIX, _letters(index))
+        if candidate.lower() not in taken:
+            return candidate
+        index += 1
+
+
+def dedupe_option_name(name, existing_names):
+    """``name`` si está libre, y si no ``name (2)``, ``name (3)``...
+
+    Insensible a mayúsculas porque el sitio donde se eligen las opciones es
+    el Object Manager, donde "Hero" y "hero" son indistinguibles de un
+    vistazo. Un nombre vacío cae al automático en vez de producir una opción
+    sin nombre que nadie puede volver a elegir."""
+    text = (name or "").strip()
+    if not text:
+        return next_option_name(existing_names)
+    taken = {(other or "").strip().lower() for other in (existing_names or [])}
+    if text.lower() not in taken:
+        return text
+    suffix = 2
+    while ("%s (%d)" % (text, suffix)).lower() in taken:
+        suffix += 1
+    return "%s (%d)" % (text, suffix)
+
+
+def _bad(reason):
+    return {"ok": False, "reason": reason, "park": None, "mount": None}
+
+
+def plan_switch(option_count, active_index, target_index):
+    """Qué mueve un cambio de opción: qué sale de la jerarquía y qué entra.
+
+    Devuelve ``ok=False`` sin plan cuando no hay nada que hacer — y el
+    llamador NO debe abrir un bracket de undo en ese caso: un paso de
+    deshacer que no deshace nada es peor que ninguno, porque el siguiente
+    Cmd+Z del artista se lo gasta sin que la escena cambie."""
+    count = int(option_count or 0)
+    if target_index is None or not (0 <= int(target_index) < count):
+        return _bad("bad_index")
+    target = int(target_index)
+    if active_index is not None and int(active_index) == target:
+        return _bad("already_active")
+    park = int(active_index) if active_index is not None else None
+    if park is not None and not (0 <= park < count):
+        # La activa apunta fuera de la lista (enlace perdido, lista
+        # reescrita a mano): montar la elegida es correcto, aparcar un
+        # fantasma no.
+        park = None
+    return {"ok": True, "reason": "", "park": park, "mount": target}
+
+
+def plan_delete(option_count, active_index, target_index):
+    """Qué borra un borrado, y QUÉ QUEDA ACTIVO después.
+
+    La segunda mitad es la que se equivoca sola: los índices son posiciones
+    en una lista, así que borrar una opción anterior a la activa desplaza la
+    activa una posición. Sin este ajuste, tras borrar queda montada una
+    opción distinta de la que estaba puesta, en silencio."""
+    count = int(option_count or 0)
+    if target_index is None or not (0 <= int(target_index) < count):
+        return {"ok": False, "reason": "bad_index",
+                "delete": None, "new_active": None}
+    if count <= 1:
+        return {"ok": False, "reason": "last_option",
+                "delete": None, "new_active": None}
+    target = int(target_index)
+    active = int(active_index) if active_index is not None else None
+    if active is None:
+        new_active = 0
+    elif active == target:
+        # Se borra la que está puesta: hay que montar otra, y la de al lado
+        # es la elección menos sorprendente.
+        new_active = target - 1 if target > 0 else 0
+    elif active > target:
+        new_active = active - 1
+    else:
+        new_active = active
+    return {"ok": True, "reason": "", "delete": target, "new_active": new_active}
+
+
+def render_image_stem(scene_stem, set_name, option_name):
+    """Nombre base de la imagen de una opción: escena, conjunto y opción,
+    en ese orden, con los caracteres que una ruta no admite sustituidos por
+    "_". Sin recortes: el nombre de la opción ES lo que identifica la imagen
+    para quien la mira, y una versión truncada las hace indistinguibles."""
+    parts = [part for part in (scene_stem, set_name, option_name)
+             if (part or "").strip()]
+    stem = "_".join(part.strip() for part in parts)
+    for char in _UNSAFE_PATH_CHARS:
+        stem = stem.replace(char, "_")
+    return stem
+
+
+def _active_option(state):
+    options = (state or {}).get("options") or []
+    index = (state or {}).get("active")
+    if index is None or not (0 <= int(index) < len(options)):
+        return None
+    return options[int(index)]
+
+
+def status_text(state):
+    """La línea de resumen: qué opción está puesta y cuánto hay. Derivada en
+    cada repintado (mismo patrón que ID_PIN_STATUS del Pin), nunca
+    almacenada, para que no pueda quedarse vieja."""
+    options = (state or {}).get("options") or []
+    active = _active_option(state)
+    count = pluralize_es(len(options), "opción", "opciones")
+    if active is None:
+        return "ninguna opción montada · %s" % count
+    mounted = pluralize_es(int(active.get("objects") or 0), "objeto montado",
+                           "objetos montados")
+    return "%s · %s · %s" % (active.get("name") or "", count, mounted)
+
+
+def warning_text(state):
+    """La línea de límites, SEPARADA del resumen (lección del Pin: al
+    concatenarlas detrás del conteo, la advertencia es lo primero que se
+    trunca). Devuelve "" cuando no hay nada que advertir.
+
+    Orden deliberado: primero lo que puede ser trabajo perdido (una opción
+    cuyo enlace no resuelve), después el peso — que es el límite honesto
+    nº1 del spec (las copias son reales y la escena pesa lo mismo que
+    hoy)."""
+    state = state or {}
+    parts = []
+    orphans = int(state.get("orphans") or 0)
+    if orphans:
+        parts.append(pluralize_es(orphans, "opción no encontrada",
+                                  "opciones no encontradas"))
+    parked = int(state.get("parked_objects") or 0)
+    if parked:
+        parts.append("%s siguen en la escena" % pluralize_es(
+            parked, "objeto aparcado", "objetos aparcados"))
+    if not parts:
+        return ""
+    return "⚠ " + " · ".join(parts)
