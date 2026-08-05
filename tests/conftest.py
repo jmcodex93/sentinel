@@ -93,6 +93,16 @@ class BaseContainer(dict):
     def GetLink(self, key, doc=None):
         return self.get(key)
 
+    def SetLink(self, key, value):
+        # Honest about what it is NOT: the real BaseContainer stores a
+        # BaseLink that resolves against a document (and comes back None
+        # when its target is gone or the document was reloaded). This fake
+        # just holds the object, so "the link survived save/load" is NOT
+        # something any test here can claim — only "the code asked for the
+        # link and reacted to what came back" (a test can hand it None to
+        # model an unresolvable link).
+        self[key] = value
+
     # Typed accessors modeled after the real c4d.BaseContainer API — added
     # for the Sentinel Pin harness (nested containers, ints, strings,
     # bools, matrices), purely additive on top of the dict this already
