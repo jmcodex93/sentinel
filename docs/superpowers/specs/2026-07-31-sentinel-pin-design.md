@@ -2,7 +2,7 @@
 
 **Fecha**: 2026-07-31
 **Estado**: implementado y live-verified en rama feat/sentinel-pin (pytest 1229). **Modelo revisado 2026-07-31** tras ver la interfaz real de Recall: un tag = un pin, en vez de seis slots dentro de un tag. La Tarea 3 del plan (grid de seis filas) quedó obsoleta y se rehizo.
-**Contexto**: primera de las dos capas del arco "puntos de retorno", que cierra la expansión de Tools (v1.30 quick-wins → v1.31 Batch Rename → v1.32-v1.34 matwire → **v1.35 este spec** → v1.36 red automática).
+**Contexto**: cierra la expansión de Tools (v1.30 quick-wins → v1.31 Batch Rename → v1.32-v1.34 matwire → **v1.35 este spec**). Se concibió como la primera de dos capas de "puntos de retorno"; la segunda (la red automática) **se descartó** al brainstormear la v1.36 — ver "Fuera de alcance" al final. La v1.36 pasó a ser [Sentinel Variants](2026-08-05-sentinel-variants-design.md), que resuelve un verbo distinto: elegir entre alternativas, no volver atrás.
 
 Nace de un plugin que el usuario compró y **ya no puede ejecutar**: Rocket Lasso Recall (binario C++, última build R25; C4D 2026 está cuatro versiones mayores por delante). No es competir con una herramienta en uso — es recuperar una capacidad perdida. Su EULA prohíbe descompilar, así que **no se examinó el binario**: lo que se estudió son su documentación pública, sus recursos en texto plano y la API de C4D medida directamente.
 
