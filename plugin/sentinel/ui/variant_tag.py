@@ -315,28 +315,25 @@ def _option_link(payload, index, doc):
         return None
 
 
-def _subtree_stats(node):
-    """``(objetos, hay_geometría)`` del subárbol de ``node``, SIN contar
-    ``node`` mismo (el null de la opción es andamiaje del sistema, no
-    trabajo del artista). La geometría se detecta con
-    ``isinstance(obj, c4d.PointObject)``, el mismo test medido en vivo que
-    usa el Pin."""
+def _subtree_object_count(node):
+    """Objetos del subárbol de ``node``, SIN contar ``node`` mismo (el null
+    de la opción es andamiaje del sistema, no trabajo del artista).
+
+    Aquí NO se detecta geometría. Se detectaba (``isinstance(obj,
+    c4d.PointObject)``, el test del Pin) y no lo leía ningún consumidor:
+    ``read_state`` corre desde ``GetDDescription`` y DOS veces desde
+    ``GetDParameter`` en cada repintado del Attribute Manager, así que era un
+    recorrido por cada nodo de cada opción por repintado a cambio de nada."""
     total = 0
-    geometry = False
     for child in _children_of(node):
-        total += 1
-        if isinstance(child, c4d.PointObject):
-            geometry = True
-        sub_total, sub_geometry = _subtree_stats(child)
-        total += sub_total
-        geometry = geometry or sub_geometry
-    return total, geometry
+        total += 1 + _subtree_object_count(child)
+    return total
 
 
 def read_state(tag):
     """La forma que consumen ``variants.status_text`` y
     ``variants.warning_text``: ``{"options": [{"name", "resolved",
-    "objects", "geometry"}...], "active", "parked_objects", "orphans"}``.
+    "objects"}...], "active", "parked_objects", "orphans"}``.
 
     Derivada en cada lectura, nunca almacenada — igual que el estado del
     Pin: un conteo guardado se queda viejo en cuanto el artista mete un
@@ -357,12 +354,11 @@ def read_state(tag):
         name = opt.GetString(_OPTION_NAME, "") if opt is not None else ""
         node = _option_link(payload, index, doc)
         resolved = node is not None
-        objects, geometry = _subtree_stats(node) if resolved else (0, False)
+        objects = _subtree_object_count(node) if resolved else 0
         state["options"].append({
             "name": name,
             "resolved": resolved,
             "objects": objects,
-            "geometry": geometry,
         })
         if not resolved:
             state["orphans"] += 1
@@ -403,6 +399,69 @@ def _top_level_only(objects):
     return out
 
 
+def _document_order(doc):
+    """``{id(obj): posición}`` en el recorrido del Object Manager (primero en
+    profundidad), para poder ordenar una selección como se LEE la escena.
+
+    Un objeto que no aparezca en el recorrido (documento que no expone
+    ``GetFirstObject``, objeto fuera de él) simplemente no sale en el mapa;
+    el llamador lo trata como "al final", con un orden estable."""
+    order = {}
+    getter = getattr(doc, "GetFirstObject", None)
+    if not callable(getter):
+        return order
+    try:
+        node = getter()
+    except Exception:
+        return order
+    counter = 0
+    while node is not None:
+        order[id(node)] = counter
+        counter += 1
+        child = None
+        try:
+            child = node.GetDown()
+        except Exception:
+            child = None
+        if child is not None:
+            node = child
+            continue
+        nxt = None
+        while node is not None:
+            try:
+                nxt = node.GetNext()
+            except Exception:
+                nxt = None
+            if nxt is not None:
+                break
+            node = _get_up(node)
+        node = nxt
+    return order
+
+
+def _in_scene_order(doc, roots):
+    """La selección reordenada según el Object Manager.
+
+    **Decisión de contrato (orden jerárquico, no orden de selección).** En la
+    v1.31 (Batch Rename) se eligió deliberadamente lo contrario — el orden en
+    que el artista fue haciendo clic — porque allí ese orden ES el dato: el
+    token ``$n`` numera lo que el artista quiso numerar. Aquí no: envolver una
+    selección es una operación de CONTENCIÓN, no de autoría, y nada en la UI
+    le pide al artista que ordene nada. Con el orden de clic, la misma
+    selección da resultados distintos según en qué orden se pinchó — el orden
+    entre hermanos dentro de la opción, y además el sitio del Object Manager
+    donde aterriza el anclaje (ocupa el sitio de ``roots[0]``). Ordenar por
+    escena hace que el resultado dependa sólo de la escena: los objetos
+    conservan su orden entre hermanos (que en C4D es semántico: Boole, Loft,
+    Sweep, Symmetry leen a sus hijos por posición) y el anclaje aterriza donde
+    empezaba el grupo. Es también lo que pedía el brief de la Tarea 3
+    ("conservando el orden entre hermanos").
+    """
+    order = _document_order(doc)
+    fallback = len(order)
+    return sorted(roots, key=lambda obj: order.get(id(obj), fallback))
+
+
 def _anchor_name(first_object):
     return "Opciones · %s" % _safe_node_name(first_object, "")
 
@@ -426,6 +485,9 @@ def create_variant_set(doc, objects):
     """Envuelve la selección en un anclaje + el null de la Opción A, y le
     pone el tag del conjunto. UN solo paso de deshacer para todo.
 
+    La selección se ordena por ESCENA, no por orden de clic (la razón, y por
+    qué diverge de Batch Rename v1.31, está en ``_in_scene_order``).
+
     Devuelve ``{"ok", "reason", "tag"}``. El brief pedía ``tag|None`` en la
     lista de entregables y un dict con ``reason`` en el paso 1 (rechazo de
     selección vacía); esto satisface ambas — el motivo del rechazo es
@@ -433,7 +495,7 @@ def create_variant_set(doc, objects):
     """
     if doc is None:
         return {"ok": False, "reason": "no_document", "tag": None}
-    roots = _top_level_only(objects)
+    roots = _in_scene_order(doc, _top_level_only(objects))
     if not roots:
         # Sin bracket: un paso de deshacer que no deshace nada es peor que
         # ninguno, porque el siguiente Cmd+Z del artista se lo gasta sin
@@ -450,7 +512,7 @@ def create_variant_set(doc, objects):
     tag = None
     doc.StartUndo()
     try:
-        # El anclaje ocupa EL SITIO del primer objeto seleccionado (mismo
+        # El anclaje ocupa EL SITIO del primero en orden de escena (mismo
         # padre, misma posición entre hermanos): un anclaje que aparece al
         # final del Object Manager es un anclaje que el artista no
         # encuentra. ``pred`` se lee ANTES de mover nada, cuando ``first``
@@ -460,8 +522,8 @@ def create_variant_set(doc, objects):
         doc.InsertObject(option, anchor, None)
         doc.AddUndo(c4d.UNDOTYPE_NEWOBJ, option)
         # En orden INVERSO porque ``InsertUnder`` inserta como PRIMER hijo:
-        # recorrer al revés deja el orden original entre hermanos, que es
-        # cómo el artista lee su propia selección.
+        # recorrer al revés deja dentro de la opción el mismo orden que
+        # ``_in_scene_order`` fijó, que es el del Object Manager.
         for obj in reversed(roots):
             doc.AddUndo(c4d.UNDOTYPE_CHANGE, obj)
             obj.Remove()
@@ -549,16 +611,31 @@ def switch_to_option(tag, index):
     if plan["park"] is not None:
         park_node = _option_link(payload, plan["park"], doc)
 
+    # Lo que sale del anclaje NO es sólo la opción que el payload dice que
+    # está montada: es TODO lo que cuelgue de él. Un ``park`` que no resuelve
+    # (opción huérfana) no es motivo para abortar —montar la elegida sigue
+    # siendo correcto y ``read_state`` ya reporta la huérfana—, pero SÍ lo es
+    # para mirar el anclaje: en el Object Manager es un null corriente, y algo
+    # que el artista arrastrara ahí dentro se quedaría dentro de TODAS las
+    # opciones, invisible para el resumen. El invariante ("el anclaje tiene
+    # exactamente un hijo") se impone leyendo la escena, no confiando en el
+    # payload.
+    evacuate = []
+    seen = set()
+    for node in _children_of(anchor) + ([park_node] if park_node is not None else []):
+        if node is None or node is mount_node or id(node) in seen:
+            continue
+        seen.add(id(node))
+        evacuate.append(node)
+
     doc.StartUndo()
     try:
         doc.AddUndo(c4d.UNDOTYPE_CHANGE, tag)
-        if park_node is not None:
-            # Un ``park`` que no resuelve (opción huérfana) no es motivo
-            # para abortar: montar la elegida sigue siendo correcto, y
-            # ``read_state`` ya reporta la huérfana en su propia línea.
+        if evacuate:
             container = _ensure_park_container(doc, payload)
             if container is not None:
-                _reparent(doc, park_node, container)
+                for node in evacuate:
+                    _reparent(doc, node, container)
         _reparent(doc, mount_node, anchor)
         payload.SetInt32(_PAYLOAD_ACTIVE, int(plan["mount"]))
         _store_payload_bc(tag, payload)
@@ -636,13 +713,41 @@ def _option_row_label(option, is_active):
     return "%s %s" % ("●" if is_active else "○", name)
 
 
-def _option_command(command_id):
+def _option_command(command_id, option_count):
     """``(index, action)`` de un id de fila, o ``None`` si el id no cae en
-    el rango de filas."""
-    if command_id < ID_OPTION_BASE:
+    el rango de filas REALMENTE pintadas.
+
+    La cota superior no es cosmética (patrón de la casa,
+    ``frame_tag.py:2485`` acota igual): sin ella cualquier id ≥
+    ``ID_OPTION_BASE`` múltiplo de ``ID_OPTION_STRIDE`` se lee como fila de
+    opción, así que ``GetDEnabling`` devolvería ``False`` para un control que
+    no es nuestro y ``Message`` se tragaría su comando sin dispararlo. Las
+    Tareas 4 y 5 añaden ids; esto los deja fuera por construcción.
+
+    Se acota por el número de opciones (que es lo que ``GetDDescription``
+    pinta) en vez de por una constante inventada: una constante o deja filas
+    reales inertes o deja hueco muerto dentro del bloque."""
+    count = int(option_count or 0)
+    if count <= 0 or command_id < ID_OPTION_BASE:
         return None
     offset = command_id - ID_OPTION_BASE
+    if offset >= count * ID_OPTION_STRIDE:
+        return None
     return offset // ID_OPTION_STRIDE, offset % ID_OPTION_STRIDE
+
+
+def _payload_option_count(node):
+    """El número de opciones leído DIRECTO del payload — O(1), sin recorrer
+    subárboles. ``_option_command`` se llama desde ``GetDEnabling``, que corre
+    por cada parámetro en cada repintado del Attribute Manager; ahí un
+    ``read_state`` completo sería el mismo coste que el Minor 8 acaba de
+    quitar."""
+    payload = _read_payload_bc(node)
+    if payload is None:
+        return 0
+    if payload.GetInt32(_PAYLOAD_SCHEMA, 0) != VARIANT_SCHEMA:
+        return 0
+    return int(payload.GetInt32(_PAYLOAD_COUNT, 0) or 0)
 
 
 class SentinelVariantsTag(_TagDataBase):
@@ -763,7 +868,7 @@ class SentinelVariantsTag(_TagDataBase):
 
     def GetDEnabling(self, node, cid, t_data, flags, itemdesc):
         parameter_id = _desc_level_id(cid)
-        row = _option_command(parameter_id)
+        row = _option_command(parameter_id, _payload_option_count(node))
         if row is not None and row[1] == 0:
             state = read_state(node)
             index = row[0]
@@ -790,7 +895,7 @@ class SentinelVariantsTag(_TagDataBase):
         if not _is_main_thread():
             return True
         command_id = _command_id_from_data(data)
-        row = _option_command(command_id)
+        row = _option_command(command_id, _payload_option_count(node))
         if row is not None and row[1] == 0:
             switch_to_option(node, row[0])
         return True

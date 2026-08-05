@@ -11,15 +11,23 @@ veces esta semana):
   en identidad conserve ``GetMg()`` es un hecho MEDIDO en vivo (spike §3),
   no algo que estos tests observen.
 - **Que el undo del menú revierta en un paso.** Aquí sólo se cuenta que se
-  abra exactamente un bracket ``StartUndo``/``EndUndo`` y que el ``AddUndo``
-  de cada objeto movido se registre ANTES de moverlo — que es lo que el
-  spike midió que hace falta. Si C4D realmente colapsa eso en un paso es
-  cosa de C4D y se verifica en vivo (Step 8 del brief).
+  abra exactamente un bracket ``StartUndo``/``EndUndo``, que el ``AddUndo``
+  de cada objeto movido se registre ANTES de moverlo (en LOS DOS caminos que
+  mueven: crear el conjunto y cambiar de opción — el segundo no estaba
+  cubierto y la mutación sobrevivía la suite entera), y que cada objeto
+  creado y el payload lleven el suyo. Si C4D realmente colapsa eso en un paso
+  es cosa de C4D y se verifica en vivo (Step 8 del brief).
 - **Que los ``BaseLink`` sobrevivan a guardar+cargar.** El fake guarda el
   objeto tal cual (ver ``BaseContainer.SetLink`` en conftest). Un enlace
   "perdido" se modela poniendo ``None``: eso prueba cómo REACCIONA el
   código a un enlace que no resuelve, nunca cuándo un enlace real deja de
   resolver.
+- **Que C4D entregue los mensajes y las consultas de la descripción.** Que
+  ``MSG_DESCRIPTION_COMMAND`` llegue con el id de la fila pulsada, o que el
+  Attribute Manager llame a ``GetDEnabling`` por cada control, es contrato de
+  C4D. Lo que sí se prueba aquí es qué hace este módulo CON ese mensaje y con
+  esa consulta, llamando a ``Message``/``_handle_command``/``GetDEnabling``
+  directamente — no es un límite del arnés, son funciones llamables.
 """
 
 import importlib
@@ -49,6 +57,11 @@ class FakeDoc:
     def AddUndo(self, undo_type, target):
         self.undo_ops.append((undo_type, target))
         self.events.append(("undo", undo_type, target))
+
+    def GetFirstObject(self):
+        # El punto de entrada del recorrido del Object Manager, que es como
+        # ``_in_scene_order`` ordena la selección.
+        return self.root[0] if self.root else None
 
     def InsertObject(self, op, parent=None, pred=None):
         siblings = self.root if parent is None else parent._children
@@ -216,6 +229,19 @@ def _add_second_option(variant_tag, tag, c4d, doc, name, node):
     options.SetContainer(1, option)
     payload.SetInt32(variant_tag._PAYLOAD_COUNT, 2)
     return payload
+
+
+def _first_touch(doc, node, since=0):
+    """El PRIMER evento que toca ``node`` a partir de ``since``: ``("undo",
+    tipo)`` o ``("remove",)``. El orden entre esos dos ES la propiedad que el
+    spike midió; ``since`` deja mirar sólo un gesto (los objetos creados ya
+    llevan su ``AddUndo`` de creación mucho antes)."""
+    for event in doc.events[since:]:
+        if event[0] == "undo" and event[2] is node:
+            return ("undo", event[1])
+        if event[0] == "remove" and event[1] is node:
+            return ("remove",)
+    return None
 
 
 # --- 1. Selección vacía -----------------------------------------------------
@@ -489,3 +515,236 @@ def test_sync_display_name_never_reverts_a_live_rename(variant_tag):
     for _ in range(5):
         variant_tag._sync_display_name(tag)
         assert tag.GetName() == "con y sin bend"
+
+
+# --- La cadena de undo, en TODOS los caminos que mueven ----------------------
+
+def test_switch_registers_each_move_undo_before_moving(variant_tag):
+    """El mismo hecho medido que fija ``create_variant_set``, en el camino que
+    de verdad usa ``_reparent``: cambiar de opción. Sin el ``AddUndo`` delante
+    del ``Remove()``, C4D no revierte el reparentado y el artista se queda con
+    B montada y el payload diciendo A."""
+    import c4d
+
+    doc = _scene(c4d)
+    obj = _insert(doc, FakeObject("cubo", c4d, doc))
+    tag = variant_tag.create_variant_set(doc, [obj])["tag"]
+    anchor = tag.GetObject()
+    option_a = anchor._children[0]
+    option_b = _insert(doc, FakeObject("Opción B", c4d, doc))
+    _add_second_option(variant_tag, tag, c4d, doc, "Opción B", option_b)
+
+    mark = len(doc.events)
+    assert variant_tag.switch_to_option(tag, 1)["ok"] is True
+
+    # La que se aparca y la que se monta: las DOS se mueven, las dos necesitan
+    # su undo por delante.
+    assert _first_touch(doc, option_a, mark) == ("undo", c4d.UNDOTYPE_CHANGE)
+    assert _first_touch(doc, option_b, mark) == ("undo", c4d.UNDOTYPE_CHANGE)
+
+
+def test_switch_registers_the_payload_undo_on_the_tag(variant_tag):
+    """Sin el ``AddUndo`` sobre el tag, un Cmd+Z devuelve la escena pero deja
+    el payload diciendo que está montada otra: con tres opciones, el siguiente
+    cambio deja el anclaje con DOS hijos."""
+    import c4d
+
+    doc = _scene(c4d)
+    obj = _insert(doc, FakeObject("cubo", c4d, doc))
+    tag = variant_tag.create_variant_set(doc, [obj])["tag"]
+    option_b = _insert(doc, FakeObject("Opción B", c4d, doc))
+    _add_second_option(variant_tag, tag, c4d, doc, "Opción B", option_b)
+
+    doc.undo_ops = []
+    variant_tag.switch_to_option(tag, 1)
+
+    assert (c4d.UNDOTYPE_CHANGE, tag) in doc.undo_ops
+
+
+def test_create_variant_set_registers_new_object_undos_for_the_nulls_it_creates(variant_tag):
+    """El anclaje y el null de la opción NACEN en este gesto: sin su
+    ``UNDOTYPE_NEWOBJ``, un Cmd+Z deshace los movimientos y deja los dos nulls
+    colgando — y con el anclaje se queda vivo su tag, apuntando a una opción
+    que ya no contiene nada."""
+    import c4d
+
+    doc = _scene(c4d)
+    obj = _insert(doc, FakeObject("cubo", c4d, doc))
+
+    tag = variant_tag.create_variant_set(doc, [obj])["tag"]
+
+    anchor = tag.GetObject()
+    option = anchor._children[0]
+    assert (c4d.UNDOTYPE_NEWOBJ, anchor) in doc.undo_ops
+    assert (c4d.UNDOTYPE_NEWOBJ, option) in doc.undo_ops
+
+
+def test_switch_registers_a_new_object_undo_for_the_park_container(variant_tag):
+    """El cajón se crea perezosamente en el primer cambio. Sin su
+    ``UNDOTYPE_NEWOBJ``, un Cmd+Z tras ese cambio deja un null oculto
+    permanente en la raíz de la escena."""
+    import c4d
+
+    doc = _scene(c4d)
+    obj = _insert(doc, FakeObject("cubo", c4d, doc))
+    tag = variant_tag.create_variant_set(doc, [obj])["tag"]
+    option_a = tag.GetObject()._children[0]
+    option_b = _insert(doc, FakeObject("Opción B", c4d, doc))
+    _add_second_option(variant_tag, tag, c4d, doc, "Opción B", option_b)
+
+    doc.undo_ops = []
+    variant_tag.switch_to_option(tag, 1)
+
+    park = option_a._parent
+    assert park.GetName() == variant_tag.VARIANT_PARK_DEFAULT_NAME
+    assert (c4d.UNDOTYPE_NEWOBJ, park) in doc.undo_ops
+
+
+# --- El despacho de los botones de fila -------------------------------------
+
+def _tag_data(variant_tag):
+    return variant_tag.SentinelVariantsTag()
+
+
+def _two_option_set(variant_tag, c4d):
+    doc = _scene(c4d)
+    obj = _insert(doc, FakeObject("cubo", c4d, doc))
+    tag = variant_tag.create_variant_set(doc, [obj])["tag"]
+    option_b = _insert(doc, FakeObject("Opción B", c4d, doc))
+    _add_second_option(variant_tag, tag, c4d, doc, "Opción B", option_b)
+    return doc, tag, option_b
+
+
+def test_pressing_an_option_row_switches_to_that_option(variant_tag):
+    """Si el despacho no casa, TODOS los botones de opción quedan inertes y
+    la feature entera no hace nada al pulsarla."""
+    import c4d
+
+    doc, tag, option_b = _two_option_set(variant_tag, c4d)
+    row_id = variant_tag.ID_OPTION_BASE + 1 * variant_tag.ID_OPTION_STRIDE
+
+    _tag_data(variant_tag)._handle_command(tag, {"id": row_id})
+
+    assert tag.GetObject()._children == [option_b]
+    assert variant_tag.read_state(tag)["active"] == 1
+
+
+def test_message_routes_a_description_command_to_the_row_dispatch(variant_tag):
+    import c4d
+
+    doc, tag, option_b = _two_option_set(variant_tag, c4d)
+    row_id = variant_tag.ID_OPTION_BASE + 1 * variant_tag.ID_OPTION_STRIDE
+
+    _tag_data(variant_tag).Message(tag, c4d.MSG_DESCRIPTION_COMMAND, {"id": row_id})
+
+    assert variant_tag.read_state(tag)["active"] == 1
+
+
+def test_a_row_id_beyond_the_painted_rows_is_not_ours(variant_tag):
+    """Sin cota superior, cualquier id ≥ ID_OPTION_BASE múltiplo del stride se
+    lee como fila: ``GetDEnabling`` apagaría un control ajeno y ``Message`` se
+    tragaría su comando. Las Tareas 4 y 5 añaden ids."""
+    import c4d
+
+    doc, tag, option_b = _two_option_set(variant_tag, c4d)
+    stranger = variant_tag.ID_OPTION_BASE + 180 * variant_tag.ID_OPTION_STRIDE
+
+    assert variant_tag._option_command(stranger, 2) is None
+    assert variant_tag._option_command(variant_tag.ID_OPTION_BASE, 2) == (0, 0)
+
+    # Y el efecto que importa: el control ajeno no se apaga ni se traga su
+    # comando (el conjunto sigue en A).
+    tag_data = _tag_data(variant_tag)
+    assert tag_data.GetDEnabling(tag, stranger, None, 0, None) is True
+    tag_data._handle_command(tag, {"id": stranger})
+    assert variant_tag.read_state(tag)["active"] == 0
+
+
+def test_get_denabling_only_offers_the_rows_that_can_be_mounted(variant_tag):
+    """La montada no se re-monta y una perdida tampoco: el botón dice la
+    verdad en vez de aceptar el clic y no hacer nada."""
+    import c4d
+
+    doc = _scene(c4d)
+    obj = _insert(doc, FakeObject("cubo", c4d, doc))
+    tag = variant_tag.create_variant_set(doc, [obj])["tag"]
+    _add_second_option(variant_tag, tag, c4d, doc, "Opción B", None)  # perdida
+    tag_data = _tag_data(variant_tag)
+
+    def enabled(index):
+        cid = variant_tag.ID_OPTION_BASE + index * variant_tag.ID_OPTION_STRIDE
+        return tag_data.GetDEnabling(tag, cid, None, 0, None)
+
+    assert enabled(0) is False, "la opción montada no se puede volver a montar"
+    assert enabled(1) is False, "una opción cuyo enlace no resuelve tampoco"
+
+
+# --- La guarda de esquema ---------------------------------------------------
+
+def test_read_state_reads_an_unknown_schema_as_empty_never_half_way(variant_tag):
+    import c4d
+
+    doc = _scene(c4d)
+    obj = _insert(doc, FakeObject("cubo", c4d, doc))
+    tag = variant_tag.create_variant_set(doc, [obj])["tag"]
+    payload = variant_tag._read_payload_bc(tag)
+    payload.SetInt32(variant_tag._PAYLOAD_SCHEMA, variant_tag.VARIANT_SCHEMA + 7)
+
+    state = variant_tag.read_state(tag)
+
+    assert state["options"] == []
+    assert state["active"] is None
+
+
+# --- Orden de escena, no orden de clic --------------------------------------
+
+def test_create_variant_set_uses_scene_order_not_click_order(variant_tag):
+    """Decisión de contrato (ver ``_in_scene_order``): envolver es contención,
+    no autoría, así que el resultado depende sólo de la escena. Con el orden
+    de clic, la misma selección daría un orden distinto dentro de la opción y
+    aterrizaría el anclaje en un sitio distinto del Object Manager."""
+    import c4d
+
+    doc = _scene(c4d)
+    a = _insert(doc, FakeObject("luz_a", c4d, doc))
+    b = _insert(doc, FakeObject("luz_b", c4d, doc))
+    c = _insert(doc, FakeObject("luz_c", c4d, doc))
+    after = _insert(doc, FakeObject("despues", c4d, doc))
+
+    variant_tag.create_variant_set(doc, [c, a, b])
+
+    anchor = doc.root[0]
+    assert anchor.GetName().startswith("Opciones"), (
+        "el anclaje ocupa el sitio del primero EN LA ESCENA, no del primero pinchado"
+    )
+    assert doc.root[1] is after
+    option = anchor._children[0]
+    assert [obj.GetName() for obj in option._children] == [
+        "luz_a", "luz_b", "luz_c",
+    ]
+
+
+# --- El invariante del anclaje ----------------------------------------------
+
+def test_switch_evacuates_anything_the_artist_dropped_under_the_anchor(variant_tag):
+    """El anclaje es un null corriente en el Object Manager: lo que el artista
+    arrastre ahí dentro quedaría, si no se saca, dentro de TODAS las opciones
+    e invisible para el resumen. El invariante se impone leyendo la escena."""
+    import c4d
+
+    doc = _scene(c4d)
+    obj = _insert(doc, FakeObject("cubo", c4d, doc))
+    tag = variant_tag.create_variant_set(doc, [obj])["tag"]
+    anchor = tag.GetObject()
+    option_a = anchor._children[0]
+    option_b = _insert(doc, FakeObject("Opción B", c4d, doc))
+    _add_second_option(variant_tag, tag, c4d, doc, "Opción B", option_b)
+
+    stray = _insert(doc, FakeObject("arrastrado a mano", c4d, doc), anchor)
+    assert len(anchor._children) == 2
+
+    assert variant_tag.switch_to_option(tag, 1)["ok"] is True
+
+    assert anchor._children == [option_b], "el anclaje tiene exactamente un hijo"
+    park = option_a._parent
+    assert stray._parent is park, "lo arrastrado sale con lo aparcado, no se queda"

@@ -6,9 +6,11 @@ paquete es el que ejercita la reutilización real en vez de simularla."""
 from sentinel import variants
 
 
-def option(name, resolved=True, objects=1, geometry=False):
-    return {"name": name, "resolved": resolved, "objects": objects,
-            "geometry": geometry}
+def option(name, resolved=True, objects=1):
+    # La MISMA forma que produce variant_tag.read_state. Llevaba un
+    # "geometry" que ningún consumidor leía y que se retiró de producción; un
+    # fixture que siguiera fabricándolo mentiría sobre lo que llega aquí.
+    return {"name": name, "resolved": resolved, "objects": objects}
 
 
 def state(options, active=0, parked_objects=0, orphans=0):
