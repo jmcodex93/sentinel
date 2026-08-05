@@ -75,3 +75,25 @@ caso base: matriz global no trivial = SI
 | Enlaces al contenido movido | Sobreviven a mover, aparcar y guardar+cargar | Sin límite que declarar; el riesgo "central" no se materializa |
 | Transformación en el mundo | La conserva si el nuevo padre está en identidad | El anclaje nace en identidad **por necesidad medida**; sin recomposición de matriz |
 | Claves de animación | Intactas al reparentar | Sin trabajo extra |
+
+---
+
+## 4. ¿Cómo se lanza un render desde el plugin? (sonda de la Tarea 5)
+
+**Por qué bloqueaba**: el spec sustituyó la salida a Takes por "renderizar todas las opciones", y **no hay ni un solo `RenderDocument` en todo el plugin** — sin patrón de casa que copiar, no se podía diseñar a ciegas.
+
+Medido con el motor real de trabajo, **Redshift** (`RDATA_RENDERENGINE = 1036219`), a 160×120:
+
+```
+vacía    result=0 (RENDERRESULT_OK)  suma_pixeles=0      1.45s
+con cubo result=0                    suma_pixeles=8058   1.03s
+CASO BASE (difieren): True
+Save -> 1   existe=True   bytes=1664
+3 seguidos: [0, 0, 0] en 1.25s
+```
+
+**Veredicto: la vía síncrona funciona.** `documents.RenderDocument(doc, rd.GetDataInstance(), bmp, c4d.RENDERFLAGS_EXTERNAL)` devuelve `RENDERRESULT_OK` con Redshift, el bitmap trae píxeles reales, `bmp.Save(path, c4d.FILTER_PNG, None, c4d.SAVEBIT_0)` escribe el archivo, y tres llamadas seguidas no cuelgan C4D.
+
+**El caso base era obligatorio**: una escena vacía renderiza un bitmap negro con `result=OK`, exactamente el resultado nulo que parece una respuesta. Solo comparando contra una escena con contenido (0 vs 8058) la medición dice algo.
+
+**Consecuencia**: se implementa la vía 1 (bucle de opciones → `RenderDocument` → `Save`). La segunda vía —ruta de salida por opción + render nativo asíncrono esperando con el predicado de `renderwatch.py`— **no hace falta** y no se explora.
