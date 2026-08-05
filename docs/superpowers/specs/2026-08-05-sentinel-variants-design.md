@@ -46,6 +46,7 @@ La unidad es un **anclaje**: el sitio de la escena cuyo contenido varía.
 - Crear un conjunto **envuelve la selección en un null de anclaje** — el mismo gesto que el artista hace a mano. El null nace en **identidad** (sin posición, rotación ni escala) para que lo envuelto conserve su transformación en el mundo. Reparentar no invalida los `BaseLink`, así que lo que apuntara a esos objetos los sigue apuntando.
 - Lo que había pasa a ser **Opción A**, sin tocar nada más.
 - Una opción es un **subárbol completo**, por eso un solo mecanismo cubre las tres áreas: se lleva jerarquía, parámetros, pistas de animación con sus claves y tags de material.
+- **Cada opción vive en un null propio** y el anclaje tiene **exactamente un hijo**: el null de la opción activa. Esta decisión resuelve una contradicción de la primera versión de este spec, señalada al planificar: "una opción es un subárbol" y "se puede crear un conjunto sobre varios objetos a la vez" no encajan, porque un subárbol no tiene varias raíces. Con el null por opción, un conjunto funciona igual con un objeto que con quince —un setup de cuatro luces es un conjunto— y cambiar de opción es **siempre el mismo par de movimientos**, sea cual sea el contenido. El precio, aceptado explícitamente por el artista (2026-08-05): un nivel más de null visible en el Object Manager.
 - **Una sola opción está activa**; las demás quedan guardadas y fuera de en medio.
 - El conjunto vive en un **tag sobre el null de anclaje** — visible en el Object Manager sin abrir nada, la promesa que justificó usar un tag en el Pin.
 
