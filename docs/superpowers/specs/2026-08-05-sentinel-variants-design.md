@@ -1,6 +1,6 @@
 # Sentinel Variants — opciones que conviven, una activa (v1.36)
 
-**Fecha**: 2026-08-05 · **Estado**: diseño aprobado, pendiente de spike bloqueante.
+**Fecha**: 2026-08-05 · **Estado**: diseño aprobado; spike bloqueante **ejecutado y resuelto** (2026-08-05), spec actualizado con el resultado. Listo para plan de implementación.
 
 **Contexto**: sustituye a la "capa automática" que la v1.35 había anotado como v1.36. Esa idea se **descartó en este mismo brainstorm** y la razón queda registrada abajo, para que nadie la re-derive.
 
@@ -49,16 +49,30 @@ La unidad es un **anclaje**: el sitio de la escena cuyo contenido varía.
 - **Una sola opción está activa**; las demás quedan guardadas y fuera de en medio.
 - El conjunto vive en un **tag sobre el null de anclaje** — visible en el Object Manager sin abrir nada, la promesa que justificó usar un tag en el Pin.
 
-### Spike BLOQUEANTE: qué significa "guardada"
+### Cómo se guarda una opción inactiva — RESUELTO por medición
 
-Dos caminos posibles, y cuál es correcto **se mide, no se razona**:
+Spike ejecutado antes de planificar (`docs/research/2026-08-05-variant-isolation-spike.md`, C4D 2026.303). Se midió con *Current State to Object* — lo que el generador **construye**, no lo que dicen sus parámetros:
 
-1. **Apagar la visibilidad** (editor y render) dejando la opción donde está. Limpio: nada se mueve, ningún enlace se rompe, el cambio es trivialmente un paso de undo.
-2. **Sacarla de la jerarquía** a un contenedor gestionado — lo que el artista hace hoy. Más invasivo, neutraliza de forma inequívoca.
+```
+Cloner con dos hijos, control = 2584 polys
+  B oculto      = 2584   NO AISLA
+  B desactivado =   24   aísla
+  B fuera       =   54   aísla
+  desactivar == sacar ?  NO
+```
 
-**La pregunta a medir**: ¿un objeto con la visibilidad apagada sigue *contando* para lo que lo rodea? Un Cloner que reparte entre sus hijos, un Boole, un deformador que afecta a lo que cuelga. Si un hijo oculto sigue contando, apagar la visibilidad no aísla la opción y hay que sacarla.
+**Ocultar no aísla**: un Cloner sigue clonando la rama invisible y un Subdivision Surface la sigue subdividiendo (96 → 96). **Desactivar tampoco sirve**: aísla, pero produce un resultado *distinto* al de sacar la rama, porque el Cloner sigue contando al hijo desactivado como un hueco en su reparto.
 
-**Esta medición decide las dos mitades del diseño** — el mecanismo de cambio y si la salida a Takes es viable (ver abajo).
+La promesa del sistema es que con A activa la escena se comporte **exactamente como si B no existiera**, y solo una vía la cumple:
+
+> **Una opción inactiva se saca de la jerarquía**, a un contenedor gestionado. El método manual del artista era el correcto.
+
+**No medido**: el caso del deformador (en tres montajes el Bend no llegó a deformar, control nulo). No cambia la conclusión — basta con que desactivar difiera de sacar en un generador común — pero queda anotado.
+
+### Consecuencias
+
+1. **Cambiar de opción mueve subárboles.** Preservar los `BaseLink` que apunten dentro es un **requisito central**, no un riesgo marginal.
+2. **La salida a Takes cae** (ver abajo).
 
 ---
 
@@ -75,15 +89,13 @@ Cuatro gestos:
 
 ---
 
-## La salida a Takes
+## Enseñar opciones a quien decide
 
-**Publicar opciones como Takes** genera un take por opción, cada uno configurado para que su opción sea la activa: se renderizan las tres sin montaje manual.
+**Los Takes quedan descartados por el spike**: sobrescriben parámetros, no jerarquía, así que no pueden expresar "esta opción está dentro y las otras fuera". No es una decisión de gusto — es que el mecanismo no alcanza.
 
-**Depende del spike**: los Takes sobrescriben *parámetros*, no jerarquía.
-- Si basta apagar la visibilidad → publicar es casi gratis (un override de visibilidad por take, mecanismo nativo).
-- Si hay que sacar de la jerarquía → los Takes no pueden expresarlo, y la salida pasa a ser un "renderiza todas las opciones" que cambia y lanza, una por una.
+En su lugar, **renderizar todas las opciones**: la herramienta cambia a cada opción y lanza su render, una por una, dejando las imágenes nombradas por opción. Sin montaje manual, que era el objetivo.
 
-**Choque con Sentinel Frame**: si la escena tiene un Frame ya hay takes por formato. Formatos × opciones es una matriz que crece rápido, así que **no se genera el producto cruzado automáticamente** — se avisa y decide el artista.
+**Sin choque con Sentinel Frame**: al no crear takes, no hay matriz de formatos × opciones que gestionar. El problema desaparece con el mecanismo.
 
 ---
 
@@ -111,5 +123,5 @@ Misma regla que el Pin: los límites se muestran en la fila del tag, no solo aqu
 - Crear un conjunto sobre un objeto y sobre varios a la vez, conservando las transformaciones en el mundo y sin romper enlaces que apunten dentro.
 - Duplicar, renombrar, borrar y cambiar de opción, **cada acción un solo paso de deshacer**, verificado en C4D vivo (no en el harness de tests: los fakes de este repo han dado verde sobre código roto siete veces).
 - Una variante de cada área real: estructura (con y sin deformador), valores (intensidades de luz), y curvas (dos timings distintos del mismo objeto).
-- Publicar como Takes y renderizar cada opción sin montaje manual — o, si el spike lo impide, el camino alternativo funcionando.
+- Renderizar todas las opciones sin montaje manual, con las imágenes nombradas por opción.
 - Los límites visibles en la fila del tag.
