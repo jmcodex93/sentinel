@@ -113,6 +113,50 @@ def _op_tool_variant_set(payload):
     return _tool(_run)
 
 
+def _op_tool_pin_state(payload):
+    """Pin the Object Manager selection (v1.36.1).
+
+    One Sentinel Pin per selected object, captured on the spot. Until this
+    op existed a pin could only be added through C4D's native tag menu —
+    it worked, nobody found it, and Variants already had a Tools button.
+
+    ``GETACTIVEOBJECTFLAGS_0`` (the raw selection), NOT the ``_CHILDREN``
+    flag the containment tools use: a pin already covers the whole subtree
+    of the object it sits on, so pulling descendants in would put a second,
+    redundant pin on every child of a selected parent.
+
+    One undo bracket for the batch — the per-tag ``NEW``/``CHANGE`` undos
+    nest inside it, so a single Cmd+Z removes every pin this created.
+    Never returns a ``BaseTag``: the web bridge JSON-encodes the response
+    and a tag is not serializable (the v1.36 lesson from ``variant_set``)."""
+    from sentinel.ui import pin_tag
+
+    def _run(doc):
+        try:
+            selection = doc.GetActiveObjects(c4d.GETACTIVEOBJECTFLAGS_0) or []
+        except Exception:
+            selection = []
+        if not selection:
+            return {"ok": False, "error": "no_selection"}
+        pinned, failed = 0, 0
+        doc.StartUndo()
+        try:
+            for obj in selection:
+                if pin_tag.pin_object(obj, doc) is not None:
+                    pinned += 1
+                else:
+                    failed += 1
+        finally:
+            doc.EndUndo()
+        if not pinned:
+            # Nothing landed: report it as a failure rather than "0 pinned",
+            # which reads like success to a toast.
+            return {"ok": False, "error": "no_pin"}
+        return {"ok": True, "pinned": pinned, "failed": failed}
+
+    return _tool(_run)
+
+
 _EXTERNAL_URLS = {
     "github": "https://github.com/jmcodex93/sentinel",
     "bug": "https://github.com/jmcodex93/sentinel/issues/new",
@@ -509,6 +553,7 @@ PANEL_TOOLS_OPS = {
     "panel/tools/solo": _op_tool_solo,
     "panel/tools/drop_to_floor": _op_tool_drop_to_floor,
     "panel/tools/variant_set": _op_tool_variant_set,
+    "panel/tools/pin_state": _op_tool_pin_state,
     "panel/tools/abc_retime": _op_tool_abc_retime,
     "panel/tools/mark_safe_area": _op_tool_mark_safe_area,
     "panel/tools/open_settings": _op_open_settings,

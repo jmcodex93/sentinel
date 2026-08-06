@@ -2,9 +2,19 @@ import { describe, expect, it } from "vitest";
 import { TOOL_GROUPS, toolToast } from "./panelTools";
 
 describe("TOOL_GROUPS", () => {
+  // v1.36.1 adds "Return Points" (Pin State). Kept as an exact-equality
+  // assertion — the contract this pins is "these groups, in this order",
+  // and the release deliberately changes it; loosening it to a `contains`
+  // would stop catching an accidental group appearing or moving.
   it("has the scene-authoring groups, Cleanup between Layout and Animation", () => {
     expect(TOOL_GROUPS.map((g) => g.title)).toEqual([
-      "Layout & Hierarchy", "Cleanup", "Animation",
+      "Layout & Hierarchy", "Cleanup", "Animation", "Return Points",
+    ]);
+  });
+  it("Return Points holds Pin State (v1.36.1)", () => {
+    const group = TOOL_GROUPS.find((g) => g.title === "Return Points");
+    expect(group?.tools).toEqual([
+      { id: "panel/tools/pin_state", label: "Pin State" },
     ]);
   });
   it("Cleanup group has the two cleanup tools", () => {
@@ -106,6 +116,29 @@ describe("toolToast", () => {
     const t = toolToast("panel/tools/variant_set", { ok: false, error: "no_tag" });
     expect(t.variant).toBe("warn");
     expect(t.message).toBe("Couldn't create the Variants tag on the anchor.");
+  });
+  it("pin_state ok reports the pinned count (plural)", () => {
+    const t = toolToast("panel/tools/pin_state", { ok: true, pinned: 3, failed: 0 });
+    expect(t.variant).toBe("success");
+    expect(t.message).toBe("Pinned 3 objects.");
+  });
+  it("pin_state ok singular phrasing", () => {
+    const t = toolToast("panel/tools/pin_state", { ok: true, pinned: 1, failed: 0 });
+    expect(t.message).toBe("Pinned 1 object.");
+  });
+  it("pin_state names partial failures instead of hiding them", () => {
+    const t = toolToast("panel/tools/pin_state", { ok: true, pinned: 2, failed: 1 });
+    expect(t.message).toBe("Pinned 2 objects · 1 failed.");
+  });
+  it("pin_state no_selection → warn", () => {
+    const t = toolToast("panel/tools/pin_state", { ok: false, error: "no_selection" });
+    expect(t.variant).toBe("warn");
+    expect(t.message).toBe("Select one or more objects first.");
+  });
+  it("pin_state no_pin → warn (not the generic fallback)", () => {
+    const t = toolToast("panel/tools/pin_state", { ok: false, error: "no_pin" });
+    expect(t.variant).toBe("warn");
+    expect(t.message).toBe("Couldn't pin the selection — no state was captured.");
   });
   it("keyframe_offset ok reports keys/objects/frames from the op result", () => {
     const t = toolToast("panel/tools/keyframe_offset", { ok: true, keys: 12, objects: 3, frames: 5 });

@@ -37,6 +37,18 @@ export const TOOL_GROUPS: { title: string; tools: ToolDef[] }[] = [
       { id: "panel/tools/cam_shakel", label: "Cam Shakel" },
     ],
   },
+  // v1.36.1. A pin neither lays out, cleans, nor animates — none of the
+  // three groups above names what it does, so it gets its own rather than
+  // being filed under the least-wrong one. "Return Points" is the term this
+  // project already uses for the v1.30→v1.36 arc (Pin = states to come back
+  // to, Variants = options to come back to); Variant Set stays where it is
+  // for now — moving it is a separate call, not this one's to make.
+  {
+    title: "Return Points",
+    tools: [
+      { id: "panel/tools/pin_state", label: "Pin State" },
+    ],
+  },
 ];
 
 const ERROR_COPY: Record<string, string> = {
@@ -55,6 +67,7 @@ const ERROR_COPY: Record<string, string> = {
   bad_frames: "Frames must be a non-zero integer (±10000).",
   need_two: "Select two or more objects to stagger.",
   no_tag: "Couldn't create the Variants tag on the anchor.",
+  no_pin: "Couldn't pin the selection — no state was captured.",
 };
 
 /** Tool result → toast. Success uses a count when the op returns one; errors
@@ -100,6 +113,18 @@ export function toolToast(id: string, r: PanelToolResult): { message: string; va
     const option = r.option || "Option A";
     return {
       message: `Variant set created — ${objects} object${objects === 1 ? "" : "s"} in ${option}.`,
+      variant: "success",
+    };
+  }
+  if (id === "panel/tools/pin_state") {
+    const pinned = r.pinned ?? 0;
+    const failed = r.failed ?? 0;
+    // Partial failures are named, never rounded away: the op only reports
+    // `ok` when at least one pin landed, so silence here would tell an
+    // artist that objects were covered when they were not.
+    const tail = failed > 0 ? ` · ${failed} failed.` : ".";
+    return {
+      message: `Pinned ${pinned} object${pinned === 1 ? "" : "s"}${tail}`,
       variant: "success",
     };
   }
