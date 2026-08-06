@@ -93,6 +93,16 @@ class BaseContainer(dict):
     def GetLink(self, key, doc=None):
         return self.get(key)
 
+    def SetLink(self, key, value):
+        # Honest about what it is NOT: the real BaseContainer stores a
+        # BaseLink that resolves against a document (and comes back None
+        # when its target is gone or the document was reloaded). This fake
+        # just holds the object, so "the link survived save/load" is NOT
+        # something any test here can claim — only "the code asked for the
+        # link and reacted to what came back" (a test can hand it None to
+        # model an unresolvable link).
+        self[key] = value
+
     # Typed accessors modeled after the real c4d.BaseContainer API — added
     # for the Sentinel Pin harness (nested containers, ints, strings,
     # bools, matrices), purely additive on top of the dict this already
@@ -127,6 +137,14 @@ class BaseContainer(dict):
     def SetMatrix(self, key, value):
         self[key] = value
 
+    def GetClone(self, flags=0):
+        """Shallow copy, like the real BaseContainer.GetClone(COPYFLAGS_*).
+        Honest about what it is NOT: the real one deep-copies nested
+        containers, this one shares them. What a test CAN claim with it is
+        the thing it exists for — that code wrote into a copy and left the
+        live container alone."""
+        return BaseContainer(self)
+
 
 class BaseDocument(dict):
     def __init__(self, render_datas=None):
@@ -150,6 +168,58 @@ class BaseDocument(dict):
 
     def GetActiveRenderData(self):
         return self.GetFirstRenderData()
+
+
+class AliasTrans:
+    """Modelo mínimo de ``c4d.AliasTrans`` — el traductor de enlaces que
+    ``GetClone`` necesita para que los ``BaseLink`` INTERNOS de un subárbol
+    copiado apunten a la copia y no al original.
+
+    Aditivo: sin él ``c4d.AliasTrans`` se auto-vivificaba como un entero del
+    ``_PermissiveModule`` y ``c4d.AliasTrans()`` reventaba, así que el camino
+    correcto de duplicar no se podía ejercitar bajo test EN ABSOLUTO.
+
+    Lo que modela: quien clona registra cada pareja (original, copia) y
+    ``Translate`` reapunta, en las copias, los enlaces cuyo destino esté en
+    ese registro. Es la MECÁNICA de C4D (medida en vivo: sin traductor el
+    enlace del clon sigue apuntando al nodo del original, con el MISMO
+    nombre; con traductor apunta al del clon).
+
+    Lo que NO modela, y por eso sigue siendo un hecho a verificar en vivo:
+    cuándo C4D considera un alias "traducible", qué pasa con enlaces a nodos
+    de FUERA del subárbol (aquí se dejan intactos, que es lo medido, pero no
+    lo prueba este fake), ni la interacción con el documento que recibe
+    ``Init``.
+    """
+
+    def __init__(self):
+        self._pairs = []
+        self._initialized = False
+        self.translated = False
+
+    def Init(self, doc):
+        self._initialized = True
+        return True
+
+    def register(self, original, clone):
+        """Llamado por el clonador del arnés, no por C4D: en el real esto lo
+        hace ``GetClone`` por dentro al recibir el ``AliasTrans``."""
+        self._pairs.append((original, clone))
+
+    def Translate(self, connect_oldnew=True):
+        if not self._initialized:
+            return False
+        mapping = {id(original): clone for original, clone in self._pairs}
+        for _original, clone in self._pairs:
+            links = getattr(clone, "_links", None)
+            if not links:
+                continue
+            for key, target in list(links.items()):
+                mapped = mapping.get(id(target))
+                if mapped is not None:
+                    links[key] = mapped
+        self.translated = True
+        return True
 
 
 class _BaseGui:
@@ -186,6 +256,7 @@ def _install_fake_c4d():
     c4d.DescLevel = DescLevel
     c4d.DescID = DescID
     c4d.BaseContainer = BaseContainer
+    c4d.AliasTrans = AliasTrans
     c4d.GetCustomDatatypeDefault = lambda dtype: BaseContainer()
     c4d.EventAdd = lambda *args, **kwargs: None
 
@@ -222,6 +293,17 @@ def _install_fake_c4d():
     bitmaps.BaseBitmap = _BaseBitmap
     bitmaps.ShowBitmap = lambda *args, **kwargs: None
 
+    # c4d.modules.tokensystem — a real submodule chain, not a
+    # _PermissiveModule auto-int, so code under test actually REACHES
+    # StringConvertTokens instead of tripping AttributeError on an int and
+    # silently taking its own except branch. The default resolves nothing
+    # (identity): a test that cares about token expansion monkeypatches it.
+    modules = _PermissiveModule("c4d.modules")
+    tokensystem = _PermissiveModule("c4d.modules.tokensystem")
+    tokensystem.StringConvertTokens = lambda path, rpd: path
+    modules.tokensystem = tokensystem
+
+    c4d.modules = modules
     c4d.gui = gui
     c4d.plugins = plugins
     c4d.documents = documents
@@ -256,6 +338,8 @@ def _install_fake_c4d():
         setattr(c4d, key, value)
 
     sys.modules["c4d"] = c4d
+    sys.modules["c4d.modules"] = modules
+    sys.modules["c4d.modules.tokensystem"] = tokensystem
     sys.modules["c4d.gui"] = gui
     sys.modules["c4d.plugins"] = plugins
     sys.modules["c4d.documents"] = documents

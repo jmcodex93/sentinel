@@ -26,11 +26,12 @@ describe("TOOL_GROUPS", () => {
     const allIds = TOOL_GROUPS.flatMap((g) => g.tools.map((t) => t.id));
     expect(allIds).not.toContain("panel/tools/mark_safe_area");
   });
-  it("Layout group has the four hierarchy tools", () => {
+  it("Layout group has the hierarchy tools, Variant Set last (v1.36)", () => {
     const ids = TOOL_GROUPS[0].tools.map((t) => t.id);
     expect(ids).toEqual([
       "panel/tools/hierarchy", "panel/tools/h_to_layers",
       "panel/tools/solo", "panel/tools/drop_to_floor",
+      "panel/tools/variant_set",
     ]);
   });
 });
@@ -86,6 +87,25 @@ describe("toolToast", () => {
     const t = toolToast("panel/tools/clean_material_tags", { ok: false, error: "none_found" });
     expect(t.variant).toBe("warn");
     expect(t.message).toBe("Nothing to clean — scene is already tidy.");
+  });
+  it("variant_set ok names the option and its object count (plural)", () => {
+    const t = toolToast("panel/tools/variant_set", { ok: true, objects: 3, option: "Option A" });
+    expect(t.variant).toBe("success");
+    expect(t.message).toBe("Variant set created — 3 objects in Option A.");
+  });
+  it("variant_set ok singular phrasing", () => {
+    const t = toolToast("panel/tools/variant_set", { ok: true, objects: 1, option: "Option A" });
+    expect(t.message).toBe("Variant set created — 1 object in Option A.");
+  });
+  it("variant_set no_selection → warn telling the artist what to do", () => {
+    const t = toolToast("panel/tools/variant_set", { ok: false, error: "no_selection" });
+    expect(t.variant).toBe("warn");
+    expect(t.message).toBe("Select one or more objects first.");
+  });
+  it("variant_set no_tag → warn (not the generic fallback)", () => {
+    const t = toolToast("panel/tools/variant_set", { ok: false, error: "no_tag" });
+    expect(t.variant).toBe("warn");
+    expect(t.message).toBe("Couldn't create the Variants tag on the anchor.");
   });
   it("keyframe_offset ok reports keys/objects/frames from the op result", () => {
     const t = toolToast("panel/tools/keyframe_offset", { ok: true, keys: 12, objects: 3, frames: 5 });

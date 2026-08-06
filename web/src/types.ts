@@ -1192,6 +1192,8 @@ export interface PanelToolResult {
   keys?: number;
   objects?: number;
   frames?: number;
+  /** `panel/tools/variant_set` — name of the option the selection landed in. */
+  option?: string;
 }
 
 // ---------------------------------------------------------------------------

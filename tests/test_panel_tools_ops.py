@@ -306,6 +306,145 @@ class TestParityOps:
             "ok": False, "error": "no_document"}
 
 
+class _FakeVariantDoc:
+    """A doc whose only job is to hand back a selection (the engine itself
+    is stubbed — its behavior lives in test_variant_tag.py)."""
+
+    def __init__(self, selection):
+        self._selection = selection
+
+    def GetActiveObjects(self, flags):
+        return list(self._selection)
+
+
+class TestVariantSetOp:
+    """`panel/tools/variant_set` (v1.36) — the entry point that was missing:
+    `variant_tag.create_variant_set` had no caller at all."""
+
+    def _forbid_dialog(self, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+
+        def _boom(*a, **k):
+            raise AssertionError("no dialog in op path")
+
+        monkeypatch.setattr(panel_tools_ops.c4d.gui, "MessageDialog", _boom)
+        monkeypatch.setattr(panel_tools_ops.c4d.gui, "QuestionDialog", _boom)
+
+    def _stub(self, monkeypatch, create, read_state=None):
+        from sentinel.ui import variant_tag
+        monkeypatch.setattr(variant_tag, "create_variant_set", create)
+        if read_state is not None:
+            monkeypatch.setattr(variant_tag, "read_state", read_state)
+
+    def test_ops_registered(self, sentinel_module):
+        from sentinel.ui import panel_tools_ops
+        from sentinel.ui import reports_dialog
+        assert "panel/tools/variant_set" in panel_tools_ops.PANEL_TOOLS_OPS
+        assert "panel/tools/variant_set" in reports_dialog._OPS
+
+    def test_no_document(self, sentinel_module, monkeypatch):
+        """The op short-circuits BEFORE the engine: stubbing the engine with
+        a raiser is what makes this test discriminate — the engine also
+        rejects a None doc, so asserting the dict alone passes either way."""
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: None)
+
+        def _never(doc, objs):
+            raise AssertionError("engine reached with no document")
+
+        self._stub(monkeypatch, _never)
+        assert panel_tools_ops._op_tool_variant_set({}) == {
+            "ok": False, "error": "no_document"}
+
+    def test_no_selection_reason_becomes_error(self, sentinel_module, monkeypatch):
+        """The core rejects with `reason`; the SPA's toast copy keys off
+        `error` — without the rename the artist gets the generic fallback
+        ("Couldn't run that tool") instead of "Select one or more objects
+        first"."""
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: _FakeVariantDoc([]))
+        self._stub(monkeypatch,
+                   lambda doc, objs: {"ok": False, "reason": "no_selection",
+                                      "tag": None})
+        assert panel_tools_ops._op_tool_variant_set({}) == {
+            "ok": False, "error": "no_selection"}
+
+    def test_passes_the_selection_through_untouched(self, sentinel_module, monkeypatch):
+        """`create_variant_set` orders by SCENE order itself; the op must
+        hand it the raw selection, not a re-ordered or filtered one."""
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        selection = ["b", "a", "c"]
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument",
+                            lambda: _FakeVariantDoc(selection))
+        seen = {}
+
+        def _create(doc, objs):
+            seen["objs"] = list(objs)
+            return {"ok": True, "reason": "", "tag": object()}
+
+        self._stub(monkeypatch, _create,
+                   read_state=lambda tag: {"options": [{"name": "Option A",
+                                                        "objects": 3}]})
+        assert panel_tools_ops._op_tool_variant_set({})["ok"] is True
+        assert seen["objs"] == ["b", "a", "c"]
+
+    def test_success_reports_option_name_and_object_count(
+            self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument",
+                            lambda: _FakeVariantDoc(["a"]))
+        self._stub(monkeypatch,
+                   lambda doc, objs: {"ok": True, "reason": "", "tag": object()},
+                   read_state=lambda tag: {"options": [{"name": "Option A",
+                                                        "objects": 4}],
+                                           "active": 0})
+        assert panel_tools_ops._op_tool_variant_set({}) == {
+            "ok": True, "objects": 4, "option": "Option A"}
+
+    def test_response_is_json_serializable(self, sentinel_module, monkeypatch):
+        """The web bridge JSON-encodes every op response: forwarding the
+        core's `tag` (a BaseTag) would raise at serialization time, where
+        no toast can report it."""
+        import json
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument",
+                            lambda: _FakeVariantDoc(["a"]))
+        self._stub(monkeypatch,
+                   lambda doc, objs: {"ok": True, "reason": "", "tag": object()},
+                   read_state=lambda tag: {"options": [{"name": "Option A",
+                                                        "objects": 1}]})
+        json.dumps(panel_tools_ops._op_tool_variant_set({}))
+
+    def test_unreadable_state_still_succeeds(self, sentinel_module, monkeypatch):
+        """The set IS created by the time `read_state` runs — a reader
+        failure must not report failure and send the artist to undo a set
+        that exists."""
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument",
+                            lambda: _FakeVariantDoc(["a"]))
+
+        def _boom(tag):
+            raise RuntimeError("payload unreadable")
+
+        self._stub(monkeypatch,
+                   lambda doc, objs: {"ok": True, "reason": "", "tag": object()},
+                   read_state=_boom)
+        assert panel_tools_ops._op_tool_variant_set({}) == {
+            "ok": True, "objects": 0, "option": ""}
+
+
 class _FakeTag:
     """Minimal texture-tag fake keyed off the fake-c4d constants
     (``c4d.TEXTURETAG_MATERIAL`` / ``c4d.TEXTURETAG_RESTRICTION``, added in

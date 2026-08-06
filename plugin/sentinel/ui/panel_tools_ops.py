@@ -75,6 +75,44 @@ def _op_tool_keyframe_stagger(payload):
     return _tool(lambda doc: keyframes.run_stagger(doc, (payload or {}).get("frames")))
 
 
+def _op_tool_variant_set(payload):
+    """Wrap the Object Manager selection in a Sentinel Variants set (v1.36).
+
+    The engine already orders the selection by SCENE order and drops any
+    object nested under another selected one (``_in_scene_order`` /
+    ``_top_level_only``), so this op passes the raw selection through — it
+    is containment, not authorship. ``GETACTIVEOBJECTFLAGS_CHILDREN`` is the
+    flag the neighbouring tools use; the extra descendants it returns are
+    collapsed by ``_top_level_only``, so it only affects the list size.
+
+    The core reports its rejection as ``reason``; the SPA's toast copy keys
+    off ``error`` (``panelTools.ts``), hence the rename. The core's ``tag``
+    is deliberately NOT forwarded: the response is JSON-encoded by the web
+    bridge and a ``BaseTag`` is not serializable — the toast's count comes
+    from ``read_state`` instead, the same reader the tag row uses."""
+    from sentinel.ui import variant_tag
+
+    def _run(doc):
+        try:
+            selection = doc.GetActiveObjects(c4d.GETACTIVEOBJECTFLAGS_CHILDREN) or []
+        except Exception:
+            selection = []
+        result = variant_tag.create_variant_set(doc, selection) or {}
+        if not result.get("ok"):
+            return {"ok": False, "error": result.get("reason") or "failed"}
+        objects, option = 0, ""
+        try:
+            options = (variant_tag.read_state(result.get("tag")) or {}).get("options") or []
+            if options:
+                objects = int(options[0].get("objects") or 0)
+                option = str(options[0].get("name") or "")
+        except Exception:
+            pass
+        return {"ok": True, "objects": objects, "option": option}
+
+    return _tool(_run)
+
+
 _EXTERNAL_URLS = {
     "github": "https://github.com/jmcodex93/sentinel",
     "bug": "https://github.com/jmcodex93/sentinel/issues/new",
@@ -470,6 +508,7 @@ PANEL_TOOLS_OPS = {
     "panel/tools/h_to_layers": _op_tool_h_to_layers,
     "panel/tools/solo": _op_tool_solo,
     "panel/tools/drop_to_floor": _op_tool_drop_to_floor,
+    "panel/tools/variant_set": _op_tool_variant_set,
     "panel/tools/abc_retime": _op_tool_abc_retime,
     "panel/tools/mark_safe_area": _op_tool_mark_safe_area,
     "panel/tools/open_settings": _op_open_settings,

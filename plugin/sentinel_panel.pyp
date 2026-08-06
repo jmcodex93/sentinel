@@ -25,7 +25,8 @@ from sentinel.ui.panel_spa import SentinelPanelSPACmd, SentinelPaletteCmd
 # independently via Preferences > Customize Commands. Grepped the 2099xxx
 # range (PLUGIN_ID=2099069, SENTINEL_FRAME_TAG_PLUGIN_ID=2099073, 2099072
 # retired, SENTINEL_PANEL_SPA_PLUGIN_ID=2099076, 2099077 unassigned,
-# SENTINEL_PIN_TAG_PLUGIN_ID=2099078 taken by pin_tag.py) before picking
+# SENTINEL_PIN_TAG_PLUGIN_ID=2099078 taken by pin_tag.py,
+# SENTINEL_VARIANT_TAG_PLUGIN_ID=2099079 taken by variant_tag.py) before picking
 # 2099075 — free.
 SENTINEL_PALETTE_PLUGIN_ID = 2099075
 
@@ -61,6 +62,21 @@ except Exception as _exc:
     _SENTINEL_PIN_TAG_AVAILABLE = False
     PIN_TAG_DEFAULT_NAME = "Sentinel Pin"
     _PIN_TAG_IMPORT_ERROR = _exc
+
+try:
+    from sentinel.ui.variant_tag import (
+        SENTINEL_VARIANT_TAG_PLUGIN_ID,
+        SentinelVariantsTag,
+        _SENTINEL_VARIANT_TAG_AVAILABLE,
+        VARIANT_TAG_DEFAULT_NAME,
+    )
+    _VARIANT_TAG_IMPORT_ERROR = None
+except Exception as _exc:
+    SENTINEL_VARIANT_TAG_PLUGIN_ID = 2099079
+    SentinelVariantsTag = None
+    _SENTINEL_VARIANT_TAG_AVAILABLE = False
+    VARIANT_TAG_DEFAULT_NAME = "Sentinel Variants"
+    _VARIANT_TAG_IMPORT_ERROR = _exc
 
 # Compatibility surface for tests, fixture runner, and C4D scripts that import
 # sentinel_panel.pyp directly. Keep private helpers too.
@@ -258,6 +274,50 @@ def Register():
     else:
         reason = f" ({_PIN_TAG_IMPORT_ERROR})" if _PIN_TAG_IMPORT_ERROR else ""
         safe_print(f"TagData API unavailable{reason} — Sentinel Pin tag disabled")
+
+    # Sentinel Variants (TagData) — un tag = un CONJUNTO de opciones sobre
+    # el null de anclaje (v1.36). No TAG_IMPLEMENTS_DRAW_FUNCTION: no dibuja
+    # nada en el viewport. Fallo no fatal, mismo patrón que los dos de
+    # arriba.
+    #
+    # SIN TAG_MULTIPLE, a propósito — y al revés que el Pin de arriba, que sí
+    # lo necesita (un Pin = un estado, y varios sobre el MISMO objeto son su
+    # diseño). Aquí un tag = un CONJUNTO, y dos conjuntos viven sobre DOS
+    # anclajes distintos: ``create_variant_set`` fabrica un anclaje nuevo cada
+    # vez, así que el flag no compra nada al flujo real. Lo que sí permitía
+    # era copiar un tag Variants sobre un anclaje que YA tiene uno (Ctrl y
+    # arrastrar el tag a su propio anclaje): los dos payloads apuntan a los
+    # MISMOS nulls de opción, cada tag impone "un solo hijo" contra el otro y
+    # ``read_state`` del segundo sigue viendo su opción como resuelta (está
+    # aparcada, no perdida) — un conjunto gobernado en secreto por otro, sin
+    # que nada lo diga. Sin el flag es el propio C4D quien impide la
+    # configuración, en el gesto y gratis. (El comentario anterior decía
+    # "dos conjuntos conviviendo", que es justo lo que el flag NO gobierna.)
+    if _SENTINEL_VARIANT_TAG_AVAILABLE and SentinelVariantsTag is not None:
+        try:
+            variant_tag_info = c4d.TAG_VISIBLE | c4d.TAG_EXPRESSION
+            variant_tag_ok = plugins.RegisterTagPlugin(
+                id=SENTINEL_VARIANT_TAG_PLUGIN_ID,
+                # VARIANT_TAG_DEFAULT_NAME, nunca un literal retecleado: el
+                # sync del nombre en variant_tag.py detecta "una carga acaba
+                # de resetear este nombre" comparando contra esa MISMA
+                # constante, así que este string de registro y esa
+                # comparación no pueden divergir.
+                str=VARIANT_TAG_DEFAULT_NAME,
+                info=variant_tag_info,
+                g=SentinelVariantsTag,
+                description="Tsentinelvariants",
+                icon=icon,
+            )
+            if variant_tag_ok:
+                safe_print("Sentinel Variants (TagData) registered")
+            else:
+                safe_print("Failed to register Sentinel Variants TagData")
+        except Exception as e:
+            safe_print(f"Sentinel Variants registration crashed: {e}")
+    else:
+        reason = f" ({_VARIANT_TAG_IMPORT_ERROR})" if _VARIANT_TAG_IMPORT_ERROR else ""
+        safe_print(f"TagData API unavailable{reason} — Sentinel Variants tag disabled")
 
     # Frame v2 auto-sync pump (MessageData): drains the debounced per-tag sync
     # queue on main thread. Non-fatal on failure — the tag still works, just
