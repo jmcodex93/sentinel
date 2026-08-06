@@ -116,3 +116,25 @@ ARCHIVOS ESCRITOS EN LA ENTREGA: NINGUNO
 **Veredicto: `RENDERFLAGS_EXTERNAL` con el contenedor clonado también neutraliza la escritura de Redshift.** No hay nada que arreglar y no se tocó nada.
 
 Queda escrito aquí, y no sólo en el hilo de la review, porque en este repo un resultado negativo vale lo mismo que uno positivo: sin esta nota el mismo razonamiento —que sigue siendo plausible— se vuelve a derivar en la próxima revisión y cuesta otra sesión de medición.
+
+---
+
+## 6. Tres incógnitas de la revisión final, cerradas por medición
+
+La ola final de arreglos declaró honestamente tres cosas que no pudo hacer observables bajo el arnés. Las tres se midieron en C4D 2026.303 (2026-08-06):
+
+**(1) ¿Quitar `TAG_MULTIPLE` impide de verdad un segundo tag?** Sí. Dos `MakeTag` del tipo Variants sobre el mismo null dejan **1** tag: C4D lo impide en el gesto. La decisión de retirar el flag se sostiene con medición, no con argumento.
+
+**(2) ¿Un bracket de undo vacío materializa un paso?** **No.** Tras un bracket real y uno vacío, un solo Cmd+Z revierte el real.
+
+Esto **refuta la premisa de un arreglo anterior** de esta misma rama ("no abras un bracket vacío porque el artista se lo gasta"): el arreglo era innecesario. El conflicto que la ola final resolvió eligiendo la profundidad del bracket estaba bien resuelto, pero por una razón que no era la real.
+
+**(3) ¿El `AliasTrans` reapunta en el código de producción?** Sí, verificado por el camino real (`duplicate_active_option`), no por una sonda aparte:
+
+```
+duplicar -> 'duplicada como "Opción B" · montada'
+copia montada    : apunta a 'objetivo'  DENTRO de su propia opción = True
+original aparcado: apunta a 'objetivo'  DENTRO de su propia opción = True
+```
+
+Cada opción queda autónoma. Sin `AliasTrans` la copia apuntaba al objetivo del original (medido antes del fix, §5 de este documento), y como el nombre del enlace es idéntico en ambos casos, era un fallo invisible a simple vista.
