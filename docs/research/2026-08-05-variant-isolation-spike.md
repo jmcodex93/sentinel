@@ -48,6 +48,19 @@ El método manual del artista era el correcto desde el principio.
 
 ## Límite honesto de este spike
 
-**El caso del deformador no está medido.** En los tres montajes que probé, el Bend no llegó a deformar el cubo (control: 0 puntos movidos de 218), así que ese test es nulo y no se cuenta como evidencia. No cambia la conclusión — basta con que desactivar difiera de sacar en un generador común para no poder fiarse de desactivar — pero queda anotado por si alguien lo da por cubierto.
+~~**El caso del deformador no está medido.**~~ **MEDIDO Y CERRADO (2026-08-06).**
+
+Lo que este spike dio por "no medible" era un **error de la sonda, no un límite de C4D**: el objeto que insertaba con el id `1019221` **no es un Bend, es un Spline Wrap** — sin spline no deforma nada, de ahí el control nulo de 0 puntos movidos. Repetido con `c4d.Obend`:
+
+```
+CONTROL: el Bend mueve 169 de 218 puntos  -> la sonda MIDE algo
+  ocultando    -> NO AISLA (sigue deformando)
+  desactivando -> AISLA
+  sacandolo    -> AISLA
+```
+
+**El deformador se comporta como los generadores**: ocultarlo NO lo neutraliza — el cubo sigue deformado con el Bend invisible. Refuerza la conclusión del spike en vez de matizarla.
+
+Lección de método, la segunda de este mismo documento: **un control a cero no dice "aquí no hay efecto", dice "esta sonda no está midiendo"**. La primera vez fue tocar de paso los parámetros del Cloner; ésta, un id equivocado que produce un objeto plausible con otro nombre. En ambos casos el síntoma es idéntico y engañoso: números que parecen respuestas.
 
 **Trampa de método, registrada porque me costó tres sondas**: al añadir casos toqué de paso los parámetros del Cloner (`ID_MG_MOTIONGENERATOR_MODE`, `MG_LINEAR_COUNT`) y el tamaño del cubo, y rompí los casos base sin darme cuenta — el oráculo devolvía 0 para todo y "desactivar == sacar" salía `SI` por vacuidad. La sonda que resolvió fue volver al montaje exacto que ya daba 2584 y cambiar **una sola variable**. Es la misma guarda que el diseño exige del arnés de undo: **comprobar que el caso base hace algo antes de creerse el resultado**.
