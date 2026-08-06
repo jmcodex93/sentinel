@@ -18,6 +18,7 @@ export const TOOL_GROUPS: { title: string; tools: ToolDef[] }[] = [
       { id: "panel/tools/h_to_layers", label: "H → Layers" },
       { id: "panel/tools/solo", label: "Solo Layers" },
       { id: "panel/tools/drop_to_floor", label: "Drop to Floor" },
+      { id: "panel/tools/variant_set", label: "Variant Set" },
     ],
   },
   {
@@ -53,6 +54,7 @@ const ERROR_COPY: Record<string, string> = {
   no_keys: "Selection has no keyframes.",
   bad_frames: "Frames must be a non-zero integer (±10000).",
   need_two: "Select two or more objects to stagger.",
+  no_tag: "Couldn't create the Variants tag on the anchor.",
 };
 
 /** Tool result → toast. Success uses a count when the op returns one; errors
@@ -90,6 +92,14 @@ export function toolToast(id: string, r: PanelToolResult): { message: string; va
     const total = broken + dupes;
     return {
       message: `Removed ${broken} broken + ${dupes} duplicate tag${total === 1 ? "" : "s"}.`,
+      variant: "success",
+    };
+  }
+  if (id === "panel/tools/variant_set") {
+    const objects = r.objects ?? 0;
+    const option = r.option || "Option A";
+    return {
+      message: `Variant set created — ${objects} object${objects === 1 ? "" : "s"} in ${option}.`,
       variant: "success",
     };
   }
