@@ -177,6 +177,37 @@ ID_PIN_IS_SAFETY = 20002
 _ICON_COLORIZE_MODE_ID = getattr(c4d, "ID_BASELIST_ICON_COLORIZE_MODE", 1041670)
 _ICON_COLOR_ID = getattr(c4d, "ID_BASELIST_ICON_COLOR", 1041671)
 
+#: Valor de ``ID_BASELIST_ICON_COLORIZE_MODE`` que enciende el tinte
+#: personalizado — el literal medido en vivo al marcar a mano la casilla
+#: "Icon Color" de la pestaña Basic (ver el comentario de arriba: "mode
+#: became 1"). Literal y no ``getattr`` de un símbolo de enum: el fake
+#: permisivo del arnés auto-vivifica CUALQUIER atributo a un entero
+#: arbitrario, así que un ``getattr`` aquí haría que el test afirmara sobre
+#: un número inventado por el harness en vez de sobre el que C4D entiende.
+_ICON_COLORIZE_MODE_ON = 1
+
+#: v1.36.1 — con varios pins sobre un objeto, en el Object Manager eran
+#: todos el mismo icono gris: el artista no distinguía de un vistazo un
+#: estado que guardó él de la red de seguridad que la herramienta crea
+#: sola. Sentinel pone ahora el tinte NATIVO del tag (los mismos dos
+#: parámetros de la pestaña Basic que la fila "Color" ya expone) **una sola
+#: vez, al CREAR el tag** — nunca al re-pinear, al restaurar ni al
+#: sobrescribir la red de seguridad. Son parámetros nativos: si el artista
+#: los cambia, son suyos y no se le pisan.
+#:
+#: Los dos valores salen de docs/design/DESIGN.md, no de gusto:
+#:  - el pin del artista lleva el acento del sistema (``colors.primary``,
+#:    ``#5e6ad2``) — el único cromatismo no-semántico que el design system
+#:    permite; identidad de Sentinel, no estado (los colores de estado son
+#:    exclusivos de fail/warn/pass y esto no es ninguno de los tres);
+#:  - la red de seguridad lleva ``colors.muted`` (``#6b6f76``), el tono con
+#:    el que el sistema ya marca lo secundario/derivado. Que se lea apagado
+#:    frente al acento ES el mensaje: "esto lo hizo la herramienta, no tú".
+#: Difieren en tono Y en saturación, así que se separan también para quien
+#: no distingue bien los colores.
+PIN_ICON_COLOR = c4d.Vector(0.369, 0.416, 0.824)
+SAFETY_ICON_COLOR = c4d.Vector(0.420, 0.435, 0.463)
+
 #: Se sube solo si cambia la forma del payload. Un pin cuyo esquema esta
 #: build no reconoce se IGNORA con una nota en su fila — nunca se aplica a
 #: medias, porque un rig medio-aplicado es peor que uno intacto.
@@ -1189,6 +1220,28 @@ def _restore_report_text(matched_count, total_count, extra_tracks_count=0,
     return text
 
 
+def _apply_creation_icon_color(node, color):
+    """Write the tag's NATIVE icon tint (``ID_BASELIST_ICON_COLORIZE_MODE``
+    + ``ID_BASELIST_ICON_COLOR``) — ONLY ever called at creation time.
+
+    Deliberately NOT called from ``_store_pin``, ``_restore`` or the
+    safety-net overwrite branch: those run on tags that already exist, and
+    these are the artist's own native parameters (the very pair the Basic
+    tab's "Icon Color" checkbox and picker edit). Re-writing them later
+    would silently revert a colour the artist chose by hand, which is the
+    one thing exposing native parameters must never do.
+
+    Cosmetic and best-effort: a build where these ids don't take must not
+    fail a pin over a tint, so failure is swallowed and reported by the
+    return value only (nothing in this module acts on it today)."""
+    try:
+        node[_ICON_COLORIZE_MODE_ID] = _ICON_COLORIZE_MODE_ON
+        node[_ICON_COLOR_ID] = color
+    except Exception:
+        return False
+    return True
+
+
 def _is_safety_tag(node):
     """Identity check for the safety tag — the ``ID_PIN_IS_SAFETY`` flag in
     its OWN container, never the name. A name is artist-editable text:
@@ -1269,12 +1322,64 @@ def _capture_safety_pin(node, obj, doc):
                 except Exception:
                     pass
             return False
+        # v1.36.1: the safety net gets its OWN tint, and only here — in the
+        # creation branch. The ``else`` of this ``if`` (the tag already
+        # existed and is being overwritten) deliberately has no colour
+        # write: whatever colour that tag carries is the artist's by then.
+        # In real C4D ``MakeTag`` already ran ``Init``, which tinted this
+        # tag as an ordinary pin; this overwrites that with the automatic
+        # tone, so the artist never sees the tool's own tag wearing the
+        # colour that means "you made this".
+        _apply_creation_icon_color(tag, SAFETY_ICON_COLOR)
         doc.StartUndo()
         try:
             doc.AddUndo(c4d.UNDOTYPE_NEW, tag)
         finally:
             doc.EndUndo()
     return _store_pin(tag)
+
+
+def pin_object(obj, doc):
+    """Put a Sentinel Pin on ``obj`` and capture its state right away.
+
+    The entry point behind Tools → "Pin State" (v1.36.1). Until then a pin
+    could only be added through C4D's own tag menu, which works and which
+    nobody discovers.
+
+    Captures immediately, on purpose: a freshly created empty pin is of no
+    use to the artist — "pin this" means "remember this", not "give me a
+    slot I then have to fill".
+
+    Does NOT open an undo bracket of its own. The caller owns it, so a
+    batch over a whole selection is a single Cmd+Z (nested StartUndo/
+    EndUndo pairs, the same shape ``_capture_safety_pin`` and ``_store_pin``
+    already nest inside). The ``UNDOTYPE_NEW`` registration follows
+    ``_capture_safety_pin``'s rule — the tag is fully formed by then (in
+    real C4D ``MakeTag`` has already run ``Init``, tint included), so
+    there is no half-made clone for a ``DELETE`` undo to resurrect.
+
+    Returns the tag, or ``None`` if the tag could not be made or its state
+    could not be captured. In that second case the tag is left in place
+    rather than removed: it is a valid (empty) pin, it is already inside
+    the caller's undo bracket, and removing it would need a matching
+    ``DELETE`` undo — the unbalanced-pair trap that caused a real bug in
+    matwire v1.32."""
+    if obj is None or doc is None:
+        return None
+    try:
+        tag = obj.MakeTag(SENTINEL_PIN_TAG_PLUGIN_ID)
+    except Exception:
+        tag = None
+    if tag is None:
+        return None
+    doc.StartUndo()
+    try:
+        doc.AddUndo(c4d.UNDOTYPE_NEW, tag)
+    finally:
+        doc.EndUndo()
+    if not _store_pin(tag):
+        return None
+    return tag
 
 
 # --- "Remove all" escape hatch (usability pass) ---------------------------
@@ -1649,6 +1754,17 @@ class SentinelPinTag(_TagDataBase):
             return False
 
     def Init(self, node, isCloneInit=False):
+        # v1.36.1: an ordinary pin is born wearing the accent, so it reads
+        # apart from the tool's own ``↩ Antes de restaurar`` tag in the
+        # Object Manager (see PIN_ICON_COLOR / SAFETY_ICON_COLOR). This is
+        # the ONLY place an ordinary pin's tint is ever written — creation.
+        #
+        # Skipped on a clone: the clone is about to receive the source
+        # tag's data, colour included, so writing here is at best a
+        # redundant default and at worst stomps a colour the artist chose
+        # by hand on the tag being copied.
+        if not isCloneInit:
+            _apply_creation_icon_color(node, PIN_ICON_COLOR)
         return True
 
     def GetDDescription(self, node, description, flags):

@@ -1194,6 +1194,8 @@ export interface PanelToolResult {
   frames?: number;
   /** `panel/tools/variant_set` — name of the option the selection landed in. */
   option?: string;
+  /** `panel/tools/pin_state` — objects that got a captured Sentinel Pin. */
+  pinned?: number;
 }
 
 // ---------------------------------------------------------------------------

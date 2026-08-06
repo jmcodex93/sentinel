@@ -18,7 +18,6 @@ export const TOOL_GROUPS: { title: string; tools: ToolDef[] }[] = [
       { id: "panel/tools/h_to_layers", label: "H → Layers" },
       { id: "panel/tools/solo", label: "Solo Layers" },
       { id: "panel/tools/drop_to_floor", label: "Drop to Floor" },
-      { id: "panel/tools/variant_set", label: "Variant Set" },
     ],
   },
   {
@@ -35,6 +34,24 @@ export const TOOL_GROUPS: { title: string; tools: ToolDef[] }[] = [
       { id: "panel/tools/abc_retime", label: "ABC Retime" },
       { id: "panel/tools/cam_simple", label: "Cam Simple" },
       { id: "panel/tools/cam_shakel", label: "Cam Shakel" },
+    ],
+  },
+  // v1.36.1. Neither a pin nor a variant set lays out, cleans or animates —
+  // none of the three groups above names what they do, so they get their own.
+  // The title is NOT the project's internal arc name ("return points"): a
+  // variant is not a point to come back to, it is an alternative that
+  // coexists, and a group title that describes one sibling and misdescribes
+  // the other is worse than a vague one. "States & Options" names both in the
+  // artist's own words — the state you can restore, the options you switch
+  // between. Variant Set moves here from "Layout & Hierarchy": it does
+  // restructure the scene, but so does every tool in this panel; what the
+  // artist reaches for it BY is the choosing, and it belongs next to its
+  // sibling rather than filed by its side effect.
+  {
+    title: "States & Options",
+    tools: [
+      { id: "panel/tools/pin_state", label: "Pin State" },
+      { id: "panel/tools/variant_set", label: "Variant Set" },
     ],
   },
 ];
@@ -55,6 +72,7 @@ const ERROR_COPY: Record<string, string> = {
   bad_frames: "Frames must be a non-zero integer (±10000).",
   need_two: "Select two or more objects to stagger.",
   no_tag: "Couldn't create the Variants tag on the anchor.",
+  no_pin: "Couldn't pin the selection — no state was captured.",
 };
 
 /** Tool result → toast. Success uses a count when the op returns one; errors
@@ -100,6 +118,18 @@ export function toolToast(id: string, r: PanelToolResult): { message: string; va
     const option = r.option || "Option A";
     return {
       message: `Variant set created — ${objects} object${objects === 1 ? "" : "s"} in ${option}.`,
+      variant: "success",
+    };
+  }
+  if (id === "panel/tools/pin_state") {
+    const pinned = r.pinned ?? 0;
+    const failed = r.failed ?? 0;
+    // Partial failures are named, never rounded away: the op only reports
+    // `ok` when at least one pin landed, so silence here would tell an
+    // artist that objects were covered when they were not.
+    const tail = failed > 0 ? ` · ${failed} failed.` : ".";
+    return {
+      message: `Pinned ${pinned} object${pinned === 1 ? "" : "s"}${tail}`,
       variant: "success",
     };
   }

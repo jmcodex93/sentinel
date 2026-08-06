@@ -2,9 +2,23 @@ import { describe, expect, it } from "vitest";
 import { TOOL_GROUPS, toolToast } from "./panelTools";
 
 describe("TOOL_GROUPS", () => {
+  // v1.36.1 adds a fourth group. It was first called "Return Points" and
+  // held only Pin State; renamed to "States & Options" and given Variant Set
+  // as well, because a variant is NOT a point to come back to — it is an
+  // alternative that coexists — so the first title described one sibling and
+  // misdescribed the other. Kept as an exact-equality assertion: the contract
+  // is "these groups, in this order", and loosening it to a `contains` would
+  // stop catching a group accidentally appearing or moving.
   it("has the scene-authoring groups, Cleanup between Layout and Animation", () => {
     expect(TOOL_GROUPS.map((g) => g.title)).toEqual([
-      "Layout & Hierarchy", "Cleanup", "Animation",
+      "Layout & Hierarchy", "Cleanup", "Animation", "States & Options",
+    ]);
+  });
+  it("States & Options holds the two sibling tools (v1.36.1)", () => {
+    const group = TOOL_GROUPS.find((g) => g.title === "States & Options");
+    expect(group?.tools).toEqual([
+      { id: "panel/tools/pin_state", label: "Pin State" },
+      { id: "panel/tools/variant_set", label: "Variant Set" },
     ]);
   });
   it("Cleanup group has the two cleanup tools", () => {
@@ -26,12 +40,15 @@ describe("TOOL_GROUPS", () => {
     const allIds = TOOL_GROUPS.flatMap((g) => g.tools.map((t) => t.id));
     expect(allIds).not.toContain("panel/tools/mark_safe_area");
   });
-  it("Layout group has the hierarchy tools, Variant Set last (v1.36)", () => {
+  // v1.36 puso aquí Variant Set; v1.36.1 lo movió a "States & Options" para
+  // que viva junto a Pin State — reestructurar la escena es su efecto, no
+  // aquello por lo que el artista lo busca. Este grupo vuelve a ser sólo las
+  // cuatro herramientas de disposición.
+  it("Layout group has the hierarchy tools only (v1.36.1)", () => {
     const ids = TOOL_GROUPS[0].tools.map((t) => t.id);
     expect(ids).toEqual([
       "panel/tools/hierarchy", "panel/tools/h_to_layers",
       "panel/tools/solo", "panel/tools/drop_to_floor",
-      "panel/tools/variant_set",
     ]);
   });
 });
@@ -106,6 +123,29 @@ describe("toolToast", () => {
     const t = toolToast("panel/tools/variant_set", { ok: false, error: "no_tag" });
     expect(t.variant).toBe("warn");
     expect(t.message).toBe("Couldn't create the Variants tag on the anchor.");
+  });
+  it("pin_state ok reports the pinned count (plural)", () => {
+    const t = toolToast("panel/tools/pin_state", { ok: true, pinned: 3, failed: 0 });
+    expect(t.variant).toBe("success");
+    expect(t.message).toBe("Pinned 3 objects.");
+  });
+  it("pin_state ok singular phrasing", () => {
+    const t = toolToast("panel/tools/pin_state", { ok: true, pinned: 1, failed: 0 });
+    expect(t.message).toBe("Pinned 1 object.");
+  });
+  it("pin_state names partial failures instead of hiding them", () => {
+    const t = toolToast("panel/tools/pin_state", { ok: true, pinned: 2, failed: 1 });
+    expect(t.message).toBe("Pinned 2 objects · 1 failed.");
+  });
+  it("pin_state no_selection → warn", () => {
+    const t = toolToast("panel/tools/pin_state", { ok: false, error: "no_selection" });
+    expect(t.variant).toBe("warn");
+    expect(t.message).toBe("Select one or more objects first.");
+  });
+  it("pin_state no_pin → warn (not the generic fallback)", () => {
+    const t = toolToast("panel/tools/pin_state", { ok: false, error: "no_pin" });
+    expect(t.variant).toBe("warn");
+    expect(t.message).toBe("Couldn't pin the selection — no state was captured.");
   });
   it("keyframe_offset ok reports keys/objects/frames from the op result", () => {
     const t = toolToast("panel/tools/keyframe_offset", { ok: true, keys: 12, objects: 3, frames: 5 });

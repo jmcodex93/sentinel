@@ -1176,3 +1176,200 @@ def test_matched_live_nodes_never_unpacks_the_stored_tracks(sentinel_module):
     entries.SetContainer(0, trap)
 
     assert pin_tag._matched_live_nodes(tag, payload) == [host]
+
+
+# --- v1.36.1: icon colour written ONCE, at creation ----------------------
+#
+# The artist could not tell his own pins from the tool's `↩ Antes de
+# restaurar` tag in the Object Manager — same grey icon for both. Sentinel
+# now sets the tag's NATIVE tint (the same two base-list parameters the
+# Basic tab's "Icon Color" checkbox + picker edit) at creation time and
+# NEVER again, so a colour the artist picks by hand is never reverted.
+# These tests pin both halves of that: the write happens where it should,
+# and does NOT happen anywhere else.
+
+def _colour_of(tag, pin_tag):
+    """(mode, (r, g, b)) as stored in the tag's NATIVE base-list params —
+    read from `_baselist`, not `GetDataInstance()`, because writing to our
+    own plugin container instead of the native ids would tint nothing."""
+    mode = tag[pin_tag._ICON_COLORIZE_MODE_ID]
+    colour = tag[pin_tag._ICON_COLOR_ID]
+    return mode, (None if colour is None
+                  else (colour.x, colour.y, colour.z))
+
+
+def test_init_tints_a_new_pin_with_the_accent(sentinel_module):
+    """A pin created through C4D's tag menu goes through Init — that is
+    where an ordinary pin gets its colour, and the only place it does."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+    tag = host.MakeTag(pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID)
+
+    assert pin_tag.SentinelPinTag().Init(tag) is True
+
+    mode, rgb = _colour_of(tag, pin_tag)
+    assert mode == pin_tag._ICON_COLORIZE_MODE_ON
+    assert rgb == (pin_tag.PIN_ICON_COLOR.x, pin_tag.PIN_ICON_COLOR.y,
+                   pin_tag.PIN_ICON_COLOR.z)
+
+
+def test_the_two_creation_colours_are_actually_distinguishable(sentinel_module):
+    """The whole point is telling them apart at a glance: they must differ
+    in hue AND in saturation (so the distinction survives colour-blindness
+    and a grey-ish display), not just be two different tuples."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+
+    pin, safety = pin_tag.PIN_ICON_COLOR, pin_tag.SAFETY_ICON_COLOR
+
+    def _spread(v):
+        return max(v.x, v.y, v.z) - min(v.x, v.y, v.z)
+
+    assert (pin.x, pin.y, pin.z) != (safety.x, safety.y, safety.z)
+    # The accent is chromatic; the automatic tone is near-neutral.
+    assert _spread(pin) > 0.3
+    assert _spread(safety) < 0.1
+
+
+def test_init_on_a_clone_leaves_the_copied_colour_alone(sentinel_module):
+    """A clone is about to receive the source tag's own data, colour
+    included — writing the default here would stomp a colour the artist
+    chose on the tag being copied."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+    tag = host.MakeTag(pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID)
+    tag[pin_tag._ICON_COLOR_ID] = c4d.Vector(0.9, 0.1, 0.1)
+
+    assert pin_tag.SentinelPinTag().Init(tag, True) is True
+
+    assert _colour_of(tag, pin_tag)[1] == (0.9, 0.1, 0.1)
+
+
+def test_capture_safety_pin_gives_the_new_safety_tag_its_own_colour(sentinel_module):
+    """The tool's own tag must not wear the colour that means "you made
+    this" — in real C4D MakeTag has already run Init by this point, so the
+    safety branch has to overwrite it."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+    original = _make_pin_tag(host, pin_tag, c4d)
+
+    assert pin_tag._capture_safety_pin(original, host, doc) is True
+
+    safety = pin_tag._find_safety_tag(host)
+    mode, rgb = _colour_of(safety, pin_tag)
+    assert mode == pin_tag._ICON_COLORIZE_MODE_ON
+    assert rgb == (pin_tag.SAFETY_ICON_COLOR.x, pin_tag.SAFETY_ICON_COLOR.y,
+                   pin_tag.SAFETY_ICON_COLOR.z)
+
+
+def test_overwriting_the_safety_pin_never_touches_its_colour(sentinel_module):
+    """The safety net is re-captured on EVERY restore. Only its creation
+    writes a colour: by the second restore the tag exists, so whatever
+    colour it carries is the artist's."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+    original = _make_pin_tag(host, pin_tag, c4d)
+    assert pin_tag._capture_safety_pin(original, host, doc) is True
+
+    safety = pin_tag._find_safety_tag(host)
+    safety[pin_tag._ICON_COLOR_ID] = c4d.Vector(0.2, 0.8, 0.4)
+
+    assert pin_tag._capture_safety_pin(original, host, doc) is True
+
+    assert pin_tag._find_safety_tag(host) is safety
+    assert _colour_of(safety, pin_tag)[1] == (0.2, 0.8, 0.4)
+
+
+def test_storing_a_pin_never_writes_the_icon_colour(sentinel_module):
+    """Re-pinning is the most frequent gesture on an existing tag — if it
+    wrote the tint, every artist colour would silently revert on the next
+    "Guardar estado"."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+    tag = _make_pin_tag(host, pin_tag, c4d)
+    tag[pin_tag._ICON_COLOR_ID] = c4d.Vector(0.1, 0.9, 0.9)
+    tag[pin_tag._ICON_COLORIZE_MODE_ID] = pin_tag._ICON_COLORIZE_MODE_ON
+
+    assert pin_tag._store_pin(tag) is True
+
+    assert _colour_of(tag, pin_tag)[1] == (0.1, 0.9, 0.9)
+
+
+# --- v1.36.1: pin_object — the entry point behind Tools → "Pin State" ----
+
+def test_pin_object_creates_a_tag_and_captures_it_immediately(sentinel_module):
+    """An empty pin is of no use to the artist: "pin this" means "remember
+    this", so the state must already be in the tag when this returns."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+
+    tag = pin_tag.pin_object(host, doc)
+
+    assert tag is not None
+    assert tag.GetType() == pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID
+    payload = tag.GetDataInstance().GetContainerInstance(pin_tag.ID_PIN_PAYLOAD)
+    assert payload is not None
+    assert payload.GetInt32(pin_tag._PAYLOAD_COUNT, 0) == 1
+
+
+def test_pin_object_registers_the_new_tag_for_undo(sentinel_module):
+    """Without the NEW undo the tag survives the Cmd+Z that is supposed to
+    remove it, and the batch leaves pins behind."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+
+    tag = pin_tag.pin_object(host, doc)
+
+    assert (c4d.UNDOTYPE_NEW, tag) in doc.undo_ops
+    # Every bracket it opened is closed — a leaked StartUndo would swallow
+    # everything the caller does after it into one undo step.
+    assert doc.undo_depth == 0
+
+
+def test_pin_object_never_makes_the_new_tag_the_safety_net(sentinel_module):
+    """The safety flag is the tool's own; a pin the artist asked for must
+    never be mistaken for `↩ Antes de restaurar` (which would make the next
+    restore overwrite it)."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    host = FakeObject("rig", c4d, doc)
+
+    tag = pin_tag.pin_object(host, doc)
+
+    assert pin_tag._is_safety_tag(tag) is False
+    assert pin_tag._find_safety_tag(host) is None
+
+
+def test_pin_object_returns_none_when_the_tag_cannot_be_made(sentinel_module):
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+
+    class _NoTags(FakeObject):
+        def MakeTag(self, plugin_id):
+            return None
+
+    assert pin_tag.pin_object(_NoTags("rig", c4d, doc), doc) is None

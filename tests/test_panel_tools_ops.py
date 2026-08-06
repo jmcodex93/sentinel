@@ -1801,3 +1801,147 @@ class TestMatwireMaterialType:
         result = ops._op_matwire_create({"folder": folder})
         assert result["ok"] is True
         assert seen == ["openpbr"]
+
+
+class _FakePinDoc:
+    """A doc that hands back a selection and records undo bracketing. The
+    pin engine itself is stubbed — its behaviour lives in test_pin_tag.py."""
+
+    def __init__(self, selection):
+        self._selection = selection
+        self.depth = 0
+        self.max_depth = 0
+        self.brackets = 0
+
+    def GetActiveObjects(self, flags):
+        self.flags = flags
+        return list(self._selection)
+
+    def StartUndo(self):
+        self.depth += 1
+        self.max_depth = max(self.max_depth, self.depth)
+        self.brackets += 1
+
+    def EndUndo(self):
+        self.depth -= 1
+
+
+class TestPinStateOp:
+    """`panel/tools/pin_state` (v1.36.1) — the Tools entry Pin was missing
+    while its sibling Variants already had one."""
+
+    def _forbid_dialog(self, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+
+        def _boom(*a, **k):
+            raise AssertionError("no dialog in op path")
+
+        monkeypatch.setattr(panel_tools_ops.c4d.gui, "MessageDialog", _boom)
+        monkeypatch.setattr(panel_tools_ops.c4d.gui, "QuestionDialog", _boom)
+
+    def _stub(self, monkeypatch, pin_object):
+        from sentinel.ui import pin_tag
+        monkeypatch.setattr(pin_tag, "pin_object", pin_object)
+
+    def _doc(self, monkeypatch, doc):
+        from sentinel.ui import panel_tools_ops
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+        return doc
+
+    def test_ops_registered(self, sentinel_module):
+        from sentinel.ui import panel_tools_ops
+        from sentinel.ui import reports_dialog
+        assert "panel/tools/pin_state" in panel_tools_ops.PANEL_TOOLS_OPS
+        assert "panel/tools/pin_state" in reports_dialog._OPS
+
+    def test_no_document(self, sentinel_module, monkeypatch):
+        """Short-circuits BEFORE the engine — stubbing it with a raiser is
+        what makes this discriminate."""
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        self._doc(monkeypatch, None)
+
+        def _never(obj, doc):
+            raise AssertionError("engine reached with no document")
+
+        self._stub(monkeypatch, _never)
+        assert panel_tools_ops._op_tool_pin_state({}) == {
+            "ok": False, "error": "no_document"}
+
+    def test_no_selection(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        doc = self._doc(monkeypatch, _FakePinDoc([]))
+
+        def _never(obj, d):
+            raise AssertionError("engine reached with an empty selection")
+
+        self._stub(monkeypatch, _never)
+        assert panel_tools_ops._op_tool_pin_state({}) == {
+            "ok": False, "error": "no_selection"}
+        # No undo bracket opened for a batch of nothing.
+        assert doc.brackets == 0
+
+    def test_pins_the_raw_selection_without_pulling_in_children(
+            self, sentinel_module, monkeypatch):
+        """A pin already covers the whole subtree of the object it sits on,
+        so the CHILDREN flag the containment tools use would put a second,
+        redundant pin on every descendant of a selected parent."""
+        import c4d
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        doc = self._doc(monkeypatch, _FakePinDoc(["a", "b", "c"]))
+        seen = []
+        self._stub(monkeypatch, lambda obj, d: seen.append(obj) or object())
+
+        assert panel_tools_ops._op_tool_pin_state({}) == {
+            "ok": True, "pinned": 3, "failed": 0}
+        assert seen == ["a", "b", "c"]
+        assert doc.flags == c4d.GETACTIVEOBJECTFLAGS_0
+
+    def test_the_whole_batch_is_one_undo_bracket(self, sentinel_module, monkeypatch):
+        """One Cmd+Z must take back every pin the button created — three
+        sibling brackets would need three."""
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        doc = self._doc(monkeypatch, _FakePinDoc(["a", "b", "c"]))
+        self._stub(monkeypatch, lambda obj, d: object())
+
+        assert panel_tools_ops._op_tool_pin_state({})["ok"] is True
+        assert doc.brackets == 1
+        assert doc.depth == 0
+
+    def test_partial_failure_is_reported_not_rounded_away(
+            self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        self._doc(monkeypatch, _FakePinDoc(["a", "b"]))
+        self._stub(monkeypatch,
+                   lambda obj, d: object() if obj == "a" else None)
+
+        assert panel_tools_ops._op_tool_pin_state({}) == {
+            "ok": True, "pinned": 1, "failed": 1}
+
+    def test_nothing_pinned_is_a_failure_not_a_zero_count_success(
+            self, sentinel_module, monkeypatch):
+        """`{"ok": True, "pinned": 0}` renders as a success toast — the
+        artist would believe the selection was covered when none of it was."""
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        self._doc(monkeypatch, _FakePinDoc(["a", "b"]))
+        self._stub(monkeypatch, lambda obj, d: None)
+
+        assert panel_tools_ops._op_tool_pin_state({}) == {
+            "ok": False, "error": "no_pin"}
+
+    def test_response_is_json_serializable(self, sentinel_module, monkeypatch):
+        """The web bridge JSON-encodes every op response: forwarding a
+        BaseTag would raise where no toast can report it (v1.36 lesson)."""
+        import json
+        from sentinel.ui import panel_tools_ops
+        self._forbid_dialog(monkeypatch)
+        self._doc(monkeypatch, _FakePinDoc(["a"]))
+        self._stub(monkeypatch, lambda obj, d: object())
+
+        json.dumps(panel_tools_ops._op_tool_pin_state({}))
