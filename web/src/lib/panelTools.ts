@@ -18,7 +18,6 @@ export const TOOL_GROUPS: { title: string; tools: ToolDef[] }[] = [
       { id: "panel/tools/h_to_layers", label: "H → Layers" },
       { id: "panel/tools/solo", label: "Solo Layers" },
       { id: "panel/tools/drop_to_floor", label: "Drop to Floor" },
-      { id: "panel/tools/variant_set", label: "Variant Set" },
     ],
   },
   {
@@ -37,16 +36,22 @@ export const TOOL_GROUPS: { title: string; tools: ToolDef[] }[] = [
       { id: "panel/tools/cam_shakel", label: "Cam Shakel" },
     ],
   },
-  // v1.36.1. A pin neither lays out, cleans, nor animates — none of the
-  // three groups above names what it does, so it gets its own rather than
-  // being filed under the least-wrong one. "Return Points" is the term this
-  // project already uses for the v1.30→v1.36 arc (Pin = states to come back
-  // to, Variants = options to come back to); Variant Set stays where it is
-  // for now — moving it is a separate call, not this one's to make.
+  // v1.36.1. Neither a pin nor a variant set lays out, cleans or animates —
+  // none of the three groups above names what they do, so they get their own.
+  // The title is NOT the project's internal arc name ("return points"): a
+  // variant is not a point to come back to, it is an alternative that
+  // coexists, and a group title that describes one sibling and misdescribes
+  // the other is worse than a vague one. "States & Options" names both in the
+  // artist's own words — the state you can restore, the options you switch
+  // between. Variant Set moves here from "Layout & Hierarchy": it does
+  // restructure the scene, but so does every tool in this panel; what the
+  // artist reaches for it BY is the choosing, and it belongs next to its
+  // sibling rather than filed by its side effect.
   {
-    title: "Return Points",
+    title: "States & Options",
     tools: [
       { id: "panel/tools/pin_state", label: "Pin State" },
+      { id: "panel/tools/variant_set", label: "Variant Set" },
     ],
   },
 ];

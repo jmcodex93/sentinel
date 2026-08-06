@@ -2,19 +2,23 @@ import { describe, expect, it } from "vitest";
 import { TOOL_GROUPS, toolToast } from "./panelTools";
 
 describe("TOOL_GROUPS", () => {
-  // v1.36.1 adds "Return Points" (Pin State). Kept as an exact-equality
-  // assertion — the contract this pins is "these groups, in this order",
-  // and the release deliberately changes it; loosening it to a `contains`
-  // would stop catching an accidental group appearing or moving.
+  // v1.36.1 adds a fourth group. It was first called "Return Points" and
+  // held only Pin State; renamed to "States & Options" and given Variant Set
+  // as well, because a variant is NOT a point to come back to — it is an
+  // alternative that coexists — so the first title described one sibling and
+  // misdescribed the other. Kept as an exact-equality assertion: the contract
+  // is "these groups, in this order", and loosening it to a `contains` would
+  // stop catching a group accidentally appearing or moving.
   it("has the scene-authoring groups, Cleanup between Layout and Animation", () => {
     expect(TOOL_GROUPS.map((g) => g.title)).toEqual([
-      "Layout & Hierarchy", "Cleanup", "Animation", "Return Points",
+      "Layout & Hierarchy", "Cleanup", "Animation", "States & Options",
     ]);
   });
-  it("Return Points holds Pin State (v1.36.1)", () => {
-    const group = TOOL_GROUPS.find((g) => g.title === "Return Points");
+  it("States & Options holds the two sibling tools (v1.36.1)", () => {
+    const group = TOOL_GROUPS.find((g) => g.title === "States & Options");
     expect(group?.tools).toEqual([
       { id: "panel/tools/pin_state", label: "Pin State" },
+      { id: "panel/tools/variant_set", label: "Variant Set" },
     ]);
   });
   it("Cleanup group has the two cleanup tools", () => {
@@ -36,12 +40,15 @@ describe("TOOL_GROUPS", () => {
     const allIds = TOOL_GROUPS.flatMap((g) => g.tools.map((t) => t.id));
     expect(allIds).not.toContain("panel/tools/mark_safe_area");
   });
-  it("Layout group has the hierarchy tools, Variant Set last (v1.36)", () => {
+  // v1.36 puso aquí Variant Set; v1.36.1 lo movió a "States & Options" para
+  // que viva junto a Pin State — reestructurar la escena es su efecto, no
+  // aquello por lo que el artista lo busca. Este grupo vuelve a ser sólo las
+  // cuatro herramientas de disposición.
+  it("Layout group has the hierarchy tools only (v1.36.1)", () => {
     const ids = TOOL_GROUPS[0].tools.map((t) => t.id);
     expect(ids).toEqual([
       "panel/tools/hierarchy", "panel/tools/h_to_layers",
       "panel/tools/solo", "panel/tools/drop_to_floor",
-      "panel/tools/variant_set",
     ]);
   });
 });
