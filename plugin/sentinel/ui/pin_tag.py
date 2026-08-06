@@ -259,6 +259,29 @@ _ENTRY_TRACKS_COUNT = 8
 #: nunca calladas — es la mitad "queda fuera" de la regla de honestidad del
 #: spec, la misma que ya cubre geometría.
 _ENTRY_TRACKS_SKIPPED = 9
+#: v1.36.2 — parámetros capturados por DESCRIPCIÓN, el complemento del
+#: contenedor. ``child_obj.GetData()`` es y sigue siendo el camino
+#: principal (barato, y cubre casi todo: RS Light 107/107, cámara nativa
+#: 95/95, generadores 99/99 — auditoría con oráculo funcional), pero la
+#: **luz nativa de C4D** guarda sus parámetros principales FUERA del
+#: ``BaseContainer``: ``LIGHT_BRIGHTNESS``/``LIGHT_COLOR``/``LIGHT_TYPE``
+#: sólo son accesibles por ``GetParameter``/``SetParameter``, y de sus 112
+#: parámetros de primer nivel 87 se perdían. El pin nunca llegó a
+#: guardarlos: restaurar un setup de luces devolvía las posiciones y no
+#: las intensidades, cantando "3 restaurados". BaseContainer indexado
+#: 0..N-1, cada entrada un registro de parámetro (ver ``_PARAM_*``).
+#: Aditivo sobre ``PIN_SCHEMA`` 1 a propósito — un pin escrito por una
+#: build anterior simplemente no trae esta clave y se lee como "ningún
+#: parámetro extra", igual que ``_ENTRY_TRACKS`` para pins anteriores a
+#: la Tarea 6; subir el esquema habría invalidado TODOS los pins ya
+#: guardados del artista para añadir datos que sólo complementan.
+_ENTRY_PARAMS = 10
+_ENTRY_PARAMS_COUNT = 11
+#: Parámetros que la descripción expone, que el contenedor no trae, y que
+#: este build NO pudo llevarse (la lectura lanzó, o el valor no entra en un
+#: BaseContainer — p.ej. un tipo de dato custom). Contados, nunca callados:
+#: misma regla de honestidad que geometría y pistas.
+_ENTRY_PARAMS_SKIPPED = 12
 
 # Sub-keys de UN registro de pista, dentro de su propio BaseContainer
 # (namespace privado, sin riesgo de colisión con los ids de arriba).
@@ -277,6 +300,23 @@ _KEY_VALUE_RIGHT = 5
 _KEY_TIME_LEFT = 6
 _KEY_TIME_RIGHT = 7
 _KEY_AUTO_TANGENT = 8
+
+# Sub-keys de UN registro de parámetro capturado por descripción
+# (namespace privado de ese contenedor). Se guardan las TRES partes del
+# DescLevel, no sólo el id: es la misma identidad de parámetro que
+# ``pins.track_key`` usa para las pistas, y — al contrario que cualquier
+# handle de C4D — sobrevive a guardar y recargar.
+_PARAM_ID = 1
+_PARAM_DTYPE = 2
+_PARAM_CREATOR = 3
+_PARAM_VALUE = 4
+
+#: Rango de ids de la TRANSFORMACIÓN de un objeto, excluido del barrido de
+#: descripción por completo: el pin ya la restaura entera por matriz
+#: (``SetMl``), y escribirla además por esta vía es pedir una discrepancia
+#: entre dos caminos que dicen lo mismo.
+_TRANSFORM_ID_MIN = 903
+_TRANSFORM_ID_MAX = 927
 
 
 # --- Small c4d helpers (copied pattern from frame_tag.py, not imported —
@@ -741,6 +781,202 @@ def _apply_track_keys(track, key_records):
     return applied
 
 
+def _skip_dtypes():
+    """Los ``DTYPE_*`` que el barrido de descripción NUNCA toca — el mismo
+    filtro que usó la sonda de la auditoría, que es la razón de que
+    funcionara: acciones (botón), decoración (separador, grupo, texto
+    estático), y datos que NO son un valor de estado del objeto —
+    ``DTYPE_BASELISTLINK`` (un enlace a otro nodo: reescribirlo desde un
+    pin re-cablearía la escena, no la restauraría), ``DTYPE_FILENAME`` (una
+    ruta en disco) y ``DTYPE_SUBCONTAINER`` (un contenedor entero, cuyo
+    contenido no es de primer nivel y la auditoría no midió).
+
+    Se resuelve por llamada, no como constante de módulo: son ``getattr``
+    contra ``c4d``, y una constante a nivel de módulo congelaría los
+    valores que el fake permisivo del arnés auto-vivifica en el momento
+    del import."""
+    names = ("DTYPE_BUTTON", "DTYPE_SEPARATOR", "DTYPE_GROUP",
+             "DTYPE_STATICTEXT", "DTYPE_BASELISTLINK", "DTYPE_FILENAME",
+             "DTYPE_SUBCONTAINER", "DTYPE_NONE")
+    out = set()
+    for name in names:
+        value = getattr(c4d, name, None)
+        if value is not None:
+            out.add(value)
+    return out
+
+
+def _container_ids(bc):
+    """El conjunto de ids de primer nivel que un ``BaseContainer`` YA trae.
+
+    Es lo que hace barato el complemento por descripción: sólo se barre lo
+    que el contenedor no tiene, así que en un objeto normal (RS Light,
+    cámara, cualquier generador — todos restauran 100% por ``SetData``) el
+    barrido no captura nada y el coste por objeto se queda en recorrer su
+    descripción una vez.
+
+    Iterar un ``BaseContainer`` real produce parejas ``(id, valor)``; el
+    fake del arnés es un ``dict`` y produce sólo la clave. Se aceptan las
+    dos formas a propósito — la alternativa (``for k, v in bc``) revienta
+    contra el fake y haría el camino inejercitable bajo test."""
+    ids = set()
+    try:
+        for item in bc or []:
+            if isinstance(item, tuple):
+                if item:
+                    ids.add(item[0])
+            else:
+                ids.add(item)
+    except Exception:
+        return set()
+    return ids
+
+
+def _iter_description_params(node):
+    """``(desc_id, param_id, dtype, creator)`` por cada parámetro de PRIMER
+    NIVEL de la descripción de ``node`` que este barrido puede capturar.
+
+    Primer nivel sólo, y dicho aquí porque es el límite honesto de la
+    auditoría que motivó esto: los ``DescID`` de varios niveles (anidados)
+    no están medidos, así que no se tocan.
+
+    Nunca lanza: un nodo cuya descripción no se puede leer simplemente no
+    aporta parámetros al complemento — el contenedor sigue siendo el camino
+    principal y ya se capturó."""
+    try:
+        description = node.GetDescription(c4d.DESCFLAGS_DESC_0)
+    except Exception:
+        return
+    if description is None:
+        return
+    skip = _skip_dtypes()
+    try:
+        items = list(description)
+    except Exception:
+        return
+    for item in items:
+        try:
+            desc_id = item[1]
+        except Exception:
+            continue
+        try:
+            if desc_id.GetDepth() != 1:
+                continue
+            level = desc_id[0]
+            param_id = int(level.id)
+            dtype = int(level.dtype)
+            creator = int(level.creator)
+        except Exception:
+            continue
+        if _TRANSFORM_ID_MIN <= param_id <= _TRANSFORM_ID_MAX:
+            continue
+        if dtype in skip:
+            continue
+        yield desc_id, param_id, dtype, creator
+
+
+def _capture_node_params(node, container):
+    """Complemento por descripción de ``container``: los parámetros de
+    primer nivel que la descripción del objeto expone y su
+    ``BaseContainer`` NO trae. Devuelve ``(params_bc, captured, skipped)``.
+
+    ``skipped`` cuenta sólo pérdidas REALES — la lectura lanzó, o el valor
+    no entra en un ``BaseContainer`` (tipos de dato custom). Los tipos que
+    quedan fuera por política (``_skip_dtypes``) y la transformación nunca
+    se intentaron, así que no son una pérdida y no se cuentan: una fila que
+    avisa siempre deja de avisar de nada.
+
+    Un valor que se lee como ``None`` tampoco se cuenta: C4D dice que ahí
+    no hay dato, así que no hay nada que perder ni nada que el artista
+    pueda hacer al respecto. Es un juicio, no una medición — bajo el arnés
+    no se puede distinguir de un fallo de lectura."""
+    params_bc = c4d.BaseContainer()
+    captured = 0
+    skipped = 0
+    known_ids = _container_ids(container)
+    for desc_id, param_id, dtype, creator in _iter_description_params(node):
+        if param_id in known_ids:
+            continue
+        try:
+            value = node.GetParameter(desc_id, c4d.DESCFLAGS_GET_0)
+        except Exception:
+            skipped += 1
+            continue
+        if value is None:
+            continue
+        record = c4d.BaseContainer()
+        record.SetInt32(_PARAM_ID, param_id)
+        record.SetInt32(_PARAM_DTYPE, dtype)
+        record.SetInt32(_PARAM_CREATOR, creator)
+        try:
+            record[_PARAM_VALUE] = value
+        except Exception:
+            skipped += 1
+            continue
+        params_bc.SetContainer(captured, record)
+        captured += 1
+    return params_bc, captured, skipped
+
+
+def _read_pinned_params(entry_bc):
+    """Los parámetros capturados por descripción de UNA entrada, como lista
+    de dicts ``{id, dtype, creator, value}`` en el orden en que se
+    escribieron. Una entrada escrita antes de v1.36.2 (sin
+    ``_ENTRY_PARAMS_COUNT``) se lee como ``[]`` — nada extra que aplicar,
+    nunca un fallo."""
+    count = entry_bc.GetInt32(_ENTRY_PARAMS_COUNT, 0)
+    params_container = entry_bc.GetContainerInstance(_ENTRY_PARAMS)
+    out = []
+    for i in range(count):
+        record = params_container.GetContainerInstance(i) if params_container is not None else None
+        if record is None:
+            continue
+        value = _bc_get(record, _PARAM_VALUE)
+        if value is None:
+            continue
+        out.append({
+            "id": record.GetInt32(_PARAM_ID, 0),
+            "dtype": record.GetInt32(_PARAM_DTYPE, 0),
+            "creator": record.GetInt32(_PARAM_CREATOR, 0),
+            "value": value,
+        })
+    return out
+
+
+def _apply_node_params(live_obj, param_records):
+    """Escribe de vuelta los parámetros capturados por descripción sobre
+    ``live_obj``. Devuelve ``(applied, failed)``.
+
+    Un parámetro que el objeto vivo no acepta NO puede reventar la
+    restauración entera (ni la de ese objeto, ni la de los demás): cada
+    escritura va en su propio ``try`` y un fallo sólo suma a ``failed``,
+    que la fila del tag acaba diciendo.
+
+    Sólo un ``False`` EXPLÍCITO cuenta como fallo. ``SetParameter`` devuelve
+    bool en la API real, pero si un build devolviera ``None`` contarlo como
+    fallo pondría un aviso permanente en la fila de todos los pins — y una
+    fila que avisa siempre no avisa de nada. Se prefiere no contar un fallo
+    a inventar uno."""
+    applied = 0
+    failed = 0
+    for record in param_records or []:
+        try:
+            desc_id = c4d.DescID(c4d.DescLevel(
+                record["id"], record["dtype"], record["creator"]))
+        except Exception:
+            failed += 1
+            continue
+        try:
+            result = live_obj.SetParameter(desc_id, record["value"], c4d.DESCFLAGS_SET_0)
+        except Exception:
+            failed += 1
+            continue
+        if result is False:
+            failed += 1
+        else:
+            applied += 1
+    return applied, failed
+
 def _walk_object_tree(obj):
     """Depth-first pre-order walk producing ``(location_tree, flat_nodes)``
     in the SAME order ``pins.location_keys`` assigns keys to
@@ -802,10 +1038,17 @@ def _pin_entries_summary(node):
     counts as "this pin's entries".
 
     Returns ``None`` when the tag has no pin at all. Otherwise a dict
-    ``{"schema_ok": bool, "summary": dict|None, "payload": BaseContainer}``
-    — ``summary`` is ``None`` when the schema doesn't match this build's
-    ``PIN_SCHEMA`` (a payload that will never be applied has nothing
-    meaningful to summarize either)."""
+    ``{"schema_ok": bool, "summary": dict|None, "payload": BaseContainer,
+    "params_skipped": int}`` — ``summary`` is ``None`` when the schema
+    doesn't match this build's ``PIN_SCHEMA`` (a payload that will never be
+    applied has nothing meaningful to summarize either).
+
+    ``params_skipped`` (v1.36.2) se suma aquí y NO en ``pins.pin_summary``
+    a propósito, aunque sea hermano de ``tracks_skipped``: el barrido por
+    descripción es un concepto del lado c4d (``GetDescription``/
+    ``GetParameter``), y ``pins.py`` es el motor puro que nunca importa
+    c4d. Las categorías de pista sí viven allí porque allí se decide qué
+    significan; aquí no hay decisión que llevarse, sólo una suma."""
     payload = _read_payload_bc(node)
     if payload is None:
         return None
@@ -828,13 +1071,16 @@ def _pin_entries_summary(node):
             # (it has nothing new to restore for that object either way).
             if bool(entry_bc.GetBool(_ENTRY_KEYFRAMES, False)):
                 tracks_skipped = 1
+        params_skipped = int(entry_bc.GetInt32(_ENTRY_PARAMS_SKIPPED, 0)) if entry_bc is not None else 0
         entries.append({
             "geometry": geometry,
             "tracks_captured": tracks_captured,
             "tracks_skipped": tracks_skipped,
+            "params_skipped": params_skipped,
         })
     summary = pins.pin_summary({"label": "", "entries": entries})
-    return {"schema_ok": True, "summary": summary, "payload": payload}
+    return {"schema_ok": True, "summary": summary, "payload": payload,
+            "params_skipped": sum(e["params_skipped"] for e in entries)}
 
 
 def _pin_status_text(node):
@@ -995,6 +1241,14 @@ def _pin_warning_text(node):
     if summary["has_keyframes"]:
         parts.append(pins.pluralize_es(
             summary["tracks_skipped"], "pista de animación", "pistas de animación"))
+    if info.get("params_skipped"):
+        # v1.36.2: parámetros que la descripción del objeto expone, que su
+        # contenedor no trae, y que este build no pudo llevarse. Va en la
+        # FILA y no en la documentación (regla de la casa desde v1.35):
+        # es lo que este pin NO devolverá, y el artista tiene que saberlo
+        # ANTES de confiar en él, no al restaurar.
+        parts.append("%s sin capturar" % pins.pluralize_es(
+            info["params_skipped"], "parámetro", "parámetros"))
     homonyms = pins.homonym_tag_group_count(
         _read_pinned_track_keys(info["payload"]))
     if homonyms:
@@ -1046,7 +1300,16 @@ def _store_pin(node):
         entry_bc.SetContainer(_ENTRY_TRACKS, tracks_bc)
         entry_bc.SetInt32(_ENTRY_TRACKS_COUNT, tracks_captured)
         entry_bc.SetInt32(_ENTRY_TRACKS_SKIPPED, tracks_skipped)
-        entry_bc.SetContainer(_ENTRY_CONTAINER, child_obj.GetData())
+        container = child_obj.GetData()
+        entry_bc.SetContainer(_ENTRY_CONTAINER, container)
+        # El contenedor sigue siendo el camino principal; esto es sólo el
+        # complemento para lo que no trae (v1.36.2 — la luz nativa guarda
+        # brillo/color/tipo fuera de él, ver _ENTRY_PARAMS).
+        params_bc, params_captured, params_skipped = _capture_node_params(
+            child_obj, container)
+        entry_bc.SetContainer(_ENTRY_PARAMS, params_bc)
+        entry_bc.SetInt32(_ENTRY_PARAMS_COUNT, params_captured)
+        entry_bc.SetInt32(_ENTRY_PARAMS_SKIPPED, params_skipped)
         entry_bc.SetMatrix(_ENTRY_MATRIX, child_obj.GetMl())
         entries_bc.SetContainer(i, entry_bc)
     payload_bc.SetContainer(_PAYLOAD_ENTRIES, entries_bc)
@@ -1175,12 +1438,13 @@ def _read_pinned_entries(payload_bc):
             "container": entry_bc.GetContainerInstance(_ENTRY_CONTAINER),
             "matrix": entry_bc.GetMatrix(_ENTRY_MATRIX, c4d.Matrix()),
             "tracks": _read_pinned_tracks(entry_bc),
+            "params": _read_pinned_params(entry_bc),
         }
     return keys, by_key
 
 
 def _restore_report_text(matched_count, total_count, extra_tracks_count=0,
-                         missing_tracks_count=0):
+                         missing_tracks_count=0, failed_params_count=0):
     missing_count = total_count - matched_count
     if missing_count <= 0:
         text = pins.pluralize_es(matched_count, "restaurado", "restaurados")
@@ -1217,6 +1481,22 @@ def _restore_report_text(matched_count, total_count, extra_tracks_count=0,
         # fit here.
         text += " · %s" % pins.pluralize_es(
             missing_tracks_count, "pista no encontrada", "pistas no encontradas")
+    if failed_params_count:
+        # v1.36.2, la mitad "el informe deja de mentir" del arreglo. El
+        # conteo de esta fila siempre fue de OBJETOS emparejados, así que
+        # decía "3 restaurados" mientras la intensidad de las tres luces se
+        # quedaba sin volver. Que la captura por descripción cubra ahora ese
+        # caso no cierra el agujero: cualquier parámetro que el objeto vivo
+        # RECHACE al escribirlo tiene que verse aquí, no asumirse.
+        #
+        # Se cuenta lo que NO se pudo aplicar, no se comprueba leyendo de
+        # vuelta cada valor: una verificación por lectura duplicaría el
+        # coste de cada restauración y, con floats, vectores y tipos
+        # custom, produciría falsos "no restaurado" por redondeo — un aviso
+        # que se equivoca a menudo se acaba ignorando, que es exactamente el
+        # fallo que este arreglo existe para no repetir.
+        text += " · %s sin restaurar" % pins.pluralize_es(
+            failed_params_count, "parámetro", "parámetros")
     return text
 
 
@@ -1615,6 +1895,7 @@ def _restore(node):
     # 6. One undo bracket for the whole matched subtree.
     missing_tracks = []
     extra_tracks_total = 0
+    failed_params_total = 0
     doc.StartUndo()
     try:
         for key in matched:
@@ -1627,6 +1908,13 @@ def _restore(node):
                 live_obj.SetData(entry["container"])
             except Exception:
                 pass
+            # Complemento por descripción, DESPUÉS del contenedor: son
+            # exactamente los parámetros que SetData no lleva (v1.36.2), así
+            # que no compiten — pero el orden deja claro cuál es el camino
+            # principal y cuál el complemento.
+            _, entry_params_failed = _apply_node_params(
+                live_obj, entry.get("params") or [])
+            failed_params_total += entry_params_failed
             try:
                 live_obj.SetMl(entry["matrix"])
             except Exception:
@@ -1676,7 +1964,7 @@ def _restore(node):
                 )
         report = _restore_report_text(
             len(matched), len(pinned_keys), extra_tracks_total,
-            len(missing_tracks))
+            len(missing_tracks), failed_params_total)
         doc.AddUndo(c4d.UNDOTYPE_CHANGE, node)
         _write_last_restore(node, report)
     finally:
