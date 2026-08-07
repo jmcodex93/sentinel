@@ -314,11 +314,14 @@ class TestNewShotOps:
         from sentinel.ui import standard_ops
         prj = self._project(tmp_path)
         opened = {}
-        monkeypatch.setattr(standard_ops.flows, "open_version_core",
-                            lambda p: opened.setdefault("path", p) or {"ok": True, "opened": True})
+        def _fake_open(p):
+            opened["path"] = p
+            return {"ok": True, "opened": True}
+        monkeypatch.setattr(standard_ops.flows, "open_version_core", _fake_open)
         out = standard_ops._op_newshot_create({"folder": str(prj), "name": "SH020"})
         dest = prj / "shots" / "SH020" / "SH020_v001.c4d"
         assert out["ok"] and out["path"] == str(dest)
+        assert out["opened"] is True
         assert dest.read_bytes() == b"C4Dfake"
         assert opened["path"] == str(dest)
 

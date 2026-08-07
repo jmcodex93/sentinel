@@ -261,9 +261,8 @@ def _op_newshot_create(payload):
         shutil.copy2(std["template"], dest)
     except Exception:
         return {"ok": False, "error": "copy_failed", "path": dest}
-    result = flows.open_version_core(dest)
-    opened = bool(result.get("ok")) if isinstance(result, dict) else bool(result)
-    return {"ok": True, "path": dest, "opened": opened}
+    result = flows.open_version_core(dest) or {}
+    return {"ok": True, "path": dest, "opened": bool(result.get("ok"))}
 
 
 STANDARD_OPS = {
