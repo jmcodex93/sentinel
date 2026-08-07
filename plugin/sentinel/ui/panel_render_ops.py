@@ -460,7 +460,15 @@ def _op_panel_render_reset_all(payload):
 
     result = scene_tools._force_render_settings_core(doc)
     if not result.get("ok"):
-        return {"ok": False, "error": result.get("error")}
+        failure = {"ok": False, "error": result.get("error")}
+        # ``reason`` is what lets the panel tell the two template failures
+        # apart: ``project_template_missing`` (the project ruleset named a
+        # file that is not there — nothing was reset, on purpose) vs the
+        # generic broken-install case. The human ``error`` already differs,
+        # but a UI must not have to parse prose to know which happened.
+        if result.get("reason"):
+            failure["reason"] = result["reason"]
+        return failure
 
     return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
 

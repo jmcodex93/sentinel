@@ -1542,3 +1542,181 @@ class TestResetAllConfirmButtonSaysWhatItDoes:
         assert response["ok"] is True
         assert "confirm_verb" not in response
         assert "destructive" not in response
+
+
+class _RuledDoc(_UndoableDoc):
+    """An ``_UndoableDoc`` that also has a folder on disk, so the real
+    ``sentinel_rules.json`` discovery runs against it."""
+
+    def __init__(self, render_datas, doc_path):
+        super().__init__(render_datas)
+        self._doc_path = str(doc_path)
+
+    def GetDocumentPath(self):
+        return self._doc_path
+
+
+def _write_ruleset(scene_dir, payload):
+    import json
+    (scene_dir / "sentinel_rules.json").write_text(
+        json.dumps(payload), encoding="utf-8")
+
+
+def _capture_template_load(monkeypatch, scene_tools,
+                           names=("previz", "pre_render", "render", "stills")):
+    """Record which template path ``_force_render_settings_core`` actually
+    opened. Unlike ``_install_template`` this does NOT stub
+    ``os.path.exists`` — existence is the very thing under test here."""
+    loaded = []
+    template = _UndoableDoc([_UndoableRD(n) for n in names])
+
+    def _load(path, flags):
+        loaded.append(path)
+        return template
+
+    monkeypatch.setattr(scene_tools.c4d.documents, "LoadDocument", _load,
+                        raising=False)
+    monkeypatch.setattr(scene_tools.c4d.documents, "KillDocument",
+                        lambda d: None, raising=False)
+    return loaded
+
+
+class TestTemplateSceneComesFromTheProjectRuleset:
+    """v1.36.9: the studio template scene is pointed at by
+    ``sentinel_rules.json`` instead of living inside the plugin.
+
+    The distinction these tests exist for: a ruleset that says NOTHING is
+    normal and silent (bundled template, no noise); a ruleset that names a
+    path which is NOT there is an error that refuses to run — it must never
+    quietly fall back to the plugin's template, because receiving a
+    different standard than the one your studio defined, in silence, is the
+    failure mode this codebase keeps deleting."""
+
+    def test_silent_ruleset_uses_the_bundled_plugin_template(
+            self, sentinel_module, monkeypatch, tmp_path):
+        from sentinel import rules
+        from sentinel.ui import scene_tools
+
+        scene_dir = tmp_path / "shot"
+        scene_dir.mkdir()
+        _write_ruleset(scene_dir, {"standard_fps": 24})
+        rules.invalidate()
+
+        doc = _RuledDoc([_UndoableRD("CLIENTE_9x16_final")], scene_dir)
+        resolved = scene_tools._resolve_template_scene(doc)
+
+        assert resolved["origin"] == "plugin"
+        assert resolved["path"] == scene_tools._bundled_template_path()
+
+    def test_ruleset_path_is_the_file_actually_opened(
+            self, sentinel_module, monkeypatch, tmp_path):
+        from sentinel import rules
+        from sentinel.ui import scene_tools
+
+        scene_dir = tmp_path / "shot"
+        scene_dir.mkdir()
+        template_file = tmp_path / "shot" / "studio_template.c4d"
+        template_file.write_bytes(b"")
+        _write_ruleset(scene_dir, {"template_scene": str(template_file)})
+        rules.invalidate()
+
+        loaded = _capture_template_load(monkeypatch, scene_tools)
+        doc = _RuledDoc([_UndoableRD("CLIENTE_9x16_final")], scene_dir)
+
+        result = scene_tools._force_render_settings_core(doc)
+
+        assert result["ok"] is True
+        assert loaded == [str(template_file)]
+        assert doc.preset_names() == ["previz", "pre_render", "render", "stills"]
+
+    def test_relative_ruleset_path_anchors_on_the_rules_folder(
+            self, sentinel_module, monkeypatch, tmp_path):
+        """The scene sits two levels under the rules file on purpose: an
+        implementation that anchored on the scene folder (or the cwd) would
+        open a different file, or none at all."""
+        from sentinel import rules
+        from sentinel.ui import scene_tools
+
+        project = tmp_path / "project"
+        scene_dir = project / "shots" / "shot010"
+        scene_dir.mkdir(parents=True)
+        template_file = project / "_pipeline" / "studio_template.c4d"
+        template_file.parent.mkdir()
+        template_file.write_bytes(b"")
+        _write_ruleset(project, {"template_scene": "_pipeline/studio_template.c4d"})
+        rules.invalidate()
+
+        loaded = _capture_template_load(monkeypatch, scene_tools)
+        doc = _RuledDoc([_UndoableRD("CLIENTE_9x16_final")], scene_dir)
+
+        result = scene_tools._force_render_settings_core(doc)
+
+        assert result["ok"] is True
+        assert loaded == [str(template_file)]
+
+    def test_missing_project_template_refuses_and_never_falls_back(
+            self, sentinel_module, monkeypatch, tmp_path):
+        """The heart of the feature: the presets are untouched, nothing is
+        loaded at all, and the reason is its own — not the generic
+        broken-install one."""
+        from sentinel import rules
+        from sentinel.ui import scene_tools
+
+        scene_dir = tmp_path / "shot"
+        scene_dir.mkdir()
+        gone = tmp_path / "server_down" / "studio_template.c4d"
+        _write_ruleset(scene_dir, {"template_scene": str(gone)})
+        rules.invalidate()
+
+        loaded = _capture_template_load(monkeypatch, scene_tools)
+        doc = _RuledDoc([_UndoableRD("CLIENTE_9x16_final")], scene_dir)
+
+        result = scene_tools._force_render_settings_core(doc)
+
+        assert result["ok"] is False
+        assert result["reason"] == "project_template_missing"
+        assert str(gone) in result["error"]
+        assert loaded == []
+        assert doc.preset_names() == ["CLIENTE_9x16_final"]
+        assert doc.start_undo_count == 0
+
+    def test_missing_bundled_template_keeps_its_own_generic_reason(
+            self, sentinel_module, monkeypatch, tmp_path):
+        """A broken install and an unreachable project template are two
+        different problems and must stay distinguishable."""
+        from sentinel import rules
+        from sentinel.ui import scene_tools
+
+        scene_dir = tmp_path / "shot"
+        scene_dir.mkdir()
+        _write_ruleset(scene_dir, {"standard_fps": 24})
+        rules.invalidate()
+        monkeypatch.setattr(scene_tools.os.path, "exists", lambda p: False)
+
+        doc = _RuledDoc([_UndoableRD("CLIENTE_9x16_final")], scene_dir)
+        result = scene_tools._force_render_settings_core(doc)
+
+        assert result["ok"] is False
+        assert result["reason"] == "template_missing"
+        assert "Template file not found!" in result["error"]
+
+    def test_op_propagates_the_project_template_reason(
+            self, sentinel_module, monkeypatch, tmp_path):
+        """The panel must not have to parse prose to tell the two
+        template failures apart."""
+        from sentinel.ui import panel_render_ops, scene_tools
+
+        doc = _UndoableDoc([_UndoableRD("CLIENTE_9x16_final")])
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument",
+                            lambda: doc)
+        monkeypatch.setattr(
+            scene_tools, "_force_render_settings_core",
+            lambda d: {"ok": False, "reason": "project_template_missing",
+                       "error": "Studio template scene not found!"})
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/reset_all"](
+            {"confirm": True})
+
+        assert response["ok"] is False
+        assert response["reason"] == "project_template_missing"
+        assert "Studio template scene not found!" in response["error"]

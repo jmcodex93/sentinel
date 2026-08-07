@@ -482,3 +482,138 @@ def test_matwire_suffixes_non_dict_is_rejected_but_rest_of_file_applies(tmp_path
         "matwire_suffixes" in warning and "expected a dict" in warning
         for warning in context.warnings
     )
+
+
+# --- template_scene: the studio template scene, pointed at by the ruleset ---
+#
+# The distinction these tests exist to pin: a ruleset that says NOTHING is
+# the normal, silent case (no path, caller uses the bundled template); a
+# ruleset that names a path is authoritative, whether or not that path is
+# on disk (existence is the caller's refusal, not this resolver's).
+
+
+def test_template_scene_absent_from_ruleset_resolves_to_none(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(scene_dir, {"standard_fps": 24})
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert context.params["template_scene"] == ""
+    assert rules.resolve_template_scene(context) is None
+
+
+def test_template_scene_absolute_path_is_used_verbatim(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    template = tmp_path / "studio" / "standard.c4d"
+    write_rules(scene_dir, {"template_scene": str(template)})
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert context.field_sources["template_scene"] == "project"
+    assert rules.resolve_template_scene(context) == os.path.normpath(str(template))
+
+
+def test_template_scene_relative_path_anchors_on_the_declaring_rules_folder(tmp_path):
+    """Not the cwd and not the scene: the folder of the sentinel_rules.json
+    that declared it, so moving a whole project folder keeps the path
+    valid. The scene lives two levels below the rules file precisely so a
+    scene-anchored implementation would land somewhere else."""
+    project = tmp_path / "project"
+    scene_dir = project / "shots" / "shot010"
+    scene_dir.mkdir(parents=True)
+    write_rules(project, {"template_scene": "_pipeline/studio_template.c4d"})
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert rules.resolve_template_scene(context) == os.path.normpath(
+        str(project / "_pipeline" / "studio_template.c4d")
+    )
+
+
+def test_template_scene_nearest_rules_file_anchors_its_own_relative_path(tmp_path):
+    """Two rules files in the ancestry: the nearest one wins the key AND
+    owns the anchor. A resolver that anchored on the outermost (or on any
+    other discovered file) would silently point at a different template."""
+    project = tmp_path / "project"
+    scene_dir = project / "shots" / "shot010"
+    scene_dir.mkdir(parents=True)
+    write_rules(project, {"template_scene": "outer/template.c4d"})
+    write_rules(scene_dir, {"template_scene": "inner/template.c4d"})
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert rules.resolve_template_scene(context) == os.path.normpath(
+        str(scene_dir / "inner" / "template.c4d")
+    )
+
+
+def test_template_scene_resolves_even_when_the_file_is_not_on_disk(tmp_path):
+    """The resolver does not check existence — that is the caller's refusal.
+    If this ever returned None for a missing file, a declared-but-missing
+    template would degrade into the silent 'ruleset says nothing' case,
+    which is exactly the failure the feature exists to prevent."""
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(scene_dir, {"template_scene": "nowhere/gone.c4d"})
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    resolved = rules.resolve_template_scene(context)
+    assert resolved == os.path.normpath(str(scene_dir / "nowhere" / "gone.c4d"))
+    assert not os.path.exists(resolved)
+
+
+def test_malformed_template_scene_rejected_by_name_but_rest_of_file_applies(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(
+        scene_dir,
+        {"standard_fps": 24, "template_scene": 42},
+    )
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert context.params["standard_fps"] == 24
+    assert context.params["template_scene"] == ""
+    assert rules.resolve_template_scene(context) is None
+    assert any(
+        "template_scene" in warning and "path string" in warning
+        for warning in context.warnings
+    )
+
+
+def test_list_template_scene_rejected_by_name_but_rest_of_file_applies(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(
+        scene_dir,
+        {"standard_fps": 24, "template_scene": ["a.c4d", "b.c4d"]},
+    )
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert context.params["standard_fps"] == 24
+    assert context.params["template_scene"] == ""
+    assert any("template_scene" in warning for warning in context.warnings)
+
+
+def test_blank_template_scene_is_rejected_rather_than_read_as_a_path(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(scene_dir, {"standard_fps": 24, "template_scene": "   "})
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert context.params["standard_fps"] == 24
+    assert rules.resolve_template_scene(context) is None
+    assert any("template_scene" in warning for warning in context.warnings)

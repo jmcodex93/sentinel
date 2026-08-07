@@ -419,8 +419,80 @@ def _merge_c4d_file(doc, filename):
     return result
 
 
-def _get_template_path():
+def _bundled_template_path():
+    """The template scene shipped inside the plugin — the fallback used when
+    the project ruleset says nothing."""
     return os.path.join(_ROOT, "c4d", "new.c4d")
+
+
+def _resolve_template_scene(doc=None):
+    """Where the studio template scene lives for ``doc``, and which of the
+    two origins it came from.
+
+    Two origins, not three (artist decision): what the PROJECT ruleset says
+    (``template_scene`` in ``sentinel_rules.json``, shared with the whole
+    team through the folder it lives in) and, when the ruleset says
+    nothing, the plugin's bundled ``c4d/new.c4d``. There is deliberately no
+    per-machine override — a studio standard that a single workstation can
+    quietly shadow is not a standard, and it would add a third place to
+    look when something does not add up.
+
+    Returns ``{"path": str, "origin": "project" | "plugin"}``. Existence is
+    NOT checked here: the distinction that matters lives in the caller —
+    "the ruleset said nothing" is normal and silent, "the ruleset named a
+    path and it is not there" is an error that must refuse to run rather
+    than fall back to a different standard.
+    """
+    try:
+        from sentinel import rules as rules_module
+        from sentinel.rules_context import active_rules_for_doc
+
+        declared = rules_module.resolve_template_scene(active_rules_for_doc(doc))
+    except Exception as exc:  # pragma: no cover - defensive
+        # Not the "declared but missing" case — we could not read the
+        # ruleset at all. Say so instead of swallowing it.
+        safe_print(f"Could not resolve project template scene: {exc}")
+        declared = None
+
+    if declared:
+        return {"path": declared, "origin": "project"}
+    return {"path": _bundled_template_path(), "origin": "plugin"}
+
+
+def _get_template_path(doc=None):
+    """Path of the studio template scene for ``doc`` (see
+    ``_resolve_template_scene`` for the two origins)."""
+    return _resolve_template_scene(doc)["path"]
+
+
+def _template_missing_result(template):
+    """The refusal, worded so the two failures never read alike.
+
+    ``project``: the ruleset named a file that is not there — Reset All
+    does NOT run and does NOT fall back to the bundled template. Receiving a
+    different standard than the one your studio defined, in silence, is
+    exactly the failure mode this codebase keeps deleting; not being able to
+    reset and knowing why is better.
+
+    ``plugin``: the bundled template is missing — a broken install, and the
+    historical message for it is kept verbatim.
+    """
+    if template["origin"] == "project":
+        return {
+            "ok": False,
+            "reason": "project_template_missing",
+            "error": ("Studio template scene not found!\n\n"
+                      "The project ruleset (sentinel_rules.json) points at:\n"
+                      f"{template['path']}\n\n"
+                      "Render presets were NOT reset — fix the path or the "
+                      "server mount rather than resetting from a different "
+                      "template."),
+        }
+    return {
+        "ok": False,
+        "reason": "template_missing",
+        "error": f"Template file not found!\n\nExpected at:\n{template['path']}",
+    }
 
 
 def _apply_preset_core(doc, preset_name, index=None):
@@ -505,9 +577,10 @@ def _force_render_settings_core(doc, update_ui=None):
     if not doc:
         return {"ok": False, "error": "no_document"}
 
-    template_path = _get_template_path()
+    template = _resolve_template_scene(doc)
+    template_path = template["path"]
     if not os.path.exists(template_path):
-        return {"ok": False, "error": f"Template file not found!\n\nExpected at:\n{template_path}"}
+        return _template_missing_result(template)
 
     template_doc = None
     try:
@@ -579,9 +652,9 @@ def _force_render_settings(doc, update_ui=None):
     if not doc:
         return
 
-    template_path = _get_template_path()
-    if not os.path.exists(template_path):
-        c4d.gui.MessageDialog(f"Template file not found!\n\nExpected at:\n{template_path}")
+    template = _resolve_template_scene(doc)
+    if not os.path.exists(template["path"]):
+        c4d.gui.MessageDialog(_template_missing_result(template)["error"])
         return
 
     if not c4d.gui.QuestionDialog("Reset ALL render presets from template?\n\nThis replaces existing presets with standard settings."):
