@@ -87,16 +87,27 @@ def test_discover_all_dedups(tmp_path):
 
 # ── payload verification ─────────────────────────────────────────────────────
 def _make_complete_payload(dest):
+    """A minimal payload that satisfies ``install.CRITICAL_PAYLOAD_PATHS``.
+
+    v1.36.2 changed that list, so this helper changed with it: ``ui/panel.py``
+    is gone (the native panel was retired in v1.25.0, and keeping it in the
+    critical list made the verifier fail on EVERY real install), replaced by
+    ``ui/panel_spa.py``; and ``c4d/`` was added, because the bundled scenes the
+    scene tools merge lived outside ``plugin/`` and never reached an install.
+    """
     os.makedirs(os.path.join(dest, "sentinel", "ui"))
     os.makedirs(os.path.join(dest, "res"))
     os.makedirs(os.path.join(dest, "abc_retime"))
+    os.makedirs(os.path.join(dest, "c4d"))
     Path(os.path.join(dest, "sentinel_panel.pyp")).write_text("x")
     Path(os.path.join(dest, "sentinel", "__init__.py")).write_text("x")
     Path(os.path.join(dest, "sentinel", "aovs.py")).write_text("x")
     Path(os.path.join(dest, "sentinel", "postrender.py")).write_text("x")
-    Path(os.path.join(dest, "sentinel", "ui", "panel.py")).write_text("x")
+    Path(os.path.join(dest, "sentinel", "ui", "panel_spa.py")).write_text("x")
     Path(os.path.join(dest, "res", "c4d_symbols.h")).write_text("x")
     Path(os.path.join(dest, "exr_converter_external.py")).write_text("x")
+    Path(os.path.join(dest, "c4d", "new.c4d")).write_text("x")
+    Path(os.path.join(dest, "c4d", "nulls.c4d")).write_text("x")
 
 
 def test_verify_payload_complete(tmp_path):

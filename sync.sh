@@ -11,7 +11,12 @@ mkdir -p "$TARGET"
 
 # rsync --delete keeps the destination an exact mirror of source — orphan files
 # (e.g. old icons, removed modules) are pruned automatically.
-rsync -a --delete "$SOURCE" "$TARGET"
+#
+# backup/ is excluded because C4D writes its own timestamped copies next to any
+# .c4d you save over (plugin/c4d/backup/new.c4d@20260807_100134 and friends).
+# They are the artist's safety net for the source assets, not plugin payload —
+# shipping them would put megabytes of dead weight in every install.
+rsync -a --delete --exclude 'backup/' "$SOURCE" "$TARGET"
 
 echo "Synced to: $TARGET"
 echo "Restart Cinema 4D to reload."

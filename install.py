@@ -39,10 +39,20 @@ CRITICAL_PAYLOAD_PATHS = [
     os.path.join("sentinel", "__init__.py"),
     os.path.join("sentinel", "aovs.py"),
     os.path.join("sentinel", "postrender.py"),
-    os.path.join("sentinel", "ui", "panel.py"),
+    # ui/panel.py used to be here and was removed in v1.36.2: the native panel
+    # was retired in v1.25.0, so this entry made install.py report EVERY install
+    # as a broken payload. A verifier that always fails verifies nothing.
+    os.path.join("sentinel", "ui", "panel_spa.py"),
     os.path.join("res", "c4d_symbols.h"),
     "exr_converter_external.py",
     "abc_retime",
+    # The bundled scenes the scene tools merge (Hierarchy, Vibrate Null, both
+    # camera rigs) and the render-settings template Reset All reads. They lived
+    # outside plugin/ until v1.36.2, so they never reached an install and those
+    # five tools failed with file_not_found — silently, bar a console line.
+    "c4d",
+    os.path.join("c4d", "new.c4d"),
+    os.path.join("c4d", "nulls.c4d"),
 ]
 
 # Case-insensitive substring that flags a Cinema 4D preferences directory.
