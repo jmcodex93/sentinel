@@ -275,7 +275,12 @@ def test_render_conflicts_structured_identity_reduces_to_legacy_int(sentinel_mod
     structured = render.check_render_conflicts(doc)
     legacy = render.check_render_conflicts(doc).to_legacy()
 
-    assert legacy == 3
+    # v1.36.5: this scene has `render` + `pre_render` but NOT `previz`/`stills`,
+    # so the count is now 3 (duplicate + 2 extras) + 2 missing studio presets.
+    # The oracle changed because the CHECK changed, not to make it pass: the
+    # duplicate/extra expectations below are byte-identical to the pre-v1.36.5
+    # ones and the two missing rows are the new behaviour under test.
+    assert legacy == 5
     assert structured.to_legacy() == legacy
     assert len(structured.violations) == legacy
     assert check_cache.get(doc, "rdc") == legacy
@@ -304,8 +309,150 @@ def test_render_conflicts_structured_identity_reduces_to_legacy_int(sentinel_mod
             "preset": "rogue_preset",
             "field": "extra",
         },
+        {
+            "type": "parameter",
+            "param": "render_preset",
+            "value": "previz",
+            "preset": "previz",
+            "field": "missing",
+        },
+        {
+            "type": "parameter",
+            "param": "render_preset",
+            "value": "stills",
+            "preset": "stills",
+            "field": "missing",
+        },
     ]
     json.dumps(structured)
+
+
+class FakeDocWithPath(FakeDoc):
+    """FakeDoc that answers GetDocumentPath, so project rules discovery runs."""
+
+    def __init__(self, doc_path, **kwargs):
+        super().__init__(**kwargs)
+        self._doc_path = str(doc_path)
+
+    def GetDocumentPath(self):
+        return self._doc_path
+
+
+def _missing_presets(structured):
+    return [
+        violation["identity"]["value"]
+        for violation in structured.violations
+        if violation["identity"].get("field") == "missing"
+    ]
+
+
+def _write_rules(directory, payload, mtime=None):
+    import json as _json
+    import os
+
+    path = directory / "sentinel_rules.json"
+    path.write_text(_json.dumps(payload), encoding="utf-8")
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+    return path
+
+
+def test_render_conflicts_reports_every_missing_studio_preset(sentinel_module):
+    """Scene with none of the required presets → one violation per required."""
+    from sentinel.checks import render
+    from sentinel.common.cache import check_cache
+
+    doc = FakeDoc(render_data=[
+        FakeRenderData("test_denoise"),
+        FakeRenderData("cliente_9x16_final"),
+    ])
+    check_cache.clear()
+
+    structured = render.check_render_conflicts(doc)
+
+    assert _missing_presets(structured) == ["previz", "pre_render", "render", "stills"]
+    # The two non-standard presets present still count, on top of the four missing.
+    assert structured.to_legacy() == 6
+    messages = [v["message"] for v in structured.violations if v["identity"]["field"] == "missing"]
+    assert messages[0] == "Missing studio preset: previz"
+
+
+def test_render_conflicts_no_missing_when_all_required_present(sentinel_module):
+    from sentinel.checks import render
+    from sentinel.common.cache import check_cache
+
+    doc = FakeDoc(render_data=[
+        FakeRenderData("previz"),
+        FakeRenderData("pre_render"),
+        FakeRenderData("render"),
+        FakeRenderData("stills"),
+    ])
+    check_cache.clear()
+
+    structured = render.check_render_conflicts(doc)
+
+    assert _missing_presets(structured) == []
+    assert structured.to_legacy() == 0
+
+
+def test_render_conflicts_missing_uses_preset_name_normalization(sentinel_module):
+    """`Pre-Render` counts as `pre_render` being present."""
+    from sentinel.checks import render
+    from sentinel.common.cache import check_cache
+
+    doc = FakeDoc(render_data=[
+        FakeRenderData("Previz"),
+        FakeRenderData("Pre-Render"),
+        FakeRenderData("RENDER"),
+        FakeRenderData(" Stills "),
+    ])
+    check_cache.clear()
+
+    structured = render.check_render_conflicts(doc)
+
+    assert _missing_presets(structured) == []
+
+
+def test_render_conflicts_required_presets_from_project_ruleset(sentinel_module, tmp_path):
+    """A project `required_presets` overrides the embedded four."""
+    from sentinel.checks import render
+    from sentinel.common.cache import check_cache
+    from sentinel import rules
+
+    _write_rules(tmp_path, {"required_presets": ["previz", "beauty"]})
+    doc = FakeDocWithPath(tmp_path / "shot.c4d", render_data=[FakeRenderData("previz")])
+    rules.invalidate()
+    check_cache.clear()
+
+    structured = render.check_render_conflicts(doc)
+
+    # Only "beauty" is missing: the embedded pre_render/render/stills no longer apply.
+    assert _missing_presets(structured) == ["beauty"]
+
+
+def test_render_conflicts_reruns_after_ruleset_change_instead_of_serving_cache(
+    sentinel_module, tmp_path
+):
+    """A ruleset edit inside the cache window must NOT return the stale count."""
+    from sentinel.checks import render
+    from sentinel.common.cache import check_cache
+    from sentinel import rules
+
+    _write_rules(tmp_path, {"required_presets": ["render"]}, mtime=1_000_000)
+    doc = FakeDocWithPath(tmp_path / "shot.c4d", render_data=[FakeRenderData("render")])
+    rules.invalidate()
+    check_cache.clear()
+
+    first = render.check_render_conflicts(doc)
+    assert first.to_legacy() == 0
+    assert check_cache.get(doc, "rdc") == 0
+
+    # Same document, same instant — only the ruleset changed.
+    _write_rules(tmp_path, {"required_presets": ["render", "previz"]}, mtime=2_000_000)
+    second = render.check_render_conflicts(doc)
+
+    assert _missing_presets(second) == ["previz"]
+    assert second.to_legacy() == 1
 
 
 @pytest.mark.parametrize(

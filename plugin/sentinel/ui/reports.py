@@ -110,7 +110,10 @@ def build_qc_report(doc, results, artist_name, qc_summary=None):
 
     # Info-only checks
     for key, label, count in [
-        ("render_presets", "Non-standard presets", results.get("rdc_count", 0)),
+        # v1.36.5: the count now mixes non-standard/duplicate presets with
+        # MISSING studio ones, so the old "Non-standard presets" label lied
+        # exactly the way the registry's fail template did.
+        ("render_presets", "Render preset issues", results.get("rdc_count", 0)),
         ("output_paths", "Output path issues", results.get("output_count", 0)),
         ("takes", "Take configuration issues", len(results.get("takes_bad", []))),
     ]:

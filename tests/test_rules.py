@@ -222,6 +222,39 @@ def test_default_rules_are_sourced_from_registry_and_constants(sentinel_module):
     }
 
 
+def test_required_presets_defaults_to_the_embedded_four(sentinel_module):
+    from sentinel.common.constants import PRESETS
+
+    assert rules.DEFAULTS["required_presets"] == list(PRESETS)
+
+
+def test_required_presets_ruleset_override_accepted(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(scene_dir, {"required_presets": ["previz", "beauty"]})
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert context.params["required_presets"] == ["previz", "beauty"]
+    assert context.field_sources["required_presets"] == "project"
+    # It is its own key: the whitelist keeps its embedded value.
+    assert context.params["approved_presets"] == rules.DEFAULTS["approved_presets"]
+
+
+def test_malformed_required_presets_rejected_by_name_without_dropping_the_rest(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(scene_dir, {"required_presets": "previz", "standard_fps": 24})
+
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+
+    assert context.params["required_presets"] == rules.DEFAULTS["required_presets"]
+    assert any("required_presets" in warning for warning in context.warnings)
+    assert context.params["standard_fps"] == 24
+
+
 def test_stills_presets_ruleset_override_accepted(tmp_path):
     scene_dir = tmp_path / "project"
     scene_dir.mkdir()
