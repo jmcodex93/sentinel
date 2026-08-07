@@ -1151,8 +1151,14 @@ class _UndoableDoc:
         self.undo_stack = []
         self.start_undo_count = 0
         self.end_undo_count = 0
+        # Fixture seeding bypasses InsertRenderData on purpose: it models
+        # "whatever order was already in the document", not an insertion —
+        # and InsertRenderData below intentionally does NOT preserve
+        # append-order (see its docstring), so routing seeding through it
+        # would silently reverse every fixture list in this file.
         for rd in render_datas:
-            self.InsertRenderData(rd)
+            rd.doc = self
+            self.render_datas.append(rd)
         self._active = self.render_datas[0] if self.render_datas else None
 
     # --- scene reads the code under test performs ---
@@ -1172,6 +1178,18 @@ class _UndoableDoc:
         self._active = rd
 
     def InsertRenderData(self, rd):
+        """Real C4D inserts at the FRONT of the render-data chain, not the
+        end — measured live (v1.36.11): the code under test used to call
+        this in template order and the doc ended up with the presets
+        reversed. ``multiformat.py`` elsewhere in this codebase already
+        relies on the opposite of this method (``InsertRenderDataLast``)
+        specifically to append in order, which only makes sense if this
+        one prepends. A fake that appended here could never catch the
+        inversion bug — this is the fix for that gap."""
+        rd.doc = self
+        self.render_datas.insert(0, rd)
+
+    def InsertRenderDataLast(self, rd):
         rd.doc = self
         self.render_datas.append(rd)
 
@@ -1324,7 +1342,15 @@ class TestTheTemplateIsTheStandard:
             self, sentinel_module, monkeypatch):
         """A template with the four standard ones plus a client preset
         yields five, in the order the supervisor arranged them — the order
-        is the supervisor's decision, not something this code re-sorts."""
+        is the supervisor's decision, not something this code re-sorts.
+
+        v1.36.11: this test could not have caught the real bug (the scene
+        came out REVERSED) before ``_UndoableDoc.InsertRenderData`` was
+        fixed to prepend like the real C4D API does — the old fake
+        appended, so append-then-walk-forward produced the same order by
+        accident regardless of which insert method the code under test
+        called. Fixed in the fake, not loosened here; this assertion is
+        unchanged and now actually exercises the order."""
         from sentinel.ui import scene_tools
         _install_template(monkeypatch, scene_tools,
                           names=("previz", "pre_render", "render", "stills",
@@ -1338,10 +1364,12 @@ class TestTheTemplateIsTheStandard:
         assert doc.preset_names() == ["previz", "pre_render", "render",
                                       "stills", "CLIENTE_beauty"]
 
-    def test_the_active_preset_is_the_templates_first_one(
+    def test_the_active_preset_is_the_templates_first_one_by_default(
             self, sentinel_module, monkeypatch):
-        """Kept from the old behavior and still meaningful with an
-        arbitrary count: the file's first entry, not a name guessed here."""
+        """A freshly-built template fixture has its first entry active
+        (``_UndoableDoc.__init__``'s default) — this is the "nothing
+        special going on" case, not evidence the code picks the first
+        entry on purpose. See the next test for that distinction."""
         from sentinel.ui import scene_tools
         _install_template(monkeypatch, scene_tools,
                           names=("draft", "final", "CLIENTE_beauty"))
@@ -1351,6 +1379,27 @@ class TestTheTemplateIsTheStandard:
 
         assert result["active_name"] == "draft"
         assert doc.GetActiveRenderData().GetName() == "draft"
+
+    def test_the_active_preset_follows_the_templates_own_active_one(
+            self, sentinel_module, monkeypatch):
+        """v1.36.11: until this fix, the code always activated
+        ``cloned[0]`` — the first clone MADE, an accident of insertion
+        order — never reading what the template itself had active. That
+        passed unnoticed because the one template tested by hand happened
+        to have its active preset first. Here the template's active
+        preset is the THIRD one, and it must still be the one left active
+        in the artist's scene — not "render" here by position, but because
+        it is what the supervisor's template document reports as active."""
+        from sentinel.ui import scene_tools
+        template = _install_template(monkeypatch, scene_tools,
+                          names=("previz", "pre_render", "render", "stills"))
+        template.SetActiveRenderData(template.render_datas[2])
+
+        doc = _UndoableDoc([_UndoableRD("old")])
+        result = scene_tools._force_render_settings_core(doc)
+
+        assert result["active_name"] == "render"
+        assert doc.GetActiveRenderData().GetName() == "render"
 
     def test_empty_project_template_names_the_file_and_its_origin(
             self, sentinel_module, monkeypatch, tmp_path):

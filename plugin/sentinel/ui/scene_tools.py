@@ -622,10 +622,35 @@ def _force_render_settings_core(doc, update_ui=None):
     shows both the confirm question and the result dialog, calling this
     core in between (byte-equivalent native behavior).
 
+    ORDER + ACTIVE PRESET (v1.36.11): two things this same "the template is
+    the standard" rule got wrong until now, both caught verifying the fix
+    live. First, cloning walked the template with ``GetFirstRenderData``/
+    ``GetNext`` (front-to-back) but inserted each clone with
+    ``InsertRenderData`` — which, like every other doc-level render-data
+    insert in C4D, puts the new entry at the FRONT of the chain, not the
+    end (``multiformat.py`` elsewhere in this file already relies on the
+    opposite of that for the same reason, via ``InsertRenderDataLast``).
+    Cloning front-to-back and inserting-at-front reverses the order: a
+    template ``[previz, pre_render, render, stills]`` landed in the scene
+    as ``[stills, render, pre_render, previz]``. Fixed by inserting with
+    ``InsertRenderDataLast`` instead, so the scene's order is a copy of the
+    template's, not its mirror. Second, the preset left active was always
+    ``cloned[0]`` — the FIRST clone made, an accident of insertion order,
+    not a choice. It only matched the artist's expectation because in the
+    one template tested by hand ``previz`` (the template's actual active
+    preset) also happened to be first. With a template whose active preset
+    is NOT first, the wrong one was left active. Fixed by reading the
+    template document's OWN ``GetActiveRenderData()`` before killing it and
+    carrying that identity through to the matching clone; only if that
+    render data cannot be matched among the clones (e.g. the template
+    reported no active render data at all) does this fall back to the
+    template's first entry — the same fallback as before, but now an
+    explicit fallback instead of the only path.
+
     UNDO (v1.36.3): the scene mutation runs inside ONE ``StartUndo``/
     ``EndUndo`` bracket with ``AddUndo(UNDOTYPE_DELETE, rd)`` BEFORE each
-    ``Remove()`` and ``AddUndo(UNDOTYPE_NEW, clone)`` after each
-    ``InsertRenderData``. Both halves are required and both are per-object
+    ``Remove()`` and ``AddUndo(UNDOTYPE_NEW, clone)`` after each insert.
+    Both halves are required and both are per-object
     — measured live (C4D 2026.303, throwaway document): with no ``AddUndo``
     at all a Cmd+Z restores nothing (the artist's presets are gone for
     good); registering only the deletions brings the originals back but
@@ -651,10 +676,17 @@ def _force_render_settings_core(doc, update_ui=None):
 
         # Clone every preset the template holds, in its own order — no
         # name filter (see the docstring: the template IS the standard).
+        # Also carry over WHICH one the template had active, matched by
+        # identity against the clone made from it (see docstring).
+        template_active = template_doc.GetActiveRenderData()
         cloned = []
+        active_clone = None
         template_rd = template_doc.GetFirstRenderData()
         while template_rd:
-            cloned.append(template_rd.GetClone(c4d.COPYFLAGS_NONE))
+            clone = template_rd.GetClone(c4d.COPYFLAGS_NONE)
+            if template_active is not None and template_rd == template_active:
+                active_clone = clone
+            cloned.append(clone)
             template_rd = template_rd.GetNext()
 
         # Kill template before modifying scene
@@ -675,12 +707,16 @@ def _force_render_settings_core(doc, update_ui=None):
                 rd.Remove()
                 rd = next_rd
 
-            # Insert cloned presets
+            # Insert cloned presets — InsertRenderDataLast, NOT
+            # InsertRenderData: appends, keeping the scene's order equal to
+            # the template's (see docstring; InsertRenderData prepends and
+            # would reverse the list built front-to-back above).
             for clone in cloned:
-                doc.InsertRenderData(clone)
+                doc.InsertRenderDataLast(clone)
                 doc.AddUndo(c4d.UNDOTYPE_NEW, clone)
 
-            doc.SetActiveRenderData(cloned[0])
+            new_active = active_clone if active_clone is not None else cloned[0]
+            doc.SetActiveRenderData(new_active)
         finally:
             doc.EndUndo()
 
@@ -693,8 +729,8 @@ def _force_render_settings_core(doc, update_ui=None):
         return {
             "ok": True,
             "count": len(cloned),
-            "active_name": cloned[0].GetName(),
-            "resolution": "%dx%d" % (int(cloned[0][c4d.RDATA_XRES]), int(cloned[0][c4d.RDATA_YRES])),
+            "active_name": new_active.GetName(),
+            "resolution": "%dx%d" % (int(new_active[c4d.RDATA_XRES]), int(new_active[c4d.RDATA_YRES])),
         }
 
     except Exception as e:
