@@ -938,8 +938,8 @@ export async function postPanelQcFixAll(): Promise<PanelQcFixAllResponse> {
 // Each of the 5 blocks may independently be `null` (`_guarded_block`
 // isolation, same convention as `fetchPanelOverview`/`fetchPanelQc`).
 // Mutation posters follow the shared `{ok, error?, stamp?, render?,
-// confirm_label?}` contract; only `reset_all`/`force_vertical` stay
-// destructive and take an optional `confirm` flag mirroring
+// confirm_label?}` contract; only `reset_all` stays
+// destructive and takes an optional `confirm` flag mirroring
 // `runPaletteAction`'s own confirm param — `aov_tier` (Essentials/
 // Production) is additive/Cmd+Z-able and never confirm-gates, and Light
 // Groups is an independent toggle (`set_light_groups`), not a tier.
@@ -964,7 +964,6 @@ export async function fetchPanelRender(): Promise<PanelRenderResult> {
  * same no-stateful convention as `postPanelQcSelect`). */
 const MOCK_RENDER_CONFIRM_LABELS: Record<string, string> = {
   reset_all: "Reset ALL render presets from template? This replaces existing presets with standard settings.",
-  force_vertical: "Force the active render preset's aspect ratio (9:16 / 16:9)?",
 };
 
 function mockPanelRenderMutation(op: string, confirm?: boolean): PanelRenderMutationResponse {
@@ -995,18 +994,6 @@ export async function postPanelRenderResetAll(confirm?: boolean): Promise<PanelR
   }
   return postForm<PanelRenderMutationResponse>(
     "/api/panel/render/reset_all",
-    confirm ? { confirm: true } : {},
-  );
-}
-
-/** `POST /api/panel/render/force_vertical` — destructive, confirm-gated
- * (see `_op_panel_render_force_vertical`). */
-export async function postPanelRenderForceVertical(confirm?: boolean): Promise<PanelRenderMutationResponse> {
-  if (isMock()) {
-    return mockPanelRenderMutation("force_vertical", confirm);
-  }
-  return postForm<PanelRenderMutationResponse>(
-    "/api/panel/render/force_vertical",
     confirm ? { confirm: true } : {},
   );
 }

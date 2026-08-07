@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Panel SPA Render-section ops — ``panel/render`` (per-block isolated read)
 plus the mutation/action ops. Task 1: preset/frame mutations (``set_preset``,
-``reset_all``, ``force_vertical``, ``add_frame_tag``, ``select_frame_tag``).
+``reset_all``, ``add_frame_tag``, ``select_frame_tag``).
 Task 2: AOVs + snapshots (``aov_tier``, ``set_multipart``, ``aov_list``,
 ``toggle_watchfolder``, ``save_still``, ``open_folder``). Sibling of
 ``ui/panel_ops.py`` (same ``MainThreadQueue`` dispatch-target contract, same
@@ -336,8 +336,6 @@ def _op_panel_render_set_preset(payload):
 
 _RESET_ALL_CONFIRM_LABEL = ("Reset ALL render presets from template? "
                              "This replaces existing presets with standard settings.")
-_FORCE_VERTICAL_CONFIRM_LABEL = "Force the active render preset's aspect ratio (9:16 / 16:9)?"
-
 #: How many preset names the confirm text spells out before it switches to
 #: "…and N more" — a scene with a long tail of custom presets must still
 #: fit a panel-width confirm bar.
@@ -431,28 +429,6 @@ def _op_panel_render_reset_all(payload):
     from sentinel.ui import scene_tools
 
     result = scene_tools._force_render_settings_core(doc)
-    if not result.get("ok"):
-        return {"ok": False, "error": result.get("error")}
-
-    return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
-
-
-def _op_panel_render_force_vertical(payload):
-    """``panel/render/force_vertical`` — destructive-adjacent (rewrites the
-    active preset's resolution), confirm-gated. Runs
-    ``scene_tools._toggle_aspect_core`` — the dialog-free core extracted
-    from ``_toggle_aspect``."""
-    doc = documents.GetActiveDocument()
-    if not doc:
-        return {"ok": False, "error": "no_document"}
-
-    if _needs_confirm(payload):
-        return {"ok": False, "error": "confirm_required",
-                "confirm_label": _FORCE_VERTICAL_CONFIRM_LABEL}
-
-    from sentinel.ui import scene_tools
-
-    result = scene_tools._toggle_aspect_core(doc)
     if not result.get("ok"):
         return {"ok": False, "error": result.get("error")}
 
@@ -718,7 +694,6 @@ PANEL_RENDER_OPS = {
     "panel/render": _op_panel_render,
     "panel/render/set_preset": _op_panel_render_set_preset,
     "panel/render/reset_all": _op_panel_render_reset_all,
-    "panel/render/force_vertical": _op_panel_render_force_vertical,
     "panel/render/add_frame_tag": _op_panel_render_add_frame_tag,
     "panel/render/select_frame_tag": _op_panel_render_select_frame_tag,
     "panel/render/aov_tier": _op_panel_render_aov_tier,

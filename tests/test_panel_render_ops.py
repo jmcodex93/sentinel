@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Tests for plugin/sentinel/ui/panel_render_ops.py — Fase 6.2 Task 1:
 ``panel/render`` (per-block isolated read) + preset/frame block mutations
-(``set_preset``, ``reset_all``, ``force_vertical``, ``add_frame_tag``,
+(``set_preset``, ``reset_all``, ``add_frame_tag``,
 ``select_frame_tag``).
 
 Uses the fake-c4d harness (``sentinel_module`` fixture, tests/conftest.py):
@@ -18,9 +18,18 @@ class TestPanelRenderOpsTable:
     def test_ops_registered(self, sentinel_module):
         from sentinel.ui import panel_render_ops
         for op in ("panel/render", "panel/render/set_preset",
-                   "panel/render/reset_all", "panel/render/force_vertical",
+                   "panel/render/reset_all",
                    "panel/render/add_frame_tag", "panel/render/select_frame_tag"):
             assert op in panel_render_ops.PANEL_RENDER_OPS
+
+    def test_force_vertical_is_retired(self, sentinel_module):
+        """Anti-resurrection pin (v1.36.4). Force 9:16 was removed on the
+        artist's decision: vertical delivery is Sentinel Frame's job (per-
+        format Takes with the right crop and nudge), and the button did not
+        even transpose — it snapped to rungs, so a 2048x858 preset came back
+        1080x1920 with both numbers lost."""
+        from sentinel.ui import panel_render_ops
+        assert "panel/render/force_vertical" not in panel_render_ops.PANEL_RENDER_OPS
 
     def test_panel_render_without_document(self, sentinel_module):
         from sentinel.ui import panel_render_ops
@@ -34,11 +43,6 @@ class TestPanelRenderOpsTable:
     def test_reset_all_without_document(self, sentinel_module):
         from sentinel.ui import panel_render_ops
         response = panel_render_ops.PANEL_RENDER_OPS["panel/render/reset_all"]({"confirm": True})
-        assert response == {"ok": False, "error": "no_document"}
-
-    def test_force_vertical_without_document(self, sentinel_module):
-        from sentinel.ui import panel_render_ops
-        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/force_vertical"]({"confirm": True})
         assert response == {"ok": False, "error": "no_document"}
 
     def test_add_frame_tag_without_document(self, sentinel_module):
@@ -75,18 +79,6 @@ class TestConfirmGate:
 
         monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: _FakeDoc())
         response = panel_render_ops.PANEL_RENDER_OPS["panel/render/reset_all"]({})
-        assert response["ok"] is False
-        assert response["error"] == "confirm_required"
-        assert "confirm_label" in response
-
-    def test_force_vertical_rejected_without_confirm_true(self, sentinel_module, monkeypatch):
-        from sentinel.ui import panel_render_ops
-
-        class _FakeDoc:
-            pass
-
-        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: _FakeDoc())
-        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/force_vertical"]({})
         assert response["ok"] is False
         assert response["error"] == "confirm_required"
         assert "confirm_label" in response

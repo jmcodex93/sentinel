@@ -597,69 +597,6 @@ def _force_render_settings(doc, update_ui=None):
                          f"Resolution: {result['resolution']}")
 
 
-def _toggle_aspect_core(doc, update_ui=None):
-    """Dialog-free core of the Force 9:16 / 16:9 toggle — extracted from
-    ``_toggle_aspect`` (Fase 6.2 Task 1) so a non-interactive caller
-    (``panel_render_ops.py``) can run it without the native
-    ``MessageDialog`` on the "no active render preset" branch.
-
-    Returns ``{"ok": True, "resolution": "WxH", "label": "16:9"|"9:16"}``
-    or ``{"ok": False, "error": <message>}``. Never shows a dialog.
-    """
-    if not doc:
-        return {"ok": False, "error": "no_document"}
-
-    rd = doc.GetActiveRenderData()
-    if not rd:
-        return {"ok": False, "error": "No active render preset"}
-
-    old_w = int(rd[c4d.RDATA_XRES])
-    old_h = int(rd[c4d.RDATA_YRES])
-    is_vertical = old_h > old_w
-
-    if is_vertical:
-        # Currently vertical → switch to horizontal 16:9
-        if old_h >= 3840:
-            w, h = 3840, 2160
-        elif old_h >= 1920:
-            w, h = 1920, 1080
-        else:
-            w, h = 1280, 720
-    else:
-        # Currently horizontal → switch to vertical 9:16
-        if old_w >= 3840:
-            w, h = 2160, 3840
-        elif old_w >= 1920:
-            w, h = 1080, 1920
-        else:
-            w, h = 720, 1280
-
-    rd[c4d.RDATA_XRES] = w
-    rd[c4d.RDATA_YRES] = h
-
-    check_cache.clear()
-    c4d.EventAdd()
-    if update_ui is not None:
-        update_ui()
-
-    label = "16:9" if w > h else "9:16"
-    safe_print(f"Aspect: {old_w}x{old_h} → {w}x{h} ({label})")
-    return {"ok": True, "resolution": "%dx%d" % (w, h), "label": label}
-
-
-def _toggle_aspect(doc, update_ui=None):
-    """Toggle between 16:9 and 9:16 aspect ratio"""
-    if not doc:
-        return
-
-    try:
-        result = _toggle_aspect_core(doc, update_ui=update_ui)
-        if not result["ok"]:
-            c4d.gui.MessageDialog(result["error"])
-    except Exception as e:
-        safe_print(f"Error toggling aspect: {e}")
-
-
 def _add_sentinel_frame_tag_core(doc):
     """Dialog-free core of the Sentinel Frame tag add/select flow —
     extracted from ``_add_sentinel_frame_tag`` (Fase 6.2 Task 1 fix, CRITICAL:

@@ -180,9 +180,8 @@ describe("postrenderStatusLine", () => {
 });
 
 describe("isDestructiveRenderOp", () => {
-  it("flags reset_all and force_vertical as destructive", () => {
+  it("flags reset_all as destructive", () => {
     expect(isDestructiveRenderOp("reset_all")).toBe(true);
-    expect(isDestructiveRenderOp("force_vertical")).toBe(true);
   });
 
   it("does not flag the additive/reversible ops, including aov_tier and set_light_groups", () => {

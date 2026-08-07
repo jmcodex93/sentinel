@@ -79,7 +79,7 @@ type AovListState =
 
 /** The panel's Render section (Fase 6.2) — 5 stacked status blocks reusing
  * the existing engines via thin ops (`panel_render_ops.py`). Destructive
- * actions (Reset All, Force 9:16, an AOV tier) surface an inline confirm bar
+ * actions (Reset All) surface an inline confirm bar
  * driven by the server's `confirm_label` — the SPA never invents its own
  * copy for what a mutation is about to do. Null blocks render a distinct
  * "not available" note rather than hiding, mirroring the QC section's
@@ -121,9 +121,10 @@ export function RenderSection({
   /** Receives the chosen preset's chain INDEX (the option value) — the page
    * resolves it back to a name+index pair for `set_preset`. */
   onSetPreset: (index: number) => void;
-  /** Reset All / Force 9:16 — the only two render ops that are still
-   * genuinely destructive and confirm-gated. */
-  onDestructive: (op: "reset_all" | "force_vertical") => void;
+  /** Reset All — the only render op left that is genuinely destructive and
+   * confirm-gated (Force 9:16 was retired in v1.36.4: vertical delivery is
+   * Sentinel Frame's job, a block below). */
+  onDestructive: (op: "reset_all") => void;
   onAddFrameTag: () => void;
   onSelectFrameTag: () => void;
   /** Coverage action — Essentials/Production ADD any missing AOVs up to
@@ -231,9 +232,6 @@ export function RenderSection({
             />
             <Button variant="secondary" disabled={false} onClick={() => onDestructive("reset_all")}>
               Reset All⚠
-            </Button>
-            <Button variant="secondary" disabled={false} onClick={() => onDestructive("force_vertical")}>
-              Force 9:16⚠
             </Button>
           </>
         )}

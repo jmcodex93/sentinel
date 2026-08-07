@@ -79,12 +79,12 @@ export function postrenderStatusLine(postrender: PanelRenderPostrender | null): 
 }
 
 /** The `panel/render/*` ops the server confirm-gates (`_needs_confirm` in
- * panel_render_ops.py: `reset_all`, `force_vertical`) — every other
+ * panel_render_ops.py: `reset_all`) — every other
  * mutation, including the additive `aov_tier` coverage actions and the
  * `set_light_groups`/`set_multipart` toggles, is reversible/idempotent and
  * runs without an inline confirm step, mirroring the native panel's own
  * lack of a confirmation dialog for those actions. */
-const DESTRUCTIVE_RENDER_OPS = new Set(["reset_all", "force_vertical"]);
+const DESTRUCTIVE_RENDER_OPS = new Set(["reset_all"]);
 
 export function isDestructiveRenderOp(op: string): boolean {
   return DESTRUCTIVE_RENDER_OPS.has(op);
