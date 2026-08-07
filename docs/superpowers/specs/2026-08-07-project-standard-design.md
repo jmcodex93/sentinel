@@ -110,6 +110,14 @@ Nada más: sin restos de nadie, con las rutas tokenizadas resolviéndose solas.
 
 **El artista nunca ve el ruleset.** No tiene que aprender qué es: le llegan escenas correctas.
 
+### El día 1 de un proyecto: la master la monta el supervisor
+
+"Shot bendecido" no significa shot de producción: **es cualquier escena que tengas abierta y pase el QC**. El día 1 de un proyecto el supervisor monta su master —de cero, o copiando a mano la de otro proyecto— la abre y la publica. A partir de ahí `template_scene` apunta a ella y el `new.c4d` del plugin deja de intervenir **para ese proyecto**.
+
+**Descartado en el brainstorm** (decisión del artista, para que nadie lo re-derive): heredar el estándar de otro proyecto con un gesto, y una biblioteca de masters del estudio por tipo de pieza. Ambas son plausibles y ninguna tiene demanda todavía; de dónde sale la master el día 1 es asunto del supervisor, no de la herramienta.
+
+**Reparto de la caída al `new.c4d` del plugin**, que es deliberadamente asimétrico: *Reset All* cae a él en silencio cuando el ruleset no dice nada (normalizar unos presets con el default es razonable); *nuevo shot* **se niega** (arrancar un shot entero del estándar equivocado, no).
+
 ## Errores — negarse claro antes que seguir a medias
 
 - **No hay estándar en esa carpeta** → se dice, con la ruta donde buscó.
