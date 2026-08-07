@@ -617,3 +617,92 @@ def test_blank_template_scene_is_rejected_rather_than_read_as_a_path(tmp_path):
     assert context.params["standard_fps"] == 24
     assert rules.resolve_template_scene(context) is None
     assert any("template_scene" in warning for warning in context.warnings)
+
+
+# --- shot_pattern: folder pattern for new shots ---
+
+
+class TestShotPatternKey:
+    def test_valid_pattern_is_accepted(self, tmp_path):
+        p = tmp_path / "sentinel_rules.json"
+        p.write_text(json.dumps({"shot_pattern": "shots/{shot}/{shot}_v001.c4d"}))
+        rules.invalidate()
+        resolved = rules.load_rules(p)
+        assert resolved[0]["shot_pattern"] == "shots/{shot}/{shot}_v001.c4d"
+        assert resolved[1] == []
+
+    def test_pattern_without_shot_token_is_rejected_by_name(self, tmp_path):
+        """A pattern with no {shot} placeholder can't name a shot — rejected,
+        rest of the file still applies (house per-key contract)."""
+        p = tmp_path / "sentinel_rules.json"
+        p.write_text(json.dumps({"shot_pattern": "shots/fixed_v001.c4d", "standard_fps": 24}))
+        rules.invalidate()
+        params, warnings = rules.load_rules(p)
+        assert "shot_pattern" not in params
+        assert params["standard_fps"] == 24
+        assert any("shot_pattern" in w for w in warnings)
+
+    def test_absolute_pattern_is_rejected(self, tmp_path):
+        p = tmp_path / "sentinel_rules.json"
+        p.write_text(json.dumps({"shot_pattern": "/abs/{shot}.c4d"}))
+        rules.invalidate()
+        params, warnings = rules.load_rules(p)
+        assert "shot_pattern" not in params
+
+    def test_non_string_is_rejected(self, tmp_path):
+        p = tmp_path / "sentinel_rules.json"
+        p.write_text(json.dumps({"shot_pattern": 7}))
+        rules.invalidate()
+        params, warnings = rules.load_rules(p)
+        assert "shot_pattern" not in params
+
+    def test_backslashes_normalize_to_forward_slashes(self, tmp_path):
+        """A Windows supervisor pastes backslashes; accept and normalize
+        (the Work Flow plugin's rule, studied 2026-08: both separators in,
+        '/' out)."""
+        p = tmp_path / "sentinel_rules.json"
+        p.write_text(json.dumps({"shot_pattern": "shots\\{shot}\\{shot}_v001.c4d"}))
+        rules.invalidate()
+        params, warnings = rules.load_rules(p)
+        assert params["shot_pattern"] == "shots/{shot}/{shot}_v001.c4d"
+
+    def test_windows_hostile_segments_are_rejected(self, tmp_path):
+        """Segments that cannot exist as Windows folders — reserved device
+        names, invalid characters, trailing dots/spaces, '..' escapes — are
+        rejected at validation time, not discovered on the artist's machine.
+        Cross-platform is a project constraint."""
+        for bad in ("shots/../{shot}.c4d", "CON/{shot}.c4d",
+                    "sh<ot>/{shot}.c4d", "shots./{shot}.c4d"):
+            p = tmp_path / "sentinel_rules.json"
+            p.write_text(json.dumps({"shot_pattern": bad}))
+            rules.invalidate()
+            params, warnings = rules.load_rules(p)
+            assert "shot_pattern" not in params, bad
+
+
+# --- published: publish provenance ---
+
+
+class TestPublishedKey:
+    def test_valid_provenance_dict_is_accepted(self, tmp_path):
+        p = tmp_path / "sentinel_rules.json"
+        p.write_text(json.dumps({"published": {"by": "Javier", "at": "2026-08-07 12:00:00"}}))
+        rules.invalidate()
+        params, warnings = rules.load_rules(p)
+        assert params["published"] == {"by": "Javier", "at": "2026-08-07 12:00:00"}
+        assert warnings == []
+
+    def test_non_dict_is_rejected_by_name(self, tmp_path):
+        p = tmp_path / "sentinel_rules.json"
+        p.write_text(json.dumps({"published": "Javier", "standard_fps": 24}))
+        rules.invalidate()
+        params, warnings = rules.load_rules(p)
+        assert "published" not in params
+        assert params["standard_fps"] == 24
+
+    def test_non_string_values_are_rejected(self, tmp_path):
+        p = tmp_path / "sentinel_rules.json"
+        p.write_text(json.dumps({"published": {"by": 3}}))
+        rules.invalidate()
+        params, warnings = rules.load_rules(p)
+        assert "published" not in params
