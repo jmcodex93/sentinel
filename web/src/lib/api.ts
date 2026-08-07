@@ -67,6 +67,8 @@ import type {
   PanelRenderSection,
   MatwireCreateResult,
   MatwirePreviewResult,
+  NewShotCreateResponse,
+  NewShotPreviewResponse,
   RenameApplyResult,
   RenamePreviewResult,
   PaletteAction,
@@ -74,6 +76,8 @@ import type {
   PaletteRunResponse,
   QcReport,
   QcReportResult,
+  StandardPreviewResponse,
+  StandardPublishResponse,
   RenderValidationReport,
   RenderValidationReportResult,
   SaveVersionState,
@@ -1429,4 +1433,58 @@ export async function postMatwireCreate(
     multiply_ao: multiplyAo,
     material,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Project standard (v1.37) — see `_op_standard_preview` / `_op_standard_publish`
+// / `_op_newshot_preview` / `_op_newshot_create` in panel_tools_ops.py. Same
+// server-derives-from-scratch idiom as matwire: previews are read-only and
+// re-derive from the live scene/folder on every call, mutations re-derive
+// too rather than trusting a client-cached preview.
+// ---------------------------------------------------------------------------
+
+/** `POST /api/panel/tools/standard_preview` — server-derived QC + scene
+ * summary for publishing the project standard. `folder` is optional (the
+ * server falls back to the active document's own folder). `?mock=1` has no
+ * live document behind it, so it serves an informative failure. */
+export async function fetchStandardPreview(folder?: string): Promise<StandardPreviewResponse> {
+  if (isMock()) return { ok: false, error: "no_document" };
+  return postForm<StandardPreviewResponse>("/api/panel/tools/standard_preview", { folder });
+}
+
+/** `POST /api/panel/tools/standard_publish` — writes the standard scene +
+ * `sentinel_rules.json` to `folder` in one step. `exclude` = `[name,
+ * index]` pairs (see `ExcludeEntry`/`toggleExclude` in
+ * lib/panelStandard.ts); `pattern` is the shot-name token pattern to
+ * record (or `null`). `?mock=1` has nothing to publish, so it resolves an
+ * informative failure (same convention as `postMatwireCreate`). */
+export async function postStandardPublish(
+  folder: string,
+  exclude: [string, number][],
+  pattern: string | null,
+): Promise<StandardPublishResponse> {
+  if (isMock()) return { ok: false, error: "bad_folder" };
+  return postForm<StandardPublishResponse>("/api/panel/tools/standard_publish", {
+    folder,
+    exclude,
+    pattern,
+  });
+}
+
+/** `POST /api/panel/tools/newshot_preview` — resolves the project standard
+ * (ruleset + template scene) that a new shot under `folder` would inherit,
+ * without creating anything. `?mock=1` has no folder to resolve against,
+ * so it serves an informative failure. */
+export async function fetchNewShotPreview(folder: string): Promise<NewShotPreviewResponse> {
+  if (isMock()) return { ok: false, error: "bad_folder" };
+  return postForm<NewShotPreviewResponse>("/api/panel/tools/newshot_preview", { folder });
+}
+
+/** `POST /api/panel/tools/newshot_create` — copies the resolved standard
+ * scene to `folder/<name>.c4d` and (best-effort) opens it. `?mock=1` has
+ * nothing to copy, so it resolves an informative failure (same convention
+ * as `postStandardPublish`). */
+export async function postNewShotCreate(folder: string, name: string): Promise<NewShotCreateResponse> {
+  if (isMock()) return { ok: false, error: "bad_folder" };
+  return postForm<NewShotCreateResponse>("/api/panel/tools/newshot_create", { folder, name });
 }
