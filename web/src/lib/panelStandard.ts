@@ -20,8 +20,15 @@ export function toggleExclude(list: ExcludeEntry[], name: string, index: number)
   return [...list, [name, index]];
 }
 
-export function publishDisabledReason(state: { folder: string; qcPass: boolean }): string | null {
+export function publishDisabledReason(state: {
+  folder: string;
+  qcPass: boolean;
+  previewedFolder: string | null;
+}): string | null {
   if (!state.folder) return "Choose the project folder first.";
+  if (state.folder !== state.previewedFolder) {
+    return "Preview this folder first — the publish must match what you reviewed.";
+  }
   if (!state.qcPass) return "The scene must pass the QC before publishing.";
   return null;
 }
@@ -33,6 +40,7 @@ export const STANDARD_ERROR_COPY: Record<string, string> = {
   qc_failing: "The scene must pass the QC before publishing.",
   scene_changed: "The scene changed since the preview — review and publish again.",
   rules_unreadable: "The existing sentinel_rules.json cannot be read. Fix or remove it first.",
+  bad_pattern: "The shot pattern must be relative and contain {shot}.",
   save_failed: "Could not write the standard scene file.",
   write_failed: "Could not write sentinel_rules.json.",
 };
@@ -42,7 +50,7 @@ export const NEWSHOT_ERROR_COPY: Record<string, string> = {
   no_standard: "No project standard found here (no sentinel_rules.json in this folder or its parents).",
   no_template: "This project's ruleset does not declare a standard scene.",
   template_missing: "The standard scene file is missing — ask the supervisor to republish.",
-  bad_name: "Shot names cannot be empty or contain slashes.",
+  bad_name: "Shot names cannot be empty, contain slashes, or use Windows-reserved characters/names.",
   exists: "A shot with that name already exists. Nothing was overwritten.",
   copy_failed: "Could not copy the standard scene to the destination.",
 };

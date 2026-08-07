@@ -121,6 +121,11 @@ def republish_diff(existing, derived):
         old, new = existing.get(key), derived.get(key)
         if old is not None and new is not None and old != new:
             lines.append(f"{label}: {old} → {new}")
+    # approved_presets and required_presets both get the blessed scene's
+    # preset names (derive_rules_payload), so a republish nearly always
+    # changes them identically. Collapse that into ONE line — two lines
+    # saying the same thing reads like a doubled diff, not two decisions.
+    preset_diffs = {}
     for key in ("approved_presets", "required_presets"):
         old, new = existing.get(key), derived.get(key)
         if old is None or new is None:
@@ -128,6 +133,18 @@ def republish_diff(existing, derived):
         added = [p for p in new if p not in old]
         removed = [p for p in old if p not in new]
         if added or removed:
+            preset_diffs[key] = (added, removed)
+    if len(preset_diffs) == 2:
+        a_added, a_removed = preset_diffs["approved_presets"]
+        r_added, r_removed = preset_diffs["required_presets"]
+        identical = a_added == r_added and a_removed == r_removed
+    else:
+        identical = False
+    if identical:
+        bits = [f"+{p}" for p in a_added] + [f"-{p}" for p in a_removed]
+        lines.append("presets: " + " ".join(bits))
+    else:
+        for key, (added, removed) in preset_diffs.items():
             bits = [f"+{p}" for p in added] + [f"-{p}" for p in removed]
             lines.append(f"{key}: " + " ".join(bits))
     if existing.get("template_scene"):

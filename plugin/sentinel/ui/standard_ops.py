@@ -50,6 +50,11 @@ def _scene_block(doc):
 
 
 def _qc_block(doc):
+    """``pass`` reflects ``passed == total`` from the shared scoring, which
+    (repo-wide contract) counts an accepted-baseline violation as passing.
+    A shot with accepted violations CAN publish the standard — by design,
+    not an oversight; the baseline IS the record of "this is intentional
+    here"."""
     _ctx, _results, report = panel_ops._run_qc_scoring(doc)
     score = report.get("score") or {}
     passed = int(score.get("passed") or 0)
@@ -140,6 +145,31 @@ def _op_standard_publish(payload):
     if not readable:
         return {"ok": False, "error": "rules_unreadable"}
 
+    # Validate BEFORE writing anything. A client-provided pattern that
+    # fails rules._validate_key would otherwise sail into the ruleset and
+    # get silently rejected again at load time — a green toast and a
+    # degraded project. A derived pattern is trusted (it comes from
+    # ``derive_shot_pattern``, not the network), but it is still run
+    # through the validator for normalization; if it somehow fails, the
+    # key is omitted rather than the publish refused — a derivation bug
+    # is ours, not the supervisor's typo to fix.
+    raw_pattern = payload.get("pattern")
+    if raw_pattern is not None:
+        raw_pattern = str(raw_pattern).strip() or None
+    if raw_pattern is not None:
+        valid, normalized, _reason = rules_module._validate_key(
+            "shot_pattern", raw_pattern)
+        if not valid:
+            return {"ok": False, "error": "bad_pattern"}
+        pattern = normalized
+    else:
+        derived_pattern = projectstd.derive_shot_pattern(scene_path, folder)
+        pattern = None
+        if derived_pattern is not None:
+            valid, normalized, _reason = rules_module._validate_key(
+                "shot_pattern", derived_pattern)
+            pattern = normalized if valid else None
+
     # Re-derive the exclusion against the LIVE scene. Location identity
     # (name + sibling index), honored only when both still match — a stale
     # preview refuses instead of removing the wrong branch.
@@ -154,32 +184,36 @@ def _op_standard_publish(payload):
             return {"ok": False, "error": "scene_changed"}
         excludes.append(index)
 
-    # Clone, strip the curated-out branches, save. The live document is
-    # never mutated — the standard is a cleaned COPY.
+    # Clone, strip the curated-out branches, save to a TEMP path. The live
+    # document is never mutated — the standard is a cleaned COPY. Saving to
+    # a tmp path (renamed into place only after the rules file is safely
+    # written, see below) keeps the window where a half-published project
+    # could exist as narrow as a single os.replace.
     clone = doc.GetClone(c4d.COPYFLAGS_NONE)
     if clone is None:
         return {"ok": False, "error": "save_failed"}
     scene_dest = os.path.join(folder, projectstd.STANDARD_SCENE_NAME)
+    tmp_scene = scene_dest + ".tmp"
     try:
         clone_tops, obj = [], clone.GetFirstObject()
         while obj:
             clone_tops.append(obj)
             obj = obj.GetNext()
+        if len(clone_tops) != len(tops):
+            # The scene changed between the top-level snapshot and the
+            # clone (an object was added/removed at the root) — the
+            # exclude indices can no longer be trusted against this clone.
+            return {"ok": False, "error": "scene_changed"}
         for index in excludes:
             clone_tops[index].Remove()
         saved = c4d.documents.SaveDocument(
-            clone, scene_dest,
+            clone, tmp_scene,
             c4d.SAVEDOCUMENTFLAGS_DONTADDTORECENTLIST, c4d.FORMAT_C4DEXPORT)
     finally:
         c4d.documents.KillDocument(clone)
     if not saved:
         return {"ok": False, "error": "save_failed"}
 
-    pattern = payload.get("pattern")
-    if pattern is not None:
-        pattern = str(pattern).strip() or None
-    if pattern is None:
-        pattern = projectstd.derive_shot_pattern(scene_path, folder)
     derived = projectstd.derive_rules_payload(
         fps=doc.GetFps(),
         start_frame=_scene_block(doc)["start_frame"],
@@ -189,17 +223,29 @@ def _op_standard_publish(payload):
         published_at=time.strftime("%Y-%m-%d %H:%M:%S"))
     merged = projectstd.merge_rules(existing_raw, derived)
     rules_path = os.path.join(folder, rules_module.RULES_FILENAME)
-    tmp_path = rules_path + ".tmp"
+    tmp_rules = rules_path + ".tmp"
     try:
-        with open(tmp_path, "w", encoding="utf-8") as fh:
+        with open(tmp_rules, "w", encoding="utf-8") as fh:
             json.dump(merged, fh, indent=2, ensure_ascii=False)
-        os.replace(tmp_path, rules_path)
+        os.replace(tmp_rules, rules_path)
     except Exception:
         try:
-            os.remove(tmp_path)
+            os.remove(tmp_rules)
+        except Exception:
+            pass
+        try:
+            os.remove(tmp_scene)
         except Exception:
             pass
         return {"ok": False, "error": "write_failed"}
+
+    # Rules are the source of truth and are now committed. Only the final
+    # rename of the scene remains — the narrowest possible torn window.
+    try:
+        os.replace(tmp_scene, scene_dest)
+    except Exception:
+        return {"ok": False, "error": "save_failed"}
+
     rules_module.invalidate()
     return {"ok": True, "scene_path": scene_dest, "rules_path": rules_path,
             "excluded": len(excludes)}

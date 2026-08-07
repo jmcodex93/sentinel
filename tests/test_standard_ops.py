@@ -108,8 +108,16 @@ class TestStandardOps:
     def _setup(self, standard_ops, monkeypatch, doc, saved=True):
         monkeypatch.setattr(standard_ops.c4d.documents, "GetActiveDocument",
                             lambda: doc)
+        def _fake_save(d, p, f, fmt):
+            # Real SaveDocument writes bytes at ``p``; the op now saves to
+            # a ``.tmp`` path and renames it into place, so the fake must
+            # actually create the file for that rename to succeed.
+            if saved:
+                with open(p, "wb") as fh:
+                    fh.write(b"C4Dfake")
+            return saved
         monkeypatch.setattr(standard_ops.c4d.documents, "SaveDocument",
-                            lambda d, p, f, fmt: saved)
+                            _fake_save)
         monkeypatch.setattr(standard_ops.c4d.documents, "KillDocument",
                             lambda d: None)
 
@@ -198,6 +206,9 @@ class TestStandardOps:
         # the excluded branch was removed from the CLONE, not the live doc
         assert doc.clone._objects[1].removed is True
         assert doc._objects[1].removed is False
+        # the tmp scene was renamed into place, not left behind
+        assert (tmp_path / "sentinel_standard.c4d").exists()
+        assert not (tmp_path / "sentinel_standard.c4d.tmp").exists()
 
     def test_publish_preserves_manual_keys_on_republish(self, sentinel_module, monkeypatch, tmp_path):
         from sentinel.ui import standard_ops
@@ -263,6 +274,67 @@ class TestStandardOps:
         out = standard_ops._op_standard_publish({"folder": str(tmp_path)})
         assert out == {"ok": False, "error": "rules_unreadable"}
         assert (tmp_path / "sentinel_rules.json").read_text() == "{not json"
+
+    def test_publish_bad_client_pattern_refuses_before_writing(self, sentinel_module, monkeypatch, tmp_path):
+        """A client-provided pattern that rules._validate_key would reject
+        at load time must be refused up front — not written, discovered
+        as a silently degraded project later."""
+        from sentinel.ui import standard_ops
+        doc = _FakeDoc()
+        self._setup(standard_ops, monkeypatch, doc)
+        _passing_qc(standard_ops, monkeypatch)
+        out = standard_ops._op_standard_publish({
+            "folder": str(tmp_path), "pattern": "no_token_here"})
+        assert out == {"ok": False, "error": "bad_pattern"}
+        assert not (tmp_path / "sentinel_rules.json").exists()
+        assert not (tmp_path / "sentinel_standard.c4d").exists()
+        assert not (tmp_path / "sentinel_standard.c4d.tmp").exists()
+
+    def test_publish_clone_top_level_mismatch_refuses(self, sentinel_module, monkeypatch, tmp_path):
+        """GetClone() runs after the top-level snapshot; if the live scene
+        gained/lost a root object in between, the exclude indices no
+        longer point at the same objects in the clone. A count mismatch
+        is the cheap, honest signal — refuse loudly instead of removing
+        (or keeping) the wrong branch."""
+        from sentinel.ui import standard_ops
+        doc = _FakeDoc(objects=[_FakeObj("Cameras", 1)])
+        real_get_clone = doc.GetClone
+        def _mismatched_clone(flags):
+            clone = real_get_clone(flags)
+            clone._objects.append(_FakeObj("Extra", 0))
+            clone._first_obj = _link(clone._objects)
+            return clone
+        doc.GetClone = _mismatched_clone
+        self._setup(standard_ops, monkeypatch, doc)
+        _passing_qc(standard_ops, monkeypatch)
+        out = standard_ops._op_standard_publish({"folder": str(tmp_path)})
+        assert out == {"ok": False, "error": "scene_changed"}
+        assert not (tmp_path / "sentinel_rules.json").exists()
+        assert not (tmp_path / "sentinel_standard.c4d").exists()
+
+    def test_publish_rules_write_failure_leaves_no_scene_behind(self, sentinel_module, monkeypatch, tmp_path):
+        """The scene clone saves to a .tmp path FIRST; it is only renamed
+        into place AFTER the rules file writes successfully. If the rules
+        write fails, the tmp scene must be cleaned up too — a half-
+        published project (new scene, no/old rules) is worse than a
+        clean refusal."""
+        from sentinel.ui import standard_ops
+        doc = _FakeDoc()
+        self._setup(standard_ops, monkeypatch, doc)
+        _passing_qc(standard_ops, monkeypatch)
+        # Not the property under test — see the identical stub + comment on
+        # test_publish_preserves_manual_keys_on_republish (collection-order
+        # c4d.storage binding issue, unrelated to this test).
+        monkeypatch.setattr(standard_ops.GlobalSettings, "load_artist_name",
+                            staticmethod(lambda: ""))
+        def _boom_dump(*a, **k):
+            raise OSError("disk full")
+        monkeypatch.setattr(standard_ops.json, "dump", _boom_dump)
+        out = standard_ops._op_standard_publish({"folder": str(tmp_path)})
+        assert out == {"ok": False, "error": "write_failed"}
+        assert not (tmp_path / "sentinel_rules.json").exists()
+        assert not (tmp_path / "sentinel_standard.c4d").exists()
+        assert not (tmp_path / "sentinel_standard.c4d.tmp").exists()
 
 
 class TestNewShotOps:

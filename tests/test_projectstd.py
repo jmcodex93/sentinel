@@ -110,12 +110,31 @@ class TestRepublishDiff:
         assert lines == ["fps: 25 → 24"]
 
     def test_preset_add_remove_named(self):
+        """approved_presets and required_presets both get the blessed
+        scene's preset names, so a republish changes them identically —
+        collapsed into exactly ONE line, not one per key."""
         lines = projectstd.republish_diff(
-            {"required_presets": ["previz", "stills"]},
+            {"required_presets": ["previz", "stills"],
+             "approved_presets": ["previz", "stills"]},
             {"required_presets": ["previz", "cliente_9x16"],
              "approved_presets": ["previz", "cliente_9x16"]})
-        assert any("+cliente_9x16" in l for l in lines)
-        assert any("-stills" in l for l in lines)
+        preset_lines = [l for l in lines if l.startswith("presets:")]
+        assert len(preset_lines) == 1
+        assert "+cliente_9x16" in preset_lines[0]
+        assert "-stills" in preset_lines[0]
+        assert not any(l.startswith("required_presets:") or
+                       l.startswith("approved_presets:") for l in lines)
+
+    def test_preset_change_in_only_one_key_keeps_per_key_label(self):
+        """When the two keys diverge (e.g. only required_presets changed,
+        approved_presets held steady), the per-key label survives — the
+        collapse only applies to an IDENTICAL change."""
+        lines = projectstd.republish_diff(
+            {"required_presets": ["previz", "stills"],
+             "approved_presets": ["previz", "stills"]},
+            {"required_presets": ["previz", "cliente_9x16"],
+             "approved_presets": ["previz", "stills"]})
+        assert lines == ["required_presets: +cliente_9x16 -stills"]
 
     def test_unchanged_keys_produce_no_lines(self):
         same = {"standard_fps": 25, "required_presets": ["a"]}

@@ -1437,16 +1437,19 @@ export async function postMatwireCreate(
 
 // ---------------------------------------------------------------------------
 // Project standard (v1.37) — see `_op_standard_preview` / `_op_standard_publish`
-// / `_op_newshot_preview` / `_op_newshot_create` in panel_tools_ops.py. Same
+// / `_op_newshot_preview` / `_op_newshot_create` in ui/standard_ops.py. Same
 // server-derives-from-scratch idiom as matwire: previews are read-only and
 // re-derive from the live scene/folder on every call, mutations re-derive
 // too rather than trusting a client-cached preview.
 // ---------------------------------------------------------------------------
 
 /** `POST /api/panel/tools/standard_preview` — server-derived QC + scene
- * summary for publishing the project standard. `folder` is optional (the
- * server falls back to the active document's own folder). `?mock=1` has no
- * live document behind it, so it serves an informative failure. */
+ * summary for publishing the project standard. `folder` is optional — an
+ * omitted folder does NOT fall back to any folder server-side, it just
+ * means the op reports QC/scene against the active document with no
+ * project folder to derive a pattern/diff/existing-rules against (those
+ * come back empty). `?mock=1` has no live document behind it, so it
+ * serves an informative failure. */
 export async function fetchStandardPreview(folder?: string): Promise<StandardPreviewResponse> {
   if (isMock()) return { ok: false, error: "no_document" };
   return postForm<StandardPreviewResponse>("/api/panel/tools/standard_preview", { folder });
@@ -1481,9 +1484,11 @@ export async function fetchNewShotPreview(folder: string): Promise<NewShotPrevie
 }
 
 /** `POST /api/panel/tools/newshot_create` — copies the resolved standard
- * scene to `folder/<name>.c4d` and (best-effort) opens it. `?mock=1` has
- * nothing to copy, so it resolves an informative failure (same convention
- * as `postStandardPublish`). */
+ * scene to the destination the project's `shot_pattern` derives (e.g.
+ * `shots/{shot}/{shot}_v001.c4d`, possibly nested — see
+ * `projectstd.shot_destination`, NOT a flat `folder/<name>.c4d`) and
+ * (best-effort) opens it. `?mock=1` has nothing to copy, so it resolves an
+ * informative failure (same convention as `postStandardPublish`). */
 export async function postNewShotCreate(folder: string, name: string): Promise<NewShotCreateResponse> {
   if (isMock()) return { ok: false, error: "bad_folder" };
   return postForm<NewShotCreateResponse>("/api/panel/tools/newshot_create", { folder, name });

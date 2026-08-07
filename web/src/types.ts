@@ -1342,15 +1342,16 @@ export interface MatwireCreateResult {
 
 // ---------------------------------------------------------------------------
 // Project standard (v1.37) — see `_op_standard_preview` / `_op_standard_publish`
-// / `_op_newshot_preview` / `_op_newshot_create` in panel_tools_ops.py.
+// / `_op_newshot_preview` / `_op_newshot_create` in ui/standard_ops.py.
 // ---------------------------------------------------------------------------
 
 /** `POST /api/panel/tools/standard_preview` — see `_op_standard_preview` in
- * panel_tools_ops.py. `error` is one of `no_document` / `unsaved` /
+ * ui/standard_ops.py. `error` is one of `no_document` / `unsaved` /
  * `bad_folder`. `pattern` is the detected shot-name token pattern (or
- * `null` if none could be inferred); `wont_travel` names objects the
- * publish step will leave out of the shared template (e.g. links outside
- * the project). */
+ * `null` if none could be inferred); `wont_travel` is the fixed copy of
+ * what a publish never carries forward (version history/notes/TODOs, the
+ * file's own version number — see `projectstd.WONT_TRAVEL`), not a list
+ * of excluded scene objects. */
 export interface StandardPreviewResponse {
   ok: boolean;
   qc?: {
@@ -1373,12 +1374,12 @@ export interface StandardPreviewResponse {
 }
 
 /** `POST /api/panel/tools/standard_publish` — see `_op_standard_publish` in
- * panel_tools_ops.py. `exclude` on the request is `[name, index]` pairs
+ * ui/standard_ops.py. `exclude` on the request is `[name, index]` pairs
  * (mirrors `ExcludeEntry` in lib/panelStandard.ts). `error` is one of
  * `no_document` / `unsaved` / `bad_folder` / `qc_failing` / `scene_changed`
- * / `rules_unreadable` / `save_failed` / `write_failed`; `failing` rides
- * along with `qc_failing` so the SPA can name the blockers without a
- * second round-trip. */
+ * / `rules_unreadable` / `bad_pattern` / `save_failed` / `write_failed`;
+ * `failing` rides along with `qc_failing` so the SPA can name the
+ * blockers without a second round-trip. */
 export interface StandardPublishResponse {
   ok: boolean;
   scene_path?: string;
@@ -1389,7 +1390,7 @@ export interface StandardPublishResponse {
 }
 
 /** `POST /api/panel/tools/newshot_preview` — see `_op_newshot_preview` in
- * panel_tools_ops.py. `error` is one of `bad_folder` / `no_standard` /
+ * ui/standard_ops.py. `error` is one of `bad_folder` / `no_standard` /
  * `no_template` / `template_missing`; on `no_standard` the server echoes
  * back the single `folder` it was given as `searched` (not a list of
  * ancestor folders walked). `published` mirrors the ruleset's own
@@ -1408,7 +1409,7 @@ export interface NewShotPreviewResponse {
 }
 
 /** `POST /api/panel/tools/newshot_create` — see `_op_newshot_create` in
- * panel_tools_ops.py. `error` is one of `bad_folder` / `no_standard` /
+ * ui/standard_ops.py. `error` is one of `bad_folder` / `no_standard` /
  * `no_template` / `template_missing` / `bad_name` / `exists` /
  * `copy_failed`; `path` rides along with `exists`/`copy_failed` so the SPA
  * can point at the offending destination. `opened` is true when Sentinel

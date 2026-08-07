@@ -27,6 +27,11 @@ export function StandardSubview({ onBack }: { onBack: () => void }) {
   const [exclude, setExclude] = useState<ExcludeEntry[]>([]);
   const [patternText, setPatternText] = useState("");
   const [applying, setApplying] = useState(false);
+  // The folder the LATEST landed preview actually ran against. Publish is
+  // gated on `folder === previewedFolder` (panelStandard.ts) — typing a
+  // different path and hitting Publish without re-previewing would ship a
+  // diff nobody saw.
+  const [previewedFolder, setPreviewedFolder] = useState<string | null>(null);
 
   // Monotonic sequence: only the LATEST in-flight preview may land (a slow
   // stale response must never overwrite a newer scan).
@@ -37,6 +42,7 @@ export function StandardSubview({ onBack }: { onBack: () => void }) {
     const result = await fetchStandardPreview(dir || undefined);
     if (seq !== seqRef.current) return;
     setPreview(result);
+    setPreviewedFolder(dir);
     // Re-seed the editable state from the server's scan: a re-scan is a new
     // scan, and stale exclusions/pattern edits for a prior folder must not
     // linger silently.
@@ -46,7 +52,10 @@ export function StandardSubview({ onBack }: { onBack: () => void }) {
     }
   }, []);
 
-  // Load once on mount against the active document's own folder (folder="").
+  // Load once on mount. `folder=""` does not fall back to any folder on
+  // the server — it just runs QC/scene against the active document with
+  // no project folder to derive a pattern or diff against, so the
+  // pattern/existing_rules/diff blocks come back empty.
   useEffect(() => {
     void loadPreview("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -72,7 +81,7 @@ export function StandardSubview({ onBack }: { onBack: () => void }) {
     ? (STANDARD_ERROR_COPY[preview.error ?? ""] ?? "Preview unavailable.")
     : null;
 
-  const disabledReason = publishDisabledReason({ folder, qcPass: qc?.pass ?? false });
+  const disabledReason = publishDisabledReason({ folder, qcPass: qc?.pass ?? false, previewedFolder });
   const canPublish = !applying && !!preview?.ok && !disabledReason;
 
   const handlePublish = async () => {

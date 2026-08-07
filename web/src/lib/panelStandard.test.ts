@@ -34,21 +34,26 @@ describe("toggleExclude", () => {
 
 describe("publishDisabledReason", () => {
   it("needs a folder first", () => {
-    expect(publishDisabledReason({ folder: "", qcPass: true })).toBe("Choose the project folder first.");
+    expect(publishDisabledReason({ folder: "", qcPass: true, previewedFolder: null }))
+      .toBe("Choose the project folder first.");
   });
-  it("refuses on failing QC", () => {
-    expect(publishDisabledReason({ folder: "/prj", qcPass: false }))
+  it("needs a preview of THIS folder before publish is allowed", () => {
+    expect(publishDisabledReason({ folder: "/prj", qcPass: true, previewedFolder: "/other" }))
+      .toBe("Preview this folder first — the publish must match what you reviewed.");
+  });
+  it("refuses on failing QC once the preview matches", () => {
+    expect(publishDisabledReason({ folder: "/prj", qcPass: false, previewedFolder: "/prj" }))
       .toBe("The scene must pass the QC before publishing.");
   });
-  it("null when publishable", () => {
-    expect(publishDisabledReason({ folder: "/prj", qcPass: true })).toBeNull();
+  it("null when publishable and the preview matches the folder", () => {
+    expect(publishDisabledReason({ folder: "/prj", qcPass: true, previewedFolder: "/prj" })).toBeNull();
   });
 });
 
 describe("error copy", () => {
   it("every server code the ops can return has copy", () => {
     for (const code of ["no_document", "unsaved", "bad_folder", "qc_failing",
-      "scene_changed", "rules_unreadable", "save_failed", "write_failed"]) {
+      "scene_changed", "rules_unreadable", "bad_pattern", "save_failed", "write_failed"]) {
       expect(STANDARD_ERROR_COPY[code]).toBeTruthy();
     }
     for (const code of ["bad_folder", "no_standard", "no_template",
