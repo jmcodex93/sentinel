@@ -233,6 +233,18 @@ class TestStandardOps:
         assert out == {"ok": False, "error": "scene_changed"}
         assert not (tmp_path / "sentinel_rules.json").exists()
 
+    def test_publish_in_bounds_name_mismatch_refuses(self, sentinel_module, monkeypatch, tmp_path):
+        """Exclude guard checks both index bounds AND name identity: in-bounds
+        name mismatch (stale preview row) refuses instead of silently dropping."""
+        from sentinel.ui import standard_ops
+        doc = _FakeDoc(objects=[_FakeObj("Cameras", 1)])
+        self._setup(standard_ops, monkeypatch, doc)
+        _passing_qc(standard_ops, monkeypatch)
+        out = standard_ops._op_standard_publish({
+            "folder": str(tmp_path), "exclude": [["wrong", 0]]})
+        assert out == {"ok": False, "error": "scene_changed"}
+        assert not (tmp_path / "sentinel_rules.json").exists()
+
     def test_publish_save_failure_does_not_write_rules(self, sentinel_module, monkeypatch, tmp_path):
         from sentinel.ui import standard_ops
         doc = _FakeDoc()
