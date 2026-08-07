@@ -37,7 +37,10 @@ function ToastRow({ item, onDismiss }: { item: ToastItem; onDismiss: (id: number
       style={{
         backgroundColor: "var(--color-surface-2)",
         borderColor: "var(--color-hairline-strong)",
-        transitionDuration: "var(--motion-base)",
+        // Enter on `--motion-base`, leave on the faster `--motion-exit`:
+        // once the toast is on its way out the artist has already read it (or
+        // dismissed it), so lingering is just latency.
+        transitionDuration: visible ? "var(--motion-base)" : "var(--motion-exit)",
         boxShadow: "var(--shadow-float)",
         opacity: visible ? 1 : 0,
         transform: visible ? "translateY(0)" : "translateY(8px)",

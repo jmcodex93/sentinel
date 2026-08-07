@@ -81,6 +81,7 @@ motion:
   base: 180ms
   press: 80ms
   glide: 300ms
+  exit: 160ms          # dismissals — always FASTER than the matching entrance
   easing: ease
   ease-glide: cubic-bezier(0.16, 1, 0.3, 1)
   ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1)
@@ -130,13 +131,17 @@ components:
     typography: "{typography.label}"
     padding: "0 {spacing.xxs}"
   toast:
+    # duration follows urgency: success/info 4000ms, warn 7000ms — a warn is
+    #   "what you asked for did not fully happen, do this instead" and has to
+    #   survive being read by someone looking at the viewport, not the panel.
+    #   Hard failures never reach a toast: they stay inline under the field.
     backgroundColor: "{colors.surface-2}"
     textColor: "{colors.ink}"
     typography: "{typography.body}"
     rounded: "{rounded.lg}"
     padding: "{spacing.sm} {spacing.md}"
     border: "1px {colors.hairline-strong}"
-    duration: 4000ms
+    duration: 4000ms          # success/info; warn uses 7000ms (see note above)
     actionColor: "{colors.primary}"
   segmented-control:
     backgroundColor: "{colors.surface-1}"
@@ -500,7 +505,8 @@ equivalent: `PreflightStripArea` (which today uses a warn-tinted amber for
 
 The default surface for **results**, per the anti-popup rule: `{colors.surface-2}`
 background, `{rounded.lg}` corners, `1px {colors.hairline-strong}` border,
-`{typography.body}` text. Auto-dismisses after 4000ms; clickable through to
+`{typography.body}` text. Auto-dismisses after 4000ms (7000ms for `warn` —
+duration follows urgency); clickable through to
 the relevant Sentinel Reports page via an `actionColor` link in
 `{colors.primary}` — the one place a toast may show the accent, because the
 link itself is an interactive affordance, not a status indicator. Native
