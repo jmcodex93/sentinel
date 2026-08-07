@@ -15,6 +15,7 @@ import c4d
 from sentinel import projectstd
 from sentinel import rules as rules_module
 from sentinel.common.settings import GlobalSettings
+from sentinel.ui import flows
 from sentinel.ui import panel_ops
 
 
@@ -204,7 +205,70 @@ def _op_standard_publish(payload):
             "excluded": len(excludes)}
 
 
+# ------------------------------------------------------------------- gesture B
+
+def _resolve_standard(folder):
+    """Locate the project standard from any folder inside the project.
+    Returns a dict or an error dict. Uses the same discovery as scene rules
+    (nearest sentinel_rules.json, up to 3 ancestors); the ruleset's own
+    folder is the project dir and anchors the relative template path."""
+    if not folder or not os.path.isdir(folder):
+        return {"ok": False, "error": "bad_folder"}
+    rules_path, _shadowed = rules_module.discover_rules_file(folder)
+    if not rules_path:
+        return {"ok": False, "error": "no_standard", "searched": folder}
+    rules, _warnings = rules_module.load_rules(rules_path)
+    template_rel = rules.get("template_scene") or ""
+    if not template_rel:
+        return {"ok": False, "error": "no_template", "rules_path": rules_path}
+    project_dir = os.path.dirname(rules_path)
+    if os.path.isabs(template_rel):
+        template = os.path.normpath(template_rel)
+    else:
+        template = os.path.normpath(os.path.join(project_dir, template_rel))
+    return {
+        "ok": True,
+        "rules_path": rules_path,
+        "project_dir": project_dir,
+        "template": template,
+        "template_exists": os.path.exists(template),
+        "pattern": rules.get("shot_pattern") or "",
+        "published": rules.get("published") or None,
+    }
+
+
+def _op_newshot_preview(payload):
+    return _resolve_standard(str((payload or {}).get("folder") or "").strip())
+
+
+def _op_newshot_create(payload):
+    payload = payload or {}
+    std = _resolve_standard(str(payload.get("folder") or "").strip())
+    if not std.get("ok"):
+        return std
+    name = str(payload.get("name") or "").strip()
+    if not projectstd.valid_shot_name(name):
+        return {"ok": False, "error": "bad_name"}
+    if not std["template_exists"]:
+        # Never falls back to the plugin's new.c4d: starting a whole shot
+        # from the wrong standard is worse than not starting (spec).
+        return {"ok": False, "error": "template_missing", "path": std["template"]}
+    dest = projectstd.shot_destination(std["pattern"], std["project_dir"], name)
+    if os.path.exists(dest):
+        return {"ok": False, "error": "exists", "path": dest}
+    try:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copy2(std["template"], dest)
+    except Exception:
+        return {"ok": False, "error": "copy_failed", "path": dest}
+    result = flows.open_version_core(dest)
+    opened = bool(result.get("ok")) if isinstance(result, dict) else bool(result)
+    return {"ok": True, "path": dest, "opened": opened}
+
+
 STANDARD_OPS = {
     "panel/tools/standard_preview": _op_standard_preview,
     "panel/tools/standard_publish": _op_standard_publish,
+    "panel/tools/newshot_preview": _op_newshot_preview,
+    "panel/tools/newshot_create": _op_newshot_create,
 }

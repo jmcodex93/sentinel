@@ -263,3 +263,114 @@ class TestStandardOps:
         out = standard_ops._op_standard_publish({"folder": str(tmp_path)})
         assert out == {"ok": False, "error": "rules_unreadable"}
         assert (tmp_path / "sentinel_rules.json").read_text() == "{not json"
+
+
+class TestNewShotOps:
+    @pytest.fixture(autouse=True)
+    def _forbid_dialog(self, sentinel_module, monkeypatch):
+        from sentinel.ui import standard_ops
+        def _boom(*a, **k):
+            raise AssertionError("no dialog in op path")
+        monkeypatch.setattr(standard_ops.c4d.gui, "MessageDialog", _boom)
+        monkeypatch.setattr(standard_ops.c4d.gui, "QuestionDialog", _boom)
+
+    def _project(self, tmp_path, pattern="shots/{shot}/{shot}_v001.c4d",
+                 with_template=True):
+        rules = {"template_scene": "sentinel_standard.c4d"}
+        if pattern:
+            rules["shot_pattern"] = pattern
+        (tmp_path / "sentinel_rules.json").write_text(json.dumps(rules))
+        if with_template:
+            (tmp_path / "sentinel_standard.c4d").write_bytes(b"C4Dfake")
+        return tmp_path
+
+    def test_ops_registered(self, sentinel_module):
+        from sentinel.ui import standard_ops
+        from sentinel.ui import reports_dialog
+        assert "panel/tools/newshot_preview" in standard_ops.STANDARD_OPS
+        assert "panel/tools/newshot_create" in reports_dialog._OPS
+
+    def test_preview_no_standard_names_where_it_searched(self, sentinel_module, tmp_path):
+        from sentinel.ui import standard_ops
+        out = standard_ops._op_newshot_preview({"folder": str(tmp_path)})
+        assert out["ok"] is False and out["error"] == "no_standard"
+        assert out["searched"] == str(tmp_path)
+
+    def test_preview_reports_standard(self, sentinel_module, tmp_path):
+        from sentinel.ui import standard_ops
+        prj = self._project(tmp_path)
+        out = standard_ops._op_newshot_preview({"folder": str(prj)})
+        assert out["ok"] and out["template_exists"]
+        assert out["pattern"] == "shots/{shot}/{shot}_v001.c4d"
+        assert out["project_dir"] == str(prj)
+
+    def test_preview_ruleset_without_template_refuses(self, sentinel_module, tmp_path):
+        from sentinel.ui import standard_ops
+        (tmp_path / "sentinel_rules.json").write_text(json.dumps({"standard_fps": 25}))
+        out = standard_ops._op_newshot_preview({"folder": str(tmp_path)})
+        assert out["error"] == "no_template"
+
+    def test_create_places_by_pattern_and_opens(self, sentinel_module, monkeypatch, tmp_path):
+        from sentinel.ui import standard_ops
+        prj = self._project(tmp_path)
+        opened = {}
+        monkeypatch.setattr(standard_ops.flows, "open_version_core",
+                            lambda p: opened.setdefault("path", p) or {"ok": True, "opened": True})
+        out = standard_ops._op_newshot_create({"folder": str(prj), "name": "SH020"})
+        dest = prj / "shots" / "SH020" / "SH020_v001.c4d"
+        assert out["ok"] and out["path"] == str(dest)
+        assert dest.read_bytes() == b"C4Dfake"
+        assert opened["path"] == str(dest)
+
+    def test_create_missing_template_refuses_no_fallback(self, sentinel_module, monkeypatch, tmp_path):
+        """The asymmetric fall (spec): Reset All may fall back to the
+        plugin's new.c4d; starting a whole shot from the wrong standard is
+        refused, naming the missing file."""
+        from sentinel.ui import standard_ops
+        prj = self._project(tmp_path, with_template=False)
+        called = []
+        monkeypatch.setattr(standard_ops.flows, "open_version_core",
+                            lambda p: called.append(p))
+        out = standard_ops._op_newshot_create({"folder": str(prj), "name": "SH020"})
+        assert out["ok"] is False and out["error"] == "template_missing"
+        assert out["path"].endswith("sentinel_standard.c4d")
+        assert called == []
+
+    def test_create_existing_shot_never_overwrites(self, sentinel_module, monkeypatch, tmp_path):
+        from sentinel.ui import standard_ops
+        prj = self._project(tmp_path)
+        dest = prj / "shots" / "SH020" / "SH020_v001.c4d"
+        dest.parent.mkdir(parents=True)
+        dest.write_bytes(b"precious")
+        monkeypatch.setattr(standard_ops.flows, "open_version_core",
+                            lambda p: {"ok": True})
+        out = standard_ops._op_newshot_create({"folder": str(prj), "name": "SH020"})
+        assert out == {"ok": False, "error": "exists", "path": str(dest)}
+        assert dest.read_bytes() == b"precious"
+
+    def test_create_bad_name_refuses(self, sentinel_module, tmp_path):
+        from sentinel.ui import standard_ops
+        prj = self._project(tmp_path)
+        out = standard_ops._op_newshot_create({"folder": str(prj), "name": "a/b"})
+        assert out == {"ok": False, "error": "bad_name"}
+
+    def test_create_without_pattern_places_at_project_root(self, sentinel_module, monkeypatch, tmp_path):
+        from sentinel.ui import standard_ops
+        prj = self._project(tmp_path, pattern=None)
+        monkeypatch.setattr(standard_ops.flows, "open_version_core",
+                            lambda p: {"ok": True, "opened": True})
+        out = standard_ops._op_newshot_create({"folder": str(prj), "name": "SH020"})
+        assert out["ok"] and out["path"] == str(prj / "SH020_v001.c4d")
+
+    def test_create_discovers_ruleset_from_subfolder(self, sentinel_module, monkeypatch, tmp_path):
+        """The artist may pick any folder inside the project — discovery
+        walks up (same mechanism as scene rules discovery)."""
+        from sentinel.ui import standard_ops
+        prj = self._project(tmp_path)
+        sub = prj / "shots"
+        sub.mkdir(exist_ok=True)
+        monkeypatch.setattr(standard_ops.flows, "open_version_core",
+                            lambda p: {"ok": True, "opened": True})
+        out = standard_ops._op_newshot_create({"folder": str(sub), "name": "SH021"})
+        assert out["ok"]
+        assert out["path"] == str(prj / "shots" / "SH021" / "SH021_v001.c4d")
