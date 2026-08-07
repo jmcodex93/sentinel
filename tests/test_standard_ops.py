@@ -111,10 +111,12 @@ class TestStandardOps:
         def _fake_save(d, p, f, fmt):
             # Real SaveDocument writes bytes at ``p``; the op now saves to
             # a ``.tmp`` path and renames it into place, so the fake must
-            # actually create the file for that rename to succeed.
-            if saved:
-                with open(p, "wb") as fh:
-                    fh.write(b"C4Dfake")
+            # actually create the file for that rename to succeed. It writes
+            # even when reporting failure — a real failed save can leave a
+            # partial file behind, which is exactly what the op's cleanup
+            # path exists to remove.
+            with open(p, "wb") as fh:
+                fh.write(b"C4Dfake")
             return saved
         monkeypatch.setattr(standard_ops.c4d.documents, "SaveDocument",
                             _fake_save)
@@ -264,6 +266,10 @@ class TestStandardOps:
         out = standard_ops._op_standard_publish({"folder": str(tmp_path)})
         assert out == {"ok": False, "error": "save_failed"}
         assert not (tmp_path / "sentinel_rules.json").exists()
+        # A failed save never litters the team's project folder: the
+        # partial .tmp the (fake) failed SaveDocument left behind is removed.
+        assert not (tmp_path / "sentinel_standard.c4d.tmp").exists()
+        assert not (tmp_path / "sentinel_standard.c4d").exists()
 
     def test_publish_unreadable_rules_refuses(self, sentinel_module, monkeypatch, tmp_path):
         from sentinel.ui import standard_ops

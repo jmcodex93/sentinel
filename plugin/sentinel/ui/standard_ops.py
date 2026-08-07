@@ -152,7 +152,11 @@ def _op_standard_publish(payload):
     # ``derive_shot_pattern``, not the network), but it is still run
     # through the validator for normalization; if it somehow fails, the
     # key is omitted rather than the publish refused — a derivation bug
-    # is ours, not the supervisor's typo to fix.
+    # is ours, not the supervisor's typo to fix. In the real SPA flow the
+    # derived pattern is seeded into the editable field and posted back as
+    # a CLIENT pattern, so the strict ``bad_pattern`` branch is the one
+    # that actually runs; the lenient branch only serves API callers that
+    # omit ``pattern`` entirely.
     raw_pattern = payload.get("pattern")
     if raw_pattern is not None:
         raw_pattern = str(raw_pattern).strip() or None
@@ -212,6 +216,12 @@ def _op_standard_publish(payload):
     finally:
         c4d.documents.KillDocument(clone)
     if not saved:
+        # A refused/partial SaveDocument can still leave a stray tmp file
+        # in the project folder — never litter a team's shared directory.
+        try:
+            os.remove(tmp_scene)
+        except Exception:
+            pass
         return {"ok": False, "error": "save_failed"}
 
     derived = projectstd.derive_rules_payload(
@@ -244,6 +254,14 @@ def _op_standard_publish(payload):
     try:
         os.replace(tmp_scene, scene_dest)
     except Exception:
+        # The rules ARE committed at this point (inverted torn state: new
+        # rules, old scene) — invalidate so the plugin sees them, clean the
+        # tmp, and report the scene failure honestly.
+        rules_module.invalidate()
+        try:
+            os.remove(tmp_scene)
+        except Exception:
+            pass
         return {"ok": False, "error": "save_failed"}
 
     rules_module.invalidate()
