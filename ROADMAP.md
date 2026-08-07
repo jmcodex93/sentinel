@@ -614,6 +614,34 @@ Visual budget meter for scene resources:
 
 **Why**: Artists don't realize a scene is too heavy until render fails with out-of-memory.
 
+### Deuda y preguntas abiertas de v1.35-v1.36 *(anotado 2026-08-07)*
+
+#### ¿Fusionar Pin y Variants? — PREGUNTA ABIERTA, no decidida
+Planteada por el artista tras usar los dos. **Lo que tiene razón**: para iterar lighting los dos valen (las luces son baratas de duplicar, así que el argumento del peso no aplica), y elegir cuál usar es trabajo mental que la herramienta le pasa a él. Que acabaran en el mismo grupo del panel ("States & Options") es señal de que se perciben como hermanos.
+
+**Lo que bloquea una fusión limpia**, y es físico, no conceptual:
+- El Pin **no toca la jerarquía** (un dato dentro del tag, peso cero); Variants **la reestructura** (anclaje + null por opción, N copias reales). No puede haber un gesto que a veces reorganice el Object Manager y a veces no.
+- Restaurar un pin **pisa** el estado actual (de ahí la red de seguridad); cambiar de opción **no pisa nada**. Fusionados, el artista no podría predecir si va a perder lo que tiene sin guardar.
+- El Pin nunca crea ni borra objetos → jamás podrá hacer "con Bend / sin Bend". Al revés sí sería posible (usar copias siempre), pero entonces pinear un rig pesado multiplica la escena.
+
+**Camino intermedio si el problema se materializa**: un solo botón "Guardar estado" que mire la selección y elija el mecanismo, diciendo en la fila cuál eligió y por qué (corregible). Conserva las dos mecánicas y devuelve el modelo mental único.
+
+**Disparador acordado**: no construir nada por ahora. Si el artista se pilla dudando cuál usar tras unas semanas de uso, se retoma **con datos**, no con teoría.
+
+#### Auditoría del undo de todas las operaciones de Sentinel
+Deferida del brainstorm de v1.36 (donde sustituyó a la "capa automática" descartada). **Tiene evidencia real**: el contrato "un Cmd+Z revierte el lote" estuvo roto en matwire con más de un material y lo encontró el usuario en uso normal; en v1.35 y v1.36 aparecieron tres variantes del mismo fallo ("funciona con uno, se rompe con N"). Arnés repetible que corra en C4D vivo: por operación, comprobar que la escena cambió, que un solo paso la revierte, y que rehacer restaura. Higiene de ingeniería, invisible para el artista — no merece una versión propia.
+
+#### Sospecha abierta en código de producción: `id()` como identidad de nodos
+`keyframes.py:190-201` (dedupe de familias del stagger, v1.30) compara `id(GetUp())` contra los `id()` de la selección. C4D devuelve un envoltorio Python nuevo en cada lectura, así que **nunca coincidirían** — ver `reference_c4d_wrapper_identity`. No confirmado: `GetActiveObjects` excluye a los hijos de un padre seleccionado, así que puede que el escenario no se alcance por esa vía. También usan `id()`: `frame_tag.py:1540`, `panel_ops.py:532`, `textures.py:448`.
+
+#### Límites medidos del Pin que siguen abiertos
+- La auditoría de captura de v1.36.2 cubrió parámetros de **primer nivel**. Los anidados (`DescID` multinivel: gradientes, splines de falloff) **no están medidos**.
+- `Display Color` / `X-Ray` (ids 907-909) no se restauran en ningún objeto. Cosmético; cayó fuera por la exclusión 903-927 escrita como rango en el encargo.
+- `Shutter Offset` de la RS Camera (id 8105) — único parámetro con nombre que no restauraba en toda la barrida. Sin diagnosticar.
+
+#### Residual de Variants
+Dos conjuntos cuyos **anclajes se llamen igual** escriben los mismos nombres de archivo al renderizar todas las opciones. El nombre del conjunto desambigua el caso normal; dos anclajes homónimos, no.
+
 ### Backlog — Consider Later
 
 #### Higiene del repo público *(anotado 2026-07-31)*
