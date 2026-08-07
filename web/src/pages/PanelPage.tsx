@@ -71,7 +71,7 @@ type DeliverPageState = { kind: "loading" } | { kind: "ok"; data: PanelDeliverSt
  * `confirm: true` (the server, not the SPA, owns the copy in `label`).
  * `aov_tier` (Essentials/Production) is additive and never confirm-gates
  * any more — it's not part of this union. */
-type RenderConfirm = { op: "reset_all"; label: string };
+type RenderConfirm = { op: "reset_all"; label: string; verb: string | null; destructive: boolean };
 
 /** What the inline confirm bar is about to run, for the QC section's Fix
  * (per-card, via the shared palette action) and Fix-all (via
@@ -472,7 +472,12 @@ export function PanelPage() {
     setBusyRenderId(null);
 
     if (!response.ok && response.error === "confirm_required") {
-      setRenderConfirm({ op, label: response.confirm_label || "Are you sure?" });
+      setRenderConfirm({
+        op,
+        label: response.confirm_label || "Are you sure?",
+        verb: response.confirm_verb ?? null,
+        destructive: response.destructive === true,
+      });
       return;
     }
     setRenderConfirm(null);
@@ -684,6 +689,8 @@ export function PanelPage() {
               {confirmAction && (
                 <ConfirmBar
                   label={confirmAction.confirm_label ?? ""}
+                  confirmVerb={confirmAction.confirm_verb}
+                  destructive={confirmAction.destructive}
                   busy={busyFixId !== null}
                   onCancel={() => setConfirmAction(null)}
                   onConfirm={() => runFix(confirmAction, true)}
@@ -710,6 +717,14 @@ export function PanelPage() {
               {qcConfirm && (
                 <ConfirmBar
                   label={qcConfirm.action.confirm_label ?? ""}
+                  // Fix-all borrows a representative destructive action for
+                  // its gate (see `qcFixAllConfirmAction`), so its verb must
+                  // NOT be that one action's — the button would promise
+                  // "Delete materials" while running every fixable check.
+                  // Its own verb says what it really does; the red stays,
+                  // because one of the things it runs really does destroy.
+                  confirmVerb={qcConfirm.kind === "fix_all" ? "Fix all" : qcConfirm.action.confirm_verb}
+                  destructive={qcConfirm.action.destructive}
                   busy={busyQcId !== null}
                   onCancel={() => setQcConfirm(null)}
                   onConfirm={() =>
@@ -751,6 +766,8 @@ export function PanelPage() {
                   frameData={frameState}
                   busy={busyRenderId}
                   confirmLabel={renderConfirm?.label ?? null}
+                  confirmVerb={renderConfirm?.verb ?? null}
+                  confirmDestructive={renderConfirm?.destructive === true}
                   onSetPreset={handleSetPreset}
                   onDestructive={(op) => runRenderDestructive(op)}
                   onAddFrameTag={handleAddFrameTag}

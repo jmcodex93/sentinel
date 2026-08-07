@@ -1537,6 +1537,29 @@ class TestPaletteActionsPayload:
         assert actions["fix_materials"]["confirm_label"] == (
             "Delete 0 unused material(s) — single undo")
 
+    def test_destructive_fixes_carry_a_button_verb_and_the_destructive_mark(self):
+        """The confirm BUTTON gets the action's name, not "yes", and the
+        flag that licenses the red variant travels with it."""
+        actions = self._by_id(webbridge.palette_actions_payload(
+            doc_present=True, doc_saved=True,
+            qc_counts={"unused_mats": 3, "fps_range": 2}))
+        assert actions["fix_materials"]["confirm_verb"] == "Delete materials"
+        assert actions["fix_materials"]["destructive"] is True
+        assert actions["fix_fps"]["confirm_verb"] == "Rewrite FPS + range"
+        assert actions["fix_fps"]["destructive"] is True
+
+    def test_nothing_else_is_destructive_or_carries_a_verb(self):
+        """No action becomes red by accident — the shared confirm bar is
+        used by three gates, and only what the server marks goes red."""
+        actions = self._by_id(webbridge.palette_actions_payload(
+            doc_present=True, doc_saved=True,
+            qc_counts={"lights": 1, "cam": 1}))
+        for action_id, action in actions.items():
+            if action_id in ("fix_materials", "fix_fps"):
+                continue
+            assert action["destructive"] is False, action_id
+            assert action["confirm_verb"] is None, action_id
+
     def test_non_destructive_actions_never_require_confirm(self):
         actions = self._by_id(webbridge.palette_actions_payload(
             doc_present=True, doc_saved=True,

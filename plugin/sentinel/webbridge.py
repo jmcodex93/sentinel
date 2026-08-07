@@ -1320,12 +1320,14 @@ PALETTE_ACTIONS = (
     {"id": "fix_materials", "label": "Fix: Delete unused materials",
      "group": "Quick Fix", "kind": "run", "requires_doc": True,
      "check_id": "unused_mats", "requires_confirm": True,
-     "confirm_label": "Delete {count} unused material(s) — single undo"},
+     "confirm_label": "Delete {count} unused material(s) — single undo",
+     "confirm_verb": "Delete materials", "destructive": True},
     {"id": "fix_fps", "label": "Fix: FPS / frame range", "group": "Quick Fix",
      "kind": "run", "requires_doc": True, "check_id": "fps_range",
      "requires_confirm": True,
      "confirm_label": "Rewrite FPS + frame range on {count} issue(s) "
-                       "across ALL render presets — single undo"},
+                       "across ALL render presets — single undo",
+     "confirm_verb": "Rewrite FPS + range", "destructive": True},
     {"id": "rescan_qc", "label": "Rescan QC", "group": "Quick Fix",
      "kind": "run", "requires_doc": True},
 )
@@ -1352,6 +1354,17 @@ def palette_actions_payload(doc_present, doc_saved=False, qc_counts=None):
     material(s) — single undo" instead of static wording; a missing count
     falls back to 0 rather than raising.
 
+    ``confirm_verb`` + ``destructive`` are the button half of that contract
+    (the SPA's ``ConfirmBar``): the verb is what the confirm BUTTON says
+    ("Delete materials"), so the artist accepts a named action instead of a
+    mute "Confirm", and ``destructive`` is what licenses the red variant +
+    the non-primary position. The server owns both because the server is
+    what knows the consequence — the SPA never marks an action destructive
+    on its own. ``confirm_verb`` is None for anything that doesn't confirm
+    (the client falls back to "Confirm"), and ``destructive`` is False
+    unless the descriptor says otherwise, so no action becomes red by
+    accident.
+
     Never raises: an action with a ``check_id`` not present in
     ``qc_counts`` is treated as 0 (nothing to fix), never a KeyError.
     """
@@ -1372,9 +1385,11 @@ def palette_actions_payload(doc_present, doc_saved=False, qc_counts=None):
 
         requires_confirm = bool(action.get("requires_confirm"))
         confirm_label = None
+        confirm_verb = None
         if requires_confirm:
             count = qc_counts.get(action.get("check_id"), 0)
             confirm_label = action["confirm_label"].format(count=count)
+            confirm_verb = action.get("confirm_verb")
 
         actions.append({
             "id": action["id"],
@@ -1384,6 +1399,8 @@ def palette_actions_payload(doc_present, doc_saved=False, qc_counts=None):
             "reason": reason,
             "requires_confirm": requires_confirm,
             "confirm_label": confirm_label,
+            "confirm_verb": confirm_verb,
+            "destructive": bool(action.get("destructive")),
         })
     return actions
 

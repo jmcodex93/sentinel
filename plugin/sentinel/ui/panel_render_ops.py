@@ -394,16 +394,42 @@ def reset_all_confirm_label(names):
             "Cmd+Z restores them." % (subject, listed))
 
 
-def _reset_all_confirm_label_for(doc):
-    """``reset_all_confirm_label`` over the live scene, degrading to the
-    generic constant if the scene read fails for any reason. A confirm
-    prompt must never be the thing that breaks the op — but it must not
-    fail silently either, so the fallback logs."""
+def reset_all_confirm_verb(names):
+    """What the confirm BUTTON says for ``panel/render/reset_all`` — the
+    action, not "yes". Built from the same scene read as the label
+    (``names`` = the presets about to be lost) so the two can never
+    disagree: with something to lose the verb names the deletion, without
+    it the button only promises the re-create that actually happens."""
+    if not names:
+        return "Re-create presets"
+    return "Delete and re-create"
+
+
+def _reset_all_confirm_for(doc):
+    """The whole confirm half of ``panel/render/reset_all``'s gate —
+    ``confirm_label`` (the question), ``confirm_verb`` (the button) and
+    ``destructive`` (which licenses the red, non-primary button) — from ONE
+    scene read, so the three can't drift apart.
+
+    ``destructive`` is ``bool(names)``: a reset with no custom presets in
+    the scene destroys nothing, and painting it red would spend the color
+    on a no-loss action (DESIGN.md reserves the fail hue for real state).
+
+    Degrades to the generic constant if the scene read fails for any
+    reason — a confirm prompt must never be the thing that breaks the op —
+    and in that degraded state assumes the WORST (destructive), because an
+    unreadable scene is not evidence that nothing is at stake. It logs
+    rather than failing silently."""
     try:
-        return reset_all_confirm_label(non_standard_preset_names(doc))
+        names = non_standard_preset_names(doc)
     except Exception as exc:  # pragma: no cover - defensive
         safe_print(f"reset_all confirm label fell back to generic: {exc}")
-        return _RESET_ALL_CONFIRM_LABEL
+        return {"confirm_label": _RESET_ALL_CONFIRM_LABEL,
+                "confirm_verb": "Delete and re-create",
+                "destructive": True}
+    return {"confirm_label": reset_all_confirm_label(names),
+            "confirm_verb": reset_all_confirm_verb(names),
+            "destructive": bool(names)}
 
 
 def _op_panel_render_reset_all(payload):
@@ -416,15 +442,19 @@ def _op_panel_render_reset_all(payload):
     ``QuestionDialog``/summary ``MessageDialog`` path.
 
     The confirm copy is built from the SCENE at confirm time
-    (``_reset_all_confirm_label_for``): it names the presets that are about
-    to be deleted instead of a fixed sentence the artist confirms blind."""
+    (``_reset_all_confirm_for``): it names the presets that are about to be
+    deleted instead of a fixed sentence the artist confirms blind, the
+    button says the same thing (``confirm_verb``) instead of a mute
+    "Confirm", and ``destructive`` tells the SPA whether this particular
+    reset is actually losing anything."""
     doc = documents.GetActiveDocument()
     if not doc:
         return {"ok": False, "error": "no_document"}
 
     if _needs_confirm(payload):
-        return {"ok": False, "error": "confirm_required",
-                "confirm_label": _reset_all_confirm_label_for(doc)}
+        response = {"ok": False, "error": "confirm_required"}
+        response.update(_reset_all_confirm_for(doc))
+        return response
 
     from sentinel.ui import scene_tools
 

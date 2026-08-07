@@ -969,7 +969,13 @@ const MOCK_RENDER_CONFIRM_LABELS: Record<string, string> = {
 function mockPanelRenderMutation(op: string, confirm?: boolean): PanelRenderMutationResponse {
   const label = MOCK_RENDER_CONFIRM_LABELS[op];
   if (label && !confirm) {
-    return { ok: false, error: "confirm_required", confirm_label: label };
+    return {
+      ok: false,
+      error: "confirm_required",
+      confirm_label: label,
+      confirm_verb: "Delete and re-create",
+      destructive: true,
+    };
   }
   return { ok: true, stamp: "mock-stamp", render: mockPanelRender as PanelRenderSection };
 }

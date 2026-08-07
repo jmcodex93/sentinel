@@ -461,6 +461,13 @@ export interface PaletteAction {
    * `palette/run` with `confirm: true` before the action actually runs. */
   requires_confirm: boolean;
   confirm_label: string | null;
+  /** What the confirm BUTTON says ("Delete materials"), so the artist
+   * accepts a named action instead of a mute "Confirm". Null for anything
+   * that doesn't confirm; the client falls back to "Confirm". */
+  confirm_verb: string | null;
+  /** Server-owned: licenses the red button variant and its non-primary
+   * position. Never inferred client-side. */
+  destructive: boolean;
 }
 
 export type PaletteActionsResult =
@@ -1037,6 +1044,11 @@ export interface PanelRenderMutationResponse {
   stamp?: string;
   render?: PanelRenderSection;
   confirm_label?: string;
+  /** Button half of the confirm gate — see `_reset_all_confirm_for` in
+   * panel_render_ops.py. `destructive` is per-CALL, not per-op: a reset
+   * with no custom presets in the scene loses nothing and isn't red. */
+  confirm_verb?: string;
+  destructive?: boolean;
 }
 
 /** `GET /api/panel/render/aov_list` — see `_op_panel_render_aov_list` in

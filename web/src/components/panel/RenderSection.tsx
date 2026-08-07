@@ -89,6 +89,8 @@ export function RenderSection({
   frameData,
   busy,
   confirmLabel,
+  confirmVerb,
+  confirmDestructive,
   onSetPreset,
   onDestructive,
   onAddFrameTag,
@@ -118,6 +120,12 @@ export function RenderSection({
   /** Set once a destructive op comes back with `confirm_required` — the
    * inline confirm bar's copy, verbatim from the server. */
   confirmLabel: string | null;
+  /** What the confirm button says (`confirm_verb`) and whether this call is
+   * actually destructive (`destructive`) — both from the same server
+   * response as `confirmLabel`. A reset with no custom presets to lose is
+   * confirm-gated but NOT red. */
+  confirmVerb: string | null;
+  confirmDestructive: boolean;
   /** Receives the chosen preset's chain INDEX (the option value) — the page
    * resolves it back to a name+index pair for `set_preset`. */
   onSetPreset: (index: number) => void;
@@ -209,7 +217,15 @@ export function RenderSection({
     // guards (no preset / no tag / no dir) stay.
     <div className="flex flex-col p-3" style={{ pointerEvents: isBusy ? "none" : undefined }}>
       {confirmLabel && (
-        <ConfirmBar label={confirmLabel} busy={isBusy} onConfirm={onConfirm} onCancel={onCancelConfirm} className="mb-4" />
+        <ConfirmBar
+          label={confirmLabel}
+          confirmVerb={confirmVerb}
+          destructive={confirmDestructive}
+          busy={isBusy}
+          onConfirm={onConfirm}
+          onCancel={onCancelConfirm}
+          className="mb-4"
+        />
       )}
 
       {/* Preset */}
