@@ -1267,10 +1267,20 @@ class TestResetAllIsUndoable:
         assert len(doc.undo_stack) == 1
 
     def test_early_error_leaves_no_undo_step(self, sentinel_module, monkeypatch):
-        """A template with no standard presets aborts BEFORE any mutation —
-        no bracket opened, nothing for a stray Cmd+Z to swallow."""
+        """A template holding no render data at all aborts BEFORE any
+        mutation — no bracket opened, nothing for a stray Cmd+Z to swallow.
+
+        CHANGED in v1.36.10, deliberately: this used to drive the abort
+        with a template whose single preset was called ``something_else``,
+        because Reset All filtered by a hardcoded list of four names. That
+        filter is gone by artist decision (the template IS the standard —
+        see ``_force_render_settings_core``), so ``something_else`` is now
+        a preset Reset All correctly brings over. The property under test
+        (an early return leaves no undo step) is unchanged; only the way to
+        reach the early return is, because the set of failures shrank to
+        one: an empty template."""
         from sentinel.ui import scene_tools
-        _install_template(monkeypatch, scene_tools, names=("something_else",))
+        _install_template(monkeypatch, scene_tools, names=())
 
         doc = _UndoableDoc([_UndoableRD("CLIENTE_9x16_final")])
         result = scene_tools._force_render_settings_core(doc)
@@ -1279,6 +1289,109 @@ class TestResetAllIsUndoable:
         assert doc.preset_names() == ["CLIENTE_9x16_final"]
         assert doc.undo_stack == []
         assert doc.start_undo_count == 0
+
+
+class TestTheTemplateIsTheStandard:
+    """v1.36.10: Reset All brings whatever render data the studio template
+    holds, with no name filter.
+
+    Measured live in C4D before the change: a studio whose standard is
+    ``draft``/``final`` could point ``sentinel_rules.json`` at its own
+    template and still get ``ok=False  "No standard presets found in
+    template"``, because Reset All filtered against four names hardcoded in
+    the plugin. Since v1.36.5 QC #5 already validates against that studio's
+    ``required_presets`` — so the QC was conformant and the tool unusable at
+    the same time. The template creates, the ruleset validates.
+
+    Non-regression for the four Yambo names is already pinned by
+    ``TestResetAllIsUndoable.test_single_undo_restores_the_artists_presets``
+    and ``test_ruleset_path_is_the_file_actually_opened``, which both assert
+    the exact four come through."""
+
+    def test_a_studio_with_its_own_preset_names_gets_them(
+            self, sentinel_module, monkeypatch):
+        """THE case that failed live."""
+        from sentinel.ui import scene_tools
+        _install_template(monkeypatch, scene_tools, names=("draft", "final"))
+
+        doc = _UndoableDoc([_UndoableRD("CLIENTE_9x16_final")])
+        result = scene_tools._force_render_settings_core(doc)
+
+        assert result["ok"] is True
+        assert doc.preset_names() == ["draft", "final"]
+
+    def test_every_render_data_comes_over_in_the_templates_order(
+            self, sentinel_module, monkeypatch):
+        """A template with the four standard ones plus a client preset
+        yields five, in the order the supervisor arranged them — the order
+        is the supervisor's decision, not something this code re-sorts."""
+        from sentinel.ui import scene_tools
+        _install_template(monkeypatch, scene_tools,
+                          names=("previz", "pre_render", "render", "stills",
+                                 "CLIENTE_beauty"))
+
+        doc = _UndoableDoc([_UndoableRD("old")])
+        result = scene_tools._force_render_settings_core(doc)
+
+        assert result["ok"] is True
+        assert result["count"] == 5
+        assert doc.preset_names() == ["previz", "pre_render", "render",
+                                      "stills", "CLIENTE_beauty"]
+
+    def test_the_active_preset_is_the_templates_first_one(
+            self, sentinel_module, monkeypatch):
+        """Kept from the old behavior and still meaningful with an
+        arbitrary count: the file's first entry, not a name guessed here."""
+        from sentinel.ui import scene_tools
+        _install_template(monkeypatch, scene_tools,
+                          names=("draft", "final", "CLIENTE_beauty"))
+
+        doc = _UndoableDoc([_UndoableRD("old")])
+        result = scene_tools._force_render_settings_core(doc)
+
+        assert result["active_name"] == "draft"
+        assert doc.GetActiveRenderData().GetName() == "draft"
+
+    def test_empty_project_template_names_the_file_and_its_origin(
+            self, sentinel_module, monkeypatch, tmp_path):
+        """The one failure left, and the supervisor must be able to tell
+        WHICH of their two template files is the empty one without opening
+        either."""
+        from sentinel import rules
+        from sentinel.ui import scene_tools
+
+        scene_dir = tmp_path / "shot"
+        scene_dir.mkdir()
+        template_file = tmp_path / "studio_template.c4d"
+        template_file.write_bytes(b"")
+        _write_ruleset(scene_dir, {"template_scene": str(template_file)})
+        rules.invalidate()
+
+        _capture_template_load(monkeypatch, scene_tools, names=())
+        doc = _RuledDoc([_UndoableRD("CLIENTE_9x16_final")], scene_dir)
+
+        result = scene_tools._force_render_settings_core(doc)
+
+        assert result["ok"] is False
+        assert result["reason"] == "template_empty"
+        assert str(template_file) in result["error"]
+        assert "The project ruleset" in result["error"]
+        assert doc.preset_names() == ["CLIENTE_9x16_final"]
+
+    def test_empty_bundled_template_says_it_is_the_plugins_own(
+            self, sentinel_module, monkeypatch):
+        """The broken install and the empty studio file are two different
+        problems and must not read alike."""
+        from sentinel.ui import scene_tools
+        _install_template(monkeypatch, scene_tools, names=())
+
+        doc = _UndoableDoc([_UndoableRD("CLIENTE_9x16_final")])
+        result = scene_tools._force_render_settings_core(doc)
+
+        assert result["ok"] is False
+        assert result["reason"] == "template_empty"
+        assert scene_tools._bundled_template_path() in result["error"]
+        assert "bundled with the plugin" in result["error"]
 
 
 class TestPresetDropdownShowsRealNames:

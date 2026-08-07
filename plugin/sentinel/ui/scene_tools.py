@@ -495,6 +495,37 @@ def _template_missing_result(template):
     }
 
 
+def _template_empty_result(template):
+    """The only failure left once Reset All stopped filtering by name: the
+    template file holds no render data at all.
+
+    The old wording (``No standard presets found in template``) named
+    neither the file nor which of the two it was, so a supervisor with a
+    project template AND a bundled one could not tell which of their two
+    files was wrong without opening both. It says both now.
+    """
+    if template["origin"] == "project":
+        return {
+            "ok": False,
+            "reason": "template_empty",
+            "error": ("Studio template scene has no render presets!\n\n"
+                      "The project ruleset (sentinel_rules.json) points at:\n"
+                      f"{template['path']}\n\n"
+                      "Reset All copies whatever presets that file holds — "
+                      "add the studio presets to it (any names you like) and "
+                      "run this again."),
+        }
+    return {
+        "ok": False,
+        "reason": "template_empty",
+        "error": ("Template file has no render presets!\n\n"
+                  f"Found at:\n{template['path']}\n\n"
+                  "This is the template bundled with the plugin — a broken "
+                  "install, or point sentinel_rules.json at your studio "
+                  "template instead."),
+    }
+
+
 def _apply_preset_core(doc, preset_name, index=None):
     """Dialog-free core of preset switching — extracted from ``ui/panel.py``
     ``_apply_preset`` (Fase 6.2 Task 1) so a non-``GeDialog`` caller
@@ -552,8 +583,38 @@ def _force_render_settings_core(doc, update_ui=None):
     ``_force_render_settings`` (Fase 6.2 Task 1) so a non-interactive
     caller (``panel_render_ops.py``'s confirm-gated op) can run the reset
     without the native ``QuestionDialog``/summary ``MessageDialog``.
-    Clones the 4 standard presets from the bundled template and replaces
-    the doc's render data entries with them.
+    Clones EVERY render data the template holds, in the template's own
+    order, and replaces the doc's render data entries with them.
+
+    THE TEMPLATE IS THE STANDARD (v1.36.10). Until now this filtered the
+    template's presets against a list hardcoded here (``previz``,
+    ``pre_render``, ``render``, ``stills``), so a studio could point the
+    ruleset at its own template and still be told "No standard presets
+    found in template" because its presets are called ``draft``/``final``
+    — measured live. Since v1.36.5 QC #5 already validates against the
+    project's ``required_presets``/``approved_presets``, so that studio had
+    a conformant QC and an unusable Reset All at the same time.
+
+    The rule adopted: the template creates, the ruleset validates. Three
+    sources could disagree (the template, ``required_presets``,
+    ``approved_presets``); making Reset All read one of the JSON lists just
+    moves the same failure to a different list. Instead Reset All brings
+    whatever the supervisor put in the file they actually edit, and if the
+    ruleset disagrees QC #5 says so — disagreement detection for free, with
+    no third source and no sync tool. Deliberately NOT done: deriving
+    ``required_presets`` from the template — QC runs constantly (auto
+    refresh, 0.5 s cache cooldown) and that would mean opening a ``.c4d``
+    off a network share on every pass.
+
+    ACCEPTED RISK: a junk preset left behind in the template now reaches
+    the whole team. That is the supervisor's file to keep clean, which is
+    the right place for the responsibility — and for today's artist nothing
+    changes, their template holds exactly the four.
+
+    The active preset on exit is the template's FIRST render data. Kept
+    from the previous behavior and still meaningful with an arbitrary
+    count: it is the supervisor's own ordering of the file, not a name this
+    code guesses at.
 
     Returns ``{"ok": True, "count": N, "active_name": str, "resolution":
     "WxH"}`` on success, or ``{"ok": False, "error": <message>}`` — never
@@ -588,15 +649,12 @@ def _force_render_settings_core(doc, update_ui=None):
         if not template_doc:
             return {"ok": False, "error": "Failed to load template file"}
 
-        # Clone all presets from template
-        standard_presets = ["previz", "pre_render", "render", "stills"]
+        # Clone every preset the template holds, in its own order — no
+        # name filter (see the docstring: the template IS the standard).
         cloned = []
         template_rd = template_doc.GetFirstRenderData()
         while template_rd:
-            name = normalize_preset_name(template_rd.GetName() or "")
-            if name in standard_presets:
-                clone = template_rd.GetClone(c4d.COPYFLAGS_NONE)
-                cloned.append(clone)
+            cloned.append(template_rd.GetClone(c4d.COPYFLAGS_NONE))
             template_rd = template_rd.GetNext()
 
         # Kill template before modifying scene
@@ -604,7 +662,7 @@ def _force_render_settings_core(doc, update_ui=None):
         template_doc = None
 
         if not cloned:
-            return {"ok": False, "error": "No standard presets found in template"}
+            return _template_empty_result(template)
 
         doc.StartUndo()
         try:
@@ -648,7 +706,7 @@ def _force_render_settings_core(doc, update_ui=None):
 
 
 def _force_render_settings(doc, update_ui=None):
-    """Reset all 4 render presets from template file"""
+    """Reset every render preset from the studio template file"""
     if not doc:
         return
 
