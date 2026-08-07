@@ -1,0 +1,210 @@
+"""Web ops for the project standard (v1.37): publish + new shot.
+
+Thin adapters in the panel_tools_ops mold: dialog-free (a MessageDialog in
+the queue drain freezes C4D), JSON-serializable returns, and every mutation
+re-derives against the LIVE scene — client rows are never trusted (the
+Batch Rename / matwire contract). Pure logic lives in
+``sentinel.projectstd``; this module only touches c4d."""
+import json
+import os
+import shutil
+import time
+
+import c4d
+
+from sentinel import projectstd
+from sentinel import rules as rules_module
+from sentinel.common.settings import GlobalSettings
+from sentinel.ui import panel_ops
+
+
+# ---------------------------------------------------------------- derivation
+
+def _top_level_objects(doc):
+    out, obj, index = [], doc.GetFirstObject(), 0
+    while obj:
+        out.append({"name": obj.GetName(), "index": index,
+                    "children": obj.GetDown() is not None})
+        obj = obj.GetNext()
+        index += 1
+    return out
+
+
+def _preset_names(doc):
+    names, rd = [], doc.GetFirstRenderData()
+    while rd:
+        names.append(rd.GetName())
+        rd = rd.GetNext()
+    return names
+
+
+def _scene_block(doc):
+    fps = int(doc.GetFps() or 25)
+    return {
+        "fps": fps,
+        "start_frame": int(doc.GetMinTime().GetFrame(fps)),
+        "presets": _preset_names(doc),
+        "objects": _top_level_objects(doc),
+    }
+
+
+def _qc_block(doc):
+    _ctx, _results, report = panel_ops._run_qc_scoring(doc)
+    score = report.get("score") or {}
+    passed = int(score.get("passed") or 0)
+    total = int(score.get("total") or 0)
+    failing = [c.get("label") or c.get("id") or ""
+               for c in report.get("checks") or []
+               if c.get("status") == "fail"]
+    return {"passed": passed, "total": total,
+            "pass": total > 0 and passed == total, "failing": failing}
+
+
+def _read_raw_rules(folder):
+    """Raw JSON of an existing ruleset in ``folder``. Returns (raw|None,
+    ok). ``ok=False`` means the file exists but cannot be read — publishing
+    over it would destroy the supervisor's manual keys, so callers refuse."""
+    path = os.path.join(folder, rules_module.RULES_FILENAME)
+    if not os.path.exists(path):
+        return None, True
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+        return (raw if isinstance(raw, dict) else None), isinstance(raw, dict)
+    except Exception:
+        return None, False
+
+
+def _doc_scene_path(doc):
+    path, name = doc.GetDocumentPath(), doc.GetDocumentName()
+    if not path:
+        return None
+    return os.path.join(path, name)
+
+
+# ------------------------------------------------------------------- gesture A
+
+def _op_standard_preview(payload):
+    doc = c4d.documents.GetActiveDocument()
+    if doc is None:
+        return {"ok": False, "error": "no_document"}
+    scene_path = _doc_scene_path(doc)
+    if not scene_path:
+        return {"ok": False, "error": "unsaved"}
+    folder = str((payload or {}).get("folder") or "").strip()
+    pattern = None
+    existing, diff = False, []
+    if folder:
+        if not os.path.isdir(folder):
+            return {"ok": False, "error": "bad_folder"}
+        pattern = projectstd.derive_shot_pattern(scene_path, folder)
+        raw, readable = _read_raw_rules(folder)
+        existing = raw is not None or not readable
+        if raw is not None:
+            derived = projectstd.derive_rules_payload(
+                fps=doc.GetFps(), start_frame=_scene_block(doc)["start_frame"],
+                preset_names=_preset_names(doc), pattern=pattern,
+                author="", published_at="")
+            diff = projectstd.republish_diff(raw, derived)
+    return {
+        "ok": True,
+        "qc": _qc_block(doc),
+        "scene": _scene_block(doc),
+        "pattern": pattern,
+        "existing_rules": existing,
+        "diff": diff,
+        "wont_travel": list(projectstd.WONT_TRAVEL),
+    }
+
+
+def _op_standard_publish(payload):
+    payload = payload or {}
+    doc = c4d.documents.GetActiveDocument()
+    if doc is None:
+        return {"ok": False, "error": "no_document"}
+    scene_path = _doc_scene_path(doc)
+    if not scene_path:
+        return {"ok": False, "error": "unsaved"}
+    folder = str(payload.get("folder") or "").strip()
+    if not folder or not os.path.isdir(folder):
+        return {"ok": False, "error": "bad_folder"}
+
+    # A flaw inside the standard multiplies into every shot of the project:
+    # publishing from a shot that does not pass the QC is refused (spec).
+    qc = _qc_block(doc)
+    if not qc["pass"]:
+        return {"ok": False, "error": "qc_failing", "failing": qc["failing"]}
+
+    existing_raw, readable = _read_raw_rules(folder)
+    if not readable:
+        return {"ok": False, "error": "rules_unreadable"}
+
+    # Re-derive the exclusion against the LIVE scene. Location identity
+    # (name + sibling index), honored only when both still match — a stale
+    # preview refuses instead of removing the wrong branch.
+    excludes = []
+    tops = _top_level_objects(doc)
+    for entry in payload.get("exclude") or []:
+        try:
+            name, index = str(entry[0]), int(entry[1])
+        except Exception:
+            return {"ok": False, "error": "scene_changed"}
+        if index >= len(tops) or tops[index]["name"] != name:
+            return {"ok": False, "error": "scene_changed"}
+        excludes.append(index)
+
+    # Clone, strip the curated-out branches, save. The live document is
+    # never mutated — the standard is a cleaned COPY.
+    clone = doc.GetClone(c4d.COPYFLAGS_NONE)
+    if clone is None:
+        return {"ok": False, "error": "save_failed"}
+    scene_dest = os.path.join(folder, projectstd.STANDARD_SCENE_NAME)
+    try:
+        clone_tops, obj = [], clone.GetFirstObject()
+        while obj:
+            clone_tops.append(obj)
+            obj = obj.GetNext()
+        for index in excludes:
+            clone_tops[index].Remove()
+        saved = c4d.documents.SaveDocument(
+            clone, scene_dest,
+            c4d.SAVEDOCUMENTFLAGS_DONTADDTORECENTLIST, c4d.FORMAT_C4DEXPORT)
+    finally:
+        c4d.documents.KillDocument(clone)
+    if not saved:
+        return {"ok": False, "error": "save_failed"}
+
+    pattern = payload.get("pattern")
+    if pattern is not None:
+        pattern = str(pattern).strip() or None
+    if pattern is None:
+        pattern = projectstd.derive_shot_pattern(scene_path, folder)
+    derived = projectstd.derive_rules_payload(
+        fps=doc.GetFps(),
+        start_frame=_scene_block(doc)["start_frame"],
+        preset_names=_preset_names(doc),
+        pattern=pattern,
+        author=GlobalSettings.load_artist_name(),
+        published_at=time.strftime("%Y-%m-%d %H:%M:%S"))
+    merged = projectstd.merge_rules(existing_raw, derived)
+    rules_path = os.path.join(folder, rules_module.RULES_FILENAME)
+    tmp_path = rules_path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump(merged, fh, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, rules_path)
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        return {"ok": False, "error": "write_failed"}
+    rules_module.invalidate()
+    return {"ok": True, "scene_path": scene_dest, "rules_path": rules_path,
+            "excluded": len(excludes)}
+
+
+STANDARD_OPS = {
+    "panel/tools/standard_preview": _op_standard_preview,
+    "panel/tools/standard_publish": _op_standard_publish,
+}
