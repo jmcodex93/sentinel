@@ -5,6 +5,7 @@ import type { Page } from "../App";
 import { Button } from "../components/form/Button";
 import { ErrorState, LoadingState } from "../components/PageStates";
 import { fetchPaletteActions, runPaletteAction } from "../lib/api";
+import { confirmBarButtons } from "../lib/confirmBar";
 import { useToast } from "../lib/toast";
 import type { PaletteAction, PaletteActionsResult } from "../types";
 
@@ -154,6 +155,12 @@ export function PalettePage({ onNavigate }: { onNavigate: (page: Page) => void }
   }
 
   if (confirmAction) {
+    // Same verb/destructive/order policy as the panel's ConfirmBar
+    // (`lib/confirmBar.ts`) — this page just paints it full-screen with
+    // centered buttons instead of an inline floating bar. `autoFocus` stays
+    // pinned to the Cancel button specifically (never "the second button"),
+    // because a destructive gate swaps Confirm to the front: the palette is
+    // keyboard-driven and a reflex Enter must always land on the no-op.
     return (
       <div className="flex h-screen flex-col" style={{ backgroundColor: "var(--color-canvas)" }}>
         <div className="flex flex-1 flex-col items-center justify-center gap-4 p-6 text-center">
@@ -161,17 +168,22 @@ export function PalettePage({ onNavigate }: { onNavigate: (page: Page) => void }
             {confirmAction.confirm_label}
           </p>
           <div className="flex gap-2">
-            <Button
-              variant="secondary"
-              disabled={busy}
-              onClick={() => setConfirmAction(null)}
-              autoFocus
-            >
-              Cancel
-            </Button>
-            <Button variant="primary" disabled={busy} onClick={() => runAction(confirmAction, true)}>
-              Confirm
-            </Button>
+            {confirmBarButtons({
+              confirmVerb: confirmAction.confirm_verb,
+              destructive: confirmAction.destructive,
+            }).map((button) => (
+              <Button
+                key={button.role}
+                variant={button.variant}
+                disabled={busy}
+                onClick={
+                  button.role === "cancel" ? () => setConfirmAction(null) : () => runAction(confirmAction, true)
+                }
+                autoFocus={button.role === "cancel"}
+              >
+                {button.label}
+              </Button>
+            ))}
           </div>
         </div>
       </div>
