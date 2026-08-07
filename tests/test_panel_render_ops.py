@@ -1466,3 +1466,79 @@ class TestResetAllConfirmNamesWhatIsLost:
         assert response["error"] == "confirm_required"
         assert "CLIENTE_9x16_final" in response["confirm_label"]
         assert "render," not in response["confirm_label"]
+
+
+class TestResetAllConfirmButtonSaysWhatItDoes:
+    """The button that ACCEPTS the reset must name the action, and must
+    only be marked destructive when this particular reset really loses
+    something (the red is spent on real loss, not on every confirm)."""
+
+    def test_verb_names_the_deletion_when_presets_are_lost(self, sentinel_module):
+        from sentinel.ui import panel_render_ops
+        verb = panel_render_ops.reset_all_confirm_verb(["CLIENTE_9x16_final"])
+        assert verb == "Delete and re-create"
+
+    def test_verb_promises_only_the_recreate_when_nothing_is_lost(self, sentinel_module):
+        from sentinel.ui import panel_render_ops
+        verb = panel_render_ops.reset_all_confirm_verb([])
+        assert "Delete" not in verb
+        assert verb == "Re-create presets"
+
+    def test_confirm_response_carries_verb_and_destructive_flag(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+
+        doc = _UndoableDoc([_UndoableRD("CLIENTE_9x16_final"), _UndoableRD("render")])
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/reset_all"]({})
+        assert response["error"] == "confirm_required"
+        assert response["confirm_verb"] == "Delete and re-create"
+        assert response["destructive"] is True
+
+    def test_reset_with_nothing_to_lose_is_not_marked_destructive(self, sentinel_module, monkeypatch):
+        """Every preset is standard → the reset destroys nothing, so the
+        gate still asks but the button must not go red."""
+        from sentinel.ui import panel_render_ops
+
+        doc = _UndoableDoc([_UndoableRD("render"), _UndoableRD("stills")])
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/reset_all"]({})
+        assert response["error"] == "confirm_required"
+        assert response["destructive"] is False
+        assert response["confirm_verb"] == "Re-create presets"
+
+    def test_unreadable_scene_assumes_the_worst(self, sentinel_module, monkeypatch):
+        """An unreadable scene is not evidence that nothing is at stake:
+        the degraded gate stays destructive rather than quietly dropping
+        the warning."""
+        from sentinel.ui import panel_render_ops
+
+        def _boom(doc):
+            raise RuntimeError("scene read failed")
+
+        monkeypatch.setattr(panel_render_ops, "non_standard_preset_names", _boom)
+        confirm = panel_render_ops._reset_all_confirm_for(object())
+        assert confirm["destructive"] is True
+        assert confirm["confirm_verb"] == "Delete and re-create"
+        assert confirm["confirm_label"] == panel_render_ops._RESET_ALL_CONFIRM_LABEL
+
+    def test_confirmed_run_still_mutates_and_returns_no_gate_fields(self, sentinel_module, monkeypatch):
+        """The contract that already existed must not change shape: with
+        ``confirm: true`` the op runs and returns no confirm fields."""
+        from sentinel.ui import panel_render_ops, scene_tools
+
+        doc = _UndoableDoc([_UndoableRD("CLIENTE_9x16_final")])
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(scene_tools, "_force_render_settings_core",
+                            lambda d: {"ok": True})
+        # The success payload's stamp/render reads are a different concern
+        # (covered by their own tests); this test is about the gate fields.
+        monkeypatch.setattr(panel_render_ops, "_stamp_for", lambda d: "stamp")
+        monkeypatch.setattr(panel_render_ops, "build_panel_render", lambda d: {})
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/reset_all"](
+            {"confirm": True})
+        assert response["ok"] is True
+        assert "confirm_verb" not in response
+        assert "destructive" not in response

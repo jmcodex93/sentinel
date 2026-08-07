@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
 import { Button } from "./form/Button";
+import { confirmBarButtons } from "../lib/confirmBar";
 
 /** Inline confirm bar — the shared shell behind the panel's three confirm
  * gates (Overview's `confirmAction`, QC's `qcConfirm`, Render's
- * `confirmLabel`): identical Cancel/Confirm layout, only the label and
- * callbacks differ. Extracted here (Task 5, panel polish) so the mount
+ * `confirmLabel`): one layout, only the copy, the destructive flag and the
+ * callbacks differ. Which buttons exist, what they say and in what order
+ * is `lib/confirmBar.ts` (pure, tested); this file is the shell.
+ * Extracted here (Task 5, panel polish) so the mount
  * glide + floating shadow are authored once instead of three times.
  * Mounts with a fade + small `translateY` glide (same `entered`-one-frame-
  * after-mount idiom as `Toast.tsx`) since the bar floats in over existing
@@ -13,12 +16,21 @@ import { Button } from "./form/Button";
  * disabled state) is unchanged from the three inline blocks this replaces. */
 export function ConfirmBar({
   label,
+  confirmVerb,
+  destructive,
   busy,
   onConfirm,
   onCancel,
   className,
 }: {
   label: string;
+  /** What the confirm button says — the server's `confirm_verb`. Absent
+   * (an older action, or a route that never learned to send one) falls
+   * back to "Confirm": never a mute button, never SPA-invented copy. */
+  confirmVerb?: string | null;
+  /** Server-owned (`destructive` in the confirm contract). Drives the red
+   * variant AND the button order — see `lib/confirmBar.ts`. */
+  destructive?: boolean;
   busy: boolean;
   onConfirm: () => void;
   onCancel: () => void;
@@ -47,12 +59,16 @@ export function ConfirmBar({
         {label}
       </span>
       <div className="ml-auto flex gap-2">
-        <Button variant="secondary" disabled={busy} onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button variant="primary" disabled={busy} onClick={onConfirm}>
-          Confirm
-        </Button>
+        {confirmBarButtons({ confirmVerb, destructive }).map((button) => (
+          <Button
+            key={button.role}
+            variant={button.variant}
+            disabled={busy}
+            onClick={button.role === "confirm" ? onConfirm : onCancel}
+          >
+            {button.label}
+          </Button>
+        ))}
       </div>
     </div>
   );
