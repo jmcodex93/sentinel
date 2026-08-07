@@ -662,8 +662,21 @@ Background monitoring with panel closed. Invasive — reconsider when plugin is 
 #### Template Configurable
 Supervisor chooses .c4d template from shared server. Add "..." button next to Reset All.
 
-#### Dropdown Dinámico de Presets
-Show presets that exist in scene, not just hardcoded 4.
+#### Retirado: Force 9:16 *(v1.36.4 — no reponer)*
+El botón **Force 9:16** del bloque Preset se retiró a decisión del artista, con
+su op (`panel/render/force_vertical`), su núcleo (`scene_tools._toggle_aspect_core`
+/ `_toggle_aspect`) y su widget id. Dos razones, ambas suficientes:
+
+1. **Superado por Sentinel Frame** (v1.28+), que entrega takes por formato con
+   crop y nudge correctos. Tener dos maneras de hacer vertical —una tosca y una
+   buena— invita a usar la mala.
+2. **No transponía: encajaba a escalones** (medido). Un preset de 2048×858 salía
+   de ahí como 1080×1920 — los dos números originales perdidos, no rotados.
+
+La entrada obsoleta *"Dropdown Dinámico de Presets"* que vivía aquí se retiró en
+el mismo paso: el desplegable es dinámico desde la migración a SPA, y su problema
+real —enseñaba nombres normalizados en vez de los de la escena— se arregló en la
+v1.36.4.
 
 #### Keyboard Shortcuts
 Atajos for Export QC, refresh, panel toggle.

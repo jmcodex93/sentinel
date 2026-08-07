@@ -9,6 +9,7 @@ import {
   aovStatusLine,
   frameStatusLine,
   postrenderStatusLine,
+  presetOptionLabel,
   presetStatusLine,
   snapshotStatusLine,
 } from "../../lib/panelRender";
@@ -78,7 +79,7 @@ type AovListState =
 
 /** The panel's Render section (Fase 6.2) — 5 stacked status blocks reusing
  * the existing engines via thin ops (`panel_render_ops.py`). Destructive
- * actions (Reset All, Force 9:16, an AOV tier) surface an inline confirm bar
+ * actions (Reset All) surface an inline confirm bar
  * driven by the server's `confirm_label` — the SPA never invents its own
  * copy for what a mutation is about to do. Null blocks render a distinct
  * "not available" note rather than hiding, mirroring the QC section's
@@ -117,10 +118,13 @@ export function RenderSection({
   /** Set once a destructive op comes back with `confirm_required` — the
    * inline confirm bar's copy, verbatim from the server. */
   confirmLabel: string | null;
-  onSetPreset: (preset: string) => void;
-  /** Reset All / Force 9:16 — the only two render ops that are still
-   * genuinely destructive and confirm-gated. */
-  onDestructive: (op: "reset_all" | "force_vertical") => void;
+  /** Receives the chosen preset's chain INDEX (the option value) — the page
+   * resolves it back to a name+index pair for `set_preset`. */
+  onSetPreset: (index: number) => void;
+  /** Reset All — the only render op left that is genuinely destructive and
+   * confirm-gated (Force 9:16 was retired in v1.36.4: vertical delivery is
+   * Sentinel Frame's job, a block below). */
+  onDestructive: (op: "reset_all") => void;
   onAddFrameTag: () => void;
   onSelectFrameTag: () => void;
   /** Coverage action — Essentials/Production ADD any missing AOVs up to
@@ -212,17 +216,22 @@ export function RenderSection({
       <RenderBlock title="Preset" first status={presetStatusLine(preset)}>
         {preset === null ? null : (
           <>
+            {/* The option VALUE is the preset's chain index, not its name:
+                two presets whose names normalize alike (QC #5's "duplicate
+                render preset") are distinct entries that must each activate
+                themselves. The label carries the real name — see
+                `presetOptionLabel`. */}
             <Select
-              value={preset.preset_name ?? ""}
-              options={preset.preset_names.map((name) => ({ value: name, label: name }))}
-              disabled={preset.preset_names.length === 0}
-              onChange={onSetPreset}
+              value={preset.preset_index === null ? "" : String(preset.preset_index)}
+              options={preset.presets.map((option) => ({
+                value: String(option.index),
+                label: presetOptionLabel(option),
+              }))}
+              disabled={preset.presets.length === 0}
+              onChange={(value) => onSetPreset(Number(value))}
             />
             <Button variant="secondary" disabled={false} onClick={() => onDestructive("reset_all")}>
               Reset All⚠
-            </Button>
-            <Button variant="secondary" disabled={false} onClick={() => onDestructive("force_vertical")}>
-              Force 9:16⚠
             </Button>
           </>
         )}

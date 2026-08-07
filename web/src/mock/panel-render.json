@@ -1,7 +1,14 @@
 {
   "preset": {
-    "preset_name": "Render",
-    "preset_names": ["Previz", "Pre-Render", "Render", "Stills"],
+    "preset_name": "RS-LookDev 2026",
+    "preset_index": 4,
+    "presets": [
+      { "index": 0, "name": "Previz", "standard": true },
+      { "index": 1, "name": "Pre-Render", "standard": true },
+      { "index": 2, "name": "Render", "standard": true },
+      { "index": 3, "name": "Stills", "standard": true },
+      { "index": 4, "name": "RS-LookDev 2026", "standard": false }
+    ],
     "fps": 25,
     "resolution": "1920x1080"
   },

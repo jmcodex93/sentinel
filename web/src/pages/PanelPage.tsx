@@ -31,7 +31,6 @@ import {
   postPanelQcSelect,
   postPanelRenderAddFrameTag,
   postPanelRenderAovTier,
-  postPanelRenderForceVertical,
   postPanelRenderOpenFolder,
   postPanelRenderResetAll,
   postPanelRenderSaveStill,
@@ -67,12 +66,12 @@ type RenderPageState = { kind: "loading" } | PanelRenderResult;
 type DeliverPageState = { kind: "loading" } | { kind: "ok"; data: PanelDeliverState };
 
 /** What the Render section's inline confirm bar is about to run — set once
- * a destructive op (`reset_all`/`force_vertical`) comes back
+ * a destructive op (`reset_all`) comes back
  * `confirm_required`, so Confirm can re-issue the exact same op with
  * `confirm: true` (the server, not the SPA, owns the copy in `label`).
  * `aov_tier` (Essentials/Production) is additive and never confirm-gates
  * any more — it's not part of this union. */
-type RenderConfirm = { op: "reset_all" | "force_vertical"; label: string };
+type RenderConfirm = { op: "reset_all"; label: string };
 
 /** What the inline confirm bar is about to run, for the QC section's Fix
  * (per-card, via the shared palette action) and Fix-all (via
@@ -446,20 +445,30 @@ export function PanelPage() {
     load(true);
   }
 
-  async function handleSetPreset(preset: string) {
+  /** `index` is the chosen option's position in the scene's render data
+   * chain. Both it and the real name travel to the server: the index is what
+   * makes two presets with names that normalize alike individually
+   * selectable, and the name is what the server checks the index against
+   * before trusting it (a panel read can be one scene edit stale). */
+  async function handleSetPreset(index: number) {
+    const preset =
+      renderState.kind === "ok"
+        ? renderState.data.preset?.presets.find((option) => option.index === index)
+        : undefined;
+    if (!preset) return;
     setBusyRenderId("set_preset");
-    const response = await postPanelRenderSetPreset(preset);
+    const response = await postPanelRenderSetPreset(preset.name, preset.index);
     setBusyRenderId(null);
-    applyRenderMutation(response, `Preset set to ${preset}.`);
+    applyRenderMutation(response, `Preset set to ${preset.name}.`);
   }
 
-  /** Destructive ops (Reset All, Force 9:16) never confirm client-side — the
-   * first call omits `confirm`, and a `confirm_required` response is what
-   * opens the inline bar, with the server's own `confirm_label` as the copy
-   * (never SPA-authored text). */
-  async function runRenderDestructive(op: "reset_all" | "force_vertical", confirm?: boolean) {
+  /** Destructive ops (Reset All) never confirm client-side — the first call
+   * omits `confirm`, and a `confirm_required` response is what opens the
+   * inline bar, with the server's own `confirm_label` as the copy (never
+   * SPA-authored text). */
+  async function runRenderDestructive(op: "reset_all", confirm?: boolean) {
     setBusyRenderId(op);
-    const response = op === "reset_all" ? await postPanelRenderResetAll(confirm) : await postPanelRenderForceVertical(confirm);
+    const response = await postPanelRenderResetAll(confirm);
     setBusyRenderId(null);
 
     if (!response.ok && response.error === "confirm_required") {

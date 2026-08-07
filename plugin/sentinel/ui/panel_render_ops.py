@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Panel SPA Render-section ops — ``panel/render`` (per-block isolated read)
 plus the mutation/action ops. Task 1: preset/frame mutations (``set_preset``,
-``reset_all``, ``force_vertical``, ``add_frame_tag``, ``select_frame_tag``).
+``reset_all``, ``add_frame_tag``, ``select_frame_tag``).
 Task 2: AOVs + snapshots (``aov_tier``, ``set_multipart``, ``aov_list``,
 ``toggle_watchfolder``, ``save_still``, ``open_folder``). Sibling of
 ``ui/panel_ops.py`` (same ``MainThreadQueue`` dispatch-target contract, same
@@ -13,9 +13,10 @@ honor). Host-agnostic: no dialog imports at module scope; merged into
 Every field in ``panel/render`` is copied from an existing call site, never
 invented:
 
-- ``preset``: ``doc.GetActiveRenderData()`` name (normalized) + XRES/YRES +
+- ``preset``: ``doc.GetActiveRenderData()`` name (as it reads in the Render
+  Manager — normalization is a comparison key, not UI text) + XRES/YRES +
   ``doc.GetFps()`` — the same reads ``panel_ops._panel_render_block``
-  makes (extended here with ``preset_names``, gathered by iterating
+  makes (extended here with ``presets``, gathered by iterating
   ``doc.GetFirstRenderData()``/``GetNext()``, the same walk
   ``ui/panel.py`` ``_apply_preset``/``scene_tools._force_render_settings``
   already do).
@@ -73,26 +74,77 @@ from sentinel.ui.frame_tag import _enabled_format_ids_from_params
 from sentinel.ui.panel_ops import _guarded_block, _panel_render_block, _stamp_for
 
 
+def _approved_normalized_presets(doc):
+    """The normalized names QC #5 considers standard — the ruleset's
+    ``approved_presets`` through ``normalize_preset_name``. One helper, one
+    criterion: the dropdown's "not in the standard set" marker and the Reset
+    All confirm must never disagree about what standard means."""
+    from sentinel.common.constants import PRESETS
+    from sentinel.rules_context import active_rules_for_doc
+
+    context = active_rules_for_doc(doc)
+    return {
+        normalize_preset_name(name)
+        for name in context.params.get("approved_presets", PRESETS)
+    }
+
+
 def _panel_preset_block(doc):
     """Preset-card portion of ``panel/render`` — REUSES
     ``panel_ops._panel_render_block`` for the ``preset_name``/``resolution``/
     ``fps`` reads (rather than a second drifting copy of the same
     ``GetActiveRenderData``/``RDATA_XRES``/``RDATA_YRES`` reads), and adds
-    ``preset_names``: the full list of normalized preset names available in
-    this scene's render data chain (for the SPA's preset ``<select>``)."""
+    ``presets``: one entry per render data in this scene's chain, in scene
+    order, for the SPA's preset ``<select>``.
+
+    Each entry is ``{"index": <position in the chain>, "name": <REAL scene
+    name>, "standard": <bool>}``:
+
+    - ``name`` is what the Render Manager shows. It used to be the
+      *normalized* form, which is a comparison key, not UI text — the artist
+      saw ``rs_lookdev_2026`` for a preset called ``RS-LookDev 2026``.
+    - ``index`` is the identity the SPA sends back, so two presets whose
+      names normalize to the same key (``Pre-Render`` / ``pre_render``, which
+      QC #5 already reports as a duplicate) are two selectable entries that
+      each activate THEMSELVES. Under name-only matching the second entry
+      silently activated the first.
+    - ``standard`` is QC #5's criterion (``_approved_normalized_presets``),
+      never a second derivation and never the four template names by hand.
+    """
     base = _panel_render_block(doc)
 
-    preset_names = []
+    try:
+        approved = _approved_normalized_presets(doc)
+    except Exception as exc:  # pragma: no cover - defensive
+        # A ruleset read failure must not blank the dropdown; degrade to
+        # "everything unmarked" rather than "everything flagged non-standard"
+        # (a marker that is wrong in the alarming direction is worse than an
+        # absent one), and say so instead of failing silently.
+        safe_print(f"preset block could not resolve approved presets: {exc}")
+        approved = None
+
+    presets = []
+    active_index = None
+    active_rd = doc.GetActiveRenderData()
     walk = doc.GetFirstRenderData()
+    index = 0
     while walk:
-        name = normalize_preset_name(walk.GetName() or "")
-        if name and name not in preset_names:
-            preset_names.append(name)
+        raw = walk.GetName() or ""
+        presets.append({
+            "index": index,
+            "name": raw,
+            "standard": True if approved is None
+                        else normalize_preset_name(raw) in approved,
+        })
+        if active_rd is not None and walk == active_rd:
+            active_index = index
         walk = walk.GetNext()
+        index += 1
 
     return {
         "preset_name": base.get("preset_name"),
-        "preset_names": preset_names,
+        "preset_index": active_index,
+        "presets": presets,
         "fps": base.get("fps"),
         "resolution": base.get("resolution"),
     }
@@ -256,7 +308,14 @@ def _op_panel_render_set_preset(payload):
     ``scene_tools._apply_preset_core`` (the dialog-free core extracted from
     ``ui/panel.py`` ``_apply_preset`` for this task). Reversible, low-impact
     (just switches which render data is active) — no confirm gate, matching
-    the native dropdown's own lack of a confirmation step."""
+    the native dropdown's own lack of a confirmation step.
+
+    ``preset`` is the REAL scene name the dropdown displayed; the optional
+    ``index`` is the position that entry occupied in the render data chain,
+    which is what disambiguates two presets whose names normalize alike (see
+    ``_apply_preset_core``). It is passed through unvalidated on purpose: an
+    index that matches nothing simply falls through to the name scan, so a
+    malformed one can never turn a working preset switch into an error."""
     doc = documents.GetActiveDocument()
     if not doc:
         return {"ok": False, "error": "no_document"}
@@ -267,7 +326,8 @@ def _op_panel_render_set_preset(payload):
     if not preset:
         return {"ok": False, "error": "preset_required"}
 
-    rd = scene_tools._apply_preset_core(doc, preset)
+    rd = scene_tools._apply_preset_core(doc, preset,
+                                        index=(payload or {}).get("index"))
     if rd is None:
         return {"ok": False, "error": "preset_not_found"}
 
@@ -276,8 +336,6 @@ def _op_panel_render_set_preset(payload):
 
 _RESET_ALL_CONFIRM_LABEL = ("Reset ALL render presets from template? "
                              "This replaces existing presets with standard settings.")
-_FORCE_VERTICAL_CONFIRM_LABEL = "Force the active render preset's aspect ratio (9:16 / 16:9)?"
-
 #: How many preset names the confirm text spells out before it switches to
 #: "…and N more" — a scene with a long tail of custom presets must still
 #: fit a panel-width confirm bar.
@@ -293,16 +351,10 @@ def non_standard_preset_names(doc):
     The "standard" criterion is QC #5's, not a second one: the ruleset's
     ``approved_presets`` compared through ``normalize_preset_name`` (see
     ``checks/render.py`` ``check_render_conflicts``). Nothing here re-derives
-    the list or hardcodes the four template names.
+    the list or hardcodes the four template names — it shares
+    ``_approved_normalized_presets`` with the dropdown's own marker.
     """
-    from sentinel.common.constants import PRESETS
-    from sentinel.rules_context import active_rules_for_doc
-
-    context = active_rules_for_doc(doc)
-    allowed = {
-        normalize_preset_name(name)
-        for name in context.params.get("approved_presets", PRESETS)
-    }
+    allowed = _approved_normalized_presets(doc)
 
     doomed = []
     rd = doc.GetFirstRenderData()
@@ -377,28 +429,6 @@ def _op_panel_render_reset_all(payload):
     from sentinel.ui import scene_tools
 
     result = scene_tools._force_render_settings_core(doc)
-    if not result.get("ok"):
-        return {"ok": False, "error": result.get("error")}
-
-    return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
-
-
-def _op_panel_render_force_vertical(payload):
-    """``panel/render/force_vertical`` — destructive-adjacent (rewrites the
-    active preset's resolution), confirm-gated. Runs
-    ``scene_tools._toggle_aspect_core`` — the dialog-free core extracted
-    from ``_toggle_aspect``."""
-    doc = documents.GetActiveDocument()
-    if not doc:
-        return {"ok": False, "error": "no_document"}
-
-    if _needs_confirm(payload):
-        return {"ok": False, "error": "confirm_required",
-                "confirm_label": _FORCE_VERTICAL_CONFIRM_LABEL}
-
-    from sentinel.ui import scene_tools
-
-    result = scene_tools._toggle_aspect_core(doc)
     if not result.get("ok"):
         return {"ok": False, "error": result.get("error")}
 
@@ -664,7 +694,6 @@ PANEL_RENDER_OPS = {
     "panel/render": _op_panel_render,
     "panel/render/set_preset": _op_panel_render_set_preset,
     "panel/render/reset_all": _op_panel_render_reset_all,
-    "panel/render/force_vertical": _op_panel_render_force_vertical,
     "panel/render/add_frame_tag": _op_panel_render_add_frame_tag,
     "panel/render/select_frame_tag": _op_panel_render_select_frame_tag,
     "panel/render/aov_tier": _op_panel_render_aov_tier,

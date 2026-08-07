@@ -1,4 +1,5 @@
 import type {
+  PanelRenderPresetOption,
   PanelRenderAovs,
   PanelRenderFrame,
   PanelRenderPostrender,
@@ -17,6 +18,18 @@ export function presetStatusLine(preset: PanelRenderPreset | null): string {
     return "No active preset.";
   }
   return `${preset.preset_name} · ${preset.resolution} · ${preset.fps}fps`;
+}
+
+/** Dropdown label for one render preset: the real scene name, with a
+ * trailing `· custom` on the ones outside the ruleset's approved set.
+ *
+ * Tail, not prefix, and a word rather than a `⚠`: the name is the primary
+ * information and a narrow dropdown truncates from the right, so the marker
+ * is what gets cut — never the identity. A warning glyph would read as an
+ * error, and a preset the artist built on purpose is not one; it is just
+ * what a Reset All would delete. */
+export function presetOptionLabel(option: PanelRenderPresetOption): string {
+  return option.standard ? option.name : `${option.name} · custom`;
 }
 
 /** Frame card status line: `"No Sentinel Frame tag."` / `"On <camera>."`,
@@ -66,12 +79,12 @@ export function postrenderStatusLine(postrender: PanelRenderPostrender | null): 
 }
 
 /** The `panel/render/*` ops the server confirm-gates (`_needs_confirm` in
- * panel_render_ops.py: `reset_all`, `force_vertical`) — every other
+ * panel_render_ops.py: `reset_all`) — every other
  * mutation, including the additive `aov_tier` coverage actions and the
  * `set_light_groups`/`set_multipart` toggles, is reversible/idempotent and
  * runs without an inline confirm step, mirroring the native panel's own
  * lack of a confirmation dialog for those actions. */
-const DESTRUCTIVE_RENDER_OPS = new Set(["reset_all", "force_vertical"]);
+const DESTRUCTIVE_RENDER_OPS = new Set(["reset_all"]);
 
 export function isDestructiveRenderOp(op: string): boolean {
   return DESTRUCTIVE_RENDER_OPS.has(op);

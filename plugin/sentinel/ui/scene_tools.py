@@ -423,28 +423,54 @@ def _get_template_path():
     return os.path.join(_ROOT, "c4d", "new.c4d")
 
 
-def _apply_preset_core(doc, preset_name):
+def _apply_preset_core(doc, preset_name, index=None):
     """Dialog-free core of preset switching — extracted from ``ui/panel.py``
     ``_apply_preset`` (Fase 6.2 Task 1) so a non-``GeDialog`` caller
     (``panel_render_ops.py``) can apply a preset without touching
-    ``self._active_preset``/UI widgets. Finds the render data whose
-    normalized name matches ``preset_name`` and makes it active. Returns the
-    matched ``RenderData`` object, or ``None`` if ``doc`` is falsy or no
-    render data with that normalized name exists. The native
+    ``self._active_preset``/UI widgets. Returns the matched ``RenderData``
+    object, or ``None`` if ``doc`` is falsy or nothing matches. The native
     ``ui/panel.py`` ``_apply_preset`` calls this, then owns its own
     button/caption/``_active_preset`` updates and log line.
+
+    Two ways to identify the target, in this order:
+
+    - ``index`` (the position in the render data chain the panel dropdown
+      showed) is used ONLY if the render data still sitting at that position
+      carries exactly ``preset_name``. That makes two presets whose names
+      normalize alike — ``Pre-Render`` and ``pre_render``, which QC #5
+      reports as a duplicate — individually selectable instead of both
+      activating the first one.
+    - Otherwise (no index, or the scene changed under a stale panel read) it
+      falls back to the historical behavior: the first render data whose
+      NORMALIZED name matches. Normalization is right for matching — it is
+      only wrong for display.
     """
     if not doc:
         return None
+
+    def _activate(rd):
+        doc.SetActiveRenderData(rd)
+        check_cache.clear()  # Clear cache to update compliance check immediately
+        c4d.EventAdd()
+        return rd
+
+    if index is not None:
+        position = 0
+        rd = doc.GetFirstRenderData()
+        while rd:
+            if position == index:
+                if (rd.GetName() or "") == preset_name:
+                    return _activate(rd)
+                break  # stale index — fall through to the name scan
+            rd = rd.GetNext()
+            position += 1
+
     normalized_target = normalize_preset_name(preset_name)
     rd = doc.GetFirstRenderData()
     while rd:
         normalized_rd = normalize_preset_name(rd.GetName() or "")
         if normalized_rd == normalized_target:
-            doc.SetActiveRenderData(rd)
-            check_cache.clear()  # Clear cache to update compliance check immediately
-            c4d.EventAdd()
-            return rd
+            return _activate(rd)
         rd = rd.GetNext()
     return None
 
@@ -569,69 +595,6 @@ def _force_render_settings(doc, update_ui=None):
     c4d.gui.MessageDialog(f"Reset {result['count']} render presets from template\n\n"
                          f"Active: {result['active_name']}\n"
                          f"Resolution: {result['resolution']}")
-
-
-def _toggle_aspect_core(doc, update_ui=None):
-    """Dialog-free core of the Force 9:16 / 16:9 toggle — extracted from
-    ``_toggle_aspect`` (Fase 6.2 Task 1) so a non-interactive caller
-    (``panel_render_ops.py``) can run it without the native
-    ``MessageDialog`` on the "no active render preset" branch.
-
-    Returns ``{"ok": True, "resolution": "WxH", "label": "16:9"|"9:16"}``
-    or ``{"ok": False, "error": <message>}``. Never shows a dialog.
-    """
-    if not doc:
-        return {"ok": False, "error": "no_document"}
-
-    rd = doc.GetActiveRenderData()
-    if not rd:
-        return {"ok": False, "error": "No active render preset"}
-
-    old_w = int(rd[c4d.RDATA_XRES])
-    old_h = int(rd[c4d.RDATA_YRES])
-    is_vertical = old_h > old_w
-
-    if is_vertical:
-        # Currently vertical → switch to horizontal 16:9
-        if old_h >= 3840:
-            w, h = 3840, 2160
-        elif old_h >= 1920:
-            w, h = 1920, 1080
-        else:
-            w, h = 1280, 720
-    else:
-        # Currently horizontal → switch to vertical 9:16
-        if old_w >= 3840:
-            w, h = 2160, 3840
-        elif old_w >= 1920:
-            w, h = 1080, 1920
-        else:
-            w, h = 720, 1280
-
-    rd[c4d.RDATA_XRES] = w
-    rd[c4d.RDATA_YRES] = h
-
-    check_cache.clear()
-    c4d.EventAdd()
-    if update_ui is not None:
-        update_ui()
-
-    label = "16:9" if w > h else "9:16"
-    safe_print(f"Aspect: {old_w}x{old_h} → {w}x{h} ({label})")
-    return {"ok": True, "resolution": "%dx%d" % (w, h), "label": label}
-
-
-def _toggle_aspect(doc, update_ui=None):
-    """Toggle between 16:9 and 9:16 aspect ratio"""
-    if not doc:
-        return
-
-    try:
-        result = _toggle_aspect_core(doc, update_ui=update_ui)
-        if not result["ok"]:
-            c4d.gui.MessageDialog(result["error"])
-    except Exception as e:
-        safe_print(f"Error toggling aspect: {e}")
 
 
 def _add_sentinel_frame_tag_core(doc):

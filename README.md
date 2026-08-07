@@ -47,7 +47,9 @@ Standardized presets with resolution display, one-click switching:
 - **Render** – 1920×1080 @ 25fps
 - **Stills** – 3840×2160 @ 25fps
 
-**Reset All** resets all presets from a template file. **Force 9:16 / 16:9** toggles aspect ratio for social media delivery.
+**Reset All** resets all presets from a template file (undoable; the confirm names the presets it will delete). The dropdown lists the scene's real preset names and marks the ones outside the studio's approved set with a `· custom` tail.
+
+Vertical / social delivery is **Sentinel Frame**'s job — the *Force 9:16* button was retired in v1.36.4 (it snapped resolutions to rungs instead of transposing them).
 
 #### Multi-Format Delivery
 
