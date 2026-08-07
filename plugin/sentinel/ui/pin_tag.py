@@ -840,6 +840,23 @@ def _iter_description_params(node):
     auditoría que motivó esto: los ``DescID`` de varios niveles (anidados)
     no están medidos, así que no se tocan.
 
+    **Un parámetro SIN NOMBRE en la descripción se salta entero, ni se
+    captura ni se cuenta como pérdida.** Medido en vivo (C4D 2026.303):
+    un cubo, un null, una luz, una RS Light, una RS Camera y un Cloner
+    avisaban TODOS ``2 parámetros sin capturar`` — siempre los mismos dos
+    ids, ``1041672`` (dtype ``1041447``) y ``1050439`` (dtype ``1050442``),
+    y ambos lanzan ``Parameter value not accessible`` al leerlos. Los dos
+    carecen de ``DESC_NAME`` en su descripción: no aparecen en el
+    Attribute Manager, así que el artista no puede echarlos de menos —
+    son internos de C4D, que se niega a exponerlos incluso a sí mismo. Un
+    aviso que salta en un cubo vacío entrena a ignorarlo, que es
+    exactamente lo que la regla de la casa prohíbe ("una fila que avisa
+    siempre deja de avisar de nada"). Un parámetro CON nombre que no se
+    pueda capturar SIGUE contando y avisando — la medición de hoy no
+    encontró ninguno en los siete tipos probados, pero un gradiente o un
+    spline de falloff sí podrían serlo en otro objeto, y ahí el aviso es
+    justo lo que hace falta.
+
     Nunca lanza: un nodo cuya descripción no se puede leer simplemente no
     aporta parámetros al complemento — el contenedor sigue siendo el camino
     principal y ya se capturó."""
@@ -856,8 +873,15 @@ def _iter_description_params(node):
         return
     for item in items:
         try:
+            info_bc = item[0]
             desc_id = item[1]
         except Exception:
+            continue
+        try:
+            name = info_bc.GetString(c4d.DESC_NAME, "") if info_bc is not None else ""
+        except Exception:
+            name = ""
+        if not name:
             continue
         try:
             if desc_id.GetDepth() != 1:

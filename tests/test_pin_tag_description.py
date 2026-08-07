@@ -68,11 +68,19 @@ class FakeDescribedObject:
     ``False`` (el objeto vivo rechaza el valor) — para probar que un
     parámetro que no vuelve se VE en la fila en vez de asumirse.
     ``unreadable`` es el conjunto de ids cuyo ``GetParameter`` lanza.
+
+    ``unnamed`` es el conjunto de ids cuya descripción NO trae
+    ``DESC_NAME`` — la superficie que v1.36.2's fix distingue: por
+    defecto (fuera de este conjunto) cada entrada de ``described`` nace
+    CON nombre, así que los tests escritos antes de este cambio siguen
+    hablando del mismo estado que hablaban. Un id en ``unnamed`` modela
+    los dos parámetros internos medidos en vivo (1041672/1050439) que
+    C4D no expone en el Attribute Manager.
     """
 
     def __init__(self, name, c4d_module, container=None, described=None,
                  doc=None, obj_type=5102, rejected=None, unreadable=None,
-                 children=None):
+                 unnamed=None, children=None):
         self._name = name
         self._c4d = c4d_module
         self._type = obj_type
@@ -84,6 +92,7 @@ class FakeDescribedObject:
         self._desc = dict(described or {})
         self._rejected = set(rejected or ())
         self._unreadable = set(unreadable or ())
+        self._unnamed = set(unnamed or ())
         self._matrix = c4d_module.Matrix()
         self._tags = []
         self._children = list(children or [])
@@ -140,7 +149,10 @@ class FakeDescribedObject:
         out = FakeDescription()
         for param_id, (dtype, _value) in self._desc.items():
             desc_id = c4d.DescID(c4d.DescLevel(param_id, dtype, self._type))
-            out.append((c4d.BaseContainer(), desc_id, None))
+            info_bc = c4d.BaseContainer()
+            if param_id not in self._unnamed:
+                info_bc.SetString(c4d.DESC_NAME, "param_%d" % param_id)
+            out.append((info_bc, desc_id, None))
         return out
 
     def GetParameter(self, desc_id, flags):
@@ -318,6 +330,58 @@ def test_capture_counts_a_parameter_it_could_not_read(sentinel_module):
     assert (captured, skipped) == (1, 1)
 
 
+def test_capture_skips_a_nameless_parameter_that_cannot_be_read(sentinel_module):
+    """El fix real: los dos ids internos medidos en vivo (1041672/1050439)
+    no tienen ``DESC_NAME`` en su descripción Y lanzan al leerlos. Un
+    objeto corriente pineado con SÓLO ese ruido de fondo no debe avisar de
+    nada — es justo lo que un cubo/null/luz/RS Light/RS Camera/Cloner
+    hacían todos antes de este fix."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    obj = FakeDescribedObject(
+        "cubo", c4d,
+        described={
+            1041672: (1041447, None),
+            1050439: (1050442, None),
+        },
+        unreadable={1041672, 1050439},
+        unnamed={1041672, 1050439})
+
+    params_bc, captured, skipped = pin_tag._capture_node_params(
+        obj, obj.GetData())
+
+    assert (captured, skipped) == (0, 0), (
+        "un parámetro sin nombre no es dato del artista: ni se captura "
+        "ni cuenta como pérdida")
+    assert params_bc.GetContainerInstance(0) is None
+
+
+def test_capture_still_counts_a_named_parameter_it_could_not_read(sentinel_module):
+    """El contrapeso del test de arriba: quitarle el nombre a un
+    parámetro es lo único que lo excluye. Uno CON nombre que lanza al
+    leerlo (un gradiente o un spline de falloff en otro objeto, dice el
+    encargo) sigue contando como pérdida real y avisando en la fila —
+    éste es exactamente ``test_capture_counts_a_parameter_it_could_not_read``
+    de arriba, con el nombre ahora explícito en vez de implícito por
+    default, para que el contraste con el test anterior sea el dato, no
+    una casualidad del fake."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    obj = FakeDescribedObject(
+        "raro", c4d,
+        described={LIGHT_BRIGHTNESS: (c4d.DTYPE_REAL, 0.45),
+                   LIGHT_COLOR: (c4d.DTYPE_COLOR, c4d.Vector(1, 1, 1))},
+        unreadable={LIGHT_COLOR},
+        unnamed=set())
+
+    _params_bc, captured, skipped = pin_tag._capture_node_params(
+        obj, obj.GetData())
+
+    assert (captured, skipped) == (1, 1)
+
+
 def test_a_pin_written_before_this_build_still_restores(sentinel_module):
     """El esquema NO sube: una entrada sin ``_ENTRY_PARAMS_COUNT`` se lee
     como "ningún parámetro extra" y el pin se aplica igual. Subirlo habría
@@ -400,6 +464,30 @@ def test_warning_row_is_silent_when_everything_was_captured(sentinel_module):
         "fill", c4d, doc=doc,
         described={LIGHT_BRIGHTNESS: (c4d.DTYPE_REAL, 0.45)})
     tag = _pin_on(light, doc, c4d)
+    assert pin_tag._store_pin(tag) is True
+
+    assert pin_tag._pin_warning_text(tag) == ""
+
+
+def test_ordinary_object_pinned_produces_no_warning(sentinel_module):
+    """El bug real, en la superficie donde el artista lo ve: un cubo (o un
+    null) pineado hoy avisa ``2 parámetros sin capturar`` en la fila del
+    tag por los dos ids internos sin nombre — medido en vivo en los
+    mismos siete tipos de objeto que el docstring de ``_iter_description_params``
+    cita. Tras el fix, esa fila no dice nada."""
+    pin_tag = importlib.import_module("sentinel.ui.pin_tag")
+    import c4d
+
+    doc = FakeDoc()
+    cube = FakeDescribedObject(
+        "Cube", c4d, doc=doc, obj_type=c4d.Ocube,
+        described={
+            1041672: (1041447, None),
+            1050439: (1050442, None),
+        },
+        unreadable={1041672, 1050439},
+        unnamed={1041672, 1050439})
+    tag = _pin_on(cube, doc, c4d)
     assert pin_tag._store_pin(tag) is True
 
     assert pin_tag._pin_warning_text(tag) == ""
