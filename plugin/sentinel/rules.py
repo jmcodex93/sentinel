@@ -28,6 +28,9 @@ DEFAULTS = {
     "gates_enabled": False,
     "slate": False,
     "approved_presets": list(PRESETS),
+    # Separate from `approved_presets` on purpose: that one is a whitelist
+    # ("permitted"), this one is an obligation ("every scene must have these").
+    "required_presets": list(PRESETS),
     "default_names": list(DEFAULT_OBJECT_NAMES),
     "stills_presets": list(STILLS_PRESET_TOKENS),
     "safe_area_insets": {
@@ -311,7 +314,7 @@ def _validate_key(key: str, value: Any) -> tuple[bool, Any, str | None]:
             return True, value, None
         return False, None, "expected a bool"
 
-    if key in {"approved_presets", "default_names", "stills_presets"}:
+    if key in {"approved_presets", "required_presets", "default_names", "stills_presets"}:
         if _is_str_list(value):
             return True, list(value), None
         return False, None, "expected a list of strings"

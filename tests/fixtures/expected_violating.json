@@ -141,7 +141,7 @@
       "preset": "custom_preview_21x9"
     }
   ],
-  "render_conflicts": 6,
+  "render_conflicts": 10,
   "takes": [
     {
       "issue": "Output path missing $take token",

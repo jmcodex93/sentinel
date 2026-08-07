@@ -219,6 +219,34 @@ def _build_clean(module):
         "renders/$prj_$take_$frame",
         multipass_path="renders/mp/$prj_$take_mp",
     )
+    # The other three studio presets. Added when QC #5 learned to report the
+    # standard presets a scene is MISSING (before that it only flagged extras,
+    # so a one-preset scene counted as compliant). This fixture's whole job is
+    # to model "a scene that passes all 12 checks", and the artist's standard
+    # is four presets — a clean scene has four. Timing/path match the ones
+    # QC #11 and QC #9 expect, so they stay silent about these three too.
+    for extra_name in ("previz", "pre_render", "stills"):
+        extra = documents.RenderData()
+        doc.InsertRenderDataLast(extra)
+        doc.SetActiveRenderData(extra)
+        _setup_render_data(
+            doc,
+            extra_name,
+            25,
+            1001,
+            1010,
+            "renders/$prj_$take_$frame",
+            multipass_path="renders/mp/$prj_$take_mp",
+        )
+    # Leave "render" active, as it was before the other three existed: QC #11
+    # and the panel both read the ACTIVE preset, so which one is active is
+    # part of what this fixture pins.
+    walk = doc.GetFirstRenderData()
+    while walk:
+        if walk.GetName() == "render":
+            doc.SetActiveRenderData(walk)
+            break
+        walk = walk.GetNext()
 
     lights = _make_object(c4d.Onull, "lights", doc)
     _make_object(c4d.Olight, "key_light", doc, parent=lights)

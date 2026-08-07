@@ -502,7 +502,7 @@
   "render_conflicts": {
     "check_id": "render_conflicts",
     "metadata": {
-      "legacy_count": 6
+      "legacy_count": 10
     },
     "violations": [
       {
@@ -594,6 +594,66 @@
           "value": "custom_preview_21x9"
         },
         "message": "Non-standard render preset: custom_preview_21x9"
+      },
+      {
+        "check_id": "render_conflicts",
+        "extras": {
+          "normalized_name": "previz",
+          "preset": "previz"
+        },
+        "identity": {
+          "field": "missing",
+          "param": "render_preset",
+          "preset": "previz",
+          "type": "parameter",
+          "value": "previz"
+        },
+        "message": "Missing studio preset: previz"
+      },
+      {
+        "check_id": "render_conflicts",
+        "extras": {
+          "normalized_name": "pre_render",
+          "preset": "pre_render"
+        },
+        "identity": {
+          "field": "missing",
+          "param": "render_preset",
+          "preset": "pre_render",
+          "type": "parameter",
+          "value": "pre_render"
+        },
+        "message": "Missing studio preset: pre_render"
+      },
+      {
+        "check_id": "render_conflicts",
+        "extras": {
+          "normalized_name": "render",
+          "preset": "render"
+        },
+        "identity": {
+          "field": "missing",
+          "param": "render_preset",
+          "preset": "render",
+          "type": "parameter",
+          "value": "render"
+        },
+        "message": "Missing studio preset: render"
+      },
+      {
+        "check_id": "render_conflicts",
+        "extras": {
+          "normalized_name": "stills",
+          "preset": "stills"
+        },
+        "identity": {
+          "field": "missing",
+          "param": "render_preset",
+          "preset": "stills",
+          "type": "parameter",
+          "value": "stills"
+        },
+        "message": "Missing studio preset: stills"
       }
     ]
   },

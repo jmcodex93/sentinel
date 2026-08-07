@@ -77,7 +77,17 @@ def check_render_conflicts(doc, rules_context=None):
         normalize_preset_name(name)
         for name in context.params.get("approved_presets", PRESETS)
     }
+    # `required_presets` is deliberately a SEPARATE ruleset key from
+    # `approved_presets`: the latter is a whitelist ("these are permitted"),
+    # so a project may want to allow a preset without demanding every scene
+    # carry it. Order-preserving dedupe so the missing violations come out in
+    # ruleset order.
+    required = list(dict.fromkeys(
+        normalize_preset_name(name)
+        for name in context.params.get("required_presets", PRESETS)
+    ))
     name_counts = defaultdict(int)
+    present = set()
     extras = 0
     violations_data = []
 
@@ -90,6 +100,10 @@ def check_render_conflicts(doc, rules_context=None):
             try:
                 # Normalize the name (lowercase, replace hyphens/spaces with underscores)
                 name = normalize_preset_name(rd.GetName() or "")
+                # Presence is judged on the SAME normalization used everywhere
+                # else in this check, so a preset named "Pre-Render" counts as
+                # "pre_render" being present.
+                present.add(name)
                 if name in allowed:
                     name_counts[name] += 1
                     if name_counts[name] > 1:
@@ -115,8 +129,22 @@ def check_render_conflicts(doc, rules_context=None):
             rd = rd.GetNext()
             count += 1
 
+        # A studio preset that is simply NOT THERE was invisible to this check
+        # until v1.36.5: it only ever judged the presets present. One violation
+        # per missing required preset (complain if ANY is missing, not only if
+        # all are), same FAIL severity, no auto-fix — Reset All is the path.
+        missing = [name for name in required if name and name not in present]
+        for name in missing:
+            violations_data.append({
+                "preset": name,
+                "field": "missing",
+                "value": name,
+                "message": f"Missing studio preset: {name}",
+                "extras": {"preset": name, "normalized_name": name},
+            })
+
         dups = sum(max(0, c - 1) for c in name_counts.values())
-        result = extras + dups
+        result = extras + dups + len(missing)
 
     except Exception as e:
         safe_print(f"Error checking render conflicts: {e}")
