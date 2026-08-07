@@ -2,6 +2,14 @@
 
 > Originally **YS Guardian** (Yambo Studio). Rebranded to Sentinel in v1.5.0 — see CLAUDE.md and README.md for the heritage and attribution.
 
+## v1.37 — El estándar del proyecto ✅ (pendiente de merge/live)
+Spec: `docs/superpowers/specs/2026-08-07-project-standard-design.md` · Plan: `docs/superpowers/plans/2026-08-07-project-standard.md`
+- [x] Publicar el estándar desde un shot que pasa el QC (ruleset derivado + `sentinel_standard.c4d` limpio, preview curado, procedencia, diff al republicar)
+- [x] Nuevo shot desde el estándar (patrón de carpetas declarado, tres negativas, sin fallback al `new.c4d` del plugin)
+- [x] Claves de ruleset `shot_pattern` + `published`; motor puro `projectstd.py`; ops `standard_ops.py`; subvistas SPA en Tools → Project
+- [ ] Verificación live en C4D (ciclo publicar → nuevo shot → QC 12/12) — checklist al final del plan
+- [ ] **QC #13 — los assets que el proyecto declara**: tercera pieza del análisis, con su propio spec futuro (identidad, baseline y fontanería de informe propias; aporta valor incluso sin "nuevo shot")
+
 ## Completed (v1.0.4 → v1.4.0)
 
 ### Fase 1 — Fix & Foundation ✅
