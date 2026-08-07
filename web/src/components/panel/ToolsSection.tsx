@@ -5,7 +5,9 @@ import { restoreFocus } from "../../lib/focus";
 import { TOOL_GROUPS } from "../../lib/panelTools";
 import { SectionGroup } from "../SectionGroup";
 import { MatwireSubview } from "./MatwireSubview";
+import { NewShotSubview } from "./NewShotSubview";
 import { RenameSubview } from "./RenameSubview";
+import { StandardSubview } from "./StandardSubview";
 
 /** Tools section (Fase 6.4, Cleanup + Frames row added later) — grouped
  * action buttons for scene-authoring utilities. Action-only: each button
@@ -27,7 +29,7 @@ export function ToolsSection({
   // Local sub-router (the Render→Frame / Deliver idiom): "rename" swaps the
   // whole section for the Batch Rename sub-view, which owns its own fetches
   // and busy state (server-driven preview — see RenameSubview).
-  const [view, setView] = useState<"main" | "rename" | "matwire">("main");
+  const [view, setView] = useState<"main" | "rename" | "matwire" | "standard" | "newshot">("main");
   if (view !== "main") {
     // restoreFocus BEFORE the flip unmounts the sub-view: its focused
     // "← Tools" button leaves the DOM, and a webview with nothing
@@ -36,7 +38,10 @@ export function ToolsSection({
       restoreFocus();
       setView("main");
     };
-    return view === "rename" ? <RenameSubview onBack={back} /> : <MatwireSubview onBack={back} />;
+    if (view === "rename") return <RenameSubview onBack={back} />;
+    if (view === "matwire") return <MatwireSubview onBack={back} />;
+    if (view === "standard") return <StandardSubview onBack={back} />;
+    return <NewShotSubview onBack={back} />;
   }
   return (
     // During a mutation we lock interaction at the container (`pointerEvents`)
@@ -98,6 +103,22 @@ export function ToolsSection({
               </Button>
               <Button variant="secondary" onClick={() => setView("matwire")}>
                 Material from Folder →
+              </Button>
+            </div>
+          </SectionGroup>
+        )}
+        {group.title === "Cleanup" && (
+          // v1.37 — the project standard. Publish is the supervisor's
+          // once-per-project gesture; New shot is the artist's daily one.
+          // They live together: both are the same standard seen from its
+          // two sides.
+          <SectionGroup title="Project">
+            <div className="flex flex-wrap gap-2">
+              <Button variant="secondary" onClick={() => setView("standard")}>
+                Publish standard →
+              </Button>
+              <Button variant="secondary" onClick={() => setView("newshot")}>
+                New shot →
               </Button>
             </div>
           </SectionGroup>
