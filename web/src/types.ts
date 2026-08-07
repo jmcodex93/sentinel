@@ -1363,7 +1363,7 @@ export interface StandardPreviewResponse {
     fps: number;
     start_frame: number;
     presets: string[];
-    objects: { name: string; index: number; children: number }[];
+    objects: { name: string; index: number; children: boolean }[];
   };
   pattern?: string | null;
   existing_rules?: boolean;
@@ -1390,10 +1390,11 @@ export interface StandardPublishResponse {
 
 /** `POST /api/panel/tools/newshot_preview` — see `_op_newshot_preview` in
  * panel_tools_ops.py. `error` is one of `bad_folder` / `no_standard` /
- * `no_template` / `template_missing`; `searched` lists the ancestor
- * folders walked looking for a ruleset (only present on `no_standard`).
- * `published` mirrors the ruleset's own metadata about who last published
- * the standard (or `null` if the ruleset doesn't carry it). */
+ * `no_template` / `template_missing`; on `no_standard` the server echoes
+ * back the single `folder` it was given as `searched` (not a list of
+ * ancestor folders walked). `published` mirrors the ruleset's own
+ * metadata about who last published the standard (or `null` if the
+ * ruleset doesn't carry it). */
 export interface NewShotPreviewResponse {
   ok: boolean;
   rules_path?: string;
@@ -1403,7 +1404,7 @@ export interface NewShotPreviewResponse {
   pattern?: string;
   published?: Record<string, string> | null;
   error?: string;
-  searched?: string[];
+  searched?: string;
 }
 
 /** `POST /api/panel/tools/newshot_create` — see `_op_newshot_create` in
