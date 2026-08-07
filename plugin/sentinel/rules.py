@@ -43,6 +43,17 @@ DEFAULTS = {
     "check_severity": dict(CHECK_DEFAULT_SEVERITY),
     "checks_enabled": {check_id: True for check_id in CHECK_DEFAULT_SEVERITY},
     "matwire_suffixes": {},
+    # The studio's TEMPLATE SCENE — the `.c4d` a project considers its
+    # starting point. Empty means "the ruleset says nothing", and the
+    # plugin's bundled `c4d/new.c4d` is used, silently and normally.
+    #
+    # NOT named `render_template` on purpose, even though today its only
+    # consumer is Reset All (which harvests its render presets): a "new
+    # shot" that starts a scene FROM this same file is planned, and naming
+    # the key after what Reset All does with it would force a second key
+    # pointing at the same file the day that ships. Reset All is *a*
+    # consumer of the studio template scene, not its owner.
+    "template_scene": "",
 }
 
 _RULES_CACHE: dict[str, dict[str, Any]] = {}
@@ -178,6 +189,41 @@ def resolve_rules(
         identity=identity,
         reason=None,
     )
+
+
+def resolve_template_scene(context: RulesContext) -> str | None:
+    """Absolute path of the STUDIO TEMPLATE SCENE the project ruleset points
+    at, or ``None`` when the ruleset says nothing about it.
+
+    ``None`` is not an error — it is the normal, silent case: no
+    ``template_scene`` key, so the caller uses the plugin's bundled
+    template. What must never be silent is the OTHER case: a ruleset that
+    declares a path which is not there. This function still returns that
+    path (it does not check existence); the caller is what refuses to reset
+    and names the missing file, instead of quietly substituting a different
+    studio standard.
+
+    A relative path is resolved against the FOLDER OF THE
+    ``sentinel_rules.json`` THAT DECLARED IT — never the cwd, never the
+    scene. That is what lets a whole project folder move (or be mounted at
+    a different point on another machine) without rewriting the path.
+    """
+    raw = (context.params or {}).get("template_scene") or ""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+
+    candidate = Path(raw.strip()).expanduser()
+    if not candidate.is_absolute():
+        if context.rules_path:
+            candidate = Path(context.rules_path).parent / candidate
+        else:
+            # Unreachable in production: only a project rules file can set
+            # this key, so a declared value always has a declaring file.
+            # Return it as-is rather than anchoring on the cwd — the caller
+            # will fail loudly naming this path, which is the honest
+            # outcome for a value we cannot anchor.
+            return os.path.normpath(str(candidate))
+    return os.path.normpath(str(candidate))
 
 
 def _scene_dir(scene_path: str | os.PathLike[str]) -> Path:
@@ -330,6 +376,11 @@ def _validate_key(key: str, value: Any) -> tuple[bool, Any, str | None]:
 
     if key == "matwire_suffixes":
         return _validate_matwire_suffixes(value)
+
+    if key == "template_scene":
+        if isinstance(value, str) and value.strip():
+            return True, value.strip(), None
+        return False, None, "expected a non-empty path string"
 
     return False, None, "unknown key"
 
