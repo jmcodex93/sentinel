@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "../form/Button";
 import { fetchHubPreflight, fetchPaletteActions, runPaletteAction } from "../../lib/api";
+import { confirmBarButtons } from "../../lib/confirmBar";
 import { useToast } from "../../lib/toast";
 import type { PaletteAction, QcCheck, QcReportResult } from "../../types";
 
@@ -112,6 +113,9 @@ export function HubPreflightStrip({ onFixed }: { onFixed?: () => void }) {
   const scoreTone = failing.length === 0 ? "var(--color-status-pass)" : "var(--color-status-fail)";
 
   if (confirmAction) {
+    // Same verb/destructive/order policy as the panel's ConfirmBar
+    // (`lib/confirmBar.ts`) — this strip just keeps its own inline layout
+    // (buttons pushed right with `ml-auto`) instead of the floating bar.
     return strip(
       "",
       <>
@@ -119,12 +123,19 @@ export function HubPreflightStrip({ onFixed }: { onFixed?: () => void }) {
           {confirmAction.confirm_label}
         </span>
         <div className="ml-auto flex gap-2">
-          <Button variant="secondary" disabled={busyId !== null} onClick={() => setConfirmAction(null)}>
-            Cancel
-          </Button>
-          <Button variant="primary" disabled={busyId !== null} onClick={() => runFix(confirmAction, true)}>
-            Confirm
-          </Button>
+          {confirmBarButtons({
+            confirmVerb: confirmAction.confirm_verb,
+            destructive: confirmAction.destructive,
+          }).map((button) => (
+            <Button
+              key={button.role}
+              variant={button.variant}
+              disabled={busyId !== null}
+              onClick={button.role === "cancel" ? () => setConfirmAction(null) : () => runFix(confirmAction, true)}
+            >
+              {button.label}
+            </Button>
+          ))}
         </div>
       </>,
     );
