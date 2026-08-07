@@ -278,6 +278,81 @@ _RESET_ALL_CONFIRM_LABEL = ("Reset ALL render presets from template? "
                              "This replaces existing presets with standard settings.")
 _FORCE_VERTICAL_CONFIRM_LABEL = "Force the active render preset's aspect ratio (9:16 / 16:9)?"
 
+#: How many preset names the confirm text spells out before it switches to
+#: "…and N more" — a scene with a long tail of custom presets must still
+#: fit a panel-width confirm bar.
+_RESET_ALL_NAME_CAP = 5
+
+
+def non_standard_preset_names(doc):
+    """The scene's render presets that are NOT in the approved set — the
+    ones "Reset All" is about to delete, in scene order, with their real
+    names (the artist recognizes ``CLIENTE_9x16_final``, not its normalized
+    form).
+
+    The "standard" criterion is QC #5's, not a second one: the ruleset's
+    ``approved_presets`` compared through ``normalize_preset_name`` (see
+    ``checks/render.py`` ``check_render_conflicts``). Nothing here re-derives
+    the list or hardcodes the four template names.
+    """
+    from sentinel.common.constants import PRESETS
+    from sentinel.rules_context import active_rules_for_doc
+
+    context = active_rules_for_doc(doc)
+    allowed = {
+        normalize_preset_name(name)
+        for name in context.params.get("approved_presets", PRESETS)
+    }
+
+    doomed = []
+    rd = doc.GetFirstRenderData()
+    while rd:
+        raw = rd.GetName() or ""
+        if normalize_preset_name(raw) not in allowed:
+            doomed.append(raw)
+        rd = rd.GetNext()
+    return doomed
+
+
+def reset_all_confirm_label(names):
+    """Confirm copy for ``panel/render/reset_all``, built from the presets
+    that are actually about to be lost (``names``, gathered from the scene
+    at confirm time — never a fixed list).
+
+    With nothing to lose this is an innocuous reset and must not read like
+    an alarm; with something to lose it names it. English, like the rest of
+    the panel surface (the native dialog keeps its own copy).
+    """
+    if not names:
+        return ("Reset ALL render presets from template? "
+                "No custom presets in this scene — the standard set is "
+                "re-created from the template.")
+
+    shown = names[:_RESET_ALL_NAME_CAP]
+    listed = ", ".join(shown)
+    hidden = len(names) - len(shown)
+    if hidden > 0:
+        listed = "%s and %d more" % (listed, hidden)
+    if len(names) == 1:
+        subject = "1 preset that is not"
+    else:
+        subject = "%d presets that are not" % len(names)
+    return ("Reset ALL render presets from template? "
+            "This deletes %s in the standard set: %s. "
+            "Cmd+Z restores them." % (subject, listed))
+
+
+def _reset_all_confirm_label_for(doc):
+    """``reset_all_confirm_label`` over the live scene, degrading to the
+    generic constant if the scene read fails for any reason. A confirm
+    prompt must never be the thing that breaks the op — but it must not
+    fail silently either, so the fallback logs."""
+    try:
+        return reset_all_confirm_label(non_standard_preset_names(doc))
+    except Exception as exc:  # pragma: no cover - defensive
+        safe_print(f"reset_all confirm label fell back to generic: {exc}")
+        return _RESET_ALL_CONFIRM_LABEL
+
 
 def _op_panel_render_reset_all(payload):
     """``panel/render/reset_all`` — destructive (replaces every render
@@ -286,14 +361,18 @@ def _op_panel_render_reset_all(payload):
     ...}`` without ``confirm: true``). Runs
     ``scene_tools._force_render_settings_core`` — the dialog-free core
     extracted from ``_force_render_settings`` — instead of the native
-    ``QuestionDialog``/summary ``MessageDialog`` path."""
+    ``QuestionDialog``/summary ``MessageDialog`` path.
+
+    The confirm copy is built from the SCENE at confirm time
+    (``_reset_all_confirm_label_for``): it names the presets that are about
+    to be deleted instead of a fixed sentence the artist confirms blind."""
     doc = documents.GetActiveDocument()
     if not doc:
         return {"ok": False, "error": "no_document"}
 
     if _needs_confirm(payload):
         return {"ok": False, "error": "confirm_required",
-                "confirm_label": _RESET_ALL_CONFIRM_LABEL}
+                "confirm_label": _reset_all_confirm_label_for(doc)}
 
     from sentinel.ui import scene_tools
 

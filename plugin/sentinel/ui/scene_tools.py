@@ -462,6 +462,19 @@ def _force_render_settings_core(doc, update_ui=None):
     shows a dialog, never raises. ``_force_render_settings`` below still
     shows both the confirm question and the result dialog, calling this
     core in between (byte-equivalent native behavior).
+
+    UNDO (v1.36.3): the scene mutation runs inside ONE ``StartUndo``/
+    ``EndUndo`` bracket with ``AddUndo(UNDOTYPE_DELETE, rd)`` BEFORE each
+    ``Remove()`` and ``AddUndo(UNDOTYPE_NEW, clone)`` after each
+    ``InsertRenderData``. Both halves are required and both are per-object
+    — measured live (C4D 2026.303, throwaway document): with no ``AddUndo``
+    at all a Cmd+Z restores nothing (the artist's presets are gone for
+    good); registering only the deletions brings the originals back but
+    leaves the 4 template clones behind (7 presets); with both, a single
+    undo restores the exact starting state, including which render data was
+    active. The bracket opens only once the clones exist, so every early
+    error return above still leaves no undo step behind (an empty bracket
+    does not materialize a step — measured in the v1.36 spike).
     """
     if not doc:
         return {"ok": False, "error": "no_document"}
@@ -494,18 +507,26 @@ def _force_render_settings_core(doc, update_ui=None):
         if not cloned:
             return {"ok": False, "error": "No standard presets found in template"}
 
-        # Remove existing presets
-        rd = doc.GetFirstRenderData()
-        while rd:
-            next_rd = rd.GetNext()
-            rd.Remove()
-            rd = next_rd
+        doc.StartUndo()
+        try:
+            # Remove existing presets (AddUndo BEFORE the mutation, once per
+            # render data — the "works with one, breaks with N" trap).
+            rd = doc.GetFirstRenderData()
+            while rd:
+                next_rd = rd.GetNext()
+                doc.AddUndo(c4d.UNDOTYPE_DELETE, rd)
+                rd.Remove()
+                rd = next_rd
 
-        # Insert cloned presets
-        for clone in cloned:
-            doc.InsertRenderData(clone)
+            # Insert cloned presets
+            for clone in cloned:
+                doc.InsertRenderData(clone)
+                doc.AddUndo(c4d.UNDOTYPE_NEW, clone)
 
-        doc.SetActiveRenderData(cloned[0])
+            doc.SetActiveRenderData(cloned[0])
+        finally:
+            doc.EndUndo()
+
         if update_ui is not None:
             update_ui()
         check_cache.clear()

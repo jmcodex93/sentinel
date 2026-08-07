@@ -1101,3 +1101,271 @@ class TestSaveStillAndOpenFolderNeverDialog:
 
         response = panel_render_ops.PANEL_RENDER_OPS["panel/render/open_folder"]({})
         assert response == {"ok": True, "stamp": "s", "render": {}}
+
+
+# ---------------------------------------------------------------------------
+# Reset All: undo + honest confirm (v1.36.1)
+# ---------------------------------------------------------------------------
+
+class _UndoableRD:
+    """Render-data stand-in for the Reset All harness: name + a params dict
+    (only RDATA_XRES/RDATA_YRES are ever read) + the doc-backed chain walk
+    (``GetNext``) and ``Remove``/``GetClone`` the core calls.
+
+    Honest about what it is NOT: a real ``RenderData`` carries the whole
+    render settings container, and ``GetClone`` deep-copies it. This one
+    copies the name and the two resolution values — enough to tell WHICH
+    preset is in the document, which is the entire subject of these tests.
+    """
+
+    def __init__(self, name, xres=1920, yres=1080):
+        self._name = name
+        self._params = {"xres": int(xres), "yres": int(yres)}
+        self.doc = None
+
+    def GetName(self):
+        return self._name
+
+    def SetName(self, name):
+        self._name = name
+
+    def GetNext(self):
+        if self.doc is None:
+            return None
+        return self.doc.rd_after(self)
+
+    def Remove(self):
+        if self.doc is not None:
+            self.doc.rd_remove(self)
+
+    def GetClone(self, flags=0):
+        return _UndoableRD(self._name, self._params["xres"], self._params["yres"])
+
+    def __getitem__(self, key):
+        import c4d
+        if key == c4d.RDATA_YRES:
+            return self._params["yres"]
+        return self._params["xres"]
+
+
+class _UndoableDoc:
+    """Document stand-in with a REPLAYABLE undo stack, modeling what the
+    live probe measured in C4D 2026.303 (throwaway document, ``CallCommand
+    (12105)``): ``AddUndo(UNDOTYPE_DELETE, rd)`` registered BEFORE a
+    ``Remove()`` puts that render data back at its slot on undo, and
+    ``AddUndo(UNDOTYPE_NEW, rd)`` after an insert takes it back out — both
+    halves, per object. An ``AddUndo`` outside a bracket raises here (the
+    real C4D drops it), and a bracket that registered nothing does NOT push
+    an undo step (measured: an empty bracket materializes no step).
+
+    Honest about what it is NOT: the live probe also showed the ACTIVE
+    render data coming back on undo, which nothing here models — no test
+    below claims it. It also does not model undo COALESCING, so "one step"
+    here means "the code opened exactly one bracket", which is the property
+    the production code controls.
+    """
+
+    def __init__(self, render_datas=(), path=""):
+        self.render_datas = []
+        self._path = path
+        self._active = None
+        self._bracket = None
+        self.undo_stack = []
+        self.start_undo_count = 0
+        self.end_undo_count = 0
+        for rd in render_datas:
+            self.InsertRenderData(rd)
+        self._active = self.render_datas[0] if self.render_datas else None
+
+    # --- scene reads the code under test performs ---
+    def GetDocumentPath(self):
+        return self._path
+
+    def GetFirstRenderData(self):
+        return self.render_datas[0] if self.render_datas else None
+
+    def GetActiveRenderData(self):
+        return self._active
+
+    def SetActiveRenderData(self, rd):
+        self._active = rd
+
+    def InsertRenderData(self, rd):
+        rd.doc = self
+        self.render_datas.append(rd)
+
+    # --- chain helpers for _UndoableRD ---
+    def rd_after(self, rd):
+        idx = self.render_datas.index(rd)
+        return self.render_datas[idx + 1] if idx + 1 < len(self.render_datas) else None
+
+    def rd_remove(self, rd):
+        self.render_datas.remove(rd)
+
+    # --- undo engine ---
+    def StartUndo(self):
+        assert self._bracket is None, "nested StartUndo"
+        self._bracket = []
+        self.start_undo_count += 1
+
+    def AddUndo(self, undo_type, target):
+        import c4d
+        assert self._bracket is not None, "AddUndo outside a StartUndo bracket"
+        if undo_type == c4d.UNDOTYPE_DELETE:
+            self._bracket.append(("reinsert", target, self.render_datas.index(target)))
+        elif undo_type == c4d.UNDOTYPE_NEW:
+            self._bracket.append(("remove", target, None))
+        else:
+            raise AssertionError("unexpected undo type for render data: %r" % (undo_type,))
+
+    def EndUndo(self):
+        assert self._bracket is not None, "EndUndo without StartUndo"
+        if self._bracket:
+            self.undo_stack.append(self._bracket)
+        self._bracket = None
+        self.end_undo_count += 1
+
+    def do_undo(self):
+        """One Cmd+Z."""
+        if not self.undo_stack:
+            return False
+        for kind, target, index in reversed(self.undo_stack.pop()):
+            if kind == "reinsert":
+                target.doc = self
+                self.render_datas.insert(index, target)
+            else:
+                if target in self.render_datas:
+                    self.render_datas.remove(target)
+        return True
+
+    def preset_names(self):
+        return [rd.GetName() for rd in self.render_datas]
+
+
+def _install_template(monkeypatch, scene_tools, names=("previz", "pre_render", "render", "stills")):
+    """Make ``_force_render_settings_core`` see a bundled template holding
+    ``names``, without touching the filesystem or C4D."""
+    template = _UndoableDoc([_UndoableRD(n) for n in names])
+    monkeypatch.setattr(scene_tools.os.path, "exists", lambda p: True)
+    monkeypatch.setattr(scene_tools.c4d.documents, "LoadDocument",
+                        lambda path, flags: template, raising=False)
+    monkeypatch.setattr(scene_tools.c4d.documents, "KillDocument",
+                        lambda d: None, raising=False)
+    return template
+
+
+class TestResetAllIsUndoable:
+    """Regression for the bug that shipped since v1.0: Reset All deleted
+    every render preset in the scene — including the ones the artist built
+    for a client — with no undo registered at all, so Cmd+Z could not bring
+    them back. Reproduced live in C4D before the fix (presets gone after
+    undo); this pins it under test so it cannot come back."""
+
+    def test_single_undo_restores_the_artists_presets(self, sentinel_module, monkeypatch):
+        from sentinel.ui import scene_tools
+        _install_template(monkeypatch, scene_tools)
+
+        doc = _UndoableDoc([_UndoableRD("CLIENTE_9x16_final"), _UndoableRD("test_denoise")])
+        before = doc.preset_names()
+
+        result = scene_tools._force_render_settings_core(doc)
+        assert result["ok"] is True
+        assert doc.preset_names() == ["previz", "pre_render", "render", "stills"]
+
+        assert doc.do_undo() is True
+        assert doc.preset_names() == before
+
+    def test_reset_all_opens_exactly_one_undo_bracket(self, sentinel_module, monkeypatch):
+        from sentinel.ui import scene_tools
+        _install_template(monkeypatch, scene_tools)
+
+        doc = _UndoableDoc([_UndoableRD("CLIENTE_9x16_final"), _UndoableRD("test_denoise")])
+        scene_tools._force_render_settings_core(doc)
+
+        assert (doc.start_undo_count, doc.end_undo_count) == (1, 1)
+        assert len(doc.undo_stack) == 1
+
+    def test_early_error_leaves_no_undo_step(self, sentinel_module, monkeypatch):
+        """A template with no standard presets aborts BEFORE any mutation —
+        no bracket opened, nothing for a stray Cmd+Z to swallow."""
+        from sentinel.ui import scene_tools
+        _install_template(monkeypatch, scene_tools, names=("something_else",))
+
+        doc = _UndoableDoc([_UndoableRD("CLIENTE_9x16_final")])
+        result = scene_tools._force_render_settings_core(doc)
+
+        assert result["ok"] is False
+        assert doc.preset_names() == ["CLIENTE_9x16_final"]
+        assert doc.undo_stack == []
+        assert doc.start_undo_count == 0
+
+
+class TestResetAllConfirmNamesWhatIsLost:
+    """The confirm text must say WHAT disappears, read from the scene at
+    confirm time — and must not invent an alarm when there is nothing to
+    lose."""
+
+    def test_label_names_the_non_standard_presets(self, sentinel_module):
+        from sentinel.ui import panel_render_ops
+        label = panel_render_ops.reset_all_confirm_label(
+            ["CLIENTE_9x16_final", "test_denoise"])
+        assert "CLIENTE_9x16_final" in label
+        assert "test_denoise" in label
+        assert "2 presets" in label
+
+    def test_label_is_singular_for_one(self, sentinel_module):
+        from sentinel.ui import panel_render_ops
+        label = panel_render_ops.reset_all_confirm_label(["test_denoise"])
+        assert "1 preset " in label
+        assert "1 presets" not in label
+
+    def test_label_does_not_alarm_when_nothing_is_lost(self, sentinel_module):
+        from sentinel.ui import panel_render_ops
+        label = panel_render_ops.reset_all_confirm_label([])
+        assert "deletes" not in label
+        assert "No custom presets" in label
+
+    def test_label_caps_the_list_and_says_how_many_are_left(self, sentinel_module):
+        from sentinel.ui import panel_render_ops
+        names = ["p%d" % i for i in range(9)]
+        label = panel_render_ops.reset_all_confirm_label(names)
+        assert "p4" in label
+        assert "p5" not in label
+        assert "and 4 more" in label
+        assert "9 presets" in label
+
+    def test_non_standard_names_use_the_qc5_criterion(self, sentinel_module):
+        """Standard = the ruleset's ``approved_presets`` through
+        ``normalize_preset_name`` (QC #5's own rule), so ``Pre-Render``
+        counts as standard and is NOT listed as a loss."""
+        from sentinel.ui import panel_render_ops
+        doc = _UndoableDoc([
+            _UndoableRD("Pre-Render"),
+            _UndoableRD("stills"),
+            _UndoableRD("CLIENTE_9x16_final"),
+        ])
+        assert panel_render_ops.non_standard_preset_names(doc) == ["CLIENTE_9x16_final"]
+
+    def test_non_standard_names_follow_the_project_ruleset(self, sentinel_module, monkeypatch):
+        """A project ruleset that approves ``CLIENTE_9x16_final`` makes it
+        standard — the list is never hardcoded to the four template names."""
+        from sentinel.ui import panel_render_ops
+        from sentinel import rules_context
+
+        class _Ctx:
+            params = {"approved_presets": ["CLIENTE_9x16_final"]}
+
+        monkeypatch.setattr(rules_context, "active_rules_for_doc", lambda d: _Ctx())
+        doc = _UndoableDoc([_UndoableRD("CLIENTE_9x16_final"), _UndoableRD("stills")])
+        assert panel_render_ops.non_standard_preset_names(doc) == ["stills"]
+
+    def test_confirm_response_carries_the_scene_derived_label(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+
+        doc = _UndoableDoc([_UndoableRD("CLIENTE_9x16_final"), _UndoableRD("render")])
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/reset_all"]({})
+        assert response["error"] == "confirm_required"
+        assert "CLIENTE_9x16_final" in response["confirm_label"]
+        assert "render," not in response["confirm_label"]
