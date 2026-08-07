@@ -263,37 +263,23 @@ class TestPresetBlockReusesPanelRenderBlock:
     """``_panel_preset_block`` must CALL ``panel_ops._panel_render_block``
     rather than duplicate its ``GetActiveRenderData``/XRES/YRES/fps reads —
     verified by monkeypatching that function and checking its output flows
-    through unchanged (plus ``preset_names`` added on top)."""
+    through unchanged (plus ``presets`` added on top)."""
 
     def test_delegates_to_panel_render_block(self, sentinel_module, monkeypatch):
         from sentinel.ui import panel_render_ops
 
         monkeypatch.setattr(
             panel_render_ops, "_panel_render_block",
-            lambda d: {"preset_name": "render", "fps": 25, "resolution": "1920x1080",
+            lambda d: {"preset_name": "Render", "fps": 25, "resolution": "1920x1080",
                        "multiformat": None})
 
-        class _FakeRd:
-            def __init__(self, name, nxt=None):
-                self._name = name
-                self._next = nxt
-
-            def GetName(self):
-                return self._name
-
-            def GetNext(self):
-                return self._next
-
-        class _FakeDoc:
-            def GetFirstRenderData(self):
-                return _FakeRd("Render")
-
-        result = panel_render_ops._panel_preset_block(_FakeDoc())
-        assert result["preset_name"] == "render"
+        doc = _UndoableDoc([_UndoableRD("Render")])
+        result = panel_render_ops._panel_preset_block(doc)
+        assert result["preset_name"] == "Render"
         assert result["fps"] == 25
         assert result["resolution"] == "1920x1080"
         assert "multiformat" not in result
-        assert result["preset_names"] == ["render"]
+        assert [p["name"] for p in result["presets"]] == ["Render"]
 
 
 class TestSelectFrameTagNoTag:
@@ -1181,6 +1167,9 @@ class _UndoableDoc:
     def GetDocumentPath(self):
         return self._path
 
+    def GetFps(self):
+        return 25
+
     def GetFirstRenderData(self):
         return self.render_datas[0] if self.render_datas else None
 
@@ -1298,6 +1287,122 @@ class TestResetAllIsUndoable:
         assert doc.preset_names() == ["CLIENTE_9x16_final"]
         assert doc.undo_stack == []
         assert doc.start_undo_count == 0
+
+
+class TestPresetDropdownShowsRealNames:
+    """The dropdown used to display ``normalize_preset_name``'s output — a
+    comparison key — as UI text, so a preset the artist calls
+    ``RS-LookDev 2026`` appeared as ``rs_lookdev_2026``: a name that exists
+    nowhere in their Render Manager. Measured live before the fix."""
+
+    def test_entries_carry_the_real_scene_name(self, sentinel_module):
+        from sentinel.ui import panel_render_ops
+
+        doc = _UndoableDoc([_UndoableRD("render"), _UndoableRD("RS-LookDev 2026")])
+        block = panel_render_ops._panel_preset_block(doc)
+
+        assert [p["name"] for p in block["presets"]] == ["render", "RS-LookDev 2026"]
+
+    def test_active_preset_name_is_the_real_one(self, sentinel_module):
+        from sentinel.ui import panel_render_ops
+
+        doc = _UndoableDoc([_UndoableRD("render"), _UndoableRD("RS-LookDev 2026")])
+        doc.SetActiveRenderData(doc.render_datas[1])
+        block = panel_render_ops._panel_preset_block(doc)
+
+        assert block["preset_name"] == "RS-LookDev 2026"
+        assert block["preset_index"] == 1
+
+    def test_presets_that_normalize_alike_stay_separate_entries(self, sentinel_module):
+        """``Pre-Render`` and ``pre_render`` collapsed into one entry while
+        the list was keyed by normalized name. They are two render datas in
+        the scene (QC #5 already calls that a duplicate) and the dropdown
+        must offer two rows, each with its own index."""
+        from sentinel.ui import panel_render_ops
+
+        doc = _UndoableDoc([_UndoableRD("Pre-Render"), _UndoableRD("pre_render")])
+        block = panel_render_ops._panel_preset_block(doc)
+
+        assert [(p["index"], p["name"]) for p in block["presets"]] == [
+            (0, "Pre-Render"), (1, "pre_render")]
+
+    def test_non_standard_presets_are_marked_with_the_qc5_criterion(self, sentinel_module):
+        from sentinel.ui import panel_render_ops
+
+        doc = _UndoableDoc([_UndoableRD("Pre-Render"), _UndoableRD("RS-LookDev 2026")])
+        block = panel_render_ops._panel_preset_block(doc)
+
+        assert [p["standard"] for p in block["presets"]] == [True, False]
+
+    def test_marking_follows_the_project_ruleset(self, sentinel_module, monkeypatch):
+        """Same rule as the Reset All confirm: a ruleset that approves the
+        client preset makes it standard, and the template names it does NOT
+        approve stop being standard. Never a hardcoded list."""
+        from sentinel.ui import panel_render_ops
+        from sentinel import rules_context
+
+        class _Ctx:
+            params = {"approved_presets": ["RS-LookDev 2026"]}
+
+        monkeypatch.setattr(rules_context, "active_rules_for_doc", lambda d: _Ctx())
+        doc = _UndoableDoc([_UndoableRD("render"), _UndoableRD("RS-LookDev 2026")])
+        block = panel_render_ops._panel_preset_block(doc)
+
+        assert [p["standard"] for p in block["presets"]] == [False, True]
+
+    def test_ruleset_failure_leaves_presets_unmarked_not_all_flagged(self, sentinel_module, monkeypatch):
+        """If the ruleset read blows up, the dropdown still lists every
+        preset and marks none — an absent marker beats a marker that is
+        wrong in the alarming direction."""
+        from sentinel.ui import panel_render_ops
+
+        def _boom(doc):
+            raise RuntimeError("ruleset unreadable")
+
+        monkeypatch.setattr(panel_render_ops, "_approved_normalized_presets", _boom)
+        doc = _UndoableDoc([_UndoableRD("RS-LookDev 2026")])
+        block = panel_render_ops._panel_preset_block(doc)
+
+        assert [(p["name"], p["standard"]) for p in block["presets"]] == [
+            ("RS-LookDev 2026", True)]
+
+
+class TestSetPresetPicksTheEntryTheArtistClicked:
+    """With real names in the list, two presets whose names normalize alike
+    are two rows — and selecting the second one must activate the SECOND,
+    not silently fall on the first name match."""
+
+    def test_index_selects_the_second_of_two_lookalikes(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_render_ops
+
+        doc = _UndoableDoc([_UndoableRD("Pre-Render"), _UndoableRD("pre_render")])
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(panel_render_ops, "build_panel_render", lambda d: {})
+        monkeypatch.setattr(panel_render_ops, "_stamp_for", lambda d: "s")
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/set_preset"](
+            {"preset": "pre_render", "index": 1})
+
+        assert response["ok"] is True
+        assert doc.GetActiveRenderData() is doc.render_datas[1]
+
+    def test_stale_index_falls_back_to_matching_by_name(self, sentinel_module, monkeypatch):
+        """A panel read can be one scene edit old. If the render data now
+        sitting at that index is a different preset, the index is dropped and
+        the historical normalized-name match decides — never a wrong preset
+        activated because a position moved."""
+        from sentinel.ui import panel_render_ops
+
+        doc = _UndoableDoc([_UndoableRD("render"), _UndoableRD("stills")])
+        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(panel_render_ops, "build_panel_render", lambda d: {})
+        monkeypatch.setattr(panel_render_ops, "_stamp_for", lambda d: "s")
+
+        response = panel_render_ops.PANEL_RENDER_OPS["panel/render/set_preset"](
+            {"preset": "stills", "index": 0})
+
+        assert response["ok"] is True
+        assert doc.GetActiveRenderData() is doc.render_datas[1]
 
 
 class TestResetAllConfirmNamesWhatIsLost:

@@ -9,6 +9,7 @@ import {
   aovStatusLine,
   frameStatusLine,
   postrenderStatusLine,
+  presetOptionLabel,
   presetStatusLine,
   snapshotStatusLine,
 } from "../../lib/panelRender";
@@ -117,7 +118,9 @@ export function RenderSection({
   /** Set once a destructive op comes back with `confirm_required` — the
    * inline confirm bar's copy, verbatim from the server. */
   confirmLabel: string | null;
-  onSetPreset: (preset: string) => void;
+  /** Receives the chosen preset's chain INDEX (the option value) — the page
+   * resolves it back to a name+index pair for `set_preset`. */
+  onSetPreset: (index: number) => void;
   /** Reset All / Force 9:16 — the only two render ops that are still
    * genuinely destructive and confirm-gated. */
   onDestructive: (op: "reset_all" | "force_vertical") => void;
@@ -212,11 +215,19 @@ export function RenderSection({
       <RenderBlock title="Preset" first status={presetStatusLine(preset)}>
         {preset === null ? null : (
           <>
+            {/* The option VALUE is the preset's chain index, not its name:
+                two presets whose names normalize alike (QC #5's "duplicate
+                render preset") are distinct entries that must each activate
+                themselves. The label carries the real name — see
+                `presetOptionLabel`. */}
             <Select
-              value={preset.preset_name ?? ""}
-              options={preset.preset_names.map((name) => ({ value: name, label: name }))}
-              disabled={preset.preset_names.length === 0}
-              onChange={onSetPreset}
+              value={preset.preset_index === null ? "" : String(preset.preset_index)}
+              options={preset.presets.map((option) => ({
+                value: String(option.index),
+                label: presetOptionLabel(option),
+              }))}
+              disabled={preset.presets.length === 0}
+              onChange={(value) => onSetPreset(Number(value))}
             />
             <Button variant="secondary" disabled={false} onClick={() => onDestructive("reset_all")}>
               Reset All⚠

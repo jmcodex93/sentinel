@@ -4,6 +4,7 @@ import {
   frameStatusLine,
   isDestructiveRenderOp,
   postrenderStatusLine,
+  presetOptionLabel,
   presetStatusLine,
   snapshotStatusLine,
 } from "./panelRender";
@@ -12,6 +13,7 @@ import type {
   PanelRenderFrame,
   PanelRenderPostrender,
   PanelRenderPreset,
+  PanelRenderPresetOption,
   PanelRenderSnapshots,
 } from "../types";
 
@@ -19,7 +21,8 @@ describe("presetStatusLine", () => {
   it("formats name, resolution and fps", () => {
     const preset: PanelRenderPreset = {
       preset_name: "Render",
-      preset_names: ["Previz", "Pre-Render", "Render", "Stills"],
+      preset_index: 2,
+      presets: [],
       fps: 25,
       resolution: "1920x1080",
     };
@@ -33,11 +36,36 @@ describe("presetStatusLine", () => {
   it("falls back gracefully when fields are missing", () => {
     const preset: PanelRenderPreset = {
       preset_name: null,
-      preset_names: [],
+      preset_index: null,
+      presets: [],
       fps: null,
       resolution: null,
     };
     expect(presetStatusLine(preset)).toBe("No active preset.");
+  });
+});
+
+describe("presetOptionLabel", () => {
+  const option = (over: Partial<PanelRenderPresetOption> = {}): PanelRenderPresetOption => ({
+    index: 0,
+    name: "RS-LookDev 2026",
+    standard: false,
+    ...over,
+  });
+
+  it("shows the real scene name, never a normalized one", () => {
+    expect(presetOptionLabel(option({ standard: true }))).toBe("RS-LookDev 2026");
+  });
+
+  it("marks a preset outside the standard set without inventing an error", () => {
+    const label = presetOptionLabel(option());
+    expect(label.startsWith("RS-LookDev 2026")).toBe(true);
+    expect(label).toBe("RS-LookDev 2026 \u00b7 custom");
+    expect(label).not.toContain("\u26a0");
+  });
+
+  it("leaves a standard preset unmarked", () => {
+    expect(presetOptionLabel(option({ name: "Render", standard: true }))).toBe("Render");
   });
 });
 

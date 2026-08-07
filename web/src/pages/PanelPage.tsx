@@ -446,11 +446,21 @@ export function PanelPage() {
     load(true);
   }
 
-  async function handleSetPreset(preset: string) {
+  /** `index` is the chosen option's position in the scene's render data
+   * chain. Both it and the real name travel to the server: the index is what
+   * makes two presets with names that normalize alike individually
+   * selectable, and the name is what the server checks the index against
+   * before trusting it (a panel read can be one scene edit stale). */
+  async function handleSetPreset(index: number) {
+    const preset =
+      renderState.kind === "ok"
+        ? renderState.data.preset?.presets.find((option) => option.index === index)
+        : undefined;
+    if (!preset) return;
     setBusyRenderId("set_preset");
-    const response = await postPanelRenderSetPreset(preset);
+    const response = await postPanelRenderSetPreset(preset.name, preset.index);
     setBusyRenderId(null);
-    applyRenderMutation(response, `Preset set to ${preset}.`);
+    applyRenderMutation(response, `Preset set to ${preset.name}.`);
   }
 
   /** Destructive ops (Reset All, Force 9:16) never confirm client-side — the

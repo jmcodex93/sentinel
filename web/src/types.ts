@@ -954,9 +954,22 @@ export interface PanelQcFixAllResponse {
  * `{error: "redshift_unavailable"}` shape when the RS Python module isn't
  * importable.
  */
+/** One render preset of the scene, as `_panel_preset_block` reports it.
+ * `name` is the REAL Render Manager name (never its normalized comparison
+ * key); `index` is its position in the render data chain and the identity
+ * `set_preset` sends back; `standard` is QC #5's criterion (the ruleset's
+ * `approved_presets`), computed server-side and never re-derived here. */
+export interface PanelRenderPresetOption {
+  index: number;
+  name: string;
+  standard: boolean;
+}
+
 export interface PanelRenderPreset {
   preset_name: string | null;
-  preset_names: string[];
+  /** Chain position of the active preset, or null when the scene has none. */
+  preset_index: number | null;
+  presets: PanelRenderPresetOption[];
   fps: number | null;
   resolution: string | null;
 }

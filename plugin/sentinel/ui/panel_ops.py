@@ -37,7 +37,8 @@ invented:
   reports ``vram_label: null`` instead of a misleading "0 B" (a scene can
   easily carry real VRAM the Hub simply hasn't parsed yet).
 - Render (``preset_name``/``fps``/``resolution``): ``doc.GetActiveRenderData()``
-  + ``checks.render.normalize_preset_name`` + ``doc.GetFps()`` +
+  (its real name — normalization is for comparing, not for showing) +
+  ``doc.GetFps()`` +
   ``rd[c4d.RDATA_XRES]``/``rd[c4d.RDATA_YRES]``, the same reads
   ``ui/panel.py`` makes at ~line 1008-1010 and ~1082-1086.
   ``multiformat``: no existing engine helper answers "does this scene have
@@ -64,7 +65,6 @@ from c4d import documents
 
 from sentinel import assets as assets_engine
 from sentinel import webbridge
-from sentinel.checks.render import normalize_preset_name
 from sentinel.common.helpers import _iter_objs, safe_print
 from sentinel.common.settings import GlobalSettings
 from sentinel.notes import get_notes_path, load_notes
@@ -311,7 +311,12 @@ def _panel_render_block(doc):
     ``ui/panel.py`` makes to sync its own render preset/resolution UI.
     ``multiformat`` is ``None`` — see module docstring."""
     rd = doc.GetActiveRenderData()
-    preset_name = normalize_preset_name(rd.GetName() or "") if rd else None
+    # The REAL scene name, not its normalized form: ``normalize_preset_name``
+    # exists to COMPARE (QC #5 matching), and using it as UI text showed the
+    # artist a preset that does not exist in their Render Manager
+    # (``RS-LookDev 2026`` displayed as ``rs_lookdev_2026``). Every consumer of
+    # this field displays it; none compares it.
+    preset_name = (rd.GetName() or None) if rd else None
     resolution = None
     if rd:
         try:

@@ -975,12 +975,16 @@ function mockPanelRenderMutation(op: string, confirm?: boolean): PanelRenderMuta
   return { ok: true, stamp: "mock-stamp", render: mockPanelRender as PanelRenderSection };
 }
 
-/** `POST /api/panel/render/set_preset` — see `_op_panel_render_set_preset`. */
-export async function postPanelRenderSetPreset(preset: string): Promise<PanelRenderMutationResponse> {
+/** `POST /api/panel/render/set_preset` — see `_op_panel_render_set_preset`.
+ * `preset` is the real scene name shown in the dropdown; `index` is its
+ * position in the render data chain, which the server only honors when the
+ * name at that position still matches (otherwise it falls back to matching
+ * by normalized name, the pre-index behavior). */
+export async function postPanelRenderSetPreset(preset: string, index?: number): Promise<PanelRenderMutationResponse> {
   if (isMock()) {
     return mockPanelRenderMutation("set_preset");
   }
-  return postForm<PanelRenderMutationResponse>("/api/panel/render/set_preset", { preset });
+  return postForm<PanelRenderMutationResponse>("/api/panel/render/set_preset", { preset, index });
 }
 
 /** `POST /api/panel/render/reset_all` — destructive, confirm-gated (see
