@@ -21,7 +21,9 @@ import http.server
 import itertools
 import json
 import os
+import secrets
 import queue
+import time
 import threading
 import traceback
 import urllib.parse
@@ -52,6 +54,38 @@ CONTENT_TYPES = {
 
 _API_PREFIX = "/api/"
 _THUMB_PATH = "/thumb"
+
+# ── Local-API hardening (Block 1) ────────────────────────────────────────────
+# The bridge serves a localhost-only HTTP server whose ops can mutate the
+# open document and the filesystem. Any web page open in any browser can
+# fire blind cross-origin requests at 127.0.0.1 (CORS stops them READING
+# responses, not SENDING requests), so the API must authenticate every
+# call with a per-instance capability token and enforce method semantics.
+MAX_BODY_BYTES = 1 * 1024 * 1024  # 1 MiB — generous for JSON payloads
+
+# Ops reachable via GET. Everything else requires POST (mutations + ops
+# that carry a body). GET is reserved for pure reads so a link prefetch,
+# image src, or other browser-initiated GET can never trigger an action.
+_GET_OPS = frozenset({
+    # report/* — read-only payload mappers.
+    "report/delivery", "report/qc", "report/doctor",
+    "report/supervisor", "report/render_validation",
+    # form state reads.
+    "form/save_version/state", "form/notes/state", "form/settings/state",
+    "form/gate/state",
+    # hub reads.
+    "hub/inventory", "hub/meta", "hub/meta_totals", "hub/variants",
+    "hub/ui_state", "hub/job_status", "hub/preflight", "hub/presets",
+    "hub/state_stamp",
+    # panel reads.
+    "panel/overview", "panel/qc", "panel/render", "panel/aov_list",
+    "panel/render/aov_list", "panel/deliver", "panel/frame",
+    "panel/state_stamp",
+    # tools previews are read-only derivations.
+    "panel/tools/rename_preview", "panel/tools/matwire_preview",
+    "panel/tools/standard_preview", "panel/tools/newshot_preview",
+    "palette/actions",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +284,8 @@ class _RequestHandler(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if not self._check_access():
+            return
         parsed_path = urllib.parse.urlsplit(self.path).path
         if self._is_api_path():
             self._handle_api()
@@ -259,10 +295,58 @@ class _RequestHandler(http.server.BaseHTTPRequestHandler):
             self._handle_static()
 
     def do_POST(self):
+        if not self._check_access():
+            return
         if self._is_api_path():
             self._handle_api()
         else:
             self._send_json({"error": "not found"}, 404)
+
+    def _check_access(self):
+        """Reject requests that did not come from the trusted SPA instance.
+
+        Three gates, cheapest first:
+        1. Host must be the loopback address the server bound (blocks DNS
+           rebinding, where an attacker page resolves a hostname they own
+           to 127.0.0.1 and the browser sends a Host header of that name).
+        2. Origin, when present, must match our own loopback origin or be
+           absent (absent = non-browser client / older HtmlViewer). The
+           SPA always sends Origin on POST; browsers omit it on same-origin
+           GET navigations but include it on cross-origin ones.
+        3. API paths additionally require the capability token. Static
+           files and /thumb stay token-free so the SPA shell can boot from
+           the URL bar before JS runs (the token rides ?token= and is
+           echoed by fetch wrappers from then on).
+        """
+        host = self.headers.get("Host") or ""
+        allowed_host = f"127.0.0.1:{self.server.server_port}"
+        if host != allowed_host:
+            self._send_json({"error": "bad_host"}, 403)
+            return False
+
+        origin = self.headers.get("Origin") or ""
+        if origin:
+            expected_origin = f"http://127.0.0.1:{self.server.server_port}"
+            if origin != expected_origin:
+                self._send_json({"error": "bad_origin"}, 403)
+                return False
+
+        if self._is_api_path():
+            token = self._extract_token()
+            if not token or not secrets.compare_digest(token, self.server.api_token):
+                self._send_json({"error": "unauthorized"}, 401)
+                return False
+        return True
+
+    def _extract_token(self):
+        # Header first (POST bodies), then query param (GET links).
+        header_token = self.headers.get("X-Sentinel-Token") or ""
+        if header_token:
+            return header_token
+        query = urllib.parse.parse_qs(
+            urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
+        values = query.get("token") or [""]
+        return values[-1]
 
     # -- api ---------------------------------------------------------
 
@@ -272,10 +356,24 @@ class _RequestHandler(http.server.BaseHTTPRequestHandler):
     def _handle_api(self):
         try:
             parsed = urllib.parse.urlsplit(self.path)
+            op = parsed.path[len(_API_PREFIX):]
+
+            # Method semantics: GET only for declared read-only ops.
+            if self.command == "GET" and op not in _GET_OPS:
+                self._send_json({"error": "method_not_allowed", "op": op}, 405)
+                return
+
             payload = {}
 
             if self.command == "POST":
                 length = int(self.headers.get("Content-Length", 0) or 0)
+                if length > MAX_BODY_BYTES:
+                    self._send_json({"error": "payload_too_large"}, 413)
+                    return
+                content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                if length and content_type not in ("application/json", ""):
+                    self._send_json({"error": "unsupported_media_type"}, 415)
+                    return
                 if length:
                     raw = self.rfile.read(length)
                     if raw:
@@ -287,12 +385,16 @@ class _RequestHandler(http.server.BaseHTTPRequestHandler):
             for key, values in query.items():
                 payload[key] = values[-1] if values else ""
 
-            payload["op"] = parsed.path[len(_API_PREFIX):]
+            payload["op"] = op
 
             result = self.server.api_handler(payload)
             self._send_json(result, 200)
         except Exception as exc:
-            self._send_json({"error": str(exc)}, 500)
+            # Log the full traceback server-side but never leak local paths
+            # or stack frames to the HTTP client (localhost-only is not a
+            # license to hand any co-resident process an information dump).
+            traceback.print_exc()
+            self._send_json({"error": "internal_error"}, 500)
 
     def _send_json(self, obj, code):
         body = json.dumps(obj).encode("utf-8")
@@ -381,8 +483,10 @@ class _RequestHandler(http.server.BaseHTTPRequestHandler):
 def create_server(web_root, api_handler, host="127.0.0.1", ports=range(8347, 8357)):
     """Bind a ThreadingHTTPServer on the first free port in ``ports``.
 
-    Returns ``(server, port)``. Raises ``OSError`` if every port in
-    ``ports`` is already in use.
+    Returns ``(server, port, token)``. The capability ``token`` is a fresh
+    random secret per server instance; it must be embedded in the SPA URL
+    (``?token=<hex>``) and echoed by every API request (header or query).
+    Raises ``OSError`` if every port in ``ports`` is already in use.
     """
     web_root = os.path.abspath(web_root)
     last_error = None
@@ -396,7 +500,8 @@ def create_server(web_root, api_handler, host="127.0.0.1", ports=range(8347, 835
 
         server.web_root = web_root
         server.api_handler = api_handler
-        return server, port
+        server.api_token = secrets.token_hex(32)
+        return server, port, server.api_token
 
     raise OSError(
         f"No free port available in {ports!r} on {host}") from last_error

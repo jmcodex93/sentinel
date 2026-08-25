@@ -251,14 +251,18 @@ class _LiveServer:
         kwargs = {}
         if ports is not None:
             kwargs["ports"] = ports
-        self.server, self.port = webbridge.create_server(
+        self.server, self.port, self.token = webbridge.create_server(
             str(web_root), api_handler, **kwargs)
         self.thread = webbridge.start_server_thread(self.server)
+
+    def _auth_path(self, path):
+        joiner = "&" if "?" in path else "?"
+        return f"{path}{joiner}token={self.token}"
 
     def get(self, path):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         try:
-            conn.request("GET", path)
+            conn.request("GET", self._auth_path(path))
             resp = conn.getresponse()
             body = resp.read()
             return resp, body
@@ -270,7 +274,8 @@ class _LiveServer:
         try:
             data = json.dumps(body_obj or {}).encode("utf-8")
             conn.request("POST", path, body=data,
-                          headers={"Content-Type": "application/json"})
+                          headers={"Content-Type": "application/json",
+                                   "X-Sentinel-Token": self.token})
             resp = conn.getresponse()
             body = resp.read()
             return resp, body
@@ -405,11 +410,15 @@ class TestApiRouting:
     def test_handler_exception_returns_500_with_error(self, web_root):
         live = _LiveServer(web_root, api_handler=_raising_handler)
         try:
-            resp, body = live.get("/api/whatever")
+            # Use a declared read-only op name so the request reaches the
+            # handler (an unknown GET op is now 405 before dispatch).
+            resp, body = live.get("/api/report/qc")
             assert resp.status == 500
             data = json.loads(body)
             assert "error" in data
-            assert "handler exploded" in data["error"]
+            # Block-1: the client sees a generic internal_error — the full
+            # traceback goes to the server-side log only (no path/stack leak).
+            assert data["error"] == "internal_error"
         finally:
             live.close()
 
@@ -429,7 +438,7 @@ class TestPortSelection:
         occupied.listen(1)
         busy_port = occupied.getsockname()[1]
         try:
-            server, port = webbridge.create_server(
+            server, port, _token = webbridge.create_server(
                 str(web_root), _echo_handler,
                 ports=range(busy_port, busy_port + 3))
             webbridge.start_server_thread(server)
@@ -1114,7 +1123,7 @@ class TestServerLifecycle:
         # create_server() without start_server_thread() means serve_forever
         # never ran; stop_server must still return instead of blocking
         # forever on shutdown()'s wait for a loop that will never notice it.
-        server, _port = webbridge.create_server(str(web_root), _echo_handler)
+        server, _port, _token = webbridge.create_server(str(web_root), _echo_handler)
         webbridge.stop_server(server)
 
 
@@ -1677,3 +1686,160 @@ class TestHubPayloadHelpers:
         assert webbridge.collect_phase_pct("Writing manifest…") == ("manifest", 80)
         assert webbridge.collect_phase_pct("Zipping 3/9…") == ("zip", 90)
         assert webbridge.collect_phase_pct("anything else") == ("run", None)
+
+
+# ---------------------------------------------------------------------------
+# Block-1 local-API hardening: token auth, method policy, host/origin checks,
+# body cap, no-traceback-leak.
+# ---------------------------------------------------------------------------
+
+class TestApiHardening:
+    def _raw_request(self, live, method, path, headers=None, body=None):
+        conn = http.client.HTTPConnection("127.0.0.1", live.port, timeout=5)
+        try:
+            conn.request(method, path, body=body, headers=headers or {})
+            resp = conn.getresponse()
+            data = resp.read()
+            return resp, data
+        finally:
+            conn.close()
+
+    def test_api_without_token_is_401(self, web_root):
+        live = _LiveServer(web_root)
+        try:
+            resp, _ = self._raw_request(live, "GET", "/api/report/qc")
+            assert resp.status == 401
+            resp, _ = self._raw_request(
+                live, "POST", "/api/form/settings/submit",
+                headers={"Content-Type": "application/json"},
+                body=b"{}")
+            assert resp.status == 401
+        finally:
+            live.close()
+
+    def test_api_with_wrong_token_is_401(self, web_root):
+        live = _LiveServer(web_root)
+        try:
+            resp, _ = self._raw_request(
+                live, "GET", "/api/report/qc?token=deadbeef")
+            assert resp.status == 401
+        finally:
+            live.close()
+
+    def test_static_served_without_token(self, web_root):
+        # The SPA shell must boot from the URL bar before JS runs; static
+        # files stay token-free by design.
+        live = _LiveServer(web_root)
+        try:
+            resp, body = self._raw_request(live, "GET", "/index.html")
+            assert resp.status == 200
+            assert b"INDEX" in body
+        finally:
+            live.close()
+
+    def test_get_mutation_op_is_405(self, web_root):
+        # GET is reserved for read-only ops; a mutation op via GET is
+        # rejected even with a valid token.
+        live = _LiveServer(web_root)
+        try:
+            resp, _ = self._raw_request(
+                live, "GET", f"/api/form/settings/submit?token={live.token}")
+            assert resp.status == 405
+        finally:
+            live.close()
+
+    def test_unknown_get_op_is_405(self, web_root):
+        live = _LiveServer(web_root)
+        try:
+            resp, _ = self._raw_request(
+                live, "GET", f"/api/not_a_real_op?token={live.token}")
+            assert resp.status == 405
+        finally:
+            live.close()
+
+    def test_bad_host_is_403(self, web_root):
+        live = _LiveServer(web_root)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", live.port, timeout=5)
+            try:
+                conn.request("GET", "/index.html",
+                              headers={"Host": "evil.example.com:8347"})
+                resp = conn.getresponse()
+                resp.read()
+                assert resp.status == 403
+            finally:
+                conn.close()
+        finally:
+            live.close()
+
+    def test_cross_origin_post_is_403(self, web_root):
+        live = _LiveServer(web_root)
+        try:
+            resp, _ = self._raw_request(
+                live, "POST", "/api/form/settings/submit",
+                headers={"Content-Type": "application/json",
+                         "Origin": "https://evil.example.com",
+                         "X-Sentinel-Token": live.token},
+                body=b"{}")
+            assert resp.status == 403
+        finally:
+            live.close()
+
+    def test_oversized_body_is_413(self, web_root):
+        live = _LiveServer(web_root)
+        try:
+            # Declare an oversized Content-Length but send only the headers:
+            # the server must answer 413 from the header alone without
+            # reading (or waiting for) the full body.
+            conn = http.client.HTTPConnection("127.0.0.1", live.port, timeout=5)
+            try:
+                conn.putrequest("POST", "/api/form/settings/submit")
+                conn.putheader("Content-Type", "application/json")
+                conn.putheader("X-Sentinel-Token", live.token)
+                conn.putheader("Content-Length",
+                               str(webbridge.MAX_BODY_BYTES + 1))
+                conn.endheaders()
+                resp = conn.getresponse()
+                data = resp.read()
+                assert resp.status == 413
+                assert json.loads(data)["error"] == "payload_too_large"
+            finally:
+                conn.close()
+        finally:
+            live.close()
+
+    def test_non_json_content_type_is_415(self, web_root):
+        live = _LiveServer(web_root)
+        try:
+            resp, _ = self._raw_request(
+                live, "POST", "/api/form/settings/submit",
+                headers={"Content-Type": "text/plain",
+                         "X-Sentinel-Token": live.token},
+                body=b"hello")
+            assert resp.status == 415
+        finally:
+            live.close()
+
+    def test_handler_error_does_not_leak_traceback(self, web_root):
+        live = _LiveServer(web_root, api_handler=_raising_handler)
+        try:
+            resp, data = self._raw_request(
+                live, "GET", f"/api/report/qc?token={live.token}")
+            assert resp.status == 500
+            payload = json.loads(data)
+            assert payload["error"] == "internal_error"
+            # No local paths or exception text leak to the client.
+            assert b"handler exploded" not in data
+            assert b"RuntimeError" not in data
+            assert b"/Users/" not in data
+        finally:
+            live.close()
+
+    def test_token_is_unique_per_instance(self, web_root):
+        s1 = webbridge.create_server(str(web_root), _echo_handler)[0]
+        s2 = webbridge.create_server(str(web_root), _echo_handler)[0]
+        try:
+            assert s1.api_token != s2.api_token
+        finally:
+            webbridge.stop_server(s1)
+            webbridge.stop_server(s2)

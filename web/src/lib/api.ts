@@ -92,6 +92,7 @@ import type {
   SupervisorReportResult,
 } from "../types";
 import type { RenameOps, RenameSource } from "./panelRename";
+import { tokenHeaders, withToken } from "./token";
 
 /** dispatch() in plugin/sentinel/ui/reports_dialog.py (Task 4) returns
  * `{"error": "no_manifest"}` when no sentinel_manifest.json sits next to
@@ -121,7 +122,7 @@ async function fetchReport<T>(
 ): Promise<{ kind: "ok"; data: T } | { kind: "empty"; reason: string } | { kind: "error"; message: string }> {
   let response: Response;
   try {
-    response = await fetch(path);
+    response = await fetch(withToken(path));
   } catch {
     return {
       kind: "error",
@@ -248,7 +249,7 @@ async function postForm<T extends { ok: boolean; error?: string }>(path: string,
   try {
     response = await fetch(path, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: tokenHeaders(),
       body: JSON.stringify(body),
     });
   } catch {
@@ -600,7 +601,7 @@ export async function fetchHubJobStatus(jobId: string): Promise<HubJobStatus> {
     return { job_id: jobId, state: "done", phase: "run", detail: "", pct: 100, result: null };
   }
   try {
-    const response = await fetch("/api/hub/job_status?job_id=" + encodeURIComponent(jobId));
+    const response = await fetch(withToken("/api/hub/job_status?job_id=" + encodeURIComponent(jobId)));
     return (await response.json()) as HubJobStatus;
   } catch {
     return { error: "Could not reach the Sentinel server. Is the Asset Hub still open in Cinema 4D?" };
@@ -661,7 +662,7 @@ export async function fetchHubMeta(keys: string[]): Promise<Record<string, HubMe
   try {
     const response = await fetch("/api/hub/meta", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: tokenHeaders(),
       body: JSON.stringify({ keys }),
     });
     const payload = await response.json();
@@ -704,7 +705,7 @@ export async function fetchHubMetaTotals(): Promise<HubMetaTotals> {
   }
 
   try {
-    const response = await fetch("/api/hub/meta_totals");
+    const response = await fetch(withToken("/api/hub/meta_totals"));
     if (!response.ok) return defaultTotals;
     return (await response.json()) as HubMetaTotals;
   } catch {
@@ -757,7 +758,7 @@ export async function fetchHubVariants(keys: string[]): Promise<Record<string, H
   try {
     const response = await fetch("/api/hub/variants", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: tokenHeaders(),
       body: JSON.stringify({ keys }),
     });
     const payload = await response.json();
@@ -792,7 +793,7 @@ export async function fetchHubUiState(): Promise<HubUiState> {
   }
 
   try {
-    const response = await fetch("/api/hub/ui_state");
+    const response = await fetch(withToken("/api/hub/ui_state"));
     if (!response.ok) return {};
     const payload = await response.json();
     if (payload && typeof payload === "object" && "state" in payload) {
@@ -815,7 +816,7 @@ export async function saveHubUiState(state: HubUiState): Promise<void> {
   try {
     await fetch("/api/hub/ui_state/save", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: tokenHeaders(),
       body: JSON.stringify({ state }),
     });
   } catch {
@@ -1157,7 +1158,7 @@ export async function fetchPanelDeliver(): Promise<PanelDeliverState> {
   try {
     response = await fetch("/api/panel/deliver", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: tokenHeaders(),
       body: JSON.stringify({}),
     });
   } catch {
@@ -1207,7 +1208,7 @@ export async function fetchPanelFrame(): Promise<PanelFrameState> {
   try {
     response = await fetch("/api/panel/frame", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: tokenHeaders(),
       body: JSON.stringify({}),
     });
   } catch {
@@ -1238,7 +1239,7 @@ export async function postPanelFrameSetViewing(
   try {
     const response = await fetch("/api/panel/frame/set_viewing", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: tokenHeaders(),
       body: JSON.stringify({ target }),
     });
     const data = (await response.json()) as { ok?: boolean; viewing?: string | null; error?: string | null };

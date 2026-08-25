@@ -92,6 +92,7 @@ _WEB_ROOT = os.path.join(_ROOT, "web")
 _server = None
 _queue = None
 _port = None
+_api_token = None
 
 # Strong references to every currently-open ReportsDialog/FormDialog
 # instance, keyed by page ("palette" -> its FormDialog; a single slot for
@@ -143,9 +144,11 @@ def ensure_server():
     # dialog's Timer drains it on the main thread (the cross-thread hand-off
     # webbridge.py documents) — hub/job_status is the one op answered right
     # here on the server thread, see _api_entry's own docstring for why.
-    _server, _port = create_server(_WEB_ROOT, _api_entry)
+    global _api_token
+    _server, _port, _token = create_server(_WEB_ROOT, _api_entry)
     start_server_thread(_server)
     safe_print(f"Sentinel Reports server listening on 127.0.0.1:{_port}")
+    _api_token = _token
     return _port
 
 
@@ -383,7 +386,10 @@ class ReportsDialog(gui.GeDialog):
 
     def _url(self):
         base = f"http://127.0.0.1:{self._port}/"
-        return f"{base}?page={self._page}" if self._page else base
+        params = [f"token={_api_token}"]
+        if self._page:
+            params.insert(0, f"page={self._page}")
+        return base + "?" + "&".join(params)
 
     def CreateLayout(self):
         self.SetTitle("Sentinel Reports")
@@ -497,7 +503,7 @@ class FormDialog(gui.GeDialog):
         self._query = query or {}
 
     def _url(self):
-        url = f"http://127.0.0.1:{self._port}/?page={self._page}"
+        url = f"http://127.0.0.1:{self._port}/?page={self._page}&token={_api_token}"
         for key, value in sorted(self._query.items()):
             url += "&%s=%s" % (key, urllib.parse.quote(str(value)))
         return url
