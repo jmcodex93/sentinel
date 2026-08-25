@@ -108,10 +108,28 @@ class _QueuedRequest:
 class MainThreadQueue:
     """Cross-thread hand-off: server threads call ``submit``, the C4D main
     thread calls ``drain`` from its Timer callback.
+
+    Block-3 additions:
+    - ``drain`` accepts a per-tick budget (max items / max wall time) so a
+      burst of queued requests cannot hold the C4D main thread hostage for
+      an unbounded stretch — leftover items are picked up by the next
+      Timer tick instead.
+    - Backlog telemetry: ``last_drain_backlog`` records how many items
+      were still waiting when the last drain ended, and ``backlog_high``
+      counts drains that ended with items left over. Both feed the SPA's
+      job-status surface (and debugging) without changing any contract.
     """
+
+    # Defaults for drain(): at most 8 requests or 100 ms per Timer tick,
+    # whichever comes first. Tuned for interactive UI responsiveness;
+    # a heavy supervisor scan costs one tick and yields.
+    MAX_ITEMS_PER_TICK = 8
+    MAX_SECONDS_PER_TICK = 0.1
 
     def __init__(self):
         self._queue = queue.Queue()
+        self.last_drain_backlog = 0
+        self.backlog_high = 0
 
     def submit(self, payload, timeout=30.0):
         """Called from a server thread. Blocks until the main thread's next
@@ -156,12 +174,18 @@ class MainThreadQueue:
             request.cancelled = True
         raise TimeoutError("keep the Reports window open")
 
-    def drain(self, dispatch):
+    def drain(self, dispatch, max_items=None, max_seconds=None):
         """Called from the main thread (the Timer). Processes EVERY item
         currently queued, in order, EXCEPT requests cancelled by a timed-out
         ``submit`` (see its docstring) — those are skipped: ``dispatch`` is
         never called for them and there is no result to discard (the queue
         no longer holds anything for a cancelled request beyond the flag).
+
+        Stops early when ``max_items`` requests have been dispatched or
+        ``max_seconds`` have elapsed since drain began (defaults from the
+        class constants). Items left in the queue wait for the next tick —
+        their ``submit`` callers keep blocking on their own timeout as
+        usual, so no request is lost, just deferred.
 
         Mutations are safe to dispatch here now: a client that gave up
         waiting can never have its request execute later. Handlers still
@@ -174,10 +198,18 @@ class MainThreadQueue:
         ``{"error": str(exc), "traceback": <format_exc>}`` instead of
         propagating. This method itself never raises.
         """
+        if max_items is None:
+            max_items = self.MAX_ITEMS_PER_TICK
+        if max_seconds is None:
+            max_seconds = self.MAX_SECONDS_PER_TICK
+        deadline = time.monotonic() + max_seconds
+        items_this_tick = 0
+
         while True:
             try:
                 request = self._queue.get_nowait()
             except queue.Empty:
+                self.last_drain_backlog = 0
                 return
 
             with request.lock:
@@ -193,6 +225,15 @@ class MainThreadQueue:
                     }
                 finally:
                     request.event.set()
+
+            items_this_tick += 1
+            if items_this_tick >= max_items or time.monotonic() >= deadline:
+                # Budget exhausted: leave the rest for the next Timer tick.
+                remaining = self._queue.qsize()
+                self.last_drain_backlog = remaining
+                if remaining:
+                    self.backlog_high += 1
+                return
 
 
 # ---------------------------------------------------------------------------

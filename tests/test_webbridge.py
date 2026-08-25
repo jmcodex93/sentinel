@@ -1843,3 +1843,57 @@ class TestApiHardening:
         finally:
             webbridge.stop_server(s1)
             webbridge.stop_server(s2)
+
+
+# ---------------------------------------------------------------------------
+# Block-3 threading: drain budget + backlog telemetry.
+# ---------------------------------------------------------------------------
+
+class TestDrainBudget:
+    def _fill(self, q, n):
+        for i in range(n):
+            q._queue.put(webbridge._QueuedRequest({"i": i}))
+
+    def test_max_items_defers_rest(self):
+        q = webbridge.MainThreadQueue()
+        self._fill(q, 5)
+        seen = []
+        q.drain(seen.append, max_items=2, max_seconds=10.0)
+        assert len(seen) == 2
+        assert q.last_drain_backlog == 3
+        assert q.backlog_high == 1
+
+    def test_second_drain_picks_up_leftovers(self):
+        q = webbridge.MainThreadQueue()
+        self._fill(q, 5)
+        seen = []
+        q.drain(seen.append, max_items=2, max_seconds=10.0)
+        q.drain(seen.append, max_items=10, max_seconds=10.0)
+        assert len(seen) == 5
+        assert q.last_drain_backlog == 0
+
+    def test_empty_drain_resets_backlog(self):
+        q = webbridge.MainThreadQueue()
+        self._fill(q, 5)
+        q.drain(lambda p: None, max_items=1, max_seconds=10.0)
+        assert q.last_drain_backlog > 0
+        q.drain(lambda p: None, max_items=100, max_seconds=10.0)
+        assert q.last_drain_backlog == 0
+
+    def test_cancelled_requests_do_not_count_toward_budget(self):
+        q = webbridge.MainThreadQueue()
+        self._fill(q, 4)
+        # Cancel the first two directly (simulating timed-out submits).
+        first = q._queue.get_nowait()
+        with first.lock:
+            first.cancelled = True
+        second = q._queue.get_nowait()
+        with second.lock:
+            second.cancelled = True
+        seen = []
+        q.drain(seen.append, max_items=10, max_seconds=10.0)
+        assert len(seen) == 2  # only the non-cancelled dispatched
+
+    def test_defaults_are_reasonable(self):
+        assert 1 <= webbridge.MainThreadQueue.MAX_ITEMS_PER_TICK <= 64
+        assert 0.01 <= webbridge.MainThreadQueue.MAX_SECONDS_PER_TICK <= 1.0
