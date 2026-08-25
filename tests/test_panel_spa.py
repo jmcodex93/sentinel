@@ -21,6 +21,21 @@ class TestPanelSpaImports:
         assert hasattr(panel_spa, "SentinelPanelSPACmd")
         assert hasattr(panel_spa, "open_panel_spa")
 
+    def test_panel_url_carries_api_capability_token(self, sentinel_module):
+        from sentinel.ui import panel_spa, reports_dialog
+
+        previous_token = reports_dialog._api_token
+        reports_dialog._api_token = "test-capability-token"
+        try:
+            url = panel_spa.PanelSPADialog()._url(8347)
+        finally:
+            reports_dialog._api_token = previous_token
+
+        assert url == (
+            "http://127.0.0.1:8347/"
+            "?page=panel&token=test-capability-token"
+        )
+
 
 class TestPanelSpaPluginId:
     # Known ids already assigned in the 2099xxx range (see
