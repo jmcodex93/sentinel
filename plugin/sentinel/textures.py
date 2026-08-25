@@ -2,6 +2,7 @@
 """Texture scanning and repathing engine."""
 
 import os
+from pathlib import Path
 
 import c4d
 
@@ -225,8 +226,10 @@ def compute_relative_texture_path(abs_path, doc_path):
     except (ValueError, OSError):
         # Different drive on Windows raises ValueError
         return None
-    # Reject overly-deep climbs
-    if rel.count("..") > 4:
+    # Reject overly-deep climbs (count path components equal to "..",
+    # not substrings — a filename like "mi..foto.jpg" must not trip this)
+    climb = sum(1 for part in Path(rel).parts if part == "..")
+    if climb > 4:
         return None
     # Reject if relpath bottomed out at the absolute path (no common root)
     if os.path.isabs(rel):
@@ -448,7 +451,14 @@ def scan_all_texture_paths(doc):
             host_id = id(host)
         except Exception:
             host_id = 0
-        key = (source_type, host_id, channel, str(path))
+        # Node-graph records include the stable port identity so two
+        # samplers in the same material pointing at the same file are
+        # distinct write targets and BOTH survive deduplication.
+        try:
+            port_id = str(context.get("port_id") or "") if context else ""
+        except Exception:
+            port_id = ""
+        key = (source_type, host_id, channel, str(path), port_id)
         if key in seen:
             return
         seen.add(key)
@@ -689,8 +699,9 @@ def _scan_node_graph(root_node, host_mat, mat_name, source_type, add_fn,
             except Exception:
                 node_id = "port"
             channel = node_id.split(".")[-1] if "." in node_id else node_id
+            port_id = node_id  # stable identity for dedupe + write targets
             add_fn(source_type, host_mat, mat_name, channel,
-                   {"port": node, "graph": graph_ref}, fp)
+                   {"port": node, "graph": graph_ref, "port_id": port_id}, fp)
         try:
             for child in node.GetChildren():
                 walk(child, depth + 1)
@@ -868,4 +879,3 @@ def apply_texture_path_change(record, new_path, doc=None):
     except Exception as e:
         safe_print(f"apply_texture_path_change error ({source_type}): {e}")
         return False
-

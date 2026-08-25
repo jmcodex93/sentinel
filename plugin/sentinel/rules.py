@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import math
 from dataclasses import dataclass
 from numbers import Integral, Real
 from pathlib import Path
@@ -454,8 +455,15 @@ def _validate_safe_area_insets(value: Any) -> tuple[bool, Any, str | None]:
         for side in ("top", "bottom", "left", "right"):
             if side not in insets:
                 return False, None, f"format '{fmt_id}' missing '{side}'"
-            if not _is_number(insets[side]):
-                return False, None, f"format '{fmt_id}' side '{side}' expected a number"
+            v = insets[side]
+            if not _is_number(v) or not math.isfinite(v):
+                return False, None, f"format '{fmt_id}' side '{side}' expected a finite number"
+            if not (0 <= v < 1):
+                return False, None, f"format '{fmt_id}' side '{side}' must be in [0, 1)"
+        if insets["left"] + insets["right"] >= 1:
+            return False, None, f"format '{fmt_id}': left + right must be < 1"
+        if insets["top"] + insets["bottom"] >= 1:
+            return False, None, f"format '{fmt_id}': top + bottom must be < 1"
         normalized[fmt_id] = {
             "top": insets["top"],
             "bottom": insets["bottom"],

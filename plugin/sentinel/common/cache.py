@@ -9,7 +9,10 @@ from .constants import CACHE_DURATION
 class CheckCache:
     def __init__(self):
         self.cache = {}
-        self.last_update = 0
+        # Per-entry timestamps: a set() for one key must not refresh the TTL
+        # of other keys (the old single last_update let any recalculation
+        # "rejuvenate" stale entries indefinitely).
+        self._timestamps = {}
         self.doc_id = None
         self.ancestor_vis_cache = {}  # Persistent ancestor visibility cache
 
@@ -19,14 +22,14 @@ class CheckCache:
 
         if (self.doc_id == doc_id and
             key in self.cache and
-            now - self.last_update < CACHE_DURATION):
+            now - self._timestamps.get(key, 0) < CACHE_DURATION):
             return self.cache[key]
         return None
 
     def set(self, doc, key, value):
         self.doc_id = id(doc)
         self.cache[key] = value
-        self.last_update = time.time()
+        self._timestamps[key] = time.time()
 
     def get_ancestor_visibility(self, obj):
         """Get cached ancestor visibility or calculate and cache"""
