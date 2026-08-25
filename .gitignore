@@ -15,5 +15,6 @@ web/node_modules/.tmp/
 
 # Session scratch (visual companion, SDD ledgers)
 .superpowers/
+.worktrees/
 tests/fixtures/backup/
 plugin/c4d/backup/
