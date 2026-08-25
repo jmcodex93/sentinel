@@ -7,6 +7,24 @@ from pathlib import Path
 import c4d
 
 from sentinel.common.constants import MAX_OBJECTS_PER_CHECK
+
+# Record cap for scan_all_texture_paths — safety net for huge scenes.
+# Applied inside _add (per record), not per material, and reported via
+# the returned meta so an incomplete scan is never mistaken for a PASS.
+_SCAN_RECORD_CAP = 500
+
+# Metadata from the most recent scan_all_texture_paths call on this module:
+# {truncated, errors, materials_scanned, objects_scanned}. Module-level by
+# design (the scan runs on the C4D main thread, single-consumer). Read it
+# via get_last_scan_meta() right after the scan.
+_LAST_SCAN_META = {"truncated": False, "errors": [],
+                   "materials_scanned": 0, "objects_scanned": 0}
+
+
+def get_last_scan_meta():
+    """Metadata dict from the most recent scan_all_texture_paths call."""
+    return dict(_LAST_SCAN_META)
+
 from sentinel.common.helpers import _iter_objs, safe_print
 
 try:
@@ -433,18 +451,39 @@ def scan_all_texture_paths(doc):
         }
 
     Performance: caps at ~500 records (safety net for huge scenes). Most
-    real scenes have 20–200 textures.
+    real scenes have 20–200 textures. Truncation is REPORTED: after the
+    call, ``scan_meta['textures']`` carries ``{truncated, errors,
+    materials_scanned, objects_scanned}`` so callers (QC check, repath
+    tooling) can surface an incomplete scan instead of silently showing
+    a green PASS built on partial data.
     """
+    global _LAST_SCAN_META
     records = []
     if not doc:
+        _LAST_SCAN_META = {"truncated": False, "errors": [],
+                           "materials_scanned": 0, "objects_scanned": 0}
         return records
 
     doc_path = doc.GetDocumentPath() or ""
     global_dirs = _c4d_texture_search_dirs()
     seen = set()  # dedupe by (host_id, channel, path) to avoid noise
+    scan_errors = []
+    counters = {"materials": 0, "objects": 0}
+
+    def _finish_meta(truncated):
+        return {
+            "truncated": truncated,
+            "errors": list(scan_errors),
+            "materials_scanned": counters["materials"],
+            "objects_scanned": counters["objects"],
+        }
 
     def _add(source_type, host, host_name, channel, context, path):
         if not path:
+            return
+        if len(records) >= _SCAN_RECORD_CAP:
+            # Budget applied per-record (not per-material): a single huge
+            # material can no longer blow past the cap unchecked.
             return
         # Dedupe key — same shader-channel-path combo shouldn't be added twice
         try:
@@ -529,15 +568,17 @@ def scan_all_texture_paths(doc):
                         except Exception:
                             continue
 
-            if len(records) > 500:
+            if len(records) >= _SCAN_RECORD_CAP:
                 break
+
+        counters["materials"] = len(materials)
 
         # ── Object-level texture references ──
         # Covers: Alembic objects (ALEMBIC_PATH), RS Dome Light / Area
         # Light HDR textures (live in the object's BaseContainer), volume
         # cache files, etc. Anything stored as a BC filename param on a
         # scene object is captured here.
-        if len(records) < 500:
+        if len(records) < _SCAN_RECORD_CAP:
             try:
                 first = doc.GetFirstObject()
                 if first:
@@ -627,13 +668,15 @@ def scan_all_texture_paths(doc):
                                           "field_id": file_path_id},
                                          str(value))
 
-                        if len(records) > 500:
+                        if len(records) >= _SCAN_RECORD_CAP:
                             break
             except Exception:
                 pass
     except Exception as e:
+        scan_errors.append(f"scan error: {e}")
         safe_print(f"scan_all_texture_paths error: {e}")
 
+    _LAST_SCAN_META = _finish_meta(len(records) >= _SCAN_RECORD_CAP)
     return records
 
 

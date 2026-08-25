@@ -797,6 +797,13 @@ def _rescan_collected_package(delivery_c4d_path, target_dir):
             return [], "failed", []
 
         records = scan_all_texture_paths(tmp_doc) or []
+        if get_last_scan_meta().get("truncated"):
+            # The manifest must not present a partial asset list as the
+            # full inventory — degrade to a partial status so the Delivery
+            # Summary says so explicitly.
+            safe_print("Scene Collector: texture re-scan truncated — "
+                       "manifest asset list is incomplete (lower bound)")
+            return [], "partial", []
         # Flatten: drop live C4D refs before handing to the pure engine.
         flat = [{
             "current_path": r.get("current_path", ""),
@@ -1150,7 +1157,7 @@ def scan_scene_assets(doc):
       skipped     — count of per-item exceptions (never fatal)
     """
     from sentinel import assets as assets_engine
-    from sentinel.textures import scan_all_texture_paths
+    from sentinel.textures import get_last_scan_meta, scan_all_texture_paths
     # _is_light_obj already imported at module scope (line 19).
 
     skipped = 0
@@ -1245,4 +1252,3 @@ def scan_scene_assets(doc):
     records = assets_engine.merge_inventories(
         tex_flat, generic, base_dir=doc_own_path)
     return records, tex_records, skipped
-

@@ -4,7 +4,7 @@
 from sentinel.common.cache import check_cache
 from sentinel.common.helpers import safe_print
 from sentinel.qc.results import CheckResult, structured_cache_key
-from sentinel.textures import scan_all_texture_paths
+from sentinel.textures import get_last_scan_meta, scan_all_texture_paths
 
 def _texture_issue_from_record(record):
     status = record.get("status")
@@ -84,6 +84,35 @@ def _textures_result(issue_items):
     return result
 
 
+def _truncation_result():
+    """CheckResult for an incomplete scan — never silently a PASS.
+
+    A truncated scan means some materials/objects were never inspected;
+    the reported count is a LOWER BOUND. Surfaced as its own violation so
+    the panel/report shows it instead of a misleading green row.
+    """
+    meta = get_last_scan_meta()
+    result = CheckResult(
+        "textures",
+        metadata={"legacy_count": 0, "scan_truncated": True,
+                  "scan_meta": meta},
+        legacy_items=[{
+            "source": "Sentinel",
+            "path": "",
+            "issue": "scan_truncated",
+            "resolved": None,
+        }],
+    )
+    result.add_violation(
+        {"type": "texture_scan_truncated"},
+        (f"Texture scan hit the {meta.get('materials_scanned', '?')}"
+         f"-material record cap before finishing — results are a lower"
+         f" bound, some assets were not checked"),
+        {"scan_meta": meta},
+    )
+    return result
+
+
 def check_textures_unified_structured(doc):
     """QC #6 structured result wrapper around scan_all_texture_paths."""
     cached = check_cache.get(doc, structured_cache_key("textures"))
@@ -91,8 +120,10 @@ def check_textures_unified_structured(doc):
         return cached
 
     issue_items = []
+    scan_truncated = False
     try:
         records = scan_all_texture_paths(doc)
+        scan_truncated = get_last_scan_meta().get("truncated", False)
         for record in records:
             issue_item = _texture_issue_from_record(record)
             if issue_item is None:
@@ -102,6 +133,13 @@ def check_textures_unified_structured(doc):
                 break
     except Exception as e:
         safe_print(f"Error in unified texture check: {e}")
+
+    if scan_truncated:
+        # Report incompleteness FIRST — even if 50 issues were already
+        # found, the caller must know the list is not exhaustive.
+        result = _truncation_result()
+        check_cache.set(doc, structured_cache_key("textures"), result)
+        return result
 
     result = _textures_result(issue_items)
     check_cache.set(doc, "textures", result.to_legacy())
