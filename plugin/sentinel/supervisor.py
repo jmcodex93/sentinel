@@ -311,7 +311,7 @@ def build_shot_summary(history_path, data, notes, now, label_map=None):
         filename[: -len(_HISTORY_SUFFIX)] if filename.endswith(_HISTORY_SUFFIX) else filename
     )
 
-    todos = (notes or {}).get("todos") or []
+    todos = [t for t in ((notes or {}).get("todos") or []) if isinstance(t, dict)]
     todos_total = len(todos)
     todos_pending = sum(1 for t in todos if not t.get("done"))
 

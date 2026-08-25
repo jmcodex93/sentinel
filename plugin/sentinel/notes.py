@@ -56,6 +56,12 @@ def load_notes(notes_path):
             data["notes"] = ""
         if "todos" not in data or not isinstance(data.get("todos"), list):
             data["todos"] = []
+        else:
+            # Drop non-dict elements: a malformed entry (e.g. a bare string)
+            # would crash Supervisor's t.get("done") downstream, breaking
+            # the whole folder scan — contradicting the tolerant-to-
+            # corruption contract every other sidecar honors.
+            data["todos"] = [t for t in data["todos"] if isinstance(t, dict)]
         if "scene" not in data:
             data["scene"] = ""
         if "updated" not in data:
@@ -193,4 +199,3 @@ def has_pending_todos(notes):
     if not isinstance(notes, dict):
         return False
     return any(not t.get("done") for t in (notes.get("todos") or []))
-

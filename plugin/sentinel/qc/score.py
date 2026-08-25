@@ -2,6 +2,7 @@
 """QC registry runner and score semantics."""
 
 import copy
+import inspect
 import os
 from collections import OrderedDict
 
@@ -15,11 +16,16 @@ _BASELINE_LOAD_CACHE = {}
 
 def _call(fn, doc, kwargs, rules_context=None):
     if rules_context is not None:
+        # Decide by signature, not by catching TypeError and grepping its
+        # text: an internal bug raising TypeError mentioning the parameter
+        # name would have been silently retried without rules_context,
+        # masking the real error.
         try:
+            accepts_rc = "rules_context" in inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            accepts_rc = False
+        if accepts_rc:
             return fn(doc, rules_context=rules_context, **kwargs)
-        except TypeError as exc:
-            if "rules_context" not in str(exc):
-                raise
     if kwargs:
         return fn(doc, **kwargs)
     return fn(doc)
