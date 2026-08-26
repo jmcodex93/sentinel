@@ -1,58 +1,85 @@
 # Material Graph QC — colorspace audit + nodos muertos (2 checks nuevos)
 
-- **Fecha:** 2026-08-25
+- **Fecha:** 2026-08-25 (borrador del spike) · **2026-08-26: diseño aprobado en brainstorm, pendiente de plan.**
 - **Origen:** spike Wrangler (`Node Wrangler/docs/spikes/2026-08-25-wrangler-spike.md`). Veredicto: el Wrangler standalone es NO-GO (Render Flow de Boghma ocupa la autoría), pero la **auditoría** de grafos de materiales RS es territorio Sentinel y nadie la tiene: Render Flow/NodeFlow asigna colorspace *al crear*; nadie audita *lo ya existente* (material de Gumroad, heredado, hecho a mano).
-- **Posicionamiento:** refuerza el claim "el único preflight de render de C4D". Auditoría, NO autoría — cero hotkeys, cero insert interactivo, cero solo/preview (eso quedó descartado explícitamente).
+- **Posicionamiento:** refuerza el claim "el único preflight de render de C4D". Auditoría, NO autoría — cero hotkeys, cero insert interactivo, cero solo/preview (descartado explícitamente; ver Fuera de alcance).
+
+## Decisiones cerradas en brainstorm (2026-08-26)
+
+1. **Severidad y defaults**: A (`rs_colorspace`) = **FAIL**, B (`rs_dead_nodes`) = **WARN**; **ambos ON por defecto**. Un colorspace mal renderiza píxeles incorrectos (la trampa ACEScg) — eso es FAIL; los nodos muertos no cambian la imagen — WARN. Quien no use RS ve OK trivial. Consecuencia aceptada (lección v1.36.5): escenas viejas mostrarán violaciones nuevas de golpe — información verdadera. Severidad y on/off ajustables por proyecto con el mecanismo per-check existente del ruleset; **cero claves nuevas**.
+2. **El valor "auto"** (check A): violación **solo si el auto resuelve MAL**. Si el valor resuelto es legible y coincide con lo esperado → OK; si resuelve distinto → `mismatch` con Fix a explícito; si no es legible → fila **Info "auto, sin verificar"**, sin contar como fallo. (La regla "siempre explícito" de matwire rige lo que creamos; aquí auditamos lo existente, y castigar todo auto sería ruido que enseña a ignorar el check.)
+3. **Inferencia de canal** (check A): **doble señal** — nombre de fichero (tablas MatWire, fuente única) **y puerto BRDF de destino** (tabla nueva puerto→canal). Una sola señal disponible → se usa; ambas coinciden → confianza máxima; **discrepan → Info sin Fix** (no adivinamos). Caza el caso real más común: `textura_final_v3.png` sin nombre reconocible enchufada a roughness en sRGB, invisible para la inferencia solo-por-nombre.
 
 ---
 
-## Check A — "RS Colorspace" (auditoría de colorspace en materiales Redshift)
+## Arquitectura (espejo del split matwire/matwire_c4d)
+
+- **`plugin/sentinel/matgraph.py`** — motor puro (sin `import c4d`, pytest directo):
+  - `infer_channel(filename, dest_port)` — combina las dos señales. Nombres: `matwire._match_channel`/`_CHANNEL_VARIANTS` (única fuente; si MatWire cambia su tabla, el check cambia con ella). Destinos: tabla nueva puerto-BRDF→canal en este módulo.
+  - `audit_colorspaces(entries) -> verdicts` con vocabulario `ok | mismatch | conflict | auto_unverified | unknown | foreign_cs`. Colorspace esperado vía `matwire.channel_colorspace` (extendida si hace falta, nunca duplicada).
+  - `find_dead_nodes(nodes, edges, roots, sink_ids) -> dead_ids` — BFS inverso desde roots ∪ sinks, O(nodos+aristas), un walk.
+- **`plugin/sentinel/matgraph_c4d.py`** — adapter c4d: **un solo walk por material** (`collect(doc)`) que alimenta a AMBOS checks — nodos, aristas (`GetConnectedPorts`), y por cada Texture Sampler: path, colorspace asignado (sub-puerto `tex0/colorspace`, que `textures.py` ya conoce), a qué resuelve el auto si es legible, y el puerto BRDF de destino **rastreado a través de los utilities conocidos** (Color Correct, Ramp, Invert/rsmathinv, Bump, Color Layer — la lista exacta que matwire interpone). Cadena rota o utility desconocido → señal de puerto ausente, se cae a solo-nombre. NO se toca `scan_all_texture_paths` (Assets intacto); se reutiliza su patrón, no su función. Sin dependencia de la lib Boghma `renderEngine`.
+- **Registry**: dos entradas — `rs_colorspace` (FAIL, ON, Select+Info+Fix) y `rs_dead_nodes` (WARN, ON, Select+Info+Fix). El score pasa a **X/14** solo por añadir las entradas (denominador = len(registry)); pasada de branding «12 checks»→14 en docs/README/CLAUDE.md. El «QC de assets del proyecto» reservado en ROADMAP será el #15.
+- **Caché**: `collect(doc)` corre una vez por pasada de QC y sirve a ambos checks, bajo el `check_cache` normal (el stamp ya mide dirty de materiales desde v1.17).
+
+## Check A — "RS Colorspace"
 
 ### Goal
-Nuevo check QC (nº 13/14 según orden con el QC de assets del estándar) que recorre **cada Texture Sampler de cada material RS node-based** del documento y compara el colorspace asignado en el puerto contra el que el canal debería tener según el nombre del fichero. Mismatch típico que caza: roughness/normal/metalness/displacement marcados **sRGB** (render incorrecto, la trampa ACEScg del spike), o basecolor/emission en **Raw** (lavado). Botones: **Select** (ciclar materiales infractores) / **Info** (detalle por textura: canal inferido, asignado, esperado, y el porqué) / **Fix** (corregir el colorspace de todos los infractores).
+Recorre cada Texture Sampler de cada material RS node-based y compara el colorspace asignado contra el que el canal inferido exige. Mismatch típico: roughness/normal/metalness/displacement en **sRGB** (render incorrecto), basecolor/emission en **Raw** (lavado). Botones: **Select** (ciclar materiales infractores) / **Info** (por textura: canal inferido y por qué señal, asignado, esperado) / **Fix** (corregir todos los infractores).
 
-### Constraints
-1. **Single source de verdad = MatWire.** El canal se infiere con el motor existente (`matwire._match_channel` + tablas `_CHANNEL_VARIANTS`) y el colorspace esperado con `matwire.channel_colorspace` (extendida si hace falta, nunca duplicada). Si MatWire cambia su tabla, el check cambia con ella — una sola tabla en todo Sentinel.
-2. **Motor puro primero** (doctrina del repo): `plugin/sentinel/checks/` gana un módulo puro testeable sin `import c4d` con la firma aproximada `audit_colorspaces(entries) -> verdicts`, donde `entries = [(material, filename, assigned_cs)]` y `verdicts` clasifica `ok | mismatch | unknown`. La capa c4d solo recolecta entries y aplica fixes.
-3. **Sin falsos positivos por diseño:** canal no reconocido por MatWire → `unknown` → el check **no opina** (ni warning ni fix). Packed ORM/ARM → raw. Igual para colorspaces no estándar (OCIO custom): si `assigned_cs` no es uno de los valores conocidos del combo RS, reportar como `info`, no como fallo.
-4. **Recolección:** reutilizar el patrón de escaneo recursivo de puertos maxon que ya usa el check Assets — vive en **`sentinel/textures.py`** (`scan_all_texture_paths`, el walk de GraphNodes que lee los puertos de los Texture Samplers; `assets.py` es el motor puro de merge/clasificación y no toca el grafo). Mismo walk, leyendo además el puerto de colorspace del Texture Sampler. No introducir dependencia de la lib Boghma `renderEngine` para esto — el patrón propio ya existe (y su propio walk tuvo bugs hasta 2026-08: `GetConnectedPorts` devolvía siempre `None` por un `or` que debía ser `and`).
-5. **Los valores reales del combo RS** (los strings que acepta el puerto colorspace) se descubren en vivo y quedan en el módulo c4d con comentario de procedencia; ojo divergencia pre/post-OCIO obligatorio (2025.2+) — gate por versión si difieren.
-6. **Fix undo-safe:** un solo paso de undo por pulsación de Fix (todos los puertos corregidos dentro de una transacción + `StartUndo/AddUndo(UNDOTYPE_CHANGE, mat)/EndUndo`, patrón confirmado en el spike §2). El Fix nunca corre solo: opt-in por click, como el resto de checks.
-7. Materiales no-RS / no node-based: se ignoran en silencio (mismo comportamiento que Assets).
-8. **Evidencia de done:** tests del motor puro (mismatch sRGB-en-roughness, Raw-en-basecolor, unknown, ORM) + ciclo live en C4D 2026: material con roughness en sRGB → check rojo → Fix → check verde → undo → rojo otra vez.
+### Semántica de verdictos
+- `mismatch` (explícito ≠ esperado) → violación con Fix.
+- `auto` que resuelve mal → `mismatch` con Fix a explícito (decisión 2).
+- `auto` ilegible → Info "auto, sin verificar" (no cuenta).
+- `conflict` (nombre vs puerto discrepan) → Info sin Fix.
+- Colorspace fuera del vocabulario RS conocido (OCIO custom) → Info, no fallo.
+- Canal no inferible por ninguna señal → silencio (`unknown`). **Sin falsos positivos por diseño.** Packed ORM/ARM → Raw.
 
-### Referencias
-- `plugin/sentinel/matwire.py` (tablas de canal + `channel_colorspace`) y `matwire_c4d.py::_rs_colorspace` (cómo se escribe al crear — el Fix escribe por la misma vía).
-- `plugin/sentinel/textures.py` (walk maxon de puertos RS existente, `scan_all_texture_paths`).
+### Fix
+Todos los puertos infractores del documento en **un** paso de undo: transacción maxon + ancla `AddUndo(UNDOTYPE_CHANGE, mat)` por material (patrón medido de matwire/repathing), escribiendo por la misma vía que `matwire_c4d._rs_colorspace`. Opt-in por click, jamás auto.
+
+### Identidad (baseline)
+`check_id` + nombre del material + basename de la textura + canal inferido (`field`) — se puede aceptar UN mismatch concreto («este roughness en sRGB es a propósito») sin sellar el material entero.
+
+## Check B — "RS Dead Nodes"
+
+### Goal
+Por cada material RS node-based, los **nodos sin camino al Output** (basura de lookdev: samplers colgando, islas, restos de pruebas). Hermano dentro-del-grafo de "Unused Materials". Botones: **Select** / **Info** (cuántos y cuáles por material) / **Fix** (borrarlos, un undo).
+
+### Semántica
+- **Vivos** = alcanzable hacia atrás desde los **roots** (TODOS los puertos de entrada del Output: Surface, Displacement, Volume, Environment, …) ∪ **sinks legítimos** (`StoreColorToAOV`/`StoreScalarToAOV`/`StoreIntegerToAOV` y sus aguas-arriba). Muerto = el resto.
+- **Conservador**: asset-id desconocido que parezca sink, o error leyendo el grafo → el material se reporta **Info, jamás Fix**. Solo se borra lo demostrablemente inalcanzable. El Output y el material sin grafo legible nunca cuentan.
+- **La fila dice el alcance**: `3 materials with dead nodes (11 nodes)` — conteo en la fila, detalle en Info (regla de la casa v1.35).
+- Estrictamente más fuerte que el prior art (ver Referencias): RsMat Clean / `RemoveIsolateNodes` solo borran nodos con cero conexiones — una isla cableada entre sí sobrevive y no distinguen sinks AOV.
+
+### Fix
+Borra los nodos muertos de todos los materiales infractores en **un** paso de undo (mismo patrón que A). Nunca auto.
+
+### Identidad (baseline)
+`check_id` + nombre del material + **snapshot del conteo de nodos muertos** como valor paramétrico (mecanismo existente de checks paramétricos): aceptar sella «N nodos muertos a propósito» (ramas aparcadas deliberadas); si N cambia, se re-arma. No hay identidad por-nodo: los ids de nodo maxon no tienen garantía de supervivencia a guardar+cargar (lección de identidad C4D), y nadie acepta basura nodo a nodo.
+
+## Materiales fuera del universo
+No-RS / no node-based: se ignoran en silencio (mismo comportamiento que Assets).
+
+## Verificación (escalera)
+
+1. **Mini-spike live obligatorio ANTES del writer** (doc throwaway, cero residuo): strings reales del combo colorspace pre/post-OCIO obligatorio (2025.2+; gate por versión si difieren), legibilidad del valor resuelto del auto, walk sobre un material RS **no creado por matwire**, y **medir el borrado de nodos + undo** — el fix de B es lo único destructivo y su receta de undo no está medida en este repo.
+2. **Motores puros** con verificación por mutación de cada test; fakes con las dos superficies reales (grafo con aristas + sub-puertos) — el arnés miente hasta que se demuestre lo contrario (recurrencia nº10 documentada).
+3. **Oráculo congelado**: `run_fixtures` gana dos filas `ok` triviales (las fixtures no tienen materiales RS) — se regenera el expected, no es un fallo. Nota heredada: `build_fixtures.py` está roto para `violating.c4d` (deuda v1.36.5).
+4. **Ciclo live**: roughness en sRGB → rojo → Fix → verde → Cmd+Z → rojo. Isla muerta + rama de displacement viva + sink AOV → solo la isla cae. Fila y Info con el copy exacto.
+
+## Fuera de alcance (escrito para que nadie lo re-proponga)
+- **Autoría de cualquier tipo** — insert de nodos, auto-wire interactivo, solo/preview, hotkeys. Eso es Render Flow (Boghma) y no competimos ahí (spike Wrangler §12).
+- Materiales no-RS.
+- Perseguir el colorspace a través de utilities desconocidos (se cae a solo-nombre).
+- Claves nuevas de ruleset (el per-check severity/on-off existente basta).
+
+## Referencias
+- `plugin/sentinel/matwire.py` (tablas de canal + `channel_colorspace`) y `matwire_c4d.py::_rs_colorspace` (el Fix escribe por la misma vía).
+- `plugin/sentinel/textures.py` (walk maxon de puertos RS existente; su propio walk tuvo bugs hasta 2026-08: `GetConnectedPorts` devolvía siempre `None` por un `or` que debía ser `and` — motivo extra para el spike live).
 - Spike Wrangler §6 (trampa ACEScg, con fuentes) y `Node Wrangler/spikes/wrangler/live_probe_log.md` (ids de nodo RS confirmados en vivo, p.ej. `...nodes.core.texturesampler`).
+- **Prior art de B**: RsMat Clean (Boghma, free, Windows-only) — estudio de comportamiento solamente, cero código. `renderEngine/utils/node_helper.py::RemoveIsolateNodes` (verificado leyendo la implementación 2026-08-26): solo borra nodos con cero conexiones (`IsNodeConnected`), sin reachability ni sinks AOV — prior art del gesto, NO el algoritmo; no adoptar como atajo.
+- Memoria Wrangler: `c4d-mcp-bridge-graph-limits` (por qué se verifica con plugin real, no vía MCP).
 
----
-
-## Check B — "RS Dead Nodes" (nodos aislados en grafos Redshift)
-
-### Goal
-Check QC que detecta, por cada material RS node-based, los **nodos sin camino al nodo Output** (basura acumulada de lookdev: samplers colgando, ramas muertas, restos de pruebas). Es el hermano dentro-del-grafo del check "Unused Materials". Botones: **Select** (ciclar materiales con basura) / **Info** (cuántos nodos muertos y cuáles) / **Fix** (borrarlos, undo 1 paso).
-
-### Constraints
-1. **Motor puro de alcanzabilidad:** módulo testeable sin `import c4d` con firma aproximada `find_dead_nodes(nodes, edges, roots) -> dead_ids`. La capa c4d solo extrae la lista de nodos/aristas del grafo maxon y pasa los roots.
-2. **Roots = TODOS los puertos del Output** (Surface, Displacement, Volume, …), no solo Surface — un árbol de displacement válido no es basura.
-3. **Sinks legítimos NO son basura:** `StoreColorToAOV` / `StoreScalarToAOV` / `StoreIntegerToAOV` y sus aguas-arriba cuentan como vivos aunque no lleguen al Output (escriben a AOVs — integra con el conocimiento AOV que Sentinel ya tiene). Lista de sink-assets excluidos en el motor puro, con test propio.
-4. **Conservador por defecto:** ante cualquier asset-id desconocido que actúe de sink potencial, o error leyendo el grafo, el material se reporta `info`, nunca `fix`. Borrar solo lo demostrablemente inalcanzable.
-5. **Fix undo-safe** (idéntico patrón al Check A) y opt-in. Nunca auto-fix.
-6. Performance: un solo walk por material; sin límite artificial de nodos, pero el walk es O(nodos+aristas) y no relee el grafo por nodo (lección del bridge MCP: cada llamada al grafo cuesta).
-7. **Evidencia de done:** tests del motor puro (cadena viva, isla muerta, rama de displacement, sink AOV, grafo vacío) + ciclo live: material con 3 nodos basura → rojo → Fix → verde → undo.
-
-### Referencias
-- Estudio de mercado: RsMat Clean (Boghma, free, Windows-only) hace esto standalone — **estudio de comportamiento solamente, cero código** (misma política que `docs/research/2026-07-29-matwire-implementations.md`).
-- `renderEngine/utils/node_helper.py::RemoveIsolateNodes` (lib de Boghma, en `99 - CODEX/11 C4D DEV/renderEngine`, actualizada 2026-08-25; MIT declarado en `__init__.py`, sin archivo LICENSE en raíz) — **prior art del gesto, NO el algoritmo** (verificado leyendo la implementación 2026-08-26): solo borra nodos con **cero conexiones** (`IsNodeConnected`), no hace reachability desde el Output — una isla muerta (nodos cableados entre sí pero sin camino al Output) sobrevive, y tampoco distingue sinks AOV. La reachability propia del motor puro (`find_dead_nodes` con roots en todos los puertos del Output) es estrictamente más fuerte; no adoptar su enfoque como atajo.
-- Memoria del proyecto Wrangler: `c4d-mcp-bridge-graph-limits` (por qué se verifica con plugin real, no vía MCP).
-
----
-
-## Compartido / orden de trabajo
-
-- Ambos checks comparten la recolección del grafo (un walk por material alimenta a los dos) — implementar la recolección una vez.
-- Orden sugerido: **A primero** (más valor, menos riesgo de borrado), B después reutilizando el walk.
-- UI: entran en el StatusArea como los 12 existentes, con el patrón Select/Info/Fix data-driven de Fase 2. Naming visible sugerido: **"RS Colorspace"** y **"RS Dead Nodes"** (grupo mental "Material Graph QC").
-- Estimación (del spike, con la fontanería ya en repo): A ≈ 2–4 días, B ≈ 1–2 días.
-- Fuera de alcance explícito: cualquier función de autoría (insert de nodos, auto-wire interactivo, solo/preview, hotkeys). Si alguien lo propone, la respuesta vive en el spike del Wrangler §12: eso es Render Flow, y no competimos ahí.
+## Orden de trabajo
+A primero (más valor, menos riesgo de borrado); B después reutilizando el walk. Estimación del spike (con la fontanería en repo): A ≈ 2–4 días, B ≈ 1–2 días.
