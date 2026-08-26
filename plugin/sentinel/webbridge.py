@@ -1604,6 +1604,27 @@ def palette_actions_payload(doc_present, doc_saved=False, qc_counts=None):
     return actions
 
 
+from sentinel.bridge.forms import (  # noqa: E402 - compatibility shadow
+    PALETTE_ACTIONS,
+    PALETTE_ACTION_BY_ID,
+    SAVE_VERSION_FINAL_HINT,
+    SETTINGS_COMPOSITOR_OPTIONS,
+    SETTINGS_FPS_OPTIONS,
+    SETTINGS_HISTORY_OPTIONS,
+    _CHECK_ENTRY_BY_ID,
+    _coerce_int,
+    _gate_item_payload,
+    gate_can_proceed,
+    gate_state_payload,
+    merge_notes_submission,
+    palette_actions_payload,
+    resolve_save_version_status,
+    save_version_status_options,
+    validate_save_version_submit,
+    validate_settings_submit,
+)
+
+
 # ---------------------------------------------------------------------------
 # panel/qc grouping — ui/panel_ops.py (Fase 6.1 Task 1)
 # ---------------------------------------------------------------------------

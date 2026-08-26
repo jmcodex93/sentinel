@@ -107,6 +107,22 @@ def test_report_entry_points_are_implemented_in_the_reports_module():
         assert getattr(webbridge, name).__module__ == "sentinel.bridge.reports"
 
 
+def test_form_entry_points_are_implemented_in_the_forms_module():
+    import sentinel.webbridge as webbridge
+
+    for name in (
+        "resolve_save_version_status",
+        "validate_save_version_submit",
+        "save_version_status_options",
+        "merge_notes_submission",
+        "validate_settings_submit",
+        "gate_state_payload",
+        "gate_can_proceed",
+        "palette_actions_payload",
+    ):
+        assert getattr(webbridge, name).__module__ == "sentinel.bridge.forms"
+
+
 def test_bridge_implementation_never_imports_c4d():
     bridge_dir = Path(__file__).parents[1] / "plugin" / "sentinel" / "bridge"
     for source in bridge_dir.glob("*.py"):
