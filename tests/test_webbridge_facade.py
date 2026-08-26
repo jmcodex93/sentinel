@@ -135,6 +135,18 @@ def test_hub_entry_points_are_implemented_in_the_hub_module():
         assert getattr(webbridge, name).__module__ == "sentinel.bridge.hub"
 
 
+def test_http_entry_points_are_implemented_in_the_http_module():
+    import sentinel.webbridge as webbridge
+
+    for name in (
+        "_RequestHandler",
+        "create_server",
+        "start_server_thread",
+        "stop_server",
+    ):
+        assert getattr(webbridge, name).__module__ == "sentinel.bridge.http"
+
+
 def test_bridge_implementation_never_imports_c4d():
     bridge_dir = Path(__file__).parents[1] / "plugin" / "sentinel" / "bridge"
     for source in bridge_dir.glob("*.py"):

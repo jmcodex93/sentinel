@@ -629,6 +629,19 @@ def stop_server(server):
         )
 
 
+from sentinel.bridge.http import (  # noqa: E402 - compatibility shadow
+    CONTENT_TYPES,
+    MAX_BODY_BYTES,
+    _API_PREFIX,
+    _GET_OPS,
+    _RequestHandler,
+    _THUMB_PATH,
+    create_server,
+    start_server_thread,
+    stop_server,
+)
+
+
 # ---------------------------------------------------------------------------
 # Delivery report payload — sentinel_manifest.json -> SPA contract
 # ---------------------------------------------------------------------------
