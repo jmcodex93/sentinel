@@ -165,3 +165,22 @@ bridge implementation belongs in the focused `sentinel.bridge` module, and
 external callers should continue importing the stable `sentinel.webbridge`
 facade. New diagnostic boundaries should use structured events; `safe_print`
 remains only as the migration adapter for legacy call sites.
+
+## Integration and cleanup
+
+On 2026-08-26 the local `main` branch was first updated from `origin/main`,
+which was already current, then fast-forwarded from `20a36f3` to the documented
+Block-5 tip `e7da04c`. Because Block 5 was based on `feat/project-standard`, the
+fast-forward intentionally integrated that accumulated, tested chain together
+with Blocks 0–5.
+
+The merged result was verified again from the main checkout:
+
+- full pytest: `1618 passed in 17.89s`;
+- SPA Vitest: `13 passed` files, `233 passed` tests.
+
+Only after both post-merge suites passed, the clean worktree
+`.worktrees/block5-maintainability` was removed, worktree registrations were
+pruned, and the merged local branch `refactor/block5-maintainability` was
+deleted with Git's safe `-d` check. No other historical branch was removed.
+The merge remains local until `main` is explicitly pushed.
