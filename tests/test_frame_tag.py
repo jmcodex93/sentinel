@@ -10,6 +10,51 @@ def test_frame_tag_imports_under_fake_c4d(sentinel_module):
     assert frame_tag._DRAW_CALLS == 0
 
 
+def test_frame_tag_uses_shared_host_primitives_and_keeps_unit_policy(
+    sentinel_module
+):
+    import c4d
+    from sentinel.ui import frame_tag, tag_support
+
+    assert frame_tag._desc_level_id is tag_support.desc_level_id
+    assert frame_tag._set_bc_value is tag_support.set_bc_value
+    assert frame_tag._doc_from_node is tag_support.document_from_node
+    assert frame_tag._is_main_thread is tag_support.is_main_thread
+    assert frame_tag._safe_node_name is tag_support.safe_node_name
+    assert frame_tag._event_add is tag_support.event_add
+    assert frame_tag._command_id_from_data is tag_support.command_id_from_data
+
+    class Node:
+        def GetType(self):
+            return frame_tag.SENTINEL_FRAME_TAG_PLUGIN_ID
+
+    class Description:
+        def __init__(self):
+            self.rows = []
+
+        def SetParameter(self, desc_id, bc, parent):
+            self.rows.append((desc_id, bc, parent))
+            return True
+
+    description = Description()
+    tag_data = frame_tag.SentinelFrameTag()
+    assert tag_data._set_description_parameter(
+        Node(), description, frame_tag.ID_LINE_WIDTH, c4d.DTYPE_REAL,
+        "Line Width", None, 0.5, 4.0, 0.5,
+    ) is True
+    assert tag_data._set_description_parameter(
+        Node(), description, frame_tag.ID_LINE_OPACITY, c4d.DTYPE_REAL,
+        "Line Opacity", None, 0.0, 1.0, 0.01,
+    ) is True
+
+    line_desc_id, line_bc, _ = description.rows[0]
+    opacity_desc_id, opacity_bc, _ = description.rows[1]
+    assert line_desc_id[0].creator == frame_tag.SENTINEL_FRAME_TAG_PLUGIN_ID
+    assert opacity_desc_id[0].creator == frame_tag.SENTINEL_FRAME_TAG_PLUGIN_ID
+    assert c4d.DESC_UNIT not in line_bc
+    assert opacity_bc[c4d.DESC_UNIT] == c4d.DESC_UNIT_PERCENT
+
+
 def test_is_valid_camera_host_accepts_standard_and_redshift_cameras(sentinel_module):
     frame_tag = importlib.import_module("sentinel.ui.frame_tag")
 

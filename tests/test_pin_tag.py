@@ -28,6 +28,41 @@ safety tag's display string must not be mistaken for it).
 import importlib
 
 
+def test_pin_tag_uses_shared_host_primitives_and_its_own_creator(sentinel_module):
+    import c4d
+    from sentinel.ui import pin_tag, tag_support
+
+    assert pin_tag._desc_level_id is tag_support.desc_level_id
+    assert pin_tag._set_bc_value is tag_support.set_bc_value
+    assert pin_tag._doc_from_node is tag_support.document_from_node
+    assert pin_tag._is_main_thread is tag_support.is_main_thread
+    assert pin_tag._safe_node_name is tag_support.safe_node_name
+    assert pin_tag._event_add is tag_support.event_add
+    assert pin_tag._command_id_from_data is tag_support.command_id_from_data
+
+    class DeadNode:
+        def GetType(self):
+            raise RuntimeError("dead")
+
+    class Description:
+        def __init__(self):
+            self.rows = []
+
+        def SetParameter(self, desc_id, bc, parent):
+            self.rows.append((desc_id, bc, parent))
+            return True
+
+    description = Description()
+    assert pin_tag.SentinelPinTag()._set_description_parameter(
+        DeadNode(), description, pin_tag.ID_PIN_GO, c4d.DTYPE_BUTTON,
+        "Restaurar", None, animatable=False,
+    ) is True
+    desc_id, bc, _ = description.rows[0]
+    assert desc_id[0].creator == pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID
+    assert bc[c4d.DESC_CUSTOMGUI] == c4d.CUSTOMGUI_BUTTON
+    assert bc[c4d.DESC_ANIMATE] == c4d.DESC_ANIMATE_OFF
+
+
 def _make_pin_tag(host, pin_tag, c4d, timestamp="original", name="mi pin"):
     """A tag already 'pinned' once — one entry (the host itself, key ""),
     same shape ``_store_pin`` produces for a real single-node pin."""
