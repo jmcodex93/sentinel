@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-25  
 **Branch:** `refactor/block5-maintainability`  
-**Status:** approved architecture; implementation not started
+**Status:** completed and live-verified on 2026-08-26
 
 ## Goal
 
@@ -238,3 +238,31 @@ Block 5 is complete when:
 - the full suite and live C4D smoke test pass without altering the user's
   working scene.
 
+## Completion record
+
+Implemented in commits `ce90417` through `30eb5be`, following the three
+implementation plans linked from this spec. The compatibility contract remains
+the public boundary: existing consumers import from `sentinel.webbridge`, tag
+plugin IDs and persisted payloads are unchanged, and logging is console-only.
+
+Final evidence on 2026-08-26:
+
+- full pytest suite: `1618 passed`;
+- SPA Vitest suite: `233 passed` (the Block-5 SPA diff is empty);
+- webbridge/facade selection: `157 passed`;
+- `plugin/sentinel/webbridge.py`: 75-line compatibility facade;
+- SPA build diff against the pre-Block-5 base: empty;
+- installed plugin payload matched the worktree after sync;
+- Cinema 4D 2026.3.4 restart: Frame, Pin, Variants, Panel and Command Palette
+  registered with their existing IDs;
+- Overview, QC, Render, Deliver, Tools, Settings, Doctor, Help and Command
+  Palette loaded successfully;
+- Sentinel Doctor passed every applicable diagnostic; the unsaved-scene folder
+  check was correctly neutral;
+- the Cinema 4D console showed structured Sentinel events and no traceback or
+  import error;
+- the active document's FPS, frame range, camera, take and render data were
+  identical before and after the non-destructive smoke test.
+
+The detailed implementation and verification ledger is stored at
+`docs/audit/2026-08-26_block5_maintainability_completion.md`.
