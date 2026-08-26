@@ -328,6 +328,12 @@ class JobRegistry:
             return snap
 
 
+from sentinel.bridge.runtime import (  # noqa: E402 - compatibility shadow
+    JobRegistry,
+    MainThreadQueue,
+    _QueuedRequest,
+)
+
 JOBS = JobRegistry()
 
 

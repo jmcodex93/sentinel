@@ -83,6 +83,15 @@ def test_jobs_is_assignable_at_the_legacy_import_path():
         webbridge.JOBS = original
 
 
+def test_runtime_types_are_implemented_in_the_runtime_module():
+    import sentinel.webbridge as webbridge
+
+    assert webbridge._QueuedRequest.__module__ == "sentinel.bridge.runtime"
+    assert webbridge.MainThreadQueue.__module__ == "sentinel.bridge.runtime"
+    assert webbridge.JobRegistry.__module__ == "sentinel.bridge.runtime"
+    assert isinstance(webbridge.JOBS, webbridge.JobRegistry)
+
+
 def test_bridge_implementation_never_imports_c4d():
     bridge_dir = Path(__file__).parents[1] / "plugin" / "sentinel" / "bridge"
     for source in bridge_dir.glob("*.py"):
