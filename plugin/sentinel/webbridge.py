@@ -1683,6 +1683,32 @@ def group_qc_by_severity(checks):
             "disabled_count": disabled_count}
 
 
+from sentinel.bridge.reports import (  # noqa: E402 - compatibility shadow
+    _FIX_ACTION_ID_BY_CHECK_ID,
+    _MATERIAL_SOURCE_TYPES,
+    _QC_DETAIL_CAP,
+    _asset_provenance,
+    _delivery_asset,
+    _delivery_qc,
+    _delivery_summary,
+    _delivery_version,
+    _delivery_zip,
+    _doctor_item,
+    _qc_check_details,
+    _qc_check_row,
+    _qc_violation_detail,
+    _render_validation_check,
+    _supervisor_shot,
+    delivery_report_payload,
+    doctor_report_payload,
+    group_qc_by_severity,
+    qc_report_payload,
+    render_validation_payload,
+    supervisor_report_payload,
+    top_qc_checks,
+)
+
+
 # ---------------------------------------------------------------------------
 # Hub payload helpers
 # ---------------------------------------------------------------------------

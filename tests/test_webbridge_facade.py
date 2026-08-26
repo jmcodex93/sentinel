@@ -92,6 +92,21 @@ def test_runtime_types_are_implemented_in_the_runtime_module():
     assert isinstance(webbridge.JOBS, webbridge.JobRegistry)
 
 
+def test_report_entry_points_are_implemented_in_the_reports_module():
+    import sentinel.webbridge as webbridge
+
+    for name in (
+        "delivery_report_payload",
+        "qc_report_payload",
+        "doctor_report_payload",
+        "supervisor_report_payload",
+        "render_validation_payload",
+        "top_qc_checks",
+        "group_qc_by_severity",
+    ):
+        assert getattr(webbridge, name).__module__ == "sentinel.bridge.reports"
+
+
 def test_bridge_implementation_never_imports_c4d():
     bridge_dir = Path(__file__).parents[1] / "plugin" / "sentinel" / "bridge"
     for source in bridge_dir.glob("*.py"):
