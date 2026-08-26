@@ -10,6 +10,12 @@ Spec: `docs/superpowers/specs/2026-08-07-project-standard-design.md` · Plan: `d
 - [ ] Verificación live en C4D (ciclo publicar → nuevo shot → QC 12/12) — checklist al final del plan
 - [ ] **QC #13 — los assets que el proyecto declara**: tercera pieza del análisis, con su propio spec futuro (identidad, baseline y fontanería de informe propias; aporta valor incluso sin "nuevo shot")
 
+## Candidato — Material Graph QC (salida del spike Wrangler)
+Spec: `docs/superpowers/specs/2026-08-25-material-graph-qc-design.md`
+- [ ] **RS Colorspace** — audita el colorspace de cada Texture Sampler de los materiales RS contra el canal inferido del nombre (single source: tablas de MatWire). Select/Info/Fix, undo 1 paso. Caza la trampa ACEScg en materiales existentes (nadie audita esto; NodeFlow solo asigna al crear).
+- [ ] **RS Dead Nodes** — nodos sin camino al Output (todos los puertos: Surface/Displacement/…; sinks StoreColorToAOV cuentan como vivos). Select/Info/Fix conservador.
+- Contexto: el Wrangler standalone quedó NO-GO (Render Flow de Boghma ocupa la autoría, ver spike §12); la auditoría de grafos es lo que refuerza el claim de preflight. Autoría explícitamente fuera de alcance.
+
 ## Completed (v1.0.4 → v1.4.0)
 
 ### Fase 1 — Fix & Foundation ✅
