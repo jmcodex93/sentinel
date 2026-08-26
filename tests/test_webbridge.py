@@ -16,6 +16,19 @@ import pytest
 from sentinel import webbridge
 
 
+def _structured_events(lines):
+    prefix = "[Sentinel] "
+    return [json.loads(line[len(prefix):]) for line in lines
+            if line.startswith(prefix)]
+
+
+def _capture_print(lines):
+    def capture(*args, **kwargs):
+        separator = kwargs.get("sep", " ")
+        lines.append(separator.join(str(item) for item in args))
+    return capture
+
+
 # ---------------------------------------------------------------------------
 # MainThreadQueue
 # ---------------------------------------------------------------------------
@@ -80,9 +93,13 @@ class TestMainThreadQueueRoundTrip:
             q.submit({"op": "never-drained"}, timeout=0.05)
         assert "keep the Reports window open" in str(exc_info.value)
 
-    def test_drain_dispatch_exception_returns_error_dict_not_raised(self):
+    def test_drain_dispatch_exception_returns_error_dict_not_raised(
+        self, monkeypatch
+    ):
         q = webbridge.MainThreadQueue()
         results = {}
+        lines = []
+        monkeypatch.setattr("builtins.print", _capture_print(lines))
 
         def worker():
             results["value"] = q.submit({"op": "boom"}, timeout=5.0)
@@ -104,6 +121,10 @@ class TestMainThreadQueueRoundTrip:
         assert "kaboom" in results["value"]["error"]
         assert "traceback" in results["value"]
         assert "ValueError" in results["value"]["traceback"]
+        event = _structured_events(lines)[0]
+        assert event["event"] == "queue.dispatch_failed"
+        assert event["component"] == "webbridge.runtime"
+        assert event["fields"]["op"] == "boom"
 
     def test_drain_empty_queue_is_noop(self):
         q = webbridge.MainThreadQueue()
@@ -1611,6 +1632,21 @@ class TestJobRegistry:
         b = reg.start({"n": 2})
         assert b != a and reg.status(b)["state"] == "pending"
 
+    def test_fail_emits_a_structured_job_event(self, monkeypatch):
+        lines = []
+        monkeypatch.setattr("builtins.print", _capture_print(lines))
+        reg = webbridge.JobRegistry()
+        job_id = reg.start({"kind": "collect"})
+        reg.fail(job_id, "disk full")
+
+        event = _structured_events(lines)[0]
+        assert event["event"] == "job.failed"
+        assert event["component"] == "webbridge.runtime"
+        assert event["fields"] == {
+            "error": "disk full",
+            "job_id": job_id,
+        }
+
     def test_take_pending_empty_and_unknown_status(self):
         reg = webbridge.JobRegistry()
         assert reg.take_pending() is None
@@ -1820,7 +1856,11 @@ class TestApiHardening:
         finally:
             live.close()
 
-    def test_handler_error_does_not_leak_traceback(self, web_root):
+    def test_handler_error_does_not_leak_traceback(
+        self, web_root, monkeypatch
+    ):
+        lines = []
+        monkeypatch.setattr("builtins.print", _capture_print(lines))
         live = _LiveServer(web_root, api_handler=_raising_handler)
         try:
             resp, data = self._raw_request(
@@ -1832,6 +1872,14 @@ class TestApiHardening:
             assert b"handler exploded" not in data
             assert b"RuntimeError" not in data
             assert b"/Users/" not in data
+            events = _structured_events(lines)
+            handler_event = next(
+                item for item in events
+                if item["event"] == "http.handler_failed"
+            )
+            assert handler_event["component"] == "webbridge.http"
+            assert handler_event["fields"]["method"] == "GET"
+            assert handler_event["fields"]["path"].startswith("/api/report/qc")
         finally:
             live.close()
 

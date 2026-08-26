@@ -65,7 +65,8 @@ from c4d import documents
 
 from sentinel import assets as assets_engine
 from sentinel import webbridge
-from sentinel.common.helpers import _iter_objs, safe_print
+from sentinel.common.helpers import _iter_objs
+from sentinel.common.logging import exception as log_exception
 from sentinel.common.settings import GlobalSettings
 from sentinel.notes import get_notes_path, load_notes
 from sentinel.qc.registry import CHECK_REGISTRY
@@ -354,7 +355,7 @@ def _guarded_block(name, builder, doc):
     ONE subsystem (e.g. a broken asset scan, an unreadable notes sidecar)
     must never blank the whole dashboard — same isolation pattern
     ``ui/panel.py`` ``_sync_ui_from_doc`` uses per-field (~line 985-1013,
-    each block wrapped in its own ``try/except`` with a ``safe_print`` on
+    each block wrapped in its own ``try/except`` with a structured event on
     failure, so one bad read doesn't take down the others). A failed block
     comes back as ``None`` — the SPA renders that card as unavailable
     instead of the whole response erroring out.
@@ -362,7 +363,12 @@ def _guarded_block(name, builder, doc):
     try:
         return builder(doc)
     except Exception as exc:
-        safe_print(f"panel/overview: {name} block failed: {exc}")
+        log_exception(
+            "panel.block_failed",
+            "panel.overview",
+            exc,
+            block=name,
+        )
         return None
 
 

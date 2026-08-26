@@ -28,6 +28,8 @@ import threading
 import traceback
 import urllib.parse
 
+from sentinel.common.logging import exception as log_exception
+from sentinel.common.logging import info as log_info
 # Pure, c4d-free — safe to import at module scope (see qc/registry.py's own
 # docstring: stdlib only, no top-level `import c4d`). notes.py/versioning.py
 # are equally c4d-free (verified: neither imports c4d, directly or via their
@@ -219,6 +221,15 @@ class MainThreadQueue:
                 try:
                     request.result = dispatch(request.payload)
                 except Exception as exc:
+                    op = None
+                    if isinstance(request.payload, dict):
+                        op = request.payload.get("op")
+                    log_exception(
+                        "queue.dispatch_failed",
+                        "webbridge.runtime",
+                        exc,
+                        op=op,
+                    )
                     request.result = {
                         "error": str(exc),
                         "traceback": traceback.format_exc(),
@@ -300,6 +311,12 @@ class JobRegistry:
             if job is not None:
                 job["state"] = "error"
                 job["error"] = str(error)
+                log_info(
+                    "job.failed",
+                    "webbridge.runtime",
+                    job_id=job_id,
+                    error=job["error"],
+                )
 
     def status(self, job_id):
         with self._lock:
@@ -434,7 +451,13 @@ class _RequestHandler(http.server.BaseHTTPRequestHandler):
             # Log the full traceback server-side but never leak local paths
             # or stack frames to the HTTP client (localhost-only is not a
             # license to hand any co-resident process an information dump).
-            traceback.print_exc()
+            log_exception(
+                "http.handler_failed",
+                "webbridge.http",
+                exc,
+                method=self.command,
+                path=self.path,
+            )
             self._send_json({"error": "internal_error"}, 500)
 
     def _send_json(self, obj, code):
@@ -518,6 +541,13 @@ class _RequestHandler(http.server.BaseHTTPRequestHandler):
                 data = handle.read()
             self._send_bytes(200, data, "image/png")
         except Exception as exc:
+            log_exception(
+                "http.handler_failed",
+                "webbridge.http",
+                exc,
+                method=self.command,
+                path=self.path,
+            )
             self._send_plain(404, b"thumb error")
 
 
@@ -553,6 +583,13 @@ def start_server_thread(server):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     server._sentinel_started = True
     thread.start()
+    host, port = server.server_address[:2]
+    log_info(
+        "http.server_started",
+        "webbridge.http",
+        host=host,
+        port=port,
+    )
     return thread
 
 
@@ -568,12 +605,22 @@ def stop_server(server):
     if getattr(server, "_sentinel_started", False):
         try:
             server.shutdown()
-        except Exception:
-            pass
+        except Exception as exc:
+            log_exception(
+                "http.server_stop_failed",
+                "webbridge.http",
+                exc,
+                phase="shutdown",
+            )
     try:
         server.server_close()
-    except Exception:
-        pass
+    except Exception as exc:
+        log_exception(
+            "http.server_stop_failed",
+            "webbridge.http",
+            exc,
+            phase="server_close",
+        )
 
 
 # ---------------------------------------------------------------------------
