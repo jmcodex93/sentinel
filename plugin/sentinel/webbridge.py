@@ -1811,3 +1811,13 @@ def collect_phase_pct(message):
         if (message or "").startswith(prefix):
             return phase, pct
     return "run", None
+
+
+from sentinel.bridge.hub import (  # noqa: E402 - compatibility shadow
+    _COLLECT_PHASES,
+    _THUMB_EXTS,
+    collect_phase_pct,
+    hub_inventory_payload,
+    resolve_repath_targets,
+    thumb_cache_name,
+)

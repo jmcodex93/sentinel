@@ -123,6 +123,18 @@ def test_form_entry_points_are_implemented_in_the_forms_module():
         assert getattr(webbridge, name).__module__ == "sentinel.bridge.forms"
 
 
+def test_hub_entry_points_are_implemented_in_the_hub_module():
+    import sentinel.webbridge as webbridge
+
+    for name in (
+        "hub_inventory_payload",
+        "resolve_repath_targets",
+        "thumb_cache_name",
+        "collect_phase_pct",
+    ):
+        assert getattr(webbridge, name).__module__ == "sentinel.bridge.hub"
+
+
 def test_bridge_implementation_never_imports_c4d():
     bridge_dir = Path(__file__).parents[1] / "plugin" / "sentinel" / "bridge"
     for source in bridge_dir.glob("*.py"):
