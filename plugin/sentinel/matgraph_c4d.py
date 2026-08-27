@@ -457,6 +457,55 @@ def write_colorspaces(doc, fixes):
     return {"written": written, "materials": materials_written}
 
 
+#: Substrings that mark a node as AOV-STORE-SHAPED without being one of
+#: the three known store ids in ``_SINK_ASSET_TERMS`` — e.g. a real
+#: Redshift ``storenormaltoaov`` node, which this codebase's sink list
+#: doesn't enumerate (Task 1 scoped the known list to color/scalar/
+#: integer). Deliberately broad (bare "aov"/"store"), matching
+#: ``_SINK_ASSET_TERMS``'s own case-insensitive-substring style.
+_UNKNOWN_STORE_HINT_TERMS = ("aov", "store")
+
+
+def _unknown_store_like_terminal(entry):
+    """Whether ``entry`` (a ``collect()`` per-material dict) contains a
+    STORE-SHAPED STRANGER: a node with at least one incoming edge and no
+    outgoing edges (a graph TERMINAL, same shape as the Output node and
+    the known AOV stores) whose assetid hints at "aov"/"store" but is
+    NOT the material's root (output) node and NOT one of the three known
+    store ids already in ``sink_ids``.
+
+    Rationale: in a healthy graph the only terminal consumers are the
+    Output and the AOV stores this codebase recognizes. A store-SHAPED
+    node we don't recognize might be writing data somewhere this walk
+    can't see (a newer/renamed Redshift AOV-store node kind, e.g.) — so
+    treating its upstream nodes as safely dead because they don't feed
+    the KNOWN sinks would risk exactly the silent data loss
+    ``clean_dead_nodes_core`` exists to avoid. The whole material is
+    skipped rather than guessing which of its "dead" nodes are actually
+    safe."""
+    node_ids = entry.get("node_ids") or ()
+    root_id = entry.get("root_id")
+    known_sinks = set(entry.get("sink_ids") or ())
+    nodes_by_id = entry.get("nodes_by_id") or {}
+    outgoing = set()
+    incoming = set()
+    for from_id, to_id in entry.get("edges") or ():
+        outgoing.add(from_id)
+        incoming.add(to_id)
+    for node_id in node_ids:
+        if node_id == root_id or node_id in known_sinks:
+            continue
+        if node_id not in incoming or node_id in outgoing:
+            continue
+        node = nodes_by_id.get(node_id)
+        if node is None:
+            continue
+        assetid = _safe_assetid(node).lower()
+        if any(term in assetid for term in _UNKNOWN_STORE_HINT_TERMS):
+            return True
+    return False
+
+
 def clean_dead_nodes_core(doc):
     """Remove every dead node (per ``matgraph.find_dead_nodes``) from
     every RS node material in ``doc``, in ONE ``StartUndo``/``EndUndo``
@@ -471,12 +520,16 @@ def clean_dead_nodes_core(doc):
     A material is skipped (counted, never touched) when: it already
     carries a ``collect()`` ``error`` (the walk itself failed — deleting
     from data we know is incomplete/wrong is the one thing this button
-    must never do), OR it has no identifiable ``root_id`` (no ``node.output``
-    node found). The brief's "unrecognized potential sink" case is read
-    here as exactly that second situation: without a root, ``find_dead_nodes``
-    has no anchor for "ancestor of the root", and a graph structure this
-    unrecognizable is not one this tool should guess about — it is safer
-    to leave it untouched than to remove nodes based on sinks alone.
+    must never do); it has no identifiable ``root_id`` (no ``node.output``
+    node found — no anchor to compute reachability from); OR it contains
+    an "unrecognized potential sink" per the design doc — read here (per
+    review) as a STORE-SHAPED STRANGER: a terminal node (has an incoming
+    edge, no outgoing edges — same shape as the Output node and the known
+    AOV stores) whose assetid hints at "aov"/"store" but isn't one of the
+    three ids ``_SINK_ASSET_TERMS`` actually recognizes (see
+    ``_unknown_store_like_terminal``). Such a node might be consuming
+    data this walk can't account for, so nothing in that material is
+    touched rather than guessing which of its "dead" nodes are safe.
 
     Root passed to ``find_dead_nodes`` is simply ``{root_id}`` (the
     output node), not also its direct feeders: the reverse-BFS in
@@ -494,6 +547,9 @@ def clean_dead_nodes_core(doc):
     try:
         for entry in materials:
             if entry.get("error") or entry.get("root_id") is None:
+                skipped += 1
+                continue
+            if _unknown_store_like_terminal(entry):
                 skipped += 1
                 continue
             root_ids = [entry["root_id"]]

@@ -622,6 +622,33 @@ class TestCleanDeadNodesCore:
         assert result["removed"] == 0
         assert graph.remove_calls == []
 
+    def test_unknown_store_like_terminal_skips_whole_material_untouched(
+            self, matgraph_c4d):
+        """A terminal node (has an incoming edge, no outgoing edges) whose
+        assetid contains "aov"/"store" but is NOT one of the three known
+        AAOV-store ids — e.g. a real Redshift ``storenormaltoaov`` node,
+        which this codebase's ``_SINK_ASSET_TERMS`` doesn't enumerate — is
+        a store-shaped stranger. In a healthy graph the only terminal
+        consumers are the Output and known AOV stores; deleting a dead
+        island upstream of an unrecognized one risks removing something
+        that unknown consumer actually reads. The WHOLE material must be
+        skipped and counted, and a genuine dead island elsewhere in that
+        same material must NOT be removed."""
+        graph, sampler, brdf, out, orphan_a, orphan_b = self._graph_with_dead_island()
+        unknown_store = graph.add_node(
+            "unknown_store1", _RS_CORE + "storenormaltoaov")
+        unknown_store.inputs.add_child(
+            FakePort(_RS_CORE + "storenormaltoaov.value", unknown_store))
+        _out_port(brdf, "outcolor").connect_to(_in_port(unknown_store, "value"))
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+
+        result = matgraph_c4d.clean_dead_nodes_core(doc)
+
+        assert result["skipped"] == 1
+        assert result["removed"] == 0
+        assert graph.remove_calls == []
+
     def test_no_document_returns_error(self, matgraph_c4d):
         assert matgraph_c4d.clean_dead_nodes_core(None) == {
             "ok": False, "error": "no_document"}
