@@ -972,6 +972,22 @@ class TestGroupQcBySeverity:
         assert by_id["unused_mats"]["fix_action_id"] == "fix_materials"
         assert by_id["fps_range"]["fix_action_id"] == "fix_fps"
 
+    def test_every_has_fix_check_has_a_palette_fix_action_id(self):
+        """Structural pin (residual of the final v1.38 review): the
+        rs_colorspace gap was an INSTANCE of a recurrable class — a
+        ``has_fix`` registry entry with no ``_FIX_ACTION_ID_BY_CHECK_ID``
+        mapping ships a rendered-but-permanently-disabled Fix button.
+        The docstring on the mapping declares it unenforced; this test
+        enforces it, so QC #14+ fails here instead of in the artist's
+        panel."""
+        from sentinel.qc.registry import CHECK_REGISTRY
+        from sentinel.bridge.reports import _FIX_ACTION_ID_BY_CHECK_ID
+        missing = [entry.check_id for entry in CHECK_REGISTRY
+                   if entry.has_fix
+                   and entry.check_id not in _FIX_ACTION_ID_BY_CHECK_ID]
+        assert missing == [], (
+            f"has_fix checks without a palette fix action: {missing}")
+
     def test_rs_colorspace_fix_action_id_resolves_not_none(self):
         """Review fix (Important 1, final v1.38 review): ``rs_colorspace``
         was the FIRST ``has_fix`` check to ship with no matching
