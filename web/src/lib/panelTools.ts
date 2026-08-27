@@ -146,6 +146,16 @@ export function toolToast(id: string, r: PanelToolResult): { message: string; va
     const removed = r.removed ?? 0;
     const materials = r.materials ?? 0;
     const skipped = r.skipped ?? 0;
+    if (removed === 0 && skipped > 0) {
+      // Not the same as a clean scene: the only dead-node-bearing
+      // materials were skipped (unreadable graph / unknown sink) —
+      // exactly what the conservative-skip philosophy exists to surface,
+      // so a plain info toast would swallow it.
+      return {
+        message: `No dead nodes removed · ${skipped} skipped (unreadable graph)`,
+        variant: "warn",
+      };
+    }
     if (removed === 0) {
       // Never an error: a clean graph is the expected steady state, not a
       // failure to report as a warning.

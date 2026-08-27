@@ -120,6 +120,14 @@ describe("toolToast", () => {
     expect(t.variant).toBe("info");
     expect(t.message).toBe("No dead nodes found.");
   });
+  it("clean_dead_nodes zero-removed WITH skipped>0 warns instead of a clean-info toast (review Task 4)", () => {
+    // A batch where the only dead-node-bearing materials were skipped
+    // (unreadable graph / unknown sink) is NOT the same as a clean scene —
+    // the conservative-skip philosophy exists to surface exactly this.
+    const t = toolToast("panel/tools/clean_dead_nodes", { ok: true, materials: 2, removed: 0, skipped: 2 });
+    expect(t.variant).toBe("warn");
+    expect(t.message).toBe("No dead nodes removed · 2 skipped (unreadable graph)");
+  });
   it("clean_dead_nodes no_document → warn with the existing copy", () => {
     const t = toolToast("panel/tools/clean_dead_nodes", { ok: false, error: "no_document" });
     expect(t.variant).toBe("warn");
