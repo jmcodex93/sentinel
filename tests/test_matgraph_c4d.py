@@ -19,13 +19,23 @@ the live spike measured (``docs/research/2026-08-27-matgraph-spike.md``) —
 What this harness does NOT model (stated once, house rule — fakes lie
 otherwise): real maxon ``Id``/``Data`` typing and coercion, wire "modes"
 or partial connections, more than one level of port-group nesting beyond
-``tex0``, ``GraphNode`` wrapper identity semantics (this fake's node
-objects ARE stable Python objects across "reads", unlike the real API
-where every read hands back a fresh wrapper — not exercised here because
-every lookup in the module under test resolves through ``str(node.GetPath())``
-strings, never object identity), and anything about undo REPLAY (the
-fake's ``StartUndo``/``EndUndo``/``AddUndo`` only record calls; they never
-actually revert a mutation).
+``tex0``, and anything about undo REPLAY (the fake's
+``StartUndo``/``EndUndo``/``AddUndo`` only record calls; they never
+actually revert a mutation, and a rolled-back ``Commit()`` in this
+harness leaves whatever ``SetPortValue``/``Remove`` calls already ran
+recorded — only the module-under-test's OWN counters are expected to
+stay honest about that, not the fake's bookkeeping).
+
+``GraphNode`` wrapper identity across reads: the DEFAULT harness
+(``FakeGraph``/``FakeNode``/``FakeMaterial``) keeps node objects stable
+across "reads" (calling ``GetGraph()`` twice returns the same objects),
+which is fine for every test that doesn't care about cross-read handle
+identity. ``MultiReadMaterial``/``_MultiReadNodeMatRef`` are a SEPARATE,
+opt-in surface that DOES model the real API's fresh-wrapper-per-read
+behavior (see ``reference_c4d_wrapper_identity``) — a new graph object,
+with new node objects but the SAME ``GetPath()`` strings, on each
+successive ``GetGraph()`` call — used specifically to prove a mutation
+only touches handles from the read its transaction is bound to.
 """
 
 import pytest
@@ -130,6 +140,9 @@ class FakeTransaction:
         return False
 
     def Commit(self):
+        if self.graph.raise_on_commit:
+            self.graph.transactions.append("commit-raised")
+            raise RuntimeError("boom: commit failed, transaction rolled back")
         self.graph.transactions.append("commit")
 
 
@@ -150,6 +163,7 @@ class FakeGraph:
         self.remove_calls = []
         self.set_port_calls = []
         self.transactions = []
+        self.raise_on_commit = False
         self._view_root = FakeViewRoot(self)
 
     def add_node(self, node_id, assetid):
@@ -197,6 +211,47 @@ class FakeMaterial:
         if self._graph is None:
             return None
         return FakeNodeMatRef(self._graph, self._has_space)
+
+
+class _MultiReadNodeMatRef:
+    """Hands back a DIFFERENT graph object on each successive
+    ``GetGraph()`` call — mirrors the real API's fresh-``GraphNode``-
+    wrapper-per-read behavior (``reference_c4d_wrapper_identity``), which
+    the single-graph ``FakeNodeMatRef`` above does NOT model (it always
+    returns the same object, which is fine for every test that doesn't
+    care about cross-read handle identity). Calls beyond the prepared
+    list reuse the last graph."""
+
+    def __init__(self, graphs, has_space=True):
+        self._graphs = list(graphs)
+        self._has_space = has_space
+        self.calls = 0
+
+    def HasSpace(self, space_id):
+        return self._has_space
+
+    def GetGraph(self, space_id):
+        index = min(self.calls, len(self._graphs) - 1)
+        self.calls += 1
+        return self._graphs[index]
+
+
+class MultiReadMaterial:
+    """A material whose node-material reference returns a NEW graph
+    object (fresh node wrappers) on each ``GetGraph()`` call — the
+    harness surface needed to prove a mutation only touches handles from
+    the SAME read its transaction is bound to, never a handle carried
+    over from an earlier read."""
+
+    def __init__(self, name, graphs, has_space=True):
+        self._name = name
+        self.ref = _MultiReadNodeMatRef(graphs, has_space)
+
+    def GetName(self):
+        return self._name
+
+    def GetNodeMaterialReference(self):
+        return self.ref
 
 
 class FakeDoc:
@@ -302,7 +357,6 @@ def _simple_chain_graph():
 def matgraph_c4d(sentinel_module, monkeypatch):
     from sentinel import matgraph_c4d as module
     monkeypatch.setattr(module, "maxon", _FakeMaxon)
-    monkeypatch.setattr(module, "MAXON_AVAILABLE", True)
     return module
 
 
@@ -535,6 +589,24 @@ class TestWriteColorspaces:
 
         assert result == {"written": 0, "materials": 0}
 
+    def test_commit_failure_reports_zero_written_not_the_attempted_count(
+            self, matgraph_c4d):
+        """A mid-batch exception at ``Commit()`` rolls the transaction
+        back (the repo's own v1.5.7 lesson: a maxon transaction that
+        never commits never lands). The counters must report that
+        honestly — 0 written for this material — not the number of
+        ``SetPortValue`` calls that were attempted before the rollback."""
+        graph, sampler, brdf, out = _simple_chain_graph()
+        graph.raise_on_commit = True
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+        fixes = [{"material": mat, "node_id": "sampler1",
+                  "expected": matgraph_c4d.CS_SRGB}]
+
+        result = matgraph_c4d.write_colorspaces(doc, fixes)
+
+        assert result == {"written": 0, "materials": 0}
+
 
 def _undotype_change():
     import c4d
@@ -585,6 +657,77 @@ class TestCleanDeadNodesCore:
         assert result["removed"] == 4
         assert doc.start_count == 1
         assert doc.end_count == 1
+
+    def test_commit_failure_reports_zero_removed_and_skips_the_material(
+            self, matgraph_c4d):
+        """A mid-batch exception at ``Commit()`` rolls the transaction
+        back (v1.5.7 lesson). ``removed`` must not count nodes whose
+        ``Remove()`` call happened before the rollback, and the material
+        must land in ``skipped`` — the same "never touched" posture as
+        every other skip reason in this function."""
+        graph, sampler, brdf, out, orphan_a, orphan_b = self._graph_with_dead_island()
+        graph.raise_on_commit = True
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+
+        result = matgraph_c4d.clean_dead_nodes_core(doc)
+
+        assert result["removed"] == 0
+        assert result["skipped"] == 1
+
+    def test_removal_uses_a_freshly_reacquired_graphs_own_node_handles(
+            self, matgraph_c4d):
+        """``collect()`` (called internally) reads the material's graph
+        ONCE; removal must happen against a SECOND, freshly re-fetched
+        read of that same material — never against the node objects
+        ``collect()``'s own read produced. Mixing handles from two
+        different reads is the wrapper-identity trap class documented in
+        ``reference_c4d_wrapper_identity`` (8+ recurrences in this repo).
+        ``MultiReadMaterial`` hands back a DIFFERENT graph object (with
+        fresh node wrappers, same node-id strings) on each ``GetGraph()``
+        call, so this test can tell which read's handles actually got
+        ``Remove()``d."""
+        graph1, s1, b1, o1, oa1, ob1 = self._graph_with_dead_island()
+        graph2, s2, b2, o2, oa2, ob2 = self._graph_with_dead_island()
+        mat = MultiReadMaterial("mat1", [graph1, graph2])
+        doc = FakeDoc([mat])
+
+        result = matgraph_c4d.clean_dead_nodes_core(doc)
+
+        assert result["removed"] == 2
+        assert graph1.remove_calls == [], (
+            "removal must never touch collect()'s own (first) read")
+        assert set(graph2.remove_calls) == {"orphan_a", "orphan_b"}, (
+            "removal must happen against the second, freshly re-fetched read")
+
+    def test_missing_path_on_reread_skips_material_without_removing(
+            self, matgraph_c4d):
+        """If a dead node id from ``collect()``'s read no longer exists on
+        the SECOND (removal) read — the scene changed between the two
+        reads — the whole material is skipped rather than removing only
+        the subset that still resolves."""
+        graph1, s1, b1, o1, oa1, ob1 = self._graph_with_dead_island()
+        # The second read is missing "orphan_b" entirely (simulates it
+        # having vanished between collect()'s read and the removal read).
+        graph2 = FakeGraph()
+        s2 = _add_sampler(graph2, "sampler1", "/tex/plaster_basecolor.png",
+                          "RS_INPUT_COLORSPACE_SRGB")
+        b2 = _add_brdf(graph2, "brdf1", ["base_color"])
+        o2 = _add_output(graph2, "out1")
+        _out_port(s2, "outcolor").connect_to(_in_port(b2, "base_color"))
+        _out_port(b2, "outcolor").connect_to(_in_port(o2, "surface"))
+        oa2 = graph2.add_node("orphan_a", _RS_CORE + "texturesampler")
+        oa2.outputs.add_child(FakePort(_RS_CORE + "texturesampler.outcolor", oa2))
+        # orphan_b deliberately NOT added to graph2.
+        mat = MultiReadMaterial("mat1", [graph1, graph2])
+        doc = FakeDoc([mat])
+
+        result = matgraph_c4d.clean_dead_nodes_core(doc)
+
+        assert result["removed"] == 0
+        assert result["skipped"] == 1
+        assert graph1.remove_calls == []
+        assert graph2.remove_calls == []
 
     def test_material_with_collect_error_skipped_and_counted_untouched(
             self, matgraph_c4d):

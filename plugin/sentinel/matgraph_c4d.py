@@ -63,10 +63,8 @@ from sentinel.textures import RS_NODESPACE
 
 try:
     import maxon
-    MAXON_AVAILABLE = True
 except ImportError:  # pytest fake harness / c4dpy without maxon
     maxon = None
-    MAXON_AVAILABLE = False
 
 #: Asset-id SUBSTRINGS (case-insensitive) that mark a node as an AOV store
 #: — the "sinks" per the design doc: alive regardless of whether anything
@@ -385,11 +383,24 @@ def write_colorspaces(doc, fixes):
 
     The written value is a plain Python ``str`` (``CS_SRGB``/``CS_RAW``
     themselves), not wrapped in ``maxon.String(...)``: the spike's Q1
-    probe describes writing/re-reading those two values "verbatim" while
-    testing the crash boundary, which reads as a raw string write. This
-    is the one call in this module the spike didn't capture as literal
-    code — flagged for live confirmation before this path ships a Fix
-    button (see the Task 2 report)."""
+    probe measured writing those exact values via ``SetPortValue`` as
+    plain Python strings and reading them back verbatim — this is the
+    measured-good call, not a guess (a belt-and-braces live check before
+    this path ships a Fix button is still worthwhile, but it is no
+    longer an open risk).
+
+    **Counters are only credited AFTER `Commit()` returns** (review
+    fix): a mid-batch exception at ``Commit()`` rolls the WHOLE
+    transaction back — the repo's own v1.5.7 lesson that a maxon
+    transaction which never commits never lands — so ``written`` is
+    accumulated per-material in a local ``pending_written`` and only
+    added to the running total once ``tr.Commit()`` returns without
+    raising. On an exception anywhere inside that material's transaction
+    block, its ENTIRE ``known`` batch is counted as ``skipped`` instead
+    (never partially credited): the fake/real transaction may have
+    applied some writes before the failure, but nothing here can tell
+    which, so reporting anything other than "zero landed, all skipped"
+    for that material would risk overstating what a caller can rely on."""
     written = 0
     skipped = 0
     by_material = []
@@ -433,26 +444,32 @@ def write_colorspaces(doc, fixes):
         if not known:
             continue
 
-        processed = 0
         try:
             doc.AddUndo(c4d.UNDOTYPE_CHANGE, mat)
-            wrote_any = False
+            pending_written = 0
+            pending_skipped = 0
             with graph.BeginTransaction() as tr:
                 for node, expected in known:
-                    processed += 1
                     tex0 = child_by_suffix(node.GetInputs(), "tex0")
                     cs_port = child_by_suffix(tex0, "colorspace") if tex0 is not None else None
                     if cs_port is None:
-                        skipped += 1
+                        pending_skipped += 1
                         continue
                     cs_port.SetPortValue(expected)
-                    written += 1
-                    wrote_any = True
+                    pending_written += 1
                 tr.Commit()
-            if wrote_any:
-                materials_written += 1
         except Exception:
-            skipped += len(known) - processed
+            # Commit (or anything else in the block) raised: the WHOLE
+            # transaction rolled back, so none of this material's known
+            # entries can be credited — not even the ones that looked
+            # like they succeeded before the failure.
+            skipped += len(known)
+            continue
+
+        written += pending_written
+        skipped += pending_skipped
+        if pending_written:
+            materials_written += 1
 
     return {"written": written, "materials": materials_written}
 
@@ -535,7 +552,36 @@ def clean_dead_nodes_core(doc):
     output node), not also its direct feeders: the reverse-BFS in
     ``find_dead_nodes`` discovers those feeders itself, one hop back,
     through the material's own edges — computing them separately here
-    would be redundant with what the BFS already does."""
+    would be redundant with what the BFS already does.
+
+    **Removal happens against a SECOND, freshly re-fetched graph read —
+    never against the node handles ``collect()``'s own (first) read
+    produced** (review fix — the wrapper-identity trap class,
+    ``reference_c4d_wrapper_identity``, 8+ recurrences in this repo: the
+    real API hands back a fresh ``GraphNode`` wrapper on every read, so
+    calling ``.Remove()`` on a handle from one read while a transaction
+    is bound to a DIFFERENT read is exactly the kind of cross-read
+    mixing that trap class warns about — even though ``str(node.GetPath())``
+    stays stable across reads and is what everything else in this module
+    keys off of). Concretely: once ``dead`` is known from ``collect()``'s
+    data, this function calls ``_rs_node_material_graph(mat)`` AGAIN,
+    re-enumerates ITS nodes, and maps ``str(node.GetPath())`` -> node
+    from THAT read only; every ``Remove()`` call in the transaction below
+    uses one of those second-read handles. If any dead id from the first
+    read is missing on the second (the scene changed between the two
+    reads — genuinely possible given ``collect()`` and this removal are
+    not atomic with respect to anything else that could touch the
+    document), the WHOLE material is skipped rather than removing only
+    the subset that still resolves — the same "never guess, never
+    partially act" posture as every other skip reason here.
+
+    **Counters are only credited AFTER `Commit()` returns** (review fix,
+    same reasoning as ``write_colorspaces``): ``removed`` is accumulated
+    per-material in a local ``pending_removed`` and only added to the
+    running total once ``tr.Commit()`` returns without raising; an
+    exception anywhere in that material's transaction block counts the
+    WHOLE material as ``skipped`` instead, never a partial ``removed``
+    count for nodes whose ``Remove()`` ran before a rollback."""
     if doc is None:
         return {"ok": False, "error": "no_document"}
 
@@ -559,20 +605,31 @@ def clean_dead_nodes_core(doc):
                 continue
             mat = entry["material"]
             try:
+                # Fresh, SECOND read — see the docstring. Handles for the
+                # Remove() calls below come from THIS enumeration, never
+                # from entry["nodes_by_id"] (collect()'s earlier read).
                 graph = _rs_node_material_graph(mat)
                 if graph is None:
                     skipped += 1
                     continue
-                nodes_by_id = entry["nodes_by_id"]
+                fresh_by_id = {
+                    str(n.GetPath()): n
+                    for n in graph.GetViewRoot().GetInnerNodes(
+                        mask=maxon.NODE_KIND.NODE, includeThis=False)
+                }
+                if any(node_id not in fresh_by_id for node_id in dead):
+                    # Scene changed between the two reads — removing only
+                    # the subset that still resolves would be a guess.
+                    skipped += 1
+                    continue
                 doc.AddUndo(c4d.UNDOTYPE_CHANGE, mat)
+                pending_removed = 0
                 with graph.BeginTransaction() as tr:
                     for node_id in dead:
-                        node = nodes_by_id.get(node_id)
-                        if node is None:
-                            continue
-                        node.Remove()
-                        removed += 1
+                        fresh_by_id[node_id].Remove()
+                        pending_removed += 1
                     tr.Commit()
+                removed += pending_removed
             except Exception:
                 skipped += 1
     finally:
