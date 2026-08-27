@@ -292,6 +292,19 @@ def fix_rs_colorspace(doc, manage_undo=True):
     ``manage_undo=False`` lets a caller (``apply_fixes``) own the single
     StartUndo/EndUndo + cache/EventAdd so the whole batch is one undo step
     — mirrors ``fix_fps_range``, the other ``fix_scope="document"`` fix.
+
+    Being document-scoped (Minor 8, final v1.38 review): like
+    ``fix_fps_range``, this re-derives EVERY current mismatch from a fresh
+    graph walk and rewrites all of them — including ones a supervisor
+    already accepted into the baseline. This is deliberate (the spec's own
+    "corregir todos los infractores"), not an oversight: unlike the
+    baseline's own §Identidad promise for QC violations shown in a report
+    (an acceptance sticks until the object/location changes), a document-
+    scoped Fix button has no concept of "skip this one, it's accepted" —
+    it fixes the SCENE, and a baselined mismatch is still a real mismatch
+    on disk. Running this button re-arms any baseline acceptance for
+    ``rs_colorspace`` (the value it accepted no longer matches reality),
+    same precedent as ``fix_fps_range``.
     """
     from sentinel.checks.matgraph import entries_for_audit
     from sentinel.matgraph import audit_colorspaces

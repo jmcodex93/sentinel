@@ -865,6 +865,28 @@ class TestQcReportPayload:
         assert "metal.png" in row["details"][2]["message"]
         assert "OCIO_custom" in row["details"][2]["message"]
 
+    def test_info_detail_with_no_reason_omits_bare_none(self):
+        """Review fix (Minor 6, final v1.38 review): an info row with no
+        ``reason`` key at all (``.get`` -> ``None``) must NOT render the
+        literal string "None" as if it were a real reason — the old
+        catch-all f-string did exactly that (``"mat: file — None"``),
+        which reads as a genuine (bogus) reason instead of "this row is
+        missing data"."""
+        from sentinel.bridge.reports import _qc_info_detail
+
+        detail = _qc_info_detail({"material": "spike_mat", "file": "x.png"})
+        assert detail["message"] == "spike_mat: x.png"
+        assert "None" not in detail["message"]
+
+    def test_info_detail_with_unrecognized_reason_shown_bare(self):
+        """A real (non-empty) reason string this function doesn't
+        special-case renders as-is, unlike the None case above."""
+        from sentinel.bridge.reports import _qc_info_detail
+
+        detail = _qc_info_detail(
+            {"material": "spike_mat", "file": "x.png", "reason": "some_new_reason"})
+        assert detail["message"] == "spike_mat: x.png — some_new_reason"
+
     def test_metadata_info_absent_falls_back_to_violations(self):
         """Regression pin: a check without ``metadata.info`` (i.e. every
         check except rs_colorspace today, and rs_colorspace itself when it
@@ -949,6 +971,32 @@ class TestGroupQcBySeverity:
         assert by_id["cam"]["fix_action_id"] == "fix_cameras"
         assert by_id["unused_mats"]["fix_action_id"] == "fix_materials"
         assert by_id["fps_range"]["fix_action_id"] == "fix_fps"
+
+    def test_rs_colorspace_fix_action_id_resolves_not_none(self):
+        """Review fix (Important 1, final v1.38 review): ``rs_colorspace``
+        was the FIRST ``has_fix`` check to ship with no matching
+        ``PALETTE_ACTIONS`` entry — its card's Fix button rendered but
+        ``fix_action_id`` was ``None``, so the button was permanently
+        disabled with no tooltip explaining why. A ``fix_rs_colorspace``
+        palette action now closes that gap."""
+        score = _legacy_score_fixture(counts={"rs_colorspace": 1})
+        payload = webbridge.qc_report_payload("scene.c4d", {}, score, {})
+        grouped = webbridge.group_qc_by_severity(payload["checks"])
+        row = next(c for c in grouped["fail"] if c["id"] == "rs_colorspace")
+        assert row["fix_action_id"] == "fix_rs_colorspace"
+        assert row["can_fix"] is True
+
+    def test_fix_rs_colorspace_palette_action_registered(self):
+        """The action id ``group_qc_by_severity`` now points at must
+        actually exist in ``PALETTE_ACTIONS`` — otherwise the SPA would
+        render a Fix button wired to an id ``palette/run`` doesn't know."""
+        assert "fix_rs_colorspace" in webbridge.PALETTE_ACTION_BY_ID
+        action = webbridge.PALETTE_ACTION_BY_ID["fix_rs_colorspace"]
+        assert action["check_id"] == "rs_colorspace"
+        # Reversible in one undo (writes only the two whitelisted RS
+        # colorspace constants) — no confirm gate, same as fix_lights/
+        # fix_cameras, unlike fix_materials/fix_fps.
+        assert not action.get("requires_confirm")
 
     def test_accepted_all_true_when_new_is_zero_and_accepted_positive(self):
         score = {

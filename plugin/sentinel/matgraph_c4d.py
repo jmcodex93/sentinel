@@ -57,6 +57,7 @@ AO-multiply sampler wired by matwire can therefore never be silently
 
 import c4d
 
+from sentinel.common.cache import check_cache
 from sentinel.matgraph import CS_RAW, CS_SRGB, PASS_THROUGH_ASSETS, find_dead_nodes
 from sentinel.matwire_c4d import _ASSETID_ATTR, _RS_OUTPUT
 from sentinel.textures import RS_NODESPACE
@@ -77,10 +78,25 @@ _SINK_ASSET_TERMS = ("storecolortoaov", "storescalartoaov", "storeintegertoaov")
 #: forever.
 _TRACE_DEPTH_CAP = 8
 
-_EMPTY_MATERIAL_RESULT = {
-    "node_ids": [], "nodes_by_id": {}, "edges": [], "samplers": [],
-    "root_id": None, "sink_ids": [],
-}
+def _empty_material_result():
+    """A blank material-result dict with FRESH (never shared) mutable
+    containers for every list/dict field. Review fix (Minor 2, final
+    v1.38 review): the earlier module-level ``_EMPTY_MATERIAL_RESULT``
+    constant plus ``dict(_EMPTY_MATERIAL_RESULT)`` at each call site only
+    shallow-copies the dict's own keys — every list/dict VALUE
+    (``node_ids``, ``nodes_by_id``, ``edges``, ``samplers``, ``sink_ids``)
+    stayed the SAME shared object across every call. ``_walk_material``
+    happened to reassign every one of those keys before returning, so it
+    was never exploitable there, but ``collect()``'s error-entry branch
+    (an exception mid-walk) does NOT reassign them — a mutation of one
+    material's "empty" ``node_ids`` would have silently corrupted every
+    other error entry's ``node_ids`` in the same batch, since they'd all
+    be the exact same list object. This factory hands back brand-new
+    containers on every call instead."""
+    return {
+        "node_ids": [], "nodes_by_id": {}, "edges": [], "samplers": [],
+        "root_id": None, "sink_ids": [],
+    }
 
 
 def child_by_suffix(port_group, suffix):
@@ -243,7 +259,7 @@ def _walk_material(graph):
     this walk) needing to know anything about pass-through semantics.
     Pass-through awareness is ONLY needed for the sampler dest-port label,
     which is a separate, narrower trace (``_trace_dest_port``)."""
-    out = dict(_EMPTY_MATERIAL_RESULT)
+    out = _empty_material_result()
     nodes = list(graph.GetViewRoot().GetInnerNodes(
         mask=maxon.NODE_KIND.NODE, includeThis=False))
 
@@ -346,7 +362,7 @@ def collect(doc):
             entry["name"] = name
             entry["error"] = None
         except Exception as exc:
-            entry = dict(_EMPTY_MATERIAL_RESULT)
+            entry = _empty_material_result()
             entry["material"] = mat
             entry["name"] = name
             entry["error"] = str(exc)
@@ -523,6 +539,41 @@ def _unknown_store_like_terminal(entry):
     return False
 
 
+def _dead_set_has_unknown_store_like_node(entry, dead):
+    """Whether the already-computed DEAD set itself contains a store-shaped
+    stranger, regardless of that node's own edges.
+
+    Review fix (Minor 7, final v1.38 review): ``_unknown_store_like_terminal``
+    only catches an unrecognized store node when it has the TERMINAL shape
+    (incoming edge, no outgoing edges) — the shape a real AOV store or the
+    Output node has. But a store-shaped stranger that sits entirely INSIDE
+    a dead island (it has an outgoing edge feeding another node that is
+    ALSO dead, so nothing downstream of the stranger is reachable from a
+    live root either) has an outgoing edge and slips past that guard —
+    the whole island, stranger included, then gets deleted anyway,
+    contradicting the "never guess, never touch what an unrecognized
+    consumer might read" posture the terminal guard exists for. This
+    checks every node NAME in ``dead`` (not just terminals) for the same
+    "aov"/"store" hint, so a stranger anywhere in the dead set — feeding
+    only other dead nodes or not — still stops the whole material from
+    being touched. The terminal-only guard above stays as-is for a
+    stranger sitting on a LIVE branch (never in ``dead`` in the first
+    place, so this function alone wouldn't catch it)."""
+    root_id = entry.get("root_id")
+    known_sinks = set(entry.get("sink_ids") or ())
+    nodes_by_id = entry.get("nodes_by_id") or {}
+    for node_id in dead:
+        if node_id == root_id or node_id in known_sinks:
+            continue
+        node = nodes_by_id.get(node_id)
+        if node is None:
+            continue
+        assetid = _safe_assetid(node).lower()
+        if any(term in assetid for term in _UNKNOWN_STORE_HINT_TERMS):
+            return True
+    return False
+
+
 def clean_dead_nodes_core(doc):
     """Remove every dead node (per ``matgraph.find_dead_nodes``) from
     every RS node material in ``doc``, in ONE ``StartUndo``/``EndUndo``
@@ -544,9 +595,14 @@ def clean_dead_nodes_core(doc):
     edge, no outgoing edges — same shape as the Output node and the known
     AOV stores) whose assetid hints at "aov"/"store" but isn't one of the
     three ids ``_SINK_ASSET_TERMS`` actually recognizes (see
-    ``_unknown_store_like_terminal``). Such a node might be consuming
-    data this walk can't account for, so nothing in that material is
-    touched rather than guessing which of its "dead" nodes are safe.
+    ``_unknown_store_like_terminal``) — OR the computed dead set for that
+    material contains such a stranger by name alone, regardless of its
+    own edges (see ``_dead_set_has_unknown_store_like_node``, review fix,
+    Minor 7 of the final v1.38 review: a stranger with an outgoing edge
+    into another dead node slips past the terminal-only guard). Such a
+    node might be consuming data this walk can't account for, so nothing
+    in that material is touched rather than guessing which of its "dead"
+    nodes are safe.
 
     Root passed to ``find_dead_nodes`` is simply ``{root_id}`` (the
     output node), not also its direct feeders: the reverse-BFS in
@@ -603,6 +659,9 @@ def clean_dead_nodes_core(doc):
                                    root_ids, entry["sink_ids"])
             if not dead:
                 continue
+            if _dead_set_has_unknown_store_like_node(entry, dead):
+                skipped += 1
+                continue
             mat = entry["material"]
             try:
                 # Fresh, SECOND read — see the docstring. Handles for the
@@ -634,6 +693,23 @@ def clean_dead_nodes_core(doc):
                 skipped += 1
     finally:
         doc.EndUndo()
+        # Review fix (Important 2, final v1.38 review): this button used to
+        # send no refresh signal at all — every sibling scene-mutating core
+        # (e.g. ``ui/scene_tools.py`` ``_delete_empty_nulls_core``) calls
+        # ``c4d.EventAdd()`` unconditionally in its own ``finally`` so the
+        # Object/Node Manager and viewport redraw even when nothing was
+        # removed, and clears the QC cache when something WAS removed (a
+        # dead-node deletion can flip QC #13's rs_colorspace count, since a
+        # removed sampler can no longer report a mismatch).
+        try:
+            c4d.EventAdd()
+        except Exception:
+            pass
+        if removed:
+            try:
+                check_cache.clear()
+            except Exception:
+                pass
 
     return {"ok": True, "materials": len(materials), "removed": removed,
             "skipped": skipped}

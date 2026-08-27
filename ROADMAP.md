@@ -8,11 +8,11 @@ Spec: `docs/superpowers/specs/2026-08-07-project-standard-design.md` · Plan: `d
 - [x] Nuevo shot desde el estándar (patrón de carpetas declarado, tres negativas, sin fallback al `new.c4d` del plugin)
 - [x] Claves de ruleset `shot_pattern` + `published`; motor puro `projectstd.py`; ops `standard_ops.py`; subvistas SPA en Tools → Project
 - [x] Verificación live en C4D (C4D 2026.303, 2026-08-10): checklist completo — publicar con exclusión, puerta QC, republish con diff y clave manual superviviente, nuevo shot desde subcarpeta con QC 12/12, las tres negativas + asimetría de Reset All, bad_pattern, cero `.tmp` residual
-- [ ] **QC #13 — los assets que el proyecto declara**: tercera pieza del análisis, con su propio spec futuro (identidad, baseline y fontanería de informe propias; aporta valor incluso sin "nuevo shot")
+- [ ] **QC #14 — los assets que el proyecto declara**: tercera pieza del análisis, con su propio spec futuro (identidad, baseline y fontanería de informe propias; aporta valor incluso sin "nuevo shot")
 
 ## v1.38 — Material Graph ✅ (pendiente de merge/live)
 Spec aprobada: `docs/superpowers/specs/2026-08-25-material-graph-qc-design.md`
-- [x] **QC #13 "RS Colorspace"** (FAIL, ON) — audita el colorspace de cada Texture Sampler RS con doble señal (nombre vía tablas MatWire + puerto BRDF de destino; conflicto→Info); auto solo es violación si resuelve mal. Select/Info/Fix, undo 1 paso. Caza la trampa ACEScg en materiales existentes (nadie audita esto; NodeFlow solo asigna al crear). Score pasa a X/13.
+- [x] **QC #13 "RS Colorspace"** (FAIL, ON) — audita el colorspace de cada Texture Sampler RS con doble señal (nombre vía tablas MatWire + puerto BRDF de destino; conflicto→Info); auto NUNCA es violación — verificado en el spike (`audit_colorspaces`, `assigned is None` → `auto_unverified` incondicional, Info, jamás mismatch, sin importar lo que auto haya resuelto). Select/Info/Fix, undo 1 paso. Caza la trampa ACEScg en materiales existentes (nadie audita esto; NodeFlow solo asigna al crear). Score pasa a X/13.
 - [x] **Tools → Cleanup → "Clean Dead Nodes"** — NO es QC (decisión v1.30: limpiadores = botones acción→toast): borra nodos sin camino al Output (roots = todos los puertos; sinks StoreColorToAOV vivos), conservador, un Cmd+Z. Comparte walk y motor puro (`matgraph.py`) con el check.
 - [x] Mini-spike live previo obligatorio (HECHO 2026-08-27: docs/research/2026-08-27-matgraph-spike.md): combo strings pre/post-OCIO, legibilidad del auto, walk sobre material ajeno a matwire, receta de undo del borrado de nodos.
 - Contexto: el Wrangler standalone quedó NO-GO (Render Flow de Boghma ocupa la autoría, ver spike §12); la auditoría de grafos es lo que refuerza el claim de preflight. Autoría explícitamente fuera de alcance.

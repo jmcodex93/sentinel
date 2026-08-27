@@ -805,3 +805,100 @@ class TestCleanDeadNodesCore:
 
         assert result == {"ok": True, "materials": 1, "removed": 0, "skipped": 0}
         assert graph.remove_calls == []
+
+    def test_event_add_called_when_nodes_removed(self, matgraph_c4d, monkeypatch):
+        """Review fix (Important 2, final v1.38 review): a batch that
+        actually removed dead nodes must call ``c4d.EventAdd()`` so the
+        Object Manager/Node Editor/viewport refresh — the same
+        unconditional-EventAdd discipline every sibling scene-mutating
+        core (e.g. ``_delete_empty_nulls_core``) follows in its own
+        ``finally``."""
+        calls = []
+        monkeypatch.setattr(matgraph_c4d.c4d, "EventAdd", lambda: calls.append("event"))
+        graph, sampler, brdf, out, orphan_a, orphan_b = self._graph_with_dead_island()
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+
+        result = matgraph_c4d.clean_dead_nodes_core(doc)
+
+        assert result["removed"] == 2
+        assert calls == ["event"]
+
+    def test_event_add_called_even_when_nothing_removed(self, matgraph_c4d, monkeypatch):
+        """EventAdd is unconditional (mirrors ``_delete_empty_nulls_core``)
+        — a no-op batch still refreshes."""
+        calls = []
+        monkeypatch.setattr(matgraph_c4d.c4d, "EventAdd", lambda: calls.append("event"))
+        graph, sampler, brdf, out = _simple_chain_graph()
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+
+        result = matgraph_c4d.clean_dead_nodes_core(doc)
+
+        assert result["removed"] == 0
+        assert calls == ["event"]
+
+    def test_check_cache_cleared_when_nodes_removed(self, matgraph_c4d, monkeypatch):
+        """Review fix (Important 2): a batch that removed dead nodes must
+        invalidate the QC cache — a removed sampler can flip QC #13's
+        rs_colorspace count, and the cache must not serve a stale
+        pre-removal result."""
+        calls = []
+        monkeypatch.setattr(matgraph_c4d.check_cache, "clear", lambda: calls.append("clear"))
+        graph, sampler, brdf, out, orphan_a, orphan_b = self._graph_with_dead_island()
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+
+        result = matgraph_c4d.clean_dead_nodes_core(doc)
+
+        assert result["removed"] == 2
+        assert calls == ["clear"]
+
+    def test_check_cache_not_cleared_when_nothing_removed(self, matgraph_c4d, monkeypatch):
+        calls = []
+        monkeypatch.setattr(matgraph_c4d.check_cache, "clear", lambda: calls.append("clear"))
+        graph, sampler, brdf, out = _simple_chain_graph()
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+
+        result = matgraph_c4d.clean_dead_nodes_core(doc)
+
+        assert result["removed"] == 0
+        assert calls == []
+
+    def test_dead_set_stranger_with_outgoing_edge_into_dead_island_skips_material(
+            self, matgraph_c4d):
+        """Minor 7 (final v1.38 review): ``_unknown_store_like_terminal``
+        only catches an unrecognized store-shaped node when it has NO
+        outgoing edges (terminal shape). A stranger that sits INSIDE a
+        dead island — feeding only another dead node, so it HAS an
+        outgoing edge — slipped past that guard and got deleted along
+        with the island. Build a dead island where the "downstream" node
+        of the pair is itself store/aov-shaped BY NAME (an outgoing edge
+        into the other orphan): the whole material must be skipped and
+        NOTHING removed."""
+        graph, sampler, brdf, out = _simple_chain_graph()
+        # orphan_a --outcolor--> orphan_store (aov-shaped, has an outgoing
+        # edge of its own into orphan_sink) --> orphan_sink. Nothing here
+        # is reachable from the live root, so the whole trio is dead, but
+        # orphan_store's assetid hints "aov" and it has an OUTGOING edge
+        # (not a terminal) — the pre-existing terminal-only guard misses it.
+        orphan_a = graph.add_node("orphan_a", _RS_CORE + "texturesampler")
+        orphan_a.outputs.add_child(FakePort(_RS_CORE + "texturesampler.outcolor", orphan_a))
+        orphan_store = graph.add_node("orphan_store", _RS_CORE + "storenormaltoaov")
+        orphan_store.inputs.add_child(
+            FakePort(_RS_CORE + "storenormaltoaov.value", orphan_store))
+        orphan_store.outputs.add_child(
+            FakePort(_RS_CORE + "storenormaltoaov.outvalue", orphan_store))
+        orphan_sink = graph.add_node("orphan_sink", "com.thirdparty.somenode")
+        orphan_sink.inputs.add_child(FakePort("com.thirdparty.somenode.input", orphan_sink))
+        _out_port(orphan_a, "outcolor").connect_to(_in_port(orphan_store, "value"))
+        _out_port(orphan_store, "outvalue").connect_to(_in_port(orphan_sink, "input"))
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+
+        result = matgraph_c4d.clean_dead_nodes_core(doc)
+
+        assert result["skipped"] == 1
+        assert result["removed"] == 0
+        assert graph.remove_calls == []

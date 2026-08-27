@@ -163,6 +163,10 @@ def build_qc_report(doc, results, artist_name, qc_summary=None):
     # matches the registry (``test_report_section_keys_match_registry_
     # report_keys``), the same completeness contract every other section
     # here already honors.
+    # TODO: wire a real caller (SPA op or CLI) to populate
+    # ``results["rs_colorspace_bad"]`` once this legacy report builder
+    # gets a live consumer for QC #13, the same way the other sections
+    # here are already fed.
     rs_colorspace_bad = results.get("rs_colorspace_bad", [])
     report["checks"]["rs_colorspace"] = {
         "status": "PASS" if not rs_colorspace_bad else "FAIL",

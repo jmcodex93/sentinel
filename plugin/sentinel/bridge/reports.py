@@ -55,6 +55,7 @@ _FIX_ACTION_ID_BY_CHECK_ID = {
     "cam": "fix_cameras",
     "unused_mats": "fix_materials",
     "fps_range": "fix_fps",
+    "rs_colorspace": "fix_rs_colorspace",
 }
 
 
@@ -69,9 +70,16 @@ def group_qc_by_severity(checks):
     invented: ``can_select``/``can_fix`` come straight from the entry's
     declared ``actions`` tuple (same source ``qc_report_payload`` uses for
     ``has_fix``), and ``fix_action_id`` is the matching ``PALETTE_ACTIONS``
-    "Quick Fix" id for that check_id (``None`` for a check with no Quick
-    Fix action, e.g. one that's ``has_fix`` but document-scoped only... in
-    practice every ``has_fix`` check_id already has a Quick Fix entry).
+    "Quick Fix" id for that check_id via ``_FIX_ACTION_ID_BY_CHECK_ID``
+    (``None`` for a check with no entry in that mapping). Every
+    ``has_fix`` check_id in the registry has an entry there today
+    (``rs_colorspace``/``fix_rs_colorspace`` was the first has_fix check to
+    ship WITHOUT one — a review fix closed that gap, see the final v1.38
+    review) — but that is a fact about the current registry contents, not
+    a guarantee this function enforces: a future ``has_fix`` check without
+    a matching ``_FIX_ACTION_ID_BY_CHECK_ID`` entry gets ``fix_action_id:
+    None`` and a Fix button that never enables, silently, same as
+    ``rs_colorspace`` did.
 
     ``accepted_all`` is true when every CURRENT violation of the check is
     already baselined (``new == 0`` and ``accepted > 0``) — the row can
@@ -282,8 +290,18 @@ def _qc_info_detail(row):
         )
     elif reason == "foreign_cs":
         message = f"{material}: {file_name} — foreign colorspace '{assigned}'"
-    else:
+    elif reason:
+        # Some other real (non-empty) reason string this function doesn't
+        # special-case above — render it bare rather than assuming it
+        # deserves the same "— <reason>" template as the four known ones.
         message = f"{material}: {file_name} — {reason}"
+    else:
+        # Minor 6 (final v1.38 review): a row with no ``reason`` at all
+        # (missing key -> ``.get`` returns ``None``) used to fall through
+        # to the same f-string as a real reason, literally rendering
+        # "— None" — worse than useless, since it looks like a genuine
+        # (bogus) reason string instead of "this row is missing data".
+        message = f"{material}: {file_name}"
     return {"label": material, "message": message, "extras": {"reason": reason}}
 
 
