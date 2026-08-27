@@ -1,0 +1,637 @@
+# -*- coding: utf-8 -*-
+"""Tests for the Material Graph c4d adapter (``sentinel.matgraph_c4d``).
+
+Two-surface fake graph harness (per the Task 2 brief): models exactly what
+the live spike measured (``docs/research/2026-08-27-matgraph-spike.md``) —
+
+- A node's TOP-LEVEL ``GetInputs()``/``GetOutputs()`` children carry FULL
+  id strings (e.g. ``"com...texturesampler.tex0"``).
+- A GROUP port's OWN children (``tex0``'s ``path``/``colorspace``) carry
+  SHORT id strings (``"path"``, ``"colorspace"``).
+- ``GetConnections(direction, out_list)`` FILLS the passed list with the
+  connected ports on the other end and returns ``True``; an empty fill
+  means "unconnected", not an error.
+- ``GetPortValue()`` returns ``None`` for an unset colorspace (the "auto"
+  state — no sentinel string exists for it, per the spike).
+- Node deletion is ``node.Remove()`` inside a
+  ``graph.BeginTransaction()``/``Commit()`` pair.
+
+What this harness does NOT model (stated once, house rule — fakes lie
+otherwise): real maxon ``Id``/``Data`` typing and coercion, wire "modes"
+or partial connections, more than one level of port-group nesting beyond
+``tex0``, ``GraphNode`` wrapper identity semantics (this fake's node
+objects ARE stable Python objects across "reads", unlike the real API
+where every read hands back a fresh wrapper — not exercised here because
+every lookup in the module under test resolves through ``str(node.GetPath())``
+strings, never object identity), and anything about undo REPLAY (the
+fake's ``StartUndo``/``EndUndo``/``AddUndo`` only record calls; they never
+actually revert a mutation).
+"""
+
+import pytest
+
+
+# ---------------------------------------------------------------------------
+# Fake maxon surface
+# ---------------------------------------------------------------------------
+
+class _NODE_KIND:
+    NODE = "NODE_KIND.NODE"
+
+
+class _PORT_DIR:
+    OUTPUT = "PORT_DIR.OUTPUT"
+
+
+class _FakeMaxon:
+    """Just enough of the ``maxon`` namespace for the module under test —
+    two enum-ish holders, nothing about the real type system."""
+    NODE_KIND = _NODE_KIND
+    PORT_DIR = _PORT_DIR
+
+
+class FakePort:
+    """One port (leaf or group). ``full_id`` is what ``GetId()`` returns —
+    the caller decides whether that's a full or short id string, matching
+    which level of the tree it models."""
+
+    def __init__(self, full_id, node):
+        self.full_id = full_id
+        self.node = node          # owning FakeNode
+        self._children = []
+        self._value = None
+        self._targets = []        # FakePort list — GetConnections(OUTPUT) fill
+
+    def add_child(self, port):
+        self._children.append(port)
+        return port
+
+    def GetId(self):
+        return self.full_id
+
+    def GetChildren(self):
+        return list(self._children)
+
+    def GetPortValue(self):
+        return self._value
+
+    def SetPortValue(self, value):
+        self.node.graph.set_port_calls.append((self.node.node_id, self.full_id, value))
+        self._value = value
+
+    def connect_to(self, other_port):
+        self._targets.append(other_port)
+
+    def GetConnections(self, direction, out_list):
+        out_list.extend(self._targets)
+        return True
+
+    def GetAncestor(self, kind):
+        return self.node
+
+
+class FakeNode:
+    def __init__(self, graph, node_id, assetid):
+        self.graph = graph
+        self.node_id = node_id
+        self._assetid = assetid
+        self._values = {"net.maxon.node.attribute.assetid": assetid}
+        self.inputs = FakePort(node_id + ".$in", self)
+        self.outputs = FakePort(node_id + ".$out", self)
+        self.raise_on_get_value = False
+
+    def GetPath(self):
+        return self.node_id
+
+    def GetValue(self, key):
+        if self.raise_on_get_value:
+            raise RuntimeError("boom: unreadable node")
+        return self._values.get(key)
+
+    def GetInputs(self):
+        return self.inputs
+
+    def GetOutputs(self):
+        return self.outputs
+
+    def Remove(self):
+        self.graph.remove_calls.append(self.node_id)
+
+
+class FakeTransaction:
+    def __init__(self, graph):
+        self.graph = graph
+
+    def __enter__(self):
+        self.graph.transactions.append("begin")
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def Commit(self):
+        self.graph.transactions.append("commit")
+
+
+class FakeViewRoot:
+    def __init__(self, graph):
+        self.graph = graph
+        self.raise_on_get_inner_nodes = False
+
+    def GetInnerNodes(self, mask=None, includeThis=False):
+        if self.raise_on_get_inner_nodes:
+            raise RuntimeError("boom: broken graph enumeration")
+        return list(self.graph.nodes)
+
+
+class FakeGraph:
+    def __init__(self):
+        self.nodes = []
+        self.remove_calls = []
+        self.set_port_calls = []
+        self.transactions = []
+        self._view_root = FakeViewRoot(self)
+
+    def add_node(self, node_id, assetid):
+        node = FakeNode(self, node_id, assetid)
+        self.nodes.append(node)
+        return node
+
+    def GetViewRoot(self):
+        return self._view_root
+
+    def BeginTransaction(self):
+        return FakeTransaction(self)
+
+
+class FakeNodeMatRef:
+    def __init__(self, graph, has_space=True):
+        self._graph = graph
+        self._has_space = has_space
+
+    def HasSpace(self, space_id):
+        return self._has_space
+
+    def GetGraph(self, space_id):
+        return self._graph
+
+
+class FakeMaterial:
+    """``graph=None`` models a Standard (non-node) material — a
+    ``GetNodeMaterialReference()`` call some real materials answer with
+    ``None`` rather than raising. ``broken=True`` models one that raises
+    on that call (also just a non-RS material, from this module's POV)."""
+
+    def __init__(self, name, graph=None, has_space=True, broken=False):
+        self._name = name
+        self._graph = graph
+        self._has_space = has_space
+        self._broken = broken
+
+    def GetName(self):
+        return self._name
+
+    def GetNodeMaterialReference(self):
+        if self._broken:
+            raise RuntimeError("boom: no node material reference")
+        if self._graph is None:
+            return None
+        return FakeNodeMatRef(self._graph, self._has_space)
+
+
+class FakeDoc:
+    def __init__(self, materials):
+        self._materials = materials
+        self.undo_calls = []
+        self.start_count = 0
+        self.end_count = 0
+
+    def GetMaterials(self):
+        return list(self._materials)
+
+    def StartUndo(self):
+        self.start_count += 1
+        self.undo_calls.append("start")
+
+    def EndUndo(self):
+        self.end_count += 1
+        self.undo_calls.append("end")
+
+    def AddUndo(self, kind, obj):
+        self.undo_calls.append(("add", kind, obj))
+
+
+# ---------------------------------------------------------------------------
+# Graph-building helpers
+# ---------------------------------------------------------------------------
+
+_RS_CORE = "com.redshift3d.redshift4c4d.nodes.core."
+_RS_OUTPUT = "com.redshift3d.redshift4c4d.node.output"
+
+
+def _add_sampler(graph, node_id, path, colorspace):
+    """A texturesampler node with a ``tex0`` group port (SHORT-id children
+    ``path``/``colorspace``, per the spike) and an ``outcolor`` output
+    (FULL id, per the spike)."""
+    node = graph.add_node(node_id, _RS_CORE + "texturesampler")
+    tex0 = node.inputs.add_child(FakePort(_RS_CORE + "texturesampler.tex0", node))
+    path_port = tex0.add_child(FakePort("path", node))
+    path_port._value = path
+    cs_port = tex0.add_child(FakePort("colorspace", node))
+    cs_port._value = colorspace
+    node.outputs.add_child(FakePort(_RS_CORE + "texturesampler.outcolor", node))
+    return node
+
+
+def _out_port(node, suffix):
+    for child in node.outputs.GetChildren():
+        if child.GetId().endswith(suffix):
+            return child
+    raise AssertionError("no output port %r on %s" % (suffix, node.node_id))
+
+
+def _in_port(node, suffix):
+    for child in node.inputs.GetChildren():
+        if child.GetId().endswith(suffix):
+            return child
+    raise AssertionError("no input port %r on %s" % (suffix, node.node_id))
+
+
+def _add_brdf(graph, node_id, input_suffixes):
+    node = graph.add_node(node_id, _RS_CORE + "standardmaterial")
+    for suffix in input_suffixes:
+        node.inputs.add_child(FakePort(_RS_CORE + "standardmaterial." + suffix, node))
+    node.outputs.add_child(FakePort(_RS_CORE + "standardmaterial.outcolor", node))
+    return node
+
+
+def _add_output(graph, node_id):
+    node = graph.add_node(node_id, _RS_OUTPUT)
+    node.inputs.add_child(FakePort(_RS_OUTPUT + ".surface", node))
+    return node
+
+
+def _add_colorlayer(graph, node_id):
+    node = graph.add_node(node_id, _RS_CORE + "rscolorlayer")
+    node.inputs.add_child(FakePort(_RS_CORE + "rscolorlayer.base_color", node))
+    node.inputs.add_child(FakePort(_RS_CORE + "rscolorlayer.layer1_color", node))
+    node.outputs.add_child(FakePort(_RS_CORE + "rscolorlayer.outcolor", node))
+    return node
+
+
+def _add_aov_store(graph, node_id, kind="storecolortoaov"):
+    node = graph.add_node(node_id, _RS_CORE + kind)
+    node.inputs.add_child(FakePort(_RS_CORE + kind + ".value", node))
+    return node
+
+
+def _simple_chain_graph():
+    """sampler(basecolor) --outcolor--> standardmaterial.base_color
+       standardmaterial --outcolor--> output.surface"""
+    graph = FakeGraph()
+    sampler = _add_sampler(graph, "sampler1", "/tex/plaster_basecolor.png",
+                           "RS_INPUT_COLORSPACE_SRGB")
+    brdf = _add_brdf(graph, "brdf1", ["base_color"])
+    out = _add_output(graph, "out1")
+    _out_port(sampler, "outcolor").connect_to(_in_port(brdf, "base_color"))
+    _out_port(brdf, "outcolor").connect_to(_in_port(out, "surface"))
+    return graph, sampler, brdf, out
+
+
+@pytest.fixture
+def matgraph_c4d(sentinel_module, monkeypatch):
+    from sentinel import matgraph_c4d as module
+    monkeypatch.setattr(module, "maxon", _FakeMaxon)
+    monkeypatch.setattr(module, "MAXON_AVAILABLE", True)
+    return module
+
+
+# ---------------------------------------------------------------------------
+# collect()
+# ---------------------------------------------------------------------------
+
+class TestCollect:
+    def test_live_chain_yields_sampler_with_correct_dest_port_edges_root(
+            self, matgraph_c4d):
+        graph, sampler, brdf, out = _simple_chain_graph()
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+
+        result = matgraph_c4d.collect(doc)
+
+        assert len(result) == 1
+        entry = result[0]
+        assert entry["error"] is None
+        assert entry["material"] is mat
+        assert entry["name"] == "mat1"
+        assert set(entry["node_ids"]) == {"sampler1", "brdf1", "out1"}
+        assert entry["root_id"] == "out1"
+        assert entry["sink_ids"] == []
+        assert len(entry["samplers"]) == 1
+        s = entry["samplers"][0]
+        assert s["node_id"] == "sampler1"
+        assert s["path"] == "/tex/plaster_basecolor.png"
+        assert s["assigned"] == "RS_INPUT_COLORSPACE_SRGB"
+        assert s["dest_port"] == _RS_CORE + "standardmaterial.base_color"
+        assert ("sampler1", "brdf1") in entry["edges"]
+        assert ("brdf1", "out1") in entry["edges"]
+
+    def test_sampler_traced_through_pass_through_reaches_brdf_port(
+            self, matgraph_c4d):
+        """AO sampler -> rscolorlayer (pass-through) -> standardmaterial.base_color.
+        Also exercises the deferred Task 1 review decision: an AO-named
+        sampler tracing to base_color is CORRECT (it becomes a
+        colorspace "conflict" in matgraph.audit_colorspaces, never a
+        false Fix) — this test only proves the ADAPTER's trace crosses
+        the color layer; the conflict semantics are Task 1's own tests."""
+        graph = FakeGraph()
+        ao_sampler = _add_sampler(graph, "ao1", "/tex/plaster_ao.png",
+                                  "RS_INPUT_COLORSPACE_RAW")
+        layer = _add_colorlayer(graph, "layer1")
+        brdf = _add_brdf(graph, "brdf1", ["base_color"])
+        out = _add_output(graph, "out1")
+        _out_port(ao_sampler, "outcolor").connect_to(_in_port(layer, "layer1_color"))
+        _out_port(layer, "outcolor").connect_to(_in_port(brdf, "base_color"))
+        _out_port(brdf, "outcolor").connect_to(_in_port(out, "surface"))
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+
+        result = matgraph_c4d.collect(doc)
+
+        entry = result[0]
+        assert entry["error"] is None
+        sampler_entry = next(s for s in entry["samplers"] if s["node_id"] == "ao1")
+        assert sampler_entry["dest_port"] == _RS_CORE + "standardmaterial.base_color"
+
+    def test_unknown_intermediate_node_yields_dest_port_none(self, matgraph_c4d):
+        """"Unknown" here means the trace cannot even IDENTIFY the node on
+        the other end (its assetid read raises) — the "never guess" case
+        from matgraph.PASS_THROUGH_ASSETS's own docstring. This is
+        different from a node whose assetid is perfectly readable but not
+        in PASS_THROUGH_ASSETS (a real, reportable destination) — see
+        test_live_chain_... for that case (BRDF port IS reported)."""
+        graph = FakeGraph()
+        sampler = _add_sampler(graph, "sampler1", "/tex/foo.png",
+                               "RS_INPUT_COLORSPACE_SRGB")
+        mystery = graph.add_node("mystery1", "com.thirdparty.somenode")
+        mystery.raise_on_get_value = True
+        mystery.inputs.add_child(FakePort("com.thirdparty.somenode.input", mystery))
+        _out_port(sampler, "outcolor").connect_to(_in_port(mystery, "input"))
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+
+        result = matgraph_c4d.collect(doc)
+
+        # The material walk as a whole must NOT fail just because one
+        # sampler's dest-port trace hit an unreadable node.
+        assert result[0]["error"] is None
+        s = result[0]["samplers"][0]
+        assert s["dest_port"] is None
+
+    def test_unset_colorspace_is_assigned_none(self, matgraph_c4d):
+        graph, sampler, brdf, out = _simple_chain_graph()
+        cs_port = None
+        tex0 = sampler.inputs.GetChildren()[0]
+        for child in tex0.GetChildren():
+            if child.GetId() == "colorspace":
+                cs_port = child
+        cs_port._value = None
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+
+        result = matgraph_c4d.collect(doc)
+
+        assert result[0]["samplers"][0]["assigned"] is None
+
+    def test_aov_store_node_lands_in_sink_ids(self, matgraph_c4d):
+        graph, sampler, brdf, out = _simple_chain_graph()
+        aov = _add_aov_store(graph, "aov1", kind="storecolortoaov")
+        _out_port(brdf, "outcolor").connect_to(_in_port(aov, "value"))
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+
+        result = matgraph_c4d.collect(doc)
+
+        assert result[0]["sink_ids"] == ["aov1"]
+
+    def test_material_whose_walk_raises_gets_error_others_unaffected(
+            self, matgraph_c4d):
+        """A structural failure — the graph itself refuses to enumerate its
+        nodes — must produce an ``error`` entry for THIS material without
+        affecting any other. This is deliberately NOT modeled as one
+        node's assetid read raising: ``_walk_material``'s root/sink/
+        sampler scans tolerate that per-node (see ``_safe_assetid``), so
+        the failure here has to be something no per-node guard catches."""
+        graph_ok, _, _, _ = _simple_chain_graph()
+        graph_broken = FakeGraph()
+        graph_broken.add_node("broken1", _RS_CORE + "texturesampler")
+        graph_broken._view_root.raise_on_get_inner_nodes = True
+        mat_ok = FakeMaterial("ok_mat", graph=graph_ok)
+        mat_broken = FakeMaterial("broken_mat", graph=graph_broken)
+        doc = FakeDoc([mat_broken, mat_ok])
+
+        result = matgraph_c4d.collect(doc)
+
+        assert len(result) == 2
+        broken_entry = next(e for e in result if e["name"] == "broken_mat")
+        assert broken_entry["error"] is not None
+        assert broken_entry["node_ids"] == []
+        assert broken_entry["samplers"] == []
+        ok_entry = next(e for e in result if e["name"] == "ok_mat")
+        assert ok_entry["error"] is None
+        assert len(ok_entry["samplers"]) == 1
+
+    def test_non_node_material_skipped_silently(self, matgraph_c4d):
+        mat = FakeMaterial("standard_mat", graph=None)
+        doc = FakeDoc([mat])
+
+        result = matgraph_c4d.collect(doc)
+
+        assert result == []
+
+    def test_material_with_broken_node_reference_skipped_silently(
+            self, matgraph_c4d):
+        mat = FakeMaterial("weird_mat", broken=True)
+        doc = FakeDoc([mat])
+
+        assert matgraph_c4d.collect(doc) == []
+
+    def test_no_document_returns_empty_list(self, matgraph_c4d):
+        assert matgraph_c4d.collect(None) == []
+
+
+# ---------------------------------------------------------------------------
+# write_colorspaces()
+# ---------------------------------------------------------------------------
+
+class TestWriteColorspaces:
+    def test_whitelist_rejects_unknown_value_never_calls_set_port_value(
+            self, matgraph_c4d):
+        graph, sampler, brdf, out = _simple_chain_graph()
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+        fixes = [{"material": mat, "node_id": "sampler1", "expected": "ACEScg"}]
+
+        result = matgraph_c4d.write_colorspaces(doc, fixes)
+
+        assert result == {"written": 0, "materials": 0}
+        assert graph.set_port_calls == []
+
+    def test_valid_fix_writes_and_counts(self, matgraph_c4d):
+        graph, sampler, brdf, out = _simple_chain_graph()
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+        fixes = [{"material": mat, "node_id": "sampler1",
+                  "expected": matgraph_c4d.CS_SRGB}]
+
+        result = matgraph_c4d.write_colorspaces(doc, fixes)
+
+        assert result == {"written": 1, "materials": 1}
+        assert graph.set_port_calls == [("sampler1", "colorspace", matgraph_c4d.CS_SRGB)]
+        assert doc.undo_calls == [("add", _undotype_change(), mat)]
+        assert graph.transactions == ["begin", "commit"]
+
+    def test_never_opens_start_end_undo_bracket(self, matgraph_c4d):
+        """The caller (fixes.py's apply_fixes) owns StartUndo/EndUndo — this
+        function must never call it itself."""
+        graph, sampler, brdf, out = _simple_chain_graph()
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+        fixes = [{"material": mat, "node_id": "sampler1",
+                  "expected": matgraph_c4d.CS_SRGB}]
+
+        matgraph_c4d.write_colorspaces(doc, fixes)
+
+        assert doc.start_count == 0
+        assert doc.end_count == 0
+
+    def test_two_fixes_same_material_share_one_undo_anchor_and_transaction(
+            self, matgraph_c4d):
+        graph = FakeGraph()
+        s1 = _add_sampler(graph, "s1", "/a.png", None)
+        s2 = _add_sampler(graph, "s2", "/b.png", None)
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+        fixes = [
+            {"material": mat, "node_id": "s1", "expected": matgraph_c4d.CS_SRGB},
+            {"material": mat, "node_id": "s2", "expected": matgraph_c4d.CS_RAW},
+        ]
+
+        result = matgraph_c4d.write_colorspaces(doc, fixes)
+
+        assert result == {"written": 2, "materials": 1}
+        add_undos = [c for c in doc.undo_calls if isinstance(c, tuple)]
+        assert len(add_undos) == 1
+        assert graph.transactions == ["begin", "commit"]
+
+    def test_unknown_node_id_counted_skipped(self, matgraph_c4d):
+        graph, sampler, brdf, out = _simple_chain_graph()
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+        fixes = [{"material": mat, "node_id": "does-not-exist",
+                  "expected": matgraph_c4d.CS_SRGB}]
+
+        result = matgraph_c4d.write_colorspaces(doc, fixes)
+
+        assert result == {"written": 0, "materials": 0}
+
+
+def _undotype_change():
+    import c4d
+    return c4d.UNDOTYPE_CHANGE
+
+
+# ---------------------------------------------------------------------------
+# clean_dead_nodes_core()
+# ---------------------------------------------------------------------------
+
+class TestCleanDeadNodesCore:
+    def _graph_with_dead_island(self):
+        graph, sampler, brdf, out = _simple_chain_graph()
+        # A dead island: two nodes connected to each other, connected to
+        # nothing alive.
+        orphan_a = graph.add_node("orphan_a", _RS_CORE + "texturesampler")
+        orphan_a.outputs.add_child(FakePort(_RS_CORE + "texturesampler.outcolor", orphan_a))
+        orphan_b = graph.add_node("orphan_b", "com.thirdparty.somenode")
+        orphan_b.inputs.add_child(FakePort("com.thirdparty.somenode.input", orphan_b))
+        _out_port(orphan_a, "outcolor").connect_to(_in_port(orphan_b, "input"))
+        return graph, sampler, brdf, out, orphan_a, orphan_b
+
+    def test_dead_island_removed_in_one_batch_bracket(self, matgraph_c4d):
+        graph, sampler, brdf, out, orphan_a, orphan_b = self._graph_with_dead_island()
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+
+        result = matgraph_c4d.clean_dead_nodes_core(doc)
+
+        assert result["ok"] is True
+        assert result["materials"] == 1
+        assert result["removed"] == 2
+        assert result["skipped"] == 0
+        assert set(graph.remove_calls) == {"orphan_a", "orphan_b"}
+        assert doc.start_count == 1
+        assert doc.end_count == 1
+
+    def test_batch_bracket_covers_multiple_materials_as_one_pair(
+            self, matgraph_c4d):
+        g1, s1, b1, o1, oa1, ob1 = self._graph_with_dead_island()
+        g2, s2, b2, o2, oa2, ob2 = self._graph_with_dead_island()
+        mat1 = FakeMaterial("mat1", graph=g1)
+        mat2 = FakeMaterial("mat2", graph=g2)
+        doc = FakeDoc([mat1, mat2])
+
+        result = matgraph_c4d.clean_dead_nodes_core(doc)
+
+        assert result["removed"] == 4
+        assert doc.start_count == 1
+        assert doc.end_count == 1
+
+    def test_material_with_collect_error_skipped_and_counted_untouched(
+            self, matgraph_c4d):
+        """A material whose ``collect()`` walk raised (``error`` set) must
+        be skipped and counted, and NOTHING removed from it — deleting
+        based on data we know is incomplete/wrong is the one thing this
+        button must never do."""
+        graph = FakeGraph()
+        graph.add_node("broken1", _RS_CORE + "texturesampler")
+        graph._view_root.raise_on_get_inner_nodes = True
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+
+        result = matgraph_c4d.clean_dead_nodes_core(doc)
+
+        assert result["skipped"] == 1
+        assert result["removed"] == 0
+        assert graph.remove_calls == []
+
+    def test_material_with_no_root_id_skipped_and_counted_untouched(
+            self, matgraph_c4d):
+        """A material with no ``node.output`` node — an unrecognizable
+        graph structure — is also skipped without being touched (the
+        brief's "unrecognized potential sink" case, read here as "no
+        anchor to compute reachability from")."""
+        graph = FakeGraph()
+        orphan = graph.add_node("orphan1", _RS_CORE + "texturesampler")
+        orphan.outputs.add_child(FakePort(_RS_CORE + "texturesampler.outcolor", orphan))
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+
+        result = matgraph_c4d.clean_dead_nodes_core(doc)
+
+        assert result["skipped"] == 1
+        assert result["removed"] == 0
+        assert graph.remove_calls == []
+
+    def test_no_document_returns_error(self, matgraph_c4d):
+        assert matgraph_c4d.clean_dead_nodes_core(None) == {
+            "ok": False, "error": "no_document"}
+
+    def test_no_dead_nodes_removes_nothing_but_still_ok(self, matgraph_c4d):
+        graph, sampler, brdf, out = _simple_chain_graph()
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+
+        result = matgraph_c4d.clean_dead_nodes_core(doc)
+
+        assert result == {"ok": True, "materials": 1, "removed": 0, "skipped": 0}
+        assert graph.remove_calls == []

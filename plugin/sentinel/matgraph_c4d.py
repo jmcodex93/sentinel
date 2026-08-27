@@ -1,0 +1,526 @@
+# -*- coding: utf-8 -*-
+"""Material Graph — the c4d/maxon adapter (v1.38).
+
+Task 2 of the Material Graph feature (``docs/superpowers/specs/
+2026-08-25-material-graph-qc-design.md``): the SINGLE per-material graph
+walk that BOTH QC check #13 (RS Colorspace, Task 3) and the Tools "Clean
+Dead Nodes" button (Task 4) consume, plus the two mutating operations
+(``write_colorspaces`` for the Fix path, ``clean_dead_nodes_core`` for the
+Tools button). The pure engine (``sentinel.matgraph`` — ``CS_SRGB``/
+``CS_RAW``, ``PASS_THROUGH_ASSETS``, ``find_dead_nodes``, ``audit_colorspaces``)
+never imports ``c4d``/``maxon``; every maxon idiom lives here, verified live
+in ``docs/research/2026-08-27-matgraph-spike.md`` (C4D 2026.304, Redshift).
+
+Idioms this module rests on (see the spike doc for the measurements):
+
+- **Node enumeration**: ``graph.GetViewRoot().GetInnerNodes(mask=
+  maxon.NODE_KIND.NODE, includeThis=False)`` — the same idiom
+  ``matwire_c4d.py`` uses everywhere.
+- **Node id**: ``str(node.GetPath())`` — stable WITHIN one graph read,
+  never persisted across a save/reload or a document undo (the same
+  "re-acquire fresh, never trust a stale handle" lesson the spike's undo
+  probe measured for node deletion applies here too).
+- **Port lookup by SUFFIX, not exact id** (``child_by_suffix``): the
+  spike measured that a node's TOP-LEVEL ``GetInputs()``/``GetOutputs()``
+  children carry FULL ids (``com....texturesampler.tex0``), while a GROUP
+  port's OWN children (``tex0``'s ``path``/``colorspace``) carry SHORT
+  ids. One suffix-matching helper works at BOTH levels without the
+  caller having to know which one applies — the alternative (hardcoding
+  the RS core prefix at every call site, as ``matwire_c4d.py``'s WRITER
+  does because it always knows the exact target) doesn't fit a READER
+  that also has to recognize unknown/foreign node kinds.
+- **Connections**: ``out_port.GetConnections(maxon.PORT_DIR.OUTPUT,
+  a_list)`` fills the passed list with the connected ports on the other
+  end (empty list = unconnected, not an error — measured live). Port ->
+  owning node via ``port.GetAncestor(maxon.NODE_KIND.NODE)`` (studied
+  from the DunHouGo ``renderEngine`` wrapper's ``GetTrueNode`` helper —
+  facts taken, no code copied, per this repo's external-reference rule).
+- **Assetid**: ``str(node.GetValue(_ASSETID_ATTR) or "")``, matched by
+  substring — mirrors ``matwire_c4d._kind_from_assetid``'s caller sites.
+- **Deletion**: ``node.Remove()`` inside ``graph.BeginTransaction()``/
+  ``Commit()``, undo anchored by ``doc.AddUndo(UNDOTYPE_CHANGE, mat)``
+  placed BEFORE the transaction (spike Q4) — one document undo step per
+  material, restoring the removed node on a single Cmd+Z.
+
+``collect()``'s dest-port trace crosses ``rscolorlayer`` on purpose (a
+deferred Task 1 review decision, now implemented deliberately — see its
+docstring below) because ``rscolorlayer`` is one of ``PASS_THROUGH_ASSETS``:
+an AO sampler wired through an AO-multiply color layer into ``base_color``
+traces all the way to the ``base_color`` port. That is CORRECT and safe
+under ``matgraph.audit_colorspaces``'s fixed conflict semantics: the name
+signal says ``ao`` (expects RAW), the port signal says ``basecolor``
+(expects SRGB) — those expected colorspaces DIFFER, so ``infer_channel``
+reports ``"conflict"`` and the check goes to Info, never Fix. An
+AO-multiply sampler wired by matwire can therefore never be silently
+"fixed" to sRGB by QC #13.
+"""
+
+import c4d
+
+from sentinel.matgraph import CS_RAW, CS_SRGB, PASS_THROUGH_ASSETS, find_dead_nodes
+from sentinel.matwire_c4d import _ASSETID_ATTR, _RS_OUTPUT
+from sentinel.textures import RS_NODESPACE
+
+try:
+    import maxon
+    MAXON_AVAILABLE = True
+except ImportError:  # pytest fake harness / c4dpy without maxon
+    maxon = None
+    MAXON_AVAILABLE = False
+
+#: Asset-id SUBSTRINGS (case-insensitive) that mark a node as an AOV store
+#: — the "sinks" per the design doc: alive regardless of whether anything
+#: downstream of them reads their (nonexistent) output.
+_SINK_ASSET_TERMS = ("storecolortoaov", "storescalartoaov", "storeintegertoaov")
+
+#: Trace depth cap (spike-adjacent, defensive): a pass-through chain in
+#: practice is 1-2 nodes (Color Correct, an AO layer, a Bump). 8 is
+#: generous headroom against a pathological/cyclic graph without walking
+#: forever.
+_TRACE_DEPTH_CAP = 8
+
+_EMPTY_MATERIAL_RESULT = {
+    "node_ids": [], "nodes_by_id": {}, "edges": [], "samplers": [],
+    "root_id": None, "sink_ids": [],
+}
+
+
+def child_by_suffix(port_group, suffix):
+    """The first child of ``port_group`` whose id string ends with
+    ``suffix`` — NOT an exact-id lookup. Works uniformly whether the
+    children carry full ids (a node's top-level ``GetInputs()``/
+    ``GetOutputs()``) or short ids (a group port's own children, e.g.
+    ``tex0``'s ``path``/``colorspace``) — see the module docstring.
+    Returns ``None`` for a missing/empty group (never raises: an unknown
+    or foreign node kind not exposing the expected shape is a normal,
+    silent "no signal", not an error)."""
+    if port_group is None:
+        return None
+    for child in port_group.GetChildren() or ():
+        if str(child.GetId()).endswith(suffix):
+            return child
+    return None
+
+
+def _leaf_ports(port_group):
+    """Every LEAF port reachable from ``port_group``, recursing into any
+    child that itself has children (a group port, e.g. ``tex0``). Every RS
+    node kind this feature touches has flat outputs, so the recursion is
+    defensive rather than load-bearing today — but a generic reader
+    shouldn't assume that stays true forever."""
+    ports = []
+    for child in port_group.GetChildren() or ():
+        grandchildren = child.GetChildren() or ()
+        if grandchildren:
+            ports.extend(_leaf_ports(child))
+        else:
+            ports.append(child)
+    return ports
+
+
+def _first_connected_output(node):
+    """The first of ``node``'s own output ports that has at least one
+    downstream connection — the continuation point when a dest-port trace
+    walks THROUGH a pass-through node (design doc: "first output port
+    with connections"). ``None`` if none of its outputs connect anywhere."""
+    for port in _leaf_ports(node.GetOutputs()):
+        probe = []
+        port.GetConnections(maxon.PORT_DIR.OUTPUT, probe)
+        if probe:
+            return port
+    return None
+
+
+def _trace_dest_port(sampler_node):
+    """From ``sampler_node``'s ``outcolor`` output, follow downstream
+    connections, walking THROUGH any node whose assetid matches
+    ``PASS_THROUGH_ASSETS`` (Color Correct, an AO layer, the glossiness
+    Invert, Bump, an unused-today Ramp) until hitting the first
+    non-pass-through target, whose FULL port id string is returned.
+
+    **Fan-out choice** (design doc leaves this to the implementation,
+    documented here as instructed): if ``outcolor`` feeds more than one
+    target, only the FIRST one returned by ``GetConnections`` is traced
+    and reported. A sampler multiply-wired to two different destinations
+    is rare in matwire-authored graphs (matwire never does it) and an
+    artist-wired branch with genuinely different colorspace expectations
+    on each branch is a case no single ``dest_port`` string could
+    represent anyway — reporting one real destination beats inventing a
+    list nothing else in this feature consumes.
+
+    Returns ``None`` when the sampler has no ``outcolor`` port, the chain
+    dead-ends unconnected, the depth cap is hit (a defensive guard against
+    a cyclic/pathological graph, never expected in practice), or a node
+    along the way can't be identified at all (its assetid read raises —
+    an exotic/unreadable node kind). That last case mirrors
+    ``matgraph.PASS_THROUGH_ASSETS``'s own docstring verbatim: "an unknown
+    asset along the way stops the trace with no port signal — never a
+    guess." A node whose assetid IS readable but simply isn't in
+    ``PASS_THROUGH_ASSETS`` is NOT "unknown" in that sense — it is a real,
+    identifiable destination (known or not to ``matgraph``'s channel
+    table is Task 1's concern, not this trace's), so its port IS reported;
+    only a node this trace cannot even inspect gets the "no guess" None."""
+    current_port = child_by_suffix(sampler_node.GetOutputs(), "outcolor")
+    if current_port is None:
+        return None
+    for _ in range(_TRACE_DEPTH_CAP):
+        targets = []
+        current_port.GetConnections(maxon.PORT_DIR.OUTPUT, targets)
+        if not targets:
+            return None
+        target_port = targets[0]
+        try:
+            target_node = target_port.GetAncestor(maxon.NODE_KIND.NODE)
+            assetid = str(target_node.GetValue(_ASSETID_ATTR) or "")
+        except Exception:
+            return None
+        if any(term in assetid for term in PASS_THROUGH_ASSETS):
+            next_port = _first_connected_output(target_node)
+            if next_port is None:
+                return None
+            current_port = next_port
+            continue
+        return str(target_port.GetId())
+    return None
+
+
+def _safe_assetid(node):
+    """``str(node.GetValue(_ASSETID_ATTR) or "")``, tolerating a node whose
+    attribute read raises. Used everywhere in ``_walk_material`` that scans
+    ALL nodes for a structural role (root/sink/sampler detection): one
+    exotic/broken node's assetid failing to read must not disqualify it
+    from ``node_ids``/``edges`` (still structurally present) nor blow up
+    the whole material's walk over a role-classification question it
+    simply doesn't answer either way — it's treated as assetid ``""``,
+    which matches no role.
+
+    This is DELIBERATELY different from ``_trace_dest_port``'s own
+    exception handling: there, "can't identify this node" must stop the
+    trace and report no port signal (never fall through and treat the
+    unreadable node as some ordinary unmatched destination), so that
+    function keeps its own explicit try/except rather than calling this
+    helper."""
+    try:
+        return str(node.GetValue(_ASSETID_ATTR) or "")
+    except Exception:
+        return ""
+
+
+def _rs_node_material_graph(mat):
+    """``mat``'s Redshift node graph, or ``None`` if it isn't (or can't be
+    read as) an RS node material.
+
+    Deliberately swallows every exception into ``None`` here: this
+    function answers "is this material in scope at all", and a Standard/
+    non-node material failing that probe is the ORDINARY case ``collect()``
+    skips silently — never to be confused with an exception raised while
+    walking a material ALREADY identified as RS-node, which produces an
+    ``error`` entry instead of vanishing."""
+    try:
+        node_mat = mat.GetNodeMaterialReference()
+    except Exception:
+        return None
+    if node_mat is None:
+        return None
+    try:
+        if not node_mat.HasSpace(RS_NODESPACE):
+            return None
+        return node_mat.GetGraph(RS_NODESPACE)
+    except Exception:
+        return None
+
+
+def _walk_material(graph):
+    """The single per-material walk both QC #13 and Clean Dead Nodes
+    consume. Returns the ``node_ids``/``nodes_by_id``/``edges``/
+    ``samplers``/``root_id``/``sink_ids`` fields of one ``collect()``
+    entry (never ``material``/``name``/``error`` — the caller adds those).
+
+    ``edges`` is the LITERAL set of direct connections across the WHOLE
+    graph (every node's output ports -> what they connect to), not just
+    the sampler dest-port traces — that is what makes ``find_dead_nodes``'s
+    plain reachability BFS work: a Color Correct sitting between a live
+    sampler and the BRDF is itself an ancestor of the root through a
+    normal edge, so it comes out alive without ``find_dead_nodes`` (or
+    this walk) needing to know anything about pass-through semantics.
+    Pass-through awareness is ONLY needed for the sampler dest-port label,
+    which is a separate, narrower trace (``_trace_dest_port``)."""
+    out = dict(_EMPTY_MATERIAL_RESULT)
+    nodes = list(graph.GetViewRoot().GetInnerNodes(
+        mask=maxon.NODE_KIND.NODE, includeThis=False))
+
+    node_ids = []
+    nodes_by_id = {}
+    for node in nodes:
+        nid = str(node.GetPath())
+        node_ids.append(nid)
+        nodes_by_id[nid] = node
+    out["node_ids"] = node_ids
+    out["nodes_by_id"] = nodes_by_id
+
+    edges = []
+    for node in nodes:
+        from_id = str(node.GetPath())
+        for out_port in _leaf_ports(node.GetOutputs()):
+            targets = []
+            out_port.GetConnections(maxon.PORT_DIR.OUTPUT, targets)
+            for target_port in targets:
+                target_node = target_port.GetAncestor(maxon.NODE_KIND.NODE)
+                edges.append((from_id, str(target_node.GetPath())))
+    out["edges"] = edges
+
+    root_id = None
+    for node in nodes:
+        assetid = _safe_assetid(node)
+        if _RS_OUTPUT in assetid:
+            root_id = str(node.GetPath())
+            break
+    out["root_id"] = root_id
+
+    sink_ids = []
+    for node in nodes:
+        assetid = _safe_assetid(node).lower()
+        if any(term in assetid for term in _SINK_ASSET_TERMS):
+            sink_ids.append(str(node.GetPath()))
+    out["sink_ids"] = sink_ids
+
+    samplers = []
+    for node in nodes:
+        assetid = _safe_assetid(node)
+        if "texturesampler" not in assetid:
+            continue
+        tex0 = child_by_suffix(node.GetInputs(), "tex0")
+        path_port = child_by_suffix(tex0, "path") if tex0 is not None else None
+        cs_port = child_by_suffix(tex0, "colorspace") if tex0 is not None else None
+        path_val = str(path_port.GetPortValue() or "") if path_port is not None else ""
+        assigned = cs_port.GetPortValue() if cs_port is not None else None
+        samplers.append({
+            "node_id": str(node.GetPath()),
+            "path": path_val,
+            "assigned": str(assigned) if assigned is not None else None,
+            "dest_port": _trace_dest_port(node),
+        })
+    out["samplers"] = samplers
+
+    return out
+
+
+def collect(doc):
+    """One walk per RS node material in ``doc``. Returns
+    ``list[{"material", "name", "node_ids", "nodes_by_id", "edges",
+    "samplers", "root_id", "sink_ids", "error"}]``.
+
+    Non-RS/non-node materials (Standard, Octane, a material with no node
+    graph at all) are skipped SILENTLY — they never appear in the result,
+    same as "this check doesn't apply to you". That is different from a
+    material that IS an RS node material but whose walk raises for some
+    other reason (a maxon call failing mid-read): that material is still
+    returned, with ``error`` set and every list empty — so a caller
+    iterating the result never has to special-case "this entry might not
+    have the keys the shape promises", and one bad material never hides
+    the others.
+
+    See the module docstring for the ``rscolorlayer``/AO-multiply
+    dest-port rationale: an AO sampler traced through a color layer into
+    ``base_color`` is intentional and safe (it resolves to ``"conflict"``
+    in ``matgraph.audit_colorspaces``, never a false Fix)."""
+    if doc is None:
+        return []
+    try:
+        materials = doc.GetMaterials() or []
+    except Exception:
+        materials = []
+
+    results = []
+    for mat in materials:
+        if mat is None:
+            continue
+        graph = _rs_node_material_graph(mat)
+        if graph is None:
+            continue  # not an RS node material — silent skip, not an error
+        try:
+            name = mat.GetName() or ""
+        except Exception:
+            name = ""
+        try:
+            entry = _walk_material(graph)
+            entry["material"] = mat
+            entry["name"] = name
+            entry["error"] = None
+        except Exception as exc:
+            entry = dict(_EMPTY_MATERIAL_RESULT)
+            entry["material"] = mat
+            entry["name"] = name
+            entry["error"] = str(exc)
+        results.append(entry)
+    return results
+
+
+def write_colorspaces(doc, fixes):
+    """Apply a batch of colorspace fixes: ``fixes`` = ``[{"material",
+    "node_id", "expected"}]``. Returns ``{"written": n, "materials": m}``
+    (``n`` = ports actually written, ``m`` = distinct materials that had
+    at least one write).
+
+    **Whitelist guard — the crash lesson.** Any ``expected`` outside
+    ``{CS_SRGB, CS_RAW}`` is counted as skipped and the corresponding
+    ``SetPortValue`` is NEVER called: the spike measured that writing an
+    arbitrary string to the RS ``tex0/colorspace`` port crashes C4D
+    outright (``EXC_BAD_ACCESS`` in ``redshift4c4d.xlib``). This is the
+    one call in the whole feature that must never receive a value this
+    codebase didn't itself choose.
+
+    Nodes are re-located by ``node_id`` against a FRESHLY re-read graph
+    for each material, never against a ``GraphNode`` handle carried over
+    from an earlier ``collect()`` call — the same "re-acquire fresh"
+    discipline the spike's delete/undo probe measured as necessary (a
+    stale graph handle silently reports the pre-mutation state with no
+    error).
+
+    Per material: ONE ``doc.AddUndo(UNDOTYPE_CHANGE, mat)`` anchor before
+    ONE maxon transaction covering every fix for that material. This
+    function does NOT open a ``StartUndo``/``EndUndo`` bracket — the
+    caller (``fixes.py``'s ``apply_fixes``, per its existing contract for
+    every other fix function) owns the batch-level undo step.
+
+    The written value is a plain Python ``str`` (``CS_SRGB``/``CS_RAW``
+    themselves), not wrapped in ``maxon.String(...)``: the spike's Q1
+    probe describes writing/re-reading those two values "verbatim" while
+    testing the crash boundary, which reads as a raw string write. This
+    is the one call in this module the spike didn't capture as literal
+    code — flagged for live confirmation before this path ships a Fix
+    button (see the Task 2 report)."""
+    written = 0
+    skipped = 0
+    by_material = []
+    seen_keys = {}
+    for fix in fixes or []:
+        mat = fix.get("material")
+        node_id = fix.get("node_id")
+        expected = fix.get("expected")
+        if mat is None or node_id is None or expected not in (CS_SRGB, CS_RAW):
+            skipped += 1
+            continue
+        key = id(mat)
+        if key not in seen_keys:
+            seen_keys[key] = len(by_material)
+            by_material.append((mat, []))
+        by_material[seen_keys[key]][1].append((node_id, expected))
+
+    materials_written = 0
+    for mat, entries in by_material:
+        graph = _rs_node_material_graph(mat)
+        if graph is None:
+            skipped += len(entries)
+            continue
+        try:
+            nodes_by_id = {
+                str(n.GetPath()): n
+                for n in graph.GetViewRoot().GetInnerNodes(
+                    mask=maxon.NODE_KIND.NODE, includeThis=False)
+            }
+        except Exception:
+            skipped += len(entries)
+            continue
+
+        # Resolve node ids up front so a batch that turns out to name
+        # NOTHING findable in this material's CURRENT graph never anchors
+        # a no-op undo step — the anchor only fires once we know at least
+        # one write is actually about to happen.
+        known = [(nodes_by_id[nid], expected) for nid, expected in entries
+                if nid in nodes_by_id]
+        skipped += len(entries) - len(known)
+        if not known:
+            continue
+
+        processed = 0
+        try:
+            doc.AddUndo(c4d.UNDOTYPE_CHANGE, mat)
+            wrote_any = False
+            with graph.BeginTransaction() as tr:
+                for node, expected in known:
+                    processed += 1
+                    tex0 = child_by_suffix(node.GetInputs(), "tex0")
+                    cs_port = child_by_suffix(tex0, "colorspace") if tex0 is not None else None
+                    if cs_port is None:
+                        skipped += 1
+                        continue
+                    cs_port.SetPortValue(expected)
+                    written += 1
+                    wrote_any = True
+                tr.Commit()
+            if wrote_any:
+                materials_written += 1
+        except Exception:
+            skipped += len(known) - processed
+
+    return {"written": written, "materials": materials_written}
+
+
+def clean_dead_nodes_core(doc):
+    """Remove every dead node (per ``matgraph.find_dead_nodes``) from
+    every RS node material in ``doc``, in ONE ``StartUndo``/``EndUndo``
+    bracket for the WHOLE batch — this is a standalone Tools action (no
+    ``fixes.py`` caller owns the bracket for it), unlike ``write_colorspaces``.
+
+    Returns ``{"ok": True, "materials": n, "removed": k, "skipped": s}``
+    with ``n`` = RS node materials found (``collect()``'s result length),
+    ``k`` = dead nodes actually removed, ``s`` = materials skipped without
+    being touched; or ``{"ok": False, "error": "no_document"}``.
+
+    A material is skipped (counted, never touched) when: it already
+    carries a ``collect()`` ``error`` (the walk itself failed — deleting
+    from data we know is incomplete/wrong is the one thing this button
+    must never do), OR it has no identifiable ``root_id`` (no ``node.output``
+    node found). The brief's "unrecognized potential sink" case is read
+    here as exactly that second situation: without a root, ``find_dead_nodes``
+    has no anchor for "ancestor of the root", and a graph structure this
+    unrecognizable is not one this tool should guess about — it is safer
+    to leave it untouched than to remove nodes based on sinks alone.
+
+    Root passed to ``find_dead_nodes`` is simply ``{root_id}`` (the
+    output node), not also its direct feeders: the reverse-BFS in
+    ``find_dead_nodes`` discovers those feeders itself, one hop back,
+    through the material's own edges — computing them separately here
+    would be redundant with what the BFS already does."""
+    if doc is None:
+        return {"ok": False, "error": "no_document"}
+
+    materials = collect(doc)
+    removed = 0
+    skipped = 0
+
+    doc.StartUndo()
+    try:
+        for entry in materials:
+            if entry.get("error") or entry.get("root_id") is None:
+                skipped += 1
+                continue
+            root_ids = [entry["root_id"]]
+            dead = find_dead_nodes(entry["node_ids"], entry["edges"],
+                                   root_ids, entry["sink_ids"])
+            if not dead:
+                continue
+            mat = entry["material"]
+            try:
+                graph = _rs_node_material_graph(mat)
+                if graph is None:
+                    skipped += 1
+                    continue
+                nodes_by_id = entry["nodes_by_id"]
+                doc.AddUndo(c4d.UNDOTYPE_CHANGE, mat)
+                with graph.BeginTransaction() as tr:
+                    for node_id in dead:
+                        node = nodes_by_id.get(node_id)
+                        if node is None:
+                            continue
+                        node.Remove()
+                        removed += 1
+                    tr.Commit()
+            except Exception:
+                skipped += 1
+    finally:
+        doc.EndUndo()
+
+    return {"ok": True, "materials": len(materials), "removed": removed,
+            "skipped": skipped}
