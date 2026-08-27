@@ -10,7 +10,7 @@ Quality control, render management, and workflow automation plugin for Cinema 4D
 
 Sentinel is a Cinema 4D plugin that **watches your scene in real-time** and helps you ship cleaner renders. It runs continuous quality checks, manages render presets and Redshift AOVs, captures versioned saves with full metadata, and automates the boring parts of mograph delivery.
 
-Sentinel monitors Cinema 4D scenes in real-time with **12 quality checks**, catching production issues before they reach the render farm. It also provides **Redshift AOV management** (Essentials/Production tiers with per-compositor config), **Scene Collector** (pre-flight QC + asset collection + manifest), and a full suite of scene tools: camera rigs (by keyframe wizard Riccardo Bottoni), abc_retime integration (by Austin Marola & Axis), Hierarchy→Layers, Solo Layers, Drop to Floor, and more.
+Sentinel monitors Cinema 4D scenes in real-time with **13 quality checks**, catching production issues before they reach the render farm. It also provides **Redshift AOV management** (Essentials/Production tiers with per-compositor config), **Scene Collector** (pre-flight QC + asset collection + manifest), and a full suite of scene tools: camera rigs (by keyframe wizard Riccardo Bottoni), abc_retime integration (by Austin Marola & Axis), Hierarchy→Layers, Solo Layers, Drop to Floor, and more.
 
 **IMPORTANT**: The snapshot feature requires Python 3.x with Pillow and NumPy for EXR→PNG conversion with ACES tone mapping.
 
@@ -184,7 +184,7 @@ C4D's `SaveProject` saves the project using the delivery folder's name. Sentinel
 - Manifest preserves traceability: `original_filename`, `original_version`, `original_status`
 
 #### QC Report Export
-One-click JSON export with quality score, scene complexity stats, and detailed results for all 12 checks.
+One-click JSON export with quality score, scene complexity stats, and detailed results for all 13 checks.
 
 ### Asset Management
 
@@ -311,7 +311,7 @@ The installer creates the cache directory automatically. This configuration is r
 
 ### Quality Workflow
 
-Status display shows real-time results for all 12 checks:
+Status display shows real-time results for all 13 checks:
 
 ```
 [FAIL] LIGHTS        : 3 lights outside lights group     [Select] [Fix]

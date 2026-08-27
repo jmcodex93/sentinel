@@ -3,7 +3,7 @@
 ## Project Overview
 Sentinel (v1.37.0) is a Cinema 4D quality control and workflow automation plugin designed for professional 3D production workflows. **Originally built as YS Guardian at Yambo Studio**, now maintained and extended by Javier Melgar as Sentinel — keeping the watchdog spirit while expanding into versioning, status tracking, and modern mograph workflow tools. It acts as a real-time watchdog that continuously monitors scenes for production issues, plus provides render management and scene tools.
 
-The plugin performs **12 quality checks** in real-time:
+The plugin performs **13 quality checks** in real-time:
 1. **Lights Organization** - Ensures all lights are properly organized in a "lights" group (Select + Fix)
 2. **Visibility Consistency** - Detects objects with mismatched viewport/render visibility (Select)
 3. **Keyframe Sanity** - Warns about multi-axis keyframes that can cause animation issues (Select)
@@ -16,6 +16,7 @@ The plugin performs **12 quality checks** in real-time:
 10. **Take Validation** - Camera assigned per take, output paths with $take token (Info)
 11. **FPS / Frame Range** - Validates FPS, start frame = 1001 (VFX standard), frame step, timeline + preview alignment, all presets (Info + Fix)
 12. **Cross-Aspect Safe Area** - Verifies opt-in marked subjects (UserData) stay inside per-format safe-area regions when delivering across multiple aspect ratios via Multi-Format Setup. Auto-refresh uses current frame; Info button runs full keyframe sweep (Select + Info)
+13. **RS Colorspace** - Audits every RS Texture Sampler's colorspace against its inferred channel (filename via MatWire tables + destination BRDF port; conflicts and unverifiable autos surface as Info). Catches the ACEScg trap: roughness/normal/metalness in sRGB, basecolor in Raw (Select + Info + Fix)
 
 Additional features: RS AOV management (Essentials/Production/Light Groups), Scene Collector, QC Report export, Render Presets with aspect ratio toggle, Texture Repathing tool (multi-renderer bulk find/replace + smart-fix), and a full suite of scene tools.
 
@@ -329,7 +330,7 @@ cd "../11 C4D DEV/renderEngine" && git pull
 
 ## Testing Checklist
 - [ ] Main plugin file loads without errors
-- [ ] All 12 quality checks function correctly
+- [ ] All 13 quality checks function correctly
 - [ ] Select/Fix/Info buttons work per check
 - [ ] Auto-fix: lights→group, cameras→reset shift, unused mats→delete, FPS/range→standard
 - [ ] FPS/range fix preserves duration, aligns timeline + preview, snaps playhead
