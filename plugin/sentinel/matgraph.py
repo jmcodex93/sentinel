@@ -149,15 +149,32 @@ def _port_channel(dest_port):
 
 def infer_channel(filename, dest_port):
     """``(channel, source)`` combining the two signals per the design
-    doc's decision 4. ``source`` is one of ``"name"``, ``"port"``,
-    ``"both"`` (both signals agree), ``"conflict"`` (both present, differ
-    — channel is ``None``, callers must not guess which signal wins), or
-    ``None`` (neither signal fired — channel is ``None``, silent)."""
+    doc's decision 4, refined by review (Task 1 follow-up, 2026-08-27):
+    a name/port disagreement is only a real ``"conflict"`` when the two
+    channels' EXPECTED COLORSPACES differ (``matwire.channel_colorspace``
+    for each). When the labels differ but the expected colorspace is the
+    SAME (``normal_dx`` name vs generic ``normal`` port; ``packed_orm``
+    name vs ``roughness`` port), there is no disagreement that matters for
+    the colorspace audit — treat it as agreement (``source="both"``),
+    using the PORT-side channel (what actually consumes the texture is
+    the ground truth for display). Without this, a DX/GL-suffixed normal
+    map wired to a real sRGB mismatch was silently downgraded to an
+    unfixable Info conflict, hiding the sRGB-on-normal trap from Fix.
+    Only a genuine cross-colorspace disagreement (e.g. name ``basecolor``
+    vs port ``roughness``) still returns ``"conflict"``.
+
+    ``source`` is one of ``"name"``, ``"port"``, ``"both"`` (signals
+    agree, or agree on expected colorspace), ``"conflict"`` (both
+    present, expected colorspaces differ — channel is ``None``, callers
+    must not guess which signal wins), or ``None`` (neither signal
+    fired — channel is ``None``, silent)."""
     name_channel = _name_channel(filename)
     port_channel = _port_channel(dest_port)
     if name_channel and port_channel:
         if name_channel == port_channel:
             return name_channel, "both"
+        if _expected_colorspace(name_channel) == _expected_colorspace(port_channel):
+            return port_channel, "both"
         return None, "conflict"
     if name_channel:
         return name_channel, "name"
@@ -174,6 +191,14 @@ def audit_colorspaces(entries):
     """``list[verdict]`` — one verdict per entry, entry + ``{"channel",
     "source", "expected", "verdict"}``. Verdict semantics (exact order
     matters — see the design doc + module docstring):
+
+    ``"conflict"`` only fires when ``infer_channel`` found a genuine
+    cross-colorspace disagreement (see its docstring, review Task 1
+    follow-up, 2026-08-27) — a same-colorspace label mismatch (e.g.
+    ``normal_dx`` name vs generic ``normal`` port) is judged as a normal
+    ``ok``/``mismatch`` instead, so the Fix button never misses a real
+    sRGB-on-normal/roughness/etc. trap just because the two signals used
+    different names for the same expected colorspace.
 
     1. ``assigned is None`` (auto) -> ``auto_unverified``, unconditionally
        — even when the channel IS known by name/port. Never a mismatch.

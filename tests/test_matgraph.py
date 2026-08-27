@@ -44,11 +44,36 @@ def test_infer_channel_both_agree():
 
 
 def test_infer_channel_name_vs_port_conflict():
+    # basecolor (name) expects sRGB; roughness (port) expects Raw — a
+    # genuine cross-colorspace disagreement, still a real conflict under
+    # the review-refined rule (see infer_channel's docstring).
     channel, source = infer_channel(
-        "rock_gloss.png",
+        "rock_basecolor.png",
         "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refl_roughness")
     assert channel is None
     assert source == "conflict"
+
+
+def test_infer_channel_normal_dx_vs_generic_normal_port_agree_on_colorspace():
+    # Review fix: name says "normal_dx", port says generic "normal" — the
+    # LABELS differ, but both expect Raw, so this is NOT a conflict. The
+    # port side is the ground truth for display (what actually consumes
+    # the texture), so channel comes back as the port's "normal".
+    channel, source = infer_channel(
+        "rock_normal_dx.png",
+        "com.redshift3d.redshift4c4d.nodes.core.bumpmap.input")
+    assert channel == "normal"
+    assert source == "both"
+
+
+def test_infer_channel_packed_orm_vs_roughness_port_agree_on_colorspace():
+    # Same idea: "packed_orm" (name) vs "roughness" (port) — both Raw,
+    # so this is an agreement, not a conflict.
+    channel, source = infer_channel(
+        "metal_ORM.png",
+        "com.redshift3d.redshift4c4d.nodes.core.standardmaterial.refl_roughness")
+    assert channel == "roughness"
+    assert source == "both"
 
 
 def test_infer_channel_no_signal_is_unknown():
@@ -138,7 +163,9 @@ def test_audit_foreign_colorspace_string():
 
 
 def test_audit_conflict_is_info_not_a_judgment():
-    entries = [{"material": "m1", "file": "rock_gloss.png",
+    # basecolor (name, expects sRGB) vs roughness (port, expects Raw) — a
+    # genuine cross-colorspace disagreement stays a conflict: Info, no Fix.
+    entries = [{"material": "m1", "file": "rock_basecolor.png",
                 "assigned": CS_SRGB,
                 "dest_port": ("com.redshift3d.redshift4c4d.nodes.core."
                               "standardmaterial.refl_roughness")}]
@@ -146,6 +173,33 @@ def test_audit_conflict_is_info_not_a_judgment():
     assert verdict["verdict"] == "conflict"
     assert verdict["channel"] is None
     assert verdict["expected"] is None
+
+
+def test_audit_normal_dx_vs_normal_port_mismatch_not_hidden_by_label_conflict():
+    # Review fix (Task 1 follow-up): a DX/GL-suffixed normal filename
+    # whose dest_port maps to the generic "normal" channel used to come
+    # back as an unfixable "conflict", hiding a real sRGB-on-normal
+    # mismatch from the Fix button. Since normal_dx and normal expect the
+    # SAME colorspace (Raw), this must be a "both" agreement -> mismatch,
+    # not a conflict.
+    entries = [{"material": "m1", "file": "rock_normal_dx.png",
+                "assigned": CS_SRGB,
+                "dest_port": "com.redshift3d.redshift4c4d.nodes.core.bumpmap.input"}]
+    [verdict] = audit_colorspaces(entries)
+    assert verdict["verdict"] == "mismatch"
+    assert verdict["expected"] == CS_RAW
+    assert verdict["source"] == "both"
+    assert verdict["channel"] == "normal"
+
+
+def test_audit_packed_orm_vs_roughness_port_mismatch_not_hidden_by_label_conflict():
+    entries = [{"material": "m1", "file": "metal_ORM.png",
+                "assigned": CS_SRGB,
+                "dest_port": ("com.redshift3d.redshift4c4d.nodes.core."
+                              "standardmaterial.refl_roughness")}]
+    [verdict] = audit_colorspaces(entries)
+    assert verdict["verdict"] == "mismatch"
+    assert verdict["expected"] == CS_RAW
 
 
 def test_audit_unknown_no_signal_is_silent():
