@@ -1214,6 +1214,8 @@ export interface PanelToolResult {
   removed?: number;
   removed_broken?: number;
   removed_dupes?: number;
+  /** `panel/tools/clean_dead_nodes` — RS node materials found. */
+  materials?: number;
   keys?: number;
   objects?: number;
   frames?: number;

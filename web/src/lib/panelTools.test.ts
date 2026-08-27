@@ -21,10 +21,11 @@ describe("TOOL_GROUPS", () => {
       { id: "panel/tools/variant_set", label: "Variant Set" },
     ]);
   });
-  it("Cleanup group has the two cleanup tools", () => {
+  it("Cleanup group has the three cleanup tools (v1.38 adds Clean Dead Nodes)", () => {
     const cleanup = TOOL_GROUPS.find((g) => g.title === "Cleanup");
     expect(cleanup?.tools.map((t) => t.id)).toEqual([
       "panel/tools/delete_empty_nulls", "panel/tools/clean_material_tags",
+      "panel/tools/clean_dead_nodes",
     ]);
   });
   it("carries no keyframe tools (dedicated Frames row, not a group entry)", () => {
@@ -105,6 +106,26 @@ describe("toolToast", () => {
     expect(t.variant).toBe("warn");
     expect(t.message).toBe("Nothing to clean — scene is already tidy.");
   });
+  it("clean_dead_nodes ok reports removed + materials counts", () => {
+    const t = toolToast("panel/tools/clean_dead_nodes", { ok: true, materials: 3, removed: 5, skipped: 0 });
+    expect(t.variant).toBe("success");
+    expect(t.message).toBe("Cleaned 5 dead nodes in 3 materials.");
+  });
+  it("clean_dead_nodes ok appends the skipped tail when skipped>0", () => {
+    const t = toolToast("panel/tools/clean_dead_nodes", { ok: true, materials: 3, removed: 5, skipped: 1 });
+    expect(t.message).toBe("Cleaned 5 dead nodes in 3 materials. · 1 skipped (unreadable graph)");
+  });
+  it("clean_dead_nodes zero-removed is an info toast, never an error", () => {
+    const t = toolToast("panel/tools/clean_dead_nodes", { ok: true, materials: 2, removed: 0, skipped: 0 });
+    expect(t.variant).toBe("info");
+    expect(t.message).toBe("No dead nodes found.");
+  });
+  it("clean_dead_nodes no_document → warn with the existing copy", () => {
+    const t = toolToast("panel/tools/clean_dead_nodes", { ok: false, error: "no_document" });
+    expect(t.variant).toBe("warn");
+    expect(t.message).toBe("No active document.");
+  });
+
   it("variant_set ok names the option and its object count (plural)", () => {
     const t = toolToast("panel/tools/variant_set", { ok: true, objects: 3, option: "Option A" });
     expect(t.variant).toBe("success");

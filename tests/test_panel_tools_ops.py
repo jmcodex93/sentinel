@@ -855,6 +855,88 @@ class TestCleanupKeyframeOps:
         assert panel_tools_ops._op_tool_keyframe_stagger({"frames": 5})["ok"] is True
 
 
+class TestCleanDeadNodesOp:
+    """`panel/tools/clean_dead_nodes` (v1.38, Task 4) — thin passthrough
+    to ``matgraph_c4d.clean_dead_nodes_core``, mirrors
+    TestCleanupKeyframeOps above."""
+
+    def _forbid_dialog(self, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+
+        def _boom(*a, **k):
+            raise AssertionError("no dialog in op path")
+
+        monkeypatch.setattr(panel_tools_ops.c4d.gui, "MessageDialog", _boom)
+        monkeypatch.setattr(panel_tools_ops.c4d.gui, "QuestionDialog", _boom)
+
+    def test_op_registered(self, sentinel_module):
+        from sentinel.ui import panel_tools_ops
+        from sentinel.ui import reports_dialog
+        assert "panel/tools/clean_dead_nodes" in panel_tools_ops.PANEL_TOOLS_OPS
+        assert "panel/tools/clean_dead_nodes" in reports_dialog._OPS
+
+    def test_routes_to_core(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        from sentinel import matgraph_c4d
+        self._forbid_dialog(monkeypatch)
+        doc = _FakeDoc()
+        captured = {}
+        sentinel = {"ok": True, "materials": 3, "removed": 5, "skipped": 1}
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+
+        def _fake_core(d):
+            captured["doc"] = d
+            return sentinel
+
+        monkeypatch.setattr(matgraph_c4d, "clean_dead_nodes_core", _fake_core)
+        result = panel_tools_ops._op_tool_clean_dead_nodes({})
+        assert captured["doc"] is doc
+        assert result is sentinel
+
+    def test_no_document(self, sentinel_module, monkeypatch):
+        from sentinel.ui import panel_tools_ops
+        from sentinel import matgraph_c4d
+        self._forbid_dialog(monkeypatch)
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: None)
+
+        def _never(d):
+            raise AssertionError("engine reached with no document")
+
+        monkeypatch.setattr(matgraph_c4d, "clean_dead_nodes_core", _never)
+        assert panel_tools_ops._op_tool_clean_dead_nodes({}) == {
+            "ok": False, "error": "no_document"}
+
+    def test_zero_removed_still_ok_true(self, sentinel_module, monkeypatch):
+        """removed=0 must stay {"ok": True} — the toast branches on the
+        count, not on ``ok``, and a synthesized error here would make the
+        SPA render a failure for a scene that's simply clean already."""
+        from sentinel.ui import panel_tools_ops
+        from sentinel import matgraph_c4d
+        self._forbid_dialog(monkeypatch)
+        doc = _FakeDoc()
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+        sentinel = {"ok": True, "materials": 2, "removed": 0, "skipped": 0}
+        monkeypatch.setattr(matgraph_c4d, "clean_dead_nodes_core",
+                            lambda d: sentinel)
+        assert panel_tools_ops._op_tool_clean_dead_nodes({}) == sentinel
+
+    def test_response_is_json_serializable(self, sentinel_module, monkeypatch):
+        import json
+        from sentinel.ui import panel_tools_ops
+        from sentinel import matgraph_c4d
+        self._forbid_dialog(monkeypatch)
+        doc = _FakeDoc()
+        monkeypatch.setattr(panel_tools_ops.c4d.documents,
+                            "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(matgraph_c4d, "clean_dead_nodes_core",
+                            lambda d: {"ok": True, "materials": 1,
+                                       "removed": 2, "skipped": 0})
+        json.dumps(panel_tools_ops._op_tool_clean_dead_nodes({}))
+
+
 class _FakeRenameNode:
     """Minimal object/material fake for rename ops: GetName/SetName/GetUp/
     GetTypeName, matching the mechanics rename_plan needs from ``_rename_items``."""
