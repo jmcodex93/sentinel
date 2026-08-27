@@ -692,7 +692,8 @@ def _legacy_score_fixture(counts=None, disabled=None):
     """Shaped like qc.score._legacy_score()'s return (no baseline sidecar)."""
     counts = counts or {}
     disabled = disabled or []
-    total = 12 - len(disabled)
+    # v1.38: check #13 (RS Colorspace) joins the registry — 13, not 12.
+    total = 13 - len(disabled)
     passed = total - sum(1 for v in counts.values() if v)
     return {
         "score": f"{passed}/{total}",
@@ -713,9 +714,11 @@ class TestQcReportPayload:
         assert [c["id"] for c in payload["checks"]] == [
             "lights", "vis", "keys", "cam", "rdc", "textures", "unused_mats",
             "names", "output", "takes", "fps_range", "cross_aspect",
+            # v1.38: check #13 (RS Colorspace) joins the registry, last.
+            "rs_colorspace",
         ]
         assert payload["score"] == {
-            "score": "12/12", "passed": 12, "total": 12,
+            "score": "13/13", "passed": 13, "total": 13,
             "disabled_count": 0, "baseline_status": None,
         }
         assert payload["disabled"] == []
@@ -831,7 +834,8 @@ class TestQcReportPayload:
     def test_empty_score_never_raises(self):
         payload = webbridge.qc_report_payload("", None, {}, None)
         assert payload["scene"] == ""
-        assert len(payload["checks"]) == 12
+        # v1.38: check #13 (RS Colorspace) joins the registry — 13, not 12.
+        assert len(payload["checks"]) == 13
         assert payload["disabled"] == []
 
 
@@ -853,7 +857,9 @@ class TestGroupQcBySeverity:
         warn_ids = {c["id"] for c in grouped["warn"]}
         assert fail_ids == {"lights", "rdc"}
         assert warn_ids == {"vis"}
-        assert grouped["ok_count"] == 8
+        # v1.38: check #13 (RS Colorspace) joins the registry, so with 1
+        # disabled + 2 fail + 1 warn, OK is 13 - 1 - 2 - 1 = 9 (was 8/12).
+        assert grouped["ok_count"] == 9
         assert grouped["disabled_count"] == 1
 
     def test_card_action_flags_from_registry_not_invented(self):
@@ -920,7 +926,9 @@ class TestGroupQcBySeverity:
         grouped = webbridge.group_qc_by_severity(payload["checks"])
         assert grouped["fail"] == []
         assert grouped["warn"] == []
-        assert grouped["ok_count"] == 11
+        # v1.38: check #13 (RS Colorspace) joins the registry — 13 - 1
+        # disabled = 12 OK (was 11/12).
+        assert grouped["ok_count"] == 12
         assert grouped["disabled_count"] == 1
 
     def test_empty_checks_never_raises(self):
