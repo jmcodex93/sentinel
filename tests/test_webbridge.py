@@ -823,6 +823,64 @@ class TestQcReportPayload:
         assert names_row["count"] == 75
         assert len(names_row["details"]) == 50
 
+    def test_metadata_info_rows_preferred_over_violations(self):
+        """v1.38 review fix: check #13 (RS Colorspace) ships a richer
+        Info picture in ``CheckResult.metadata["info"]`` (mismatch + the
+        non-counted auto_unverified/conflict/foreign_cs verdicts) — when
+        present and non-empty, ``_qc_check_details`` must show THAT, not
+        the (narrower) ``violations`` list, which only ever holds the
+        counted mismatches."""
+        score = _legacy_score_fixture(counts={"rs_colorspace": 1})
+        structured = {"rs_colorspace": {
+            "check_id": "rs_colorspace",
+            "violations": [
+                _violation("rs_colorspace", "spike_mat", "mismatch only"),
+            ],
+            "metadata": {
+                "legacy_count": 1,
+                "info": [
+                    {"material": "spike_mat", "file": "basecolor.png",
+                     "assigned": "RS_INPUT_COLORSPACE_RAW", "channel": "basecolor",
+                     "expected": "RS_INPUT_COLORSPACE_SRGB", "reason": "mismatch"},
+                    {"material": "spike_mat", "file": "rough.png",
+                     "assigned": None, "channel": "roughness", "reason": "auto_unverified"},
+                    {"material": "spike_mat", "file": "metal.png",
+                     "assigned": "OCIO_custom", "channel": "metalness",
+                     "reason": "foreign_cs"},
+                ],
+            },
+        }}
+        payload = webbridge.qc_report_payload("scene.c4d", {}, score, structured)
+        row = next(c for c in payload["checks"] if c["id"] == "rs_colorspace")
+        # 3 info rows, NOT the 1-entry violations list.
+        assert len(row["details"]) == 3
+        reasons = [d["extras"]["reason"] for d in row["details"]]
+        assert reasons == ["mismatch", "auto_unverified", "foreign_cs"]
+        # Each line names the material/file and its reason in human-readable form.
+        assert "spike_mat" in row["details"][0]["message"]
+        assert "basecolor.png" in row["details"][0]["message"]
+        assert "auto" in row["details"][1]["message"].lower()
+        assert "unverified" in row["details"][1]["message"].lower()
+        assert "conflict" not in row["details"][1]["message"].lower()
+        assert "metal.png" in row["details"][2]["message"]
+        assert "OCIO_custom" in row["details"][2]["message"]
+
+    def test_metadata_info_absent_falls_back_to_violations(self):
+        """Regression pin: a check without ``metadata.info`` (i.e. every
+        check except rs_colorspace today, and rs_colorspace itself when it
+        has nothing to report) keeps showing its plain ``violations`` list,
+        completely unchanged."""
+        score = _legacy_score_fixture(counts={"lights": 1})
+        structured = {"lights": _structured("lights", [
+            _violation("lights", "/Rig/Key Light", "Light outside lights group"),
+        ])}
+        payload = webbridge.qc_report_payload("scene.c4d", {}, score, structured)
+        lights_row = next(c for c in payload["checks"] if c["id"] == "lights")
+        assert lights_row["details"] == [
+            {"label": "/Rig/Key Light", "message": "Light outside lights group",
+             "extras": None},
+        ]
+
     def test_non_dict_violation_never_raises(self):
         score = _legacy_score_fixture(counts={"lights": 1})
         structured = {"lights": _structured("lights", ["not-a-dict"])}

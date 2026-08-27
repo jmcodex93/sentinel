@@ -159,6 +159,7 @@ def check_rs_colorspace(doc, rules_context=None):
                     "file": verdict.get("file"),
                     "assigned": verdict.get("assigned"),
                     "channel": verdict.get("channel"),
+                    "expected": verdict.get("expected"),
                     "reason": reason,
                 })
             elif reason in ("auto_unverified", "conflict", "foreign_cs"):

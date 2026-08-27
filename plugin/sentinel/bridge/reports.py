@@ -241,20 +241,86 @@ def _qc_violation_detail(violation):
     }
 
 
-def _qc_check_details(check_id, score, structured_by_check):
-    """Violations to show for one check_id, capped at ``_QC_DETAIL_CAP``.
+def _qc_info_detail(row):
+    """One ``CheckResult.metadata["info"]`` row -> the same compact
+    detail-row shape ``_qc_violation_detail`` builds from a violation
+    (``{"label", "message", "extras"}``) — for a check (today: v1.38's
+    ``rs_colorspace``) that ships a richer non-violation Info picture
+    alongside its counted violations (``checks/matgraph.py``'s
+    ``check_rs_colorspace``: every verdict except the two
+    ``matgraph.audit_colorspaces`` itself documents as silent —
+    ``unknown``/``ok`` — including the counted ``mismatch`` entries
+    themselves, so the Info button shows the check's whole picture, not
+    just what counted). Defensive against a malformed/non-dict row, same
+    as ``_qc_violation_detail``.
 
-    Mirrors ``ui/dialogs.py`` ``AssetHubDialog._new_violations_for_check``
-    exactly: when a baseline sidecar is active, prefer its "new" diff
-    (``score["baseline_matches"]``) so accepted violations don't reappear;
-    otherwise fall back to the raw structured violations for that check.
+    Message wording is intentionally reason-specific (mirrors the
+    per-mismatch violation message format for ``mismatch`` itself,
+    human-readable prose for the other three reasons) rather than a single
+    generic template — a reader scanning the Info list needs to tell
+    "already fixed by Fix" (mismatch) apart from "nothing to fix here, but
+    worth knowing" (the other three) at a glance.
     """
+    if not isinstance(row, dict):
+        return {"label": "", "message": str(row), "extras": None}
+    material = row.get("material") or ""
+    file_name = row.get("file") or ""
+    channel = row.get("channel")
+    assigned = row.get("assigned")
+    reason = row.get("reason")
+    if reason == "mismatch":
+        message = (
+            f"{material}: {file_name} is {assigned}, "
+            f"{channel} expects {row.get('expected')}"
+        )
+    elif reason == "auto_unverified":
+        message = f"{material}: {file_name} — auto, unverified"
+    elif reason == "conflict":
+        message = (
+            f"{material}: {file_name} — conflict: name and destination "
+            f"channel signals disagree"
+        )
+    elif reason == "foreign_cs":
+        message = f"{material}: {file_name} — foreign colorspace '{assigned}'"
+    else:
+        message = f"{material}: {file_name} — {reason}"
+    return {"label": material, "message": message, "extras": {"reason": reason}}
+
+
+def _qc_check_details(check_id, score, structured_by_check):
+    """Detail rows to show for one check_id, capped at ``_QC_DETAIL_CAP``.
+
+    ``CheckResult.metadata["info"]`` is PREFERRED, when present and
+    non-empty, over the plain ``violations`` list — today only
+    ``rs_colorspace`` (v1.38, QC #13) ever sets it, and its whole point is
+    to show MORE than what counted (see ``_qc_info_detail``'s docstring),
+    so a check that populates it must never be shown the narrower
+    violations-only view instead. Every other check (no ``metadata.info``
+    at all) falls through UNCHANGED to the original behavior below.
+
+    That original behavior mirrors ``ui/dialogs.py``
+    ``AssetHubDialog._new_violations_for_check`` exactly: when a baseline
+    sidecar is active, prefer its "new" diff (``score["baseline_matches"]``)
+    so accepted violations don't reappear; otherwise fall back to the raw
+    structured violations for that check. (``rs_colorspace``'s baseline
+    diffing, if a project ever accepts one of its mismatches, still keys
+    off ``violations``, not ``metadata.info``: baseline identity/acceptance
+    is a ``Violation`` concept the non-violation info rows never
+    participate in — but that path is only reached when ``metadata.info``
+    is absent/empty for this check_id, which never happens for a
+    ``rs_colorspace`` result computed by ``check_rs_colorspace`` itself.)
+    """
+    structured = structured_by_check.get(check_id)
+    metadata = (structured or {}).get("metadata") or {}
+    info_rows = metadata.get("info") if isinstance(metadata, dict) else None
+    if info_rows:
+        return [_qc_info_detail(row) for row in info_rows[:_QC_DETAIL_CAP]]
+
     baseline_matches = score.get("baseline_matches")
     if baseline_matches:
         match = baseline_matches.get(check_id) or {}
         violations = match.get("new") or []
     else:
-        structured = structured_by_check.get(check_id)
         violations = (structured or {}).get("violations") or []
     return [_qc_violation_detail(v) for v in violations[:_QC_DETAIL_CAP]]
 
