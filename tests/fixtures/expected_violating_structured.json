@@ -657,6 +657,14 @@
       }
     ]
   },
+  "rs_colorspace": {
+    "check_id": "rs_colorspace",
+    "metadata": {
+      "info": [],
+      "legacy_count": 0
+    },
+    "violations": []
+  },
   "takes": {
     "check_id": "takes",
     "metadata": {

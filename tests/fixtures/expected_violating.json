@@ -142,6 +142,7 @@
     }
   ],
   "render_conflicts": 10,
+  "rs_colorspace": [],
   "takes": [
     {
       "issue": "Output path missing $take token",

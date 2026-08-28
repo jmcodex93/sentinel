@@ -52,6 +52,12 @@ STRUCTURED_CHECKS = (
         "check_cross_aspect_safe_area_structured",
         {"sample_strategy": "current_frame"},
     ),
+    # v1.38: the oracle enumerates checks from THIS hardcoded tuple, not the
+    # registry — discovered live when the first freeze after adding QC #13
+    # wrote byte-identical files and reported 12/12 green with the new check
+    # silently absent. Fixtures carry no RS materials, so both rows are the
+    # trivial ok the plan predicted.
+    ("rs_colorspace", "matgraph_checks", "check_rs_colorspace", {}),
 )
 CHECKS = tuple((check_id, func_name) for check_id, _owner, func_name, _kwargs in STRUCTURED_CHECKS)
 
@@ -94,6 +100,7 @@ def _load_sentinel():
     module.scene_checks = importlib.import_module("sentinel.checks.scene")
     module.render_checks = importlib.import_module("sentinel.checks.render")
     module.assets_checks = importlib.import_module("sentinel.checks.assets")
+    module.matgraph_checks = importlib.import_module("sentinel.checks.matgraph")
     module.safe_area_checks = importlib.import_module("sentinel.checks.safe_areas")
     module.get_active_rules = importlib.import_module("sentinel.rules").get_active_rules
     module.active_rules_for_doc = importlib.import_module(
