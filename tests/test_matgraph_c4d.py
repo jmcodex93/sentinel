@@ -165,6 +165,7 @@ class FakeViewRoot:
 
 class FakeGraph:
     def __init__(self):
+        self.begin_transaction_user_data = []
         self.nodes = []
         self.remove_calls = []
         self.set_port_calls = []
@@ -180,7 +181,11 @@ class FakeGraph:
     def GetViewRoot(self):
         return self._view_root
 
-    def BeginTransaction(self):
+    def BeginTransaction(self, user_data=None):
+        # Real signature accepts optional user_data (UNDO_MODE.ADD join —
+        # measured live in v1.38: without it a two-material Fix needed two
+        # Cmd+Z presses). Recorded so the join idiom is pinned.
+        self.begin_transaction_user_data.append(user_data)
         return FakeTransaction(self)
 
 
@@ -908,3 +913,71 @@ class TestCleanDeadNodesCore:
         assert result["skipped"] == 1
         assert result["removed"] == 0
         assert graph.remove_calls == []
+
+
+class TestUndoJoinUserData:
+    """Pin of the UNDO_MODE.ADD join idiom (measured live, v1.38): every
+    mutating transaction must pass the undo-joining user_data when maxon
+    exposes it — a bare BeginTransaction() pushes its OWN document undo
+    step per material and a two-material Fix needs two Cmd+Z presses
+    (matwire v1.32.1 behavior, re-measured). textures.py's repathing is
+    the in-repo precedent."""
+
+    def test_undo_join_user_data_built_from_maxon_enum(self, matgraph_c4d, monkeypatch):
+
+        class _DD(dict):
+            def Set(self, key, value):
+                self[key] = value
+
+        class _Nodes:
+            UndoMode = "undo-mode-key"
+            class UNDO_MODE:
+                ADD = "add"
+
+        class _Maxon:
+            DataDictionary = _DD
+            nodes = _Nodes
+
+        monkeypatch.setattr(matgraph_c4d, "maxon", _Maxon)
+        ud = matgraph_c4d._undo_join_user_data()
+        assert ud is not None and ud["undo-mode-key"] == "add"
+
+    def test_write_colorspaces_passes_join_user_data(self, matgraph_c4d, monkeypatch):
+
+        class _DD(dict):
+            def Set(self, key, value):
+                self[key] = value
+
+        class _Nodes:
+            UndoMode = "undo-mode-key"
+            class UNDO_MODE:
+                ADD = "add"
+
+        real_maxon = matgraph_c4d.maxon
+
+        class _Maxon:
+            """Delegating stub: adds the undo-join enum surface on top of
+            the harness maxon (which the walk still needs for NODE_KIND
+            etc.) — replacing it wholesale silently breaks the walk and
+            the material gets skipped, which is exactly what the first
+            version of this test measured."""
+            DataDictionary = _DD
+            nodes = _Nodes
+
+            def __getattr__(self, name):
+                return getattr(real_maxon, name)
+
+        monkeypatch.setattr(matgraph_c4d, "maxon", _Maxon())
+        graph, sampler, brdf, out = _simple_chain_graph()
+        mat = FakeMaterial("mat1", graph=graph)
+        doc = FakeDoc([mat])
+        result = matgraph_c4d.write_colorspaces(
+            doc, [{"material": mat, "node_id": "sampler1",
+                   "expected": matgraph_c4d.CS_SRGB}])
+        assert result["written"] == 1
+        assert graph.begin_transaction_user_data, "no transaction opened"
+        assert all(ud is not None for ud in graph.begin_transaction_user_data)
+
+    def test_fallback_bare_call_when_maxon_lacks_enum(self, matgraph_c4d, monkeypatch):
+        monkeypatch.setattr(matgraph_c4d, "maxon", None)
+        assert matgraph_c4d._undo_join_user_data() is None

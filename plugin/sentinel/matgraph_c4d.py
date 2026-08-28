@@ -133,6 +133,37 @@ def _leaf_ports(port_group):
 
 
 
+
+def _undo_join_user_data():
+    """Transaction user_data that makes the maxon transaction JOIN the
+    caller's open StartUndo/EndUndo bracket instead of pushing its own
+    document undo step.
+
+    MEASURED LIVE (v1.38 verification): with a bare ``BeginTransaction()``
+    a two-material Fix needed TWO Cmd+Z presses — each material's
+    transaction landed as its own step despite the outer bracket and the
+    per-material CHANGE anchors (the matwire v1.32.1 step-per-transaction
+    behavior). ``textures.py``'s repathing (single Cmd+Z across materials,
+    live-verified in v1.5.7) does it by passing ``UNDO_MODE.ADD`` in the
+    transaction's user_data — the same idiom the official
+    ``create_redshift_nodematerial_2024.py`` example pairs with a prior
+    ``doc.AddUndo``. ``None`` (bare call) when maxon lacks the enum."""
+    try:
+        user_data = maxon.DataDictionary()
+        user_data.Set(maxon.nodes.UndoMode, maxon.nodes.UNDO_MODE.ADD)
+        return user_data
+    except Exception:
+        return None
+
+
+def _begin_join_transaction(graph):
+    """``graph.BeginTransaction`` with the undo-joining user_data when
+    available, bare otherwise (fallback keeps pre-2026 builds working)."""
+    user_data = _undo_join_user_data()
+    if user_data is not None:
+        return graph.BeginTransaction(user_data)
+    return graph.BeginTransaction()
+
 def _connection_port(conn):
     """Unwrap one ``GetConnections`` result entry to its port.
 
@@ -481,7 +512,7 @@ def write_colorspaces(doc, fixes):
             doc.AddUndo(c4d.UNDOTYPE_CHANGE, mat)
             pending_written = 0
             pending_skipped = 0
-            with graph.BeginTransaction() as tr:
+            with _begin_join_transaction(graph) as tr:
                 for node, expected in known:
                     tex0 = child_by_suffix(node.GetInputs(), "tex0")
                     cs_port = child_by_suffix(tex0, "colorspace") if tex0 is not None else None
@@ -700,7 +731,7 @@ def clean_dead_nodes_core(doc):
                     continue
                 doc.AddUndo(c4d.UNDOTYPE_CHANGE, mat)
                 pending_removed = 0
-                with graph.BeginTransaction() as tr:
+                with _begin_join_transaction(graph) as tr:
                     for node_id in dead:
                         fresh_by_id[node_id].Remove()
                         pending_removed += 1
