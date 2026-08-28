@@ -132,6 +132,22 @@ def _leaf_ports(port_group):
     return ports
 
 
+
+def _connection_port(conn):
+    """Unwrap one ``GetConnections`` result entry to its port.
+
+    MEASURED LIVE (v1.38 verification, C4D 2026.304): the real API fills
+    the list with TUPLES — ``(port, wire-data...)`` — exactly as the
+    official SDK example reads them (``nodegraph_selection_r26.py``:
+    ``connection[0]``). The first fake modeled the list as bare ports, so
+    production written against the fake raised ``'tuple' object has no
+    attribute 'GetAncestor'`` on every real material (the fake-shape
+    lesson, once more). Tolerates both shapes so the probe-style truthy
+    checks stay valid either way."""
+    if isinstance(conn, (tuple, list)):
+        return conn[0]
+    return conn
+
 def _first_connected_output(node):
     """The first of ``node``'s own output ports that has at least one
     downstream connection — the continuation point when a dest-port trace
@@ -182,7 +198,7 @@ def _trace_dest_port(sampler_node):
         current_port.GetConnections(maxon.PORT_DIR.OUTPUT, targets)
         if not targets:
             return None
-        target_port = targets[0]
+        target_port = _connection_port(targets[0])
         try:
             target_node = target_port.GetAncestor(maxon.NODE_KIND.NODE)
             assetid = str(target_node.GetValue(_ASSETID_ATTR) or "")
@@ -278,7 +294,8 @@ def _walk_material(graph):
         for out_port in _leaf_ports(node.GetOutputs()):
             targets = []
             out_port.GetConnections(maxon.PORT_DIR.OUTPUT, targets)
-            for target_port in targets:
+            for conn in targets:
+                target_port = _connection_port(conn)
                 target_node = target_port.GetAncestor(maxon.NODE_KIND.NODE)
                 edges.append((from_id, str(target_node.GetPath())))
     out["edges"] = edges

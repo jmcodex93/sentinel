@@ -93,7 +93,13 @@ class FakePort:
         self._targets.append(other_port)
 
     def GetConnections(self, direction, out_list):
-        out_list.extend(self._targets)
+        # MEASURED LIVE (v1.38 verification): the real API fills the list
+        # with TUPLES ``(port, wire-data)`` — the SDK example reads
+        # ``connection[0]``. The first version of this fake extended bare
+        # ports and let production ship code that called GraphNode methods
+        # on the tuple ('tuple' object has no attribute 'GetAncestor' on
+        # every real material). The fake now models the real shape.
+        out_list.extend((t, object()) for t in self._targets)
         return True
 
     def GetAncestor(self, kind):
