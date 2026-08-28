@@ -52,6 +52,22 @@ class TestPaletteRunConfirmGate:
         assert response != {"ok": False, "error": "confirm_required"}
         assert response == {"ok": False, "error": "No active document"}
 
+    def test_fix_rs_colorspace_action_resolves_and_dispatches(self, sentinel_module):
+        """Review fix (Important 1, final v1.38 review): ``fix_rs_colorspace``
+        must be a real, dispatchable palette action — not
+        ``{"error": "unknown palette action: 'fix_rs_colorspace'"}`` — and,
+        like fix_lights/fix_cameras, never gated behind confirm_required.
+        The fake harness's ``documents.GetActiveDocument()`` always returns
+        None, so this can't run the fix end to end here, but reaching
+        "No active document" (the next real check) proves the id resolved
+        and reached ``_palette_fix``'s dispatch, not the unknown-action
+        fallback."""
+        from sentinel.ui import web_ops
+
+        response = web_ops._op_palette_run({"id": "fix_rs_colorspace"})
+
+        assert response == {"ok": False, "error": "No active document"}
+
 
 class TestSettingsRenderNotify:
     """``render_notify`` across ``form/settings/state`` / ``form/settings/submit``

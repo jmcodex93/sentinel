@@ -155,6 +155,31 @@ def build_qc_report(doc, results, artist_name, qc_summary=None):
         ],
     }
 
+    # RS Colorspace check (v1.38, QC #13) — this legacy dict-driven report
+    # builder is not currently wired to a live SPA op (see
+    # ``report_export.py``'s own docstring), so ``results`` never actually
+    # carries an ``rs_colorspace_bad`` key from a real caller today; the
+    # section still needs to exist so the JSON's check-key set always
+    # matches the registry (``test_report_section_keys_match_registry_
+    # report_keys``), the same completeness contract every other section
+    # here already honors.
+    # TODO: wire a real caller (SPA op or CLI) to populate
+    # ``results["rs_colorspace_bad"]`` once this legacy report builder
+    # gets a live consumer for QC #13, the same way the other sections
+    # here are already fed.
+    rs_colorspace_bad = results.get("rs_colorspace_bad", [])
+    report["checks"]["rs_colorspace"] = {
+        "status": "PASS" if not rs_colorspace_bad else "FAIL",
+        "count": len(rs_colorspace_bad),
+        "label": "RS texture colorspace mismatches",
+        "items": [
+            f"{item.get('material_name', 'unnamed')}: {item.get('file', '?')} "
+            f"is {item.get('assigned')}, {item.get('channel')} expects "
+            f"{item.get('expected')}"
+            for item in rs_colorspace_bad[:30]
+        ],
+    }
+
     report_key_by_id = _report_key_by_check_id()
 
     disabled_checks = []

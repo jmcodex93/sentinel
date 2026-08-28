@@ -385,6 +385,15 @@ PALETTE_ACTIONS = (
      "confirm_label": "Rewrite FPS + frame range on {count} issue(s) "
                        "across ALL render presets — single undo",
      "confirm_verb": "Rewrite FPS + range", "destructive": True},
+    {"id": "fix_rs_colorspace", "label": "Fix RS texture colorspaces",
+     "group": "Quick Fix", "kind": "run", "requires_doc": True,
+     "check_id": "rs_colorspace"},
+    # No requires_confirm: like fix_lights/fix_cameras (never fix_materials/
+    # fix_fps), this is reversible in a single undo — it only ever writes
+    # the two whitelisted RS colorspace constants (matgraph_c4d.
+    # write_colorspaces), never deletes anything or rewrites render
+    # presets, so it doesn't meet the DECISIÓN bar the two confirmed fixes
+    # were classified against (see this comment block's own header).
     {"id": "rescan_qc", "label": "Rescan QC", "group": "Quick Fix",
      "kind": "run", "requires_doc": True},
 )

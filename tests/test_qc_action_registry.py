@@ -48,14 +48,18 @@ def test_every_entry_has_valid_actions_report_key_and_fix(sentinel_module):
 
 
 def test_row_click_and_fix_scope_overrides(sentinel_module):
-    """cross_aspect row click runs the sweep (info); fps_range fix is document-scoped."""
+    """cross_aspect row click runs the sweep (info); fps_range and (v1.38)
+    rs_colorspace fixes are document-scoped — both re-derive their own
+    fix targets fresh rather than acting on an ``objects`` list handed in
+    from a stale check run."""
     from sentinel.qc.registry import CHECK_REGISTRY
 
     by_id = {entry.check_id: entry for entry in CHECK_REGISTRY}
     assert by_id["cross_aspect"].row_click_action == "info"
     assert by_id["fps_range"].fix_scope == "document"
+    assert by_id["rs_colorspace"].fix_scope == "document"
     for entry in CHECK_REGISTRY:
-        if entry.check_id != "fps_range":
+        if entry.check_id not in ("fps_range", "rs_colorspace"):
             assert entry.fix_scope == "objects"
 
 

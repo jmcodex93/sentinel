@@ -65,6 +65,16 @@ def _op_tool_clean_material_tags(payload):
     return _tool(scene_tools._clean_material_tags_core)
 
 
+def _op_tool_clean_dead_nodes(payload):
+    """Tools -> Cleanup -> "Clean Dead Nodes" (v1.38, Task 4): thin
+    passthrough to ``matgraph_c4d.clean_dead_nodes_core`` (Task 2), same
+    ``_tool()`` shape as ``delete_empty_nulls``/``clean_material_tags``.
+    Lazy import — the same convention as ``keyframes``/``variant_tag``
+    above, so importing this module doesn't pull in the graph adapter."""
+    from sentinel import matgraph_c4d
+    return _tool(matgraph_c4d.clean_dead_nodes_core)
+
+
 def _op_tool_keyframe_offset(payload):
     from sentinel import keyframes
     return _tool(lambda doc: keyframes.run_offset(doc, (payload or {}).get("frames")))
@@ -561,6 +571,7 @@ PANEL_TOOLS_OPS = {
     "panel/open_external": _op_open_external,
     "panel/tools/delete_empty_nulls": _op_tool_delete_empty_nulls,
     "panel/tools/clean_material_tags": _op_tool_clean_material_tags,
+    "panel/tools/clean_dead_nodes": _op_tool_clean_dead_nodes,
     "panel/tools/keyframe_offset": _op_tool_keyframe_offset,
     "panel/tools/keyframe_stagger": _op_tool_keyframe_stagger,
     "panel/tools/rename_preview": _op_rename_preview,

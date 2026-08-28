@@ -25,6 +25,7 @@ export const TOOL_GROUPS: { title: string; tools: ToolDef[] }[] = [
     tools: [
       { id: "panel/tools/delete_empty_nulls", label: "Delete Empty Nulls" },
       { id: "panel/tools/clean_material_tags", label: "Clean Material Tags" },
+      { id: "panel/tools/clean_dead_nodes", label: "Clean Dead Nodes" },
     ],
   },
   {
@@ -77,7 +78,7 @@ const ERROR_COPY: Record<string, string> = {
 
 /** Tool result → toast. Success uses a count when the op returns one; errors
  * map to actionable copy (mirroring the native MessageDialog intent). */
-export function toolToast(id: string, r: PanelToolResult): { message: string; variant: "success" | "warn" } {
+export function toolToast(id: string, r: PanelToolResult): { message: string; variant: "success" | "warn" | "info" } {
   if (!r.ok) {
     return { message: ERROR_COPY[r.error ?? ""] ?? "Couldn't run that tool.", variant: "warn" };
   }
@@ -138,6 +139,31 @@ export function toolToast(id: string, r: PanelToolResult): { message: string; va
     const objects = r.objects ?? 0;
     return {
       message: `Shifted ${keys} key${keys === 1 ? "" : "s"} across ${objects} object${objects === 1 ? "" : "s"} by ${r.frames ?? 0}f.`,
+      variant: "success",
+    };
+  }
+  if (id === "panel/tools/clean_dead_nodes") {
+    const removed = r.removed ?? 0;
+    const materials = r.materials ?? 0;
+    const skipped = r.skipped ?? 0;
+    if (removed === 0 && skipped > 0) {
+      // Not the same as a clean scene: the only dead-node-bearing
+      // materials were skipped (unreadable graph / unknown sink) —
+      // exactly what the conservative-skip philosophy exists to surface,
+      // so a plain info toast would swallow it.
+      return {
+        message: `No dead nodes removed · ${skipped} skipped (unreadable graph)`,
+        variant: "warn",
+      };
+    }
+    if (removed === 0) {
+      // Never an error: a clean graph is the expected steady state, not a
+      // failure to report as a warning.
+      return { message: "No dead nodes found.", variant: "info" };
+    }
+    const tail = skipped > 0 ? ` · ${skipped} skipped (unreadable graph)` : "";
+    return {
+      message: `Cleaned ${removed} dead nodes in ${materials} materials.${tail}`,
       variant: "success",
     };
   }

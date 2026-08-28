@@ -277,6 +277,69 @@ def fix_unused_materials(doc, unused_mats, manage_undo=True):
     return deleted
 
 
+def fix_rs_colorspace(doc, manage_undo=True):
+    """Auto-fix QC #13 (RS Colorspace): re-runs ``matgraph_c4d.collect`` +
+    ``matgraph.audit_colorspaces`` FRESH — never trusts the QC check's own
+    cached rows, which may predate whatever scene edit triggered this fix
+    — builds the fix list from ``mismatch`` verdicts only (the only
+    Fix-able verdict; see ``matgraph.audit_colorspaces``'s docstring), and
+    delegates the actual port writes to ``matgraph_c4d.write_colorspaces``
+    — the one function in this codebase allowed to call ``SetPortValue``
+    on the RS colorspace port, and only with a whitelisted
+    ``CS_SRGB``/``CS_RAW`` value (writing anything else there crashes C4D,
+    measured live in the Task 2 spike).
+
+    ``manage_undo=False`` lets a caller (``apply_fixes``) own the single
+    StartUndo/EndUndo + cache/EventAdd so the whole batch is one undo step
+    — mirrors ``fix_fps_range``, the other ``fix_scope="document"`` fix.
+
+    Being document-scoped (Minor 8, final v1.38 review): like
+    ``fix_fps_range``, this re-derives EVERY current mismatch from a fresh
+    graph walk and rewrites all of them — including ones a supervisor
+    already accepted into the baseline. This is deliberate (the spec's own
+    "corregir todos los infractores"), not an oversight: unlike the
+    baseline's own §Identidad promise for QC violations shown in a report
+    (an acceptance sticks until the object/location changes), a document-
+    scoped Fix button has no concept of "skip this one, it's accepted" —
+    it fixes the SCENE, and a baselined mismatch is still a real mismatch
+    on disk. Running this button re-arms any baseline acceptance for
+    ``rs_colorspace`` (the value it accepted no longer matches reality),
+    same precedent as ``fix_fps_range``.
+    """
+    from sentinel.checks.matgraph import entries_for_audit
+    from sentinel.matgraph import audit_colorspaces
+    from sentinel.matgraph_c4d import collect, write_colorspaces
+
+    if manage_undo:
+        doc.StartUndo()
+    result = {"written": 0, "materials": 0}
+    try:
+        materials = collect(doc)
+        entries = entries_for_audit(materials)
+        verdicts = audit_colorspaces(entries)
+        pending_fixes = [
+            {"material": v.get("material"), "node_id": v.get("node_id"),
+             "expected": v.get("expected")}
+            for v in verdicts if v.get("verdict") == "mismatch"
+        ]
+        result = write_colorspaces(doc, pending_fixes)
+    except Exception as e:
+        # Standalone (button) path degrades gracefully; a batching caller
+        # (apply_fixes / gate) must see the failure, not a silent no-op —
+        # same contract as fix_fps_range.
+        if not manage_undo:
+            raise
+        safe_print(f"Error fixing RS colorspace: {e}")
+    finally:
+        if manage_undo:
+            doc.EndUndo()
+
+    if manage_undo:
+        check_cache.clear()
+        c4d.EventAdd()
+    return result
+
+
 def apply_fixes(doc, fixes):
     """Apply selected auto-fixes as one undo step.
 

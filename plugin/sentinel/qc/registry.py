@@ -215,6 +215,22 @@ CHECK_REGISTRY = [
         structured_kwargs={"sample_strategy": "current_frame"},
         legacy_kwargs={"sample_strategy": "current_frame"},
     ),
+    CheckEntry(
+        check_id="rs_colorspace",
+        row_label="RS Colorspace",
+        label_ok="Texture colorspaces match their channels",
+        label_fail_template="{n} colorspace mismatch(es)",
+        names_key=None,
+        severity="FAIL",
+        has_fix=True,
+        structured_fn="matgraph.check_rs_colorspace",
+        legacy_fn="matgraph.check_rs_colorspace",
+        preflight_template="  {n} colorspace mismatches",
+        report_key="rs_colorspace",
+        actions=("select", "info", "fix"),
+        fix_fn="fixes.fix_rs_colorspace",
+        fix_scope="document",
+    ),
 ]
 
 
@@ -313,6 +329,8 @@ def resolve_function(fn_ref, panel_module=None):
         module = import_module("sentinel.checks.assets")
     elif source == "safe_areas":
         module = import_module("sentinel.checks.safe_areas")
+    elif source == "matgraph":
+        module = import_module("sentinel.checks.matgraph")
     elif source == "panel":
         if panel_module is None:
             raise ValueError(f"Panel module is required to resolve {fn_ref}")

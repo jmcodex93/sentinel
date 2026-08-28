@@ -3,8 +3,10 @@
 
 # Deterministic per-check QC action button IDs, derived from the registry index.
 # id = QC_ACTION_BASE + index*4 + slot. Slots: select=0, info=1, fix=2 (slot 3
-# reserved/unused). With 12 checks this spans 1400..1446 — verified collision-free
-# against every G / GateTriageIds id below.
+# reserved/unused). With 13 checks (v1.38) this spans 1400..1450 — verified
+# collision-free against every G / GateTriageIds id below (nothing allocated
+# in 1450+; no live caller outside this module since the native panel retired
+# in v1.25, kept for the dialogs that still decode these ids).
 QC_ACTION_BASE = 1400
 _QC_ACTION_SLOTS = {"select": 0, "info": 1, "fix": 2}
 _QC_SLOT_ACTIONS = {slot: action for action, slot in _QC_ACTION_SLOTS.items()}

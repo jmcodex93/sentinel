@@ -527,13 +527,18 @@ def _advance_cursor(prior_pos, prior_total, new_total):
 
 def _qc_flagged_items(check_id, legacy_result):
     """The list of concrete items (objects, or materials for
-    ``unused_mats``) one check's ``legacy_result`` flags, in cycle order.
-    ``cross_aspect``'s ``legacy_result`` is a list of violation dicts keyed
-    by ``"object"`` — deduped here the same way the native
-    ``_qc_select_cross_aspect`` handler dedupes (an object can violate more
-    than one format). Every other selectable check's ``legacy_result`` is
-    already the flagged-item list itself (materials for ``unused_mats``,
-    objects otherwise).
+    ``unused_mats``/``rs_colorspace``) one check's ``legacy_result`` flags,
+    in cycle order. ``cross_aspect``'s ``legacy_result`` is a list of
+    violation dicts keyed by ``"object"`` — deduped here the same way the
+    native ``_qc_select_cross_aspect`` handler dedupes (an object can
+    violate more than one format). ``rs_colorspace``'s ``legacy_result`` is
+    likewise a list of per-mismatch violation dicts (one per offending
+    sampler, so ``len()`` matches the check's own violation count — see
+    ``checks/matgraph.py``), keyed by ``"material"`` instead of
+    ``"object"``: a material with two mismatched samplers must still cycle
+    as ONE selectable item, not two. Every other selectable check's
+    ``legacy_result`` is already the flagged-item list itself (materials
+    for ``unused_mats``, objects otherwise).
     """
     if check_id == "cross_aspect":
         objs = []
@@ -545,6 +550,16 @@ def _qc_flagged_items(check_id, legacy_result):
             seen.add(id(obj))
             objs.append(obj)
         return objs
+    if check_id == "rs_colorspace":
+        mats = []
+        seen = set()
+        for violation in legacy_result or []:
+            mat = violation.get("material") if isinstance(violation, dict) else None
+            if mat is None or id(mat) in seen:
+                continue
+            seen.add(id(mat))
+            mats.append(mat)
+        return mats
     return list(legacy_result or [])
 
 
@@ -570,13 +585,16 @@ def _select_objects(doc, objs):
 
 def _select_single_qc_item(doc, check_id, item):
     """Select exactly ONE flagged item in the scene — the cycle-one-per-click
-    counterpart to the old select-all. ``unused_mats`` cycles MATERIALS
-    (deselect-all-materials then ``SetBit(BIT_ACTIVE)`` on the one, same
-    primitive ``_qc_select_unused_mats`` uses); every other check cycles
-    OBJECTS via the native ``ui/panel._select_objects`` helper (which itself
-    deselects everything first), passed a single-item list.
+    counterpart to the old select-all. ``unused_mats``/``rs_colorspace``
+    cycle MATERIALS (deselect-all-materials then ``SetBit(BIT_ACTIVE)`` on
+    the one, same primitive ``_qc_select_unused_mats`` uses — ``item`` here
+    is already a bare ``BaseMaterial``, per ``_qc_flagged_items``'s
+    dedupe-by-``"material"`` for ``rs_colorspace``, never the violation
+    dict itself); every other check cycles OBJECTS via the native
+    ``ui/panel._select_objects`` helper (which itself deselects everything
+    first), passed a single-item list.
     """
-    if check_id == "unused_mats":
+    if check_id in ("unused_mats", "rs_colorspace"):
         for mat in doc.GetMaterials():
             mat.DelBit(c4d.BIT_ACTIVE)
         if item is not None:
