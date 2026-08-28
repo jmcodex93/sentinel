@@ -814,7 +814,11 @@ class TestCleanDeadNodesCore:
 
         result = matgraph_c4d.clean_dead_nodes_core(doc)
 
-        assert result == {"ok": True, "materials": 1, "removed": 0, "skipped": 0}
+        # "materials" counts materials actually CLEANED, not scanned —
+        # semantics changed deliberately after live verification (v1.38):
+        # the scanned count made the toast say "Cleaned 2 dead nodes in 5
+        # materials" on a 5-material scene with one dirty material.
+        assert result == {"ok": True, "materials": 0, "removed": 0, "skipped": 0}
         assert graph.remove_calls == []
 
     def test_event_add_called_when_nodes_removed(self, matgraph_c4d, monkeypatch):

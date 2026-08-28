@@ -629,6 +629,10 @@ def clean_dead_nodes_core(doc):
     ``fixes.py`` caller owns the bracket for it), unlike ``write_colorspaces``.
 
     Returns ``{"ok": True, "materials": n, "removed": k, "skipped": s}``
+    where ``materials`` counts the materials actually CLEANED (>=1 node
+    removed) — not the materials scanned. MEASURED LIVE (v1.38): with the
+    scanned count a 5-material scene with one dirty material toasted
+    "Cleaned 2 dead nodes in 5 materials", which is a lie with a number in it.
     with ``n`` = RS node materials found (``collect()``'s result length),
     ``k`` = dead nodes actually removed, ``s`` = materials skipped without
     being touched; or ``{"ok": False, "error": "no_document"}``.
@@ -691,6 +695,7 @@ def clean_dead_nodes_core(doc):
 
     materials = collect(doc)
     removed = 0
+    materials_cleaned = 0
     skipped = 0
 
     doc.StartUndo()
@@ -737,6 +742,8 @@ def clean_dead_nodes_core(doc):
                         pending_removed += 1
                     tr.Commit()
                 removed += pending_removed
+                if pending_removed:
+                    materials_cleaned += 1
             except Exception:
                 skipped += 1
     finally:
@@ -759,5 +766,5 @@ def clean_dead_nodes_core(doc):
             except Exception:
                 pass
 
-    return {"ok": True, "materials": len(materials), "removed": removed,
+    return {"ok": True, "materials": materials_cleaned, "removed": removed,
             "skipped": skipped}
