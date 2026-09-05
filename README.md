@@ -261,19 +261,24 @@ This system maintains color accuracy by matching your scene's ACES tone mapping,
 
 ### Quick Install (macOS / Windows) — `install.py`
 
-The cross-platform installer detects every Cinema 4D version on your machine and
-copies the plugin into the one(s) you choose (no hardcoded paths):
+Close Cinema 4D first. The cross-platform installer detects Cinema 4D preference
+folders and can install into one or more versions:
 
 ```bash
 python3 install.py            # interactive: pick one, several, or all
 python3 install.py --list     # just list the C4D installs it found
 python3 install.py --all      # install into every detected C4D
 python3 install.py --target "/path/to/Maxon Cinema 4D 2026_XXXX/plugins"
+python3 install.py --target "/path/to/.../plugins" --rollback latest
 ```
 
-It mirror-copies the whole `plugin/` payload into `<plugins>/Sentinel/` (pruning
-orphaned files), verifies the critical files landed, and warns if an old
-`YS_Guardian/` folder is still present. Restart Cinema 4D afterwards.
+It validates and stages the complete payload outside C4D's scanned plugin
+directory, verifies the staged file hashes, and then activates it. Successful
+updates retain the previous payload under the preference folder's
+`Sentinel Backups/` directory. Rollback verifies that recorded snapshot before
+restoring it and retains the displaced version as another backup. See
+[INSTALLATION_README.md](INSTALLATION_README.md) for named-backup recovery and
+candidate identity details. Fully restart Cinema 4D afterwards.
 
 For snapshot EXR→PNG conversion, install the Python deps once:
 `pip3 install Pillow numpy OpenEXR`.
@@ -284,11 +289,13 @@ diagnostic block for bug reports.
 
 ### Manual Install (macOS / Windows)
 
-1. Copy the `plugin/` folder contents to your Cinema 4D plugins directory
+1. Close Cinema 4D and copy the `plugin/` folder contents to `<plugins>/Sentinel/`
 2. For snapshot features: install Python dependencies (`pip3 install Pillow numpy OpenEXR`)
 3. Restart Cinema 4D
 
-Sentinel is a bootstrap-plus-package plugin: `sentinel_panel.pyp` registers the C4D plugins and imports the `sentinel/` package. Keep `sentinel_panel.pyp`, `sentinel/`, `res/`, and `abc_retime/` together when installing or updating.
+Sentinel is a bootstrap-plus-package plugin: `sentinel_panel.pyp` registers the
+C4D plugins and imports the `sentinel/` package. Keep the entire payload
+together. Manual copying bypasses the installer's staging and rollback record.
 
 ### Redshift Configuration
 

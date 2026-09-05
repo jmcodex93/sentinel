@@ -12,6 +12,9 @@ web/node_modules/
 web/dist/
 web/node_modules/.tmp/
 
+# Verified local candidate archives (build_candidate.py)
+dist/
+
 
 # Session scratch (visual companion, SDD ledgers)
 .superpowers/
