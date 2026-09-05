@@ -1,7 +1,7 @@
 # Sentinel beta acceptance — 2026-09-05
 
 Baseline: stabilization commit `dc52ed4`. Branch: `codex/product-readiness`.
-This is a local candidate and acceptance record, not a published release or cross-platform certification.
+This is a local candidate and acceptance record, not a published release or cross-platform certification. The subsequent [installed GUI acceptance](2026-09-05-gui-acceptance.md) records the completed macOS flows, two further corrections and remaining usability follow-ups.
 
 ## Candidate and recovery
 
@@ -52,8 +52,8 @@ Host coverage:
 
 | Gate | Current evidence / next action |
 |---|---|
-| Embedded C4D webview | Pending. Existing `Untitled 1` was kept open and saved as a separate safety copy; a second GUI process did not open. The installed plugin is unchanged. Load the candidate after an approved full restart, then exercise rapid document changes with Notes, Panel and Hub open. |
-| RenderView snapshot capture | Converter and watcher exercised with a generated real EXR; capture from RenderView and automatic folder discovery remain a GUI acceptance step. |
+| Embedded C4D webview | Completed scoped installed-GUI acceptance after user-approved restart; see the follow-up record for Notes, Hub, Settings results and the remaining focus/settings-refresh limitations. |
+| RenderView snapshot capture | Completed in the subsequent GUI run: actual Redshift RenderView capture, persisted-directory auto-detection, exactly-once PNG conversion and off/on backlog protection. |
 | Windows/C4D | No reachable Windows host was supplied. The package and checklist below support the handoff, but no Windows result is claimed. |
 | Network paths and interruption | Failure injection is covered locally; SMB/NAS permission/locking and interruption under real Windows remain unverified. |
 | Commercial launch | Ownership/third-party redistribution, registered IDs and the support matrix remain as recorded in the preceding product-readiness audit. No permission or commercial compatibility is inferred. |
