@@ -112,6 +112,7 @@ function mergePending(prev: Map<string, string>, additions: Map<string, string>)
 export function HubPage() {
   const { toast } = useToast();
   const [state, setState] = useState<PageState>({ kind: "loading" });
+  const [inventoryRevision, setInventoryRevision] = useState(0);
   const [pending, setPending] = useState<Map<string, string>>(new Map());
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   // Anchor for shift-range selection. Updated on single/toggle clicks (the
@@ -201,6 +202,7 @@ export function HubPage() {
     if (!silent) setState({ kind: "loading" });
     await inventoryChannel.current.load(fetchHubInventorySnapshot, ({ result }) => {
       setState(result);
+      if (result.kind === "ok") setInventoryRevision((revision) => revision + 1);
       setSceneChanged(false);
       setMetas({});
       setVariants({});
@@ -704,7 +706,10 @@ export function HubPage() {
         <div ref={deliverRef}>
           <Section title="Deliver">
             <div className="flex flex-col gap-3">
-              <HubPreflightStrip onFixed={() => refreshInventory(true)} />
+              <HubPreflightStrip
+                inventoryRevision={inventoryRevision}
+                onFixed={() => refreshInventory(true)}
+              />
               <HubDeliverSection
                 missingCount={data.totals.missing}
                 onInventoryRefresh={() => refreshInventory(true)}

@@ -1,13 +1,53 @@
 import { AlertTriangle, Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "../form/Button";
 import { fetchHubPreflight, fetchPaletteActions, runPaletteAction } from "../../lib/api";
 import { confirmBarButtons } from "../../lib/confirmBar";
+import { SnapshotChannel } from "../../lib/snapshot";
 import { useToast } from "../../lib/toast";
-import type { PaletteAction, QcCheck, QcReportResult } from "../../types";
+import type {
+  PaletteAction,
+  PaletteActionsResult,
+  QcCheck,
+  QcReportResult,
+} from "../../types";
 
 type PageState = { kind: "loading" } | QcReportResult;
+
+export interface HubPreflightSnapshot {
+  state: QcReportResult;
+  actions: PaletteAction[];
+}
+
+/** Read QC and its matching fix availability as one latest-wins unit. */
+// Exported so the race regression exercises the exact loader used below.
+// oxlint-disable-next-line react/only-export-components
+export async function loadHubPreflightSnapshot(
+  channel: SnapshotChannel,
+  commit: (snapshot: HubPreflightSnapshot) => void,
+  readPreflight: () => Promise<QcReportResult> = fetchHubPreflight,
+  readActions: () => Promise<PaletteActionsResult> = fetchPaletteActions,
+): Promise<void> {
+  await channel.load(
+    async () => {
+      const [state, actionResult] = await Promise.all([readPreflight(), readActions()]);
+      return {
+        stamp: null,
+        result: {
+          kind: "ok" as const,
+          data: {
+            state,
+            actions: actionResult.kind === "ok" ? actionResult.data : [],
+          },
+        },
+      };
+    },
+    ({ result }) => {
+      if (result.kind === "ok") commit(result.data);
+    },
+  );
+}
 
 /** Maps a preflight-fixable QC check id (`qc/registry.py`) to the palette
  * Quick Fix action id that fixes it (`PALETTE_ACTIONS` in webbridge.py) —
@@ -27,24 +67,34 @@ const FIX_ACTION_BY_CHECK: Record<string, string> = {
  * (`open_reports_qc`). Purely advisory: it never blocks Deliver — the
  * inline Quality Gate (`HubDeliverSection`) is what actually gates a
  * `gates_enabled` collect. */
-export function HubPreflightStrip({ onFixed }: { onFixed?: () => void }) {
+export function HubPreflightStrip({
+  inventoryRevision,
+  onFixed,
+}: {
+  inventoryRevision: number;
+  onFixed?: () => void;
+}) {
   const { toast } = useToast();
   const [state, setState] = useState<PageState>({ kind: "loading" });
   const [actions, setActions] = useState<PaletteAction[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<PaletteAction | null>(null);
+  const preflightChannel = useRef(new SnapshotChannel());
 
   const load = useCallback(() => {
     setState({ kind: "loading" });
-    fetchHubPreflight().then(setState);
-    fetchPaletteActions().then((result) => {
-      if (result.kind === "ok") setActions(result.data);
+    setConfirmAction(null);
+    void loadHubPreflightSnapshot(preflightChannel.current, (snapshot) => {
+      setState(snapshot.state);
+      setActions(snapshot.actions);
     });
   }, []);
 
   useEffect(() => {
+    const channel = preflightChannel.current;
     load();
-  }, [load]);
+    return () => channel.invalidate();
+  }, [inventoryRevision, load]);
 
   async function runFix(action: PaletteAction, confirm?: boolean) {
     if (action.requires_confirm && !confirm) {
