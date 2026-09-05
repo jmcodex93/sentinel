@@ -14,7 +14,7 @@ Sentinel monitors Cinema 4D scenes in real-time with **13 quality checks**, catc
 
 **IMPORTANT**: The snapshot feature requires Python 3.x with Pillow and NumPy for EXR→PNG conversion with ACES tone mapping.
 
-**Compatibility target**: Cinema 4D 2024+ with Redshift, macOS and Windows. Recorded live evidence primarily covers C4D 2026 on macOS; the current build still needs a complete Windows/C4D 2024 validation pass. See [product readiness](docs/audit/2026-09-05-product-readiness.md) for the release criteria.
+**Compatibility target**: Cinema 4D 2024+ with Redshift, macOS and Windows. Recorded live evidence primarily covers C4D 2026 on macOS; the current build still needs a complete Windows/C4D 2024 validation pass. See [product readiness](docs/audit/2026-09-05-product-readiness.md) for the release criteria and [beta acceptance](docs/audit/2026-09-05-beta-acceptance.md) for current host results, recovery and the remaining GUI/Windows checklist.
 
 ## Core Features
 

@@ -19,7 +19,22 @@ Verified update→rollback with a temporary copy of the actual installed plugin.
 
 ## Verification evidence
 
-Final integrated command results and candidate digest are recorded at the end of this file after the final run.
+Integrated source tested: `8df459eb7d013daae180ec49a85f54869a78c6bb`.
+
+| Verification | Result |
+|---|---|
+| `python3 -m pytest -q` | **1,775 passed** in 24.57 s |
+| `npm test` in `web/` | **247 passed**, 15 test files |
+| `npm run lint` | Passed |
+| `npm run build` | Passed; `git diff --exit-code -- ../plugin/web` confirms bundled output is unchanged |
+| Fresh C4D 2026.304 `run_beta_checks.py` | Exit 0; all six check groups passed |
+| Actual installed-payload copy → update → rollback | Original file manifest restored exactly |
+
+The host loaded the built ZIP through a fresh isolated installation, not the working-tree Python sources. Frame retained both its own tag and an existing Protection tag after one Undo, kept its formats/style and regenerated Takes. Redshift Essentials added 11 AOVs and restored the original collection with one Undo. Variants reloaded both options with resolved links and zero orphans. EXR conversion produced a 128×64 PNG with increasing sampled levels of 0, 214 and 247.
+
+Independent final review found no actionable bugs in the installer/candidate changes, Frame and AOV corrections, host runner or integration. The reviewer inspected the actual host JSON and retained the GUI/Windows limitations below.
+
+The final ZIP and adjacent `.sha256`/acceptance JSON are local artifacts under `dist/`. The final build checks that all shipped content hashes match this tested candidate; later acceptance-documentation commits do not change its payload. The ZIP manifest records its exact source commit. A digest is kept beside the archive rather than inside the source commit it identifies.
 
 `tests/c4d_runner/run_beta_checks.py` uses a candidate loaded normally by C4D's plugin loader. It does not reload or purge a running Sentinel package. Run it only in a fresh `c4dpy` process with `-g_console=true`, `-g_additionalModulePath=<isolated plugins folder>`, and the script's absolute path. `SENTINEL_ACCEPTANCE_OUTPUT` optionally names a JSON evidence file. The runner refuses execution in the GUI Script Manager and cleans up its disposable documents and files.
 
