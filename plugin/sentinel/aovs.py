@@ -379,7 +379,7 @@ def effective_mv_max_motion(doc):
 
 
 def force_aov_tier(doc, tier_list):
-    """Add missing AOVs from a tier to RS render settings, with proper bit depth"""
+    """Add missing AOVs from a tier as one undoable render-settings change."""
     if not REDSHIFT_AVAILABLE:
         return 0, "Redshift module not available"
 
@@ -387,13 +387,22 @@ def force_aov_tier(doc, tier_list):
     if not vprs:
         return 0, "Redshift VideoPost not found"
 
-    # Enable AOV system + configure output mode
     use_multipart = bool(int(GlobalSettings.get('aov_multipart', 1)))
-    _apply_multipart_globals(vprs, use_multipart)
-
     tier_list = _build_tier_list(doc, tier_list)
+    undo_started = False
 
     try:
+        # RendererSetAOVs mutates data owned by the Redshift VideoPost. A single
+        # CHANGE snapshot on that owner restores both its AOV collection and the
+        # coupled global output settings written below (verified in C4D 2026.304).
+        doc.StartUndo()
+        undo_started = True
+        doc.AddUndo(c4d.UNDOTYPE_CHANGE, vprs)
+
+        # Enable AOV system + configure output mode inside the same undo step as
+        # the collection change.
+        _apply_multipart_globals(vprs, use_multipart)
+
         existing_aovs = redshift.RendererGetAOVs(vprs)
         existing_names = {aov.GetParameter(c4d.REDSHIFT_AOV_NAME) or ""
                           for aov in existing_aovs}
@@ -487,3 +496,9 @@ def force_aov_tier(doc, tier_list):
     except Exception as e:
         safe_print(f"Error forcing AOVs: {e}")
         return 0, f"Error: {e}"
+    finally:
+        if undo_started:
+            try:
+                doc.EndUndo()
+            except Exception as e:
+                safe_print(f"Error ending AOV undo: {e}")
