@@ -320,6 +320,8 @@ export interface NotesTodo {
 }
 
 export interface NotesState {
+  context: string;
+  revision: string;
   notes_text: string;
   todos: NotesTodo[];
   scene_base: string;
@@ -331,6 +333,8 @@ export type NotesStateResult =
   | { kind: "error"; message: string };
 
 export interface NotesSubmitPayload {
+  context: string;
+  revision: string;
   notes_text: string;
   todos: NotesTodo[];
 }
@@ -1006,6 +1010,7 @@ export interface PanelRenderSnapshots {
   dir: string | null;
   origin: "auto" | "manual";
   watch_enabled: boolean;
+  watch_status?: { state: "off" | "watching" | "running" | "ready" | "error"; message: string; last_error?: string };
 }
 
 export interface PanelRenderPostrenderAvailable {

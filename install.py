@@ -30,30 +30,14 @@ PLUGIN_SRC_DIRNAME = "plugin"
 DEST_FOLDER_NAME = "Sentinel"
 LEGACY_DEST_FOLDER_NAME = "YS_Guardian"
 
-# Critical paths (relative to the destination Sentinel/ root) that MUST exist
-# after a copy for the payload to be considered landed. Mirrors CLAUDE.md's
-# "install the full folder together" contract.
-CRITICAL_PAYLOAD_PATHS = [
-    "sentinel_panel.pyp",
-    "sentinel",                       # the package directory
-    os.path.join("sentinel", "__init__.py"),
-    os.path.join("sentinel", "aovs.py"),
-    os.path.join("sentinel", "postrender.py"),
-    # ui/panel.py used to be here and was removed in v1.36.2: the native panel
-    # was retired in v1.25.0, so this entry made install.py report EVERY install
-    # as a broken payload. A verifier that always fails verifies nothing.
-    os.path.join("sentinel", "ui", "panel_spa.py"),
-    os.path.join("res", "c4d_symbols.h"),
-    "exr_converter_external.py",
-    "abc_retime",
-    # The bundled scenes the scene tools merge (Hierarchy, Vibrate Null, both
-    # camera rigs) and the render-settings template Reset All reads. They lived
-    # outside plugin/ until v1.36.2, so they never reached an install and those
-    # five tools failed with file_not_found — silently, bar a console line.
-    "c4d",
-    os.path.join("c4d", "new.c4d"),
-    os.path.join("c4d", "nulls.c4d"),
-]
+# Load the same stdlib-only verifier used by Doctor without importing C4D.
+import importlib.util
+_payload_spec = importlib.util.spec_from_file_location(
+    "sentinel_payload", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "plugin", "sentinel", "payload.py"))
+_payload = importlib.util.module_from_spec(_payload_spec)
+_payload_spec.loader.exec_module(_payload)
+CRITICAL_PAYLOAD_PATHS = _payload.CRITICAL_PAYLOAD_PATHS
 
 # Case-insensitive substring that flags a Cinema 4D preferences directory.
 _C4D_DIR_RE = re.compile(r"Cinema 4D\s+(\S+)", re.IGNORECASE)
@@ -152,11 +136,7 @@ def verify_payload(dest_dir, critical_paths=None):
     Returns (ok: bool, missing: list[str]). Pure — operates on whatever tree the
     caller points it at, so tests can build a complete or incomplete fake tree.
     """
-    if critical_paths is None:
-        critical_paths = CRITICAL_PAYLOAD_PATHS
-    missing = [rel for rel in critical_paths
-               if not os.path.exists(os.path.join(dest_dir, rel))]
-    return (not missing, missing)
+    return _payload.verify_payload(dest_dir, critical_paths)
 
 
 def legacy_folder_warning(plugins_dir):
@@ -181,14 +161,14 @@ def mirror_copy(src_dir, dest_dir):
     dest_dir = os.path.abspath(dest_dir)
     os.makedirs(dest_dir, exist_ok=True)
 
-    ignore = shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store")
+    ignore = lambda directory, names: [name for name in names if _is_ignored(name)]
     shutil.copytree(src_dir, dest_dir, dirs_exist_ok=True, ignore=ignore)
 
     _prune_orphans(src_dir, dest_dir)
 
 
 def _is_ignored(name):
-    return name in ("__pycache__", ".DS_Store") or name.endswith(".pyc")
+    return name in ("__pycache__", ".DS_Store", "node_modules", ".pytest_cache", ".git", "backup") or name.endswith((".pyc", ".bak", ".backup", "~"))
 
 
 def _prune_orphans(src_dir, dest_dir):
@@ -231,6 +211,11 @@ def install_to(plugins_dir, src_plugin_dir):
     result = {"plugins_dir": plugins_dir, "dest": dest, "ok": False,
               "missing": [], "warning": None, "error": None}
     result["warning"] = legacy_folder_warning(plugins_dir)
+    ok, missing = verify_payload(src_plugin_dir)
+    if not ok:
+        result["missing"] = missing
+        result["error"] = "Source payload is incomplete; existing installation preserved."
+        return result
     try:
         mirror_copy(src_plugin_dir, dest)
     except Exception as exc:  # pragma: no cover - filesystem failure path

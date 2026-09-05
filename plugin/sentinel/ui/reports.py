@@ -43,6 +43,10 @@ def build_baseline_artifact_details(qc_summary):
             "accepted": accepted,
             "stale": stale,
         }
+        unverified = (qc_summary.get("unverified") or {}).get(check_id)
+        if unverified:
+            details[check_id]["unverified_count"] = len(unverified)
+            details[check_id]["unverified"] = unverified
     return details
 
 
@@ -227,6 +231,12 @@ def build_qc_report(doc, results, artist_name, qc_summary=None):
         }
 
     if isinstance(qc_summary, dict):
+        for check_id, rows in (qc_summary.get("unverified") or {}).items():
+            report_key = report_key_by_id.get(check_id)
+            if check_id in disabled_checks or report_key not in report["checks"]:
+                continue
+            report["checks"][report_key].update(
+                status="UNVERIFIED", unverified_count=len(rows), unverified=rows)
         report["summary"] = {
             "total_checks": qc_summary.get("total", total),
             "passed": qc_summary.get("passed", passed),

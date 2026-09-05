@@ -368,3 +368,175 @@ def test_find_latest_exr_missing_or_empty_dir_returns_none_with_reason(tmp_path)
     path, error = _find_latest_exr(snap_dir=str(empty_dir))
     assert path is None
     assert "No EXR snapshots found" in error
+
+
+def test_watch_worker_ignores_backlog_and_keeps_main_thread_free(tmp_path):
+    import threading
+    import time
+    from sentinel.snapshots import SnapshotWatch
+    _touch_exr(str(tmp_path), 'old.exr')
+    prepared, executed = [], []
+    entered, release = threading.Event(), threading.Event()
+    main = threading.get_ident()
+    def prepare(path):
+        prepared.append((path, threading.get_ident()))
+        return {'source': path, 'destination': 'scene-A'}
+    def execute(task):
+        executed.append((task, threading.get_ident()))
+        entered.set()
+        release.wait(3)
+        return True, 'converted new.png'
+    watch = SnapshotWatch()
+    try:
+        watch.tick(True, str(tmp_path), 'A', prepare, execute)
+        watch.tick(True, str(tmp_path), 'A', prepare, execute)
+        assert not prepared
+        _touch_exr(str(tmp_path), 'new.exr')
+        watch.tick(True, str(tmp_path), 'A', prepare, execute)
+        watch.tick(True, str(tmp_path), 'A', prepare, execute)
+        assert entered.wait(1)
+        assert prepared[0][1] == main
+        assert executed[0][1] != main
+        # No second worker or growing queue while the converter is blocked.
+        _touch_exr(str(tmp_path), 'later.exr')
+        for _ in range(5):
+            watch.tick(True, str(tmp_path), 'A', prepare, execute)
+        assert len(prepared) == 1
+        assert watch.status()['state'] == 'running'
+        # A new document discards not-yet-started work. In-flight A stays A.
+        watch.tick(True, str(tmp_path), 'B', prepare, execute)
+        release.set()
+        deadline = time.monotonic() + 2
+        while watch.busy and time.monotonic() < deadline:
+            time.sleep(.01)
+        watch.tick(True, str(tmp_path), 'B', prepare, execute)
+        assert len(executed) == 1
+        assert executed[0][0]['destination'] == 'scene-A'
+        watch.tick(False, str(tmp_path), 'B', prepare, execute)
+        assert watch.status()['state'] == 'off'
+    finally:
+        release.set()
+
+
+def test_failed_watch_file_is_reported_once(tmp_path):
+    import time
+    from sentinel.snapshots import SnapshotWatch
+    attempted = []
+    def execute(task):
+        attempted.append(task)
+        raise OSError('conversion unavailable')
+    watch = SnapshotWatch()
+    watch.tick(True, str(tmp_path), 'A', str, execute)
+    _touch_exr(str(tmp_path), 'new.exr')
+    watch.tick(True, str(tmp_path), 'A', str, execute)
+    watch.tick(True, str(tmp_path), 'A', str, execute)
+    deadline = time.monotonic() + 2
+    while watch.busy and time.monotonic() < deadline:
+        time.sleep(.01)
+    for _ in range(3):
+        watch.tick(True, str(tmp_path), 'A', str, execute)
+    assert len(attempted) == 1
+    assert watch.status()['state'] == 'error'
+    assert 'conversion unavailable' in watch.status()['message']
+
+
+def test_host_message_pump_runs_real_watch_pipeline(sentinel_module, monkeypatch, tmp_path):
+    import threading
+    import time
+    from sentinel import snapshots, renderwatch
+    from sentinel.ui import flows, panel_ops
+    # The pure harness supplies unknown C4D symbols as ints; a registered
+    # MessageData class needs an actual base class for this host-path test.
+    import importlib.util
+    from pathlib import Path
+    monkeypatch.setattr(flows.c4d.plugins, 'MessageData', object)
+    spec = importlib.util.spec_from_file_location('snapshot_host_under_test',
+        Path(flows.__file__).with_name('frame_sync.py'))
+    frame_sync = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(frame_sync)
+    class Doc:
+        def GetDocumentPath(self):
+            assert threading.current_thread() is threading.main_thread()
+            return str(tmp_path / 'project' / 'scenes' / 'shot')
+        def GetDocumentName(self):
+            assert threading.current_thread() is threading.main_thread()
+            return 'shot_v001.c4d'
+    doc = Doc()
+    source = tmp_path / 'snapshots'
+    source.mkdir()
+    (source / 'old.png').write_bytes(b'old')
+    watch = snapshots.SnapshotWatch()
+    monkeypatch.setattr(snapshots, 'snapshot_watch', watch)
+    monkeypatch.setattr(flows.c4d.documents, 'GetActiveDocument', lambda: doc)
+    monkeypatch.setattr(flows.GlobalSettings, 'get_snapshot_watch', lambda: True)
+    monkeypatch.setattr(flows.GlobalSettings, 'load_artist_name', lambda: 'Artist')
+    monkeypatch.setattr(flows, 'get_effective_snapshot_dir', lambda: (str(source), 'manual'))
+    monkeypatch.setattr(frame_sync, '_drain', lambda now: None)
+    monkeypatch.setattr(renderwatch, 'tick_active_document', lambda: None)
+    monkeypatch.setattr(panel_ops, '_stamp_for', lambda doc: 'scene-stamp')
+    host = frame_sync.FrameSyncMessageData()
+    def pump():
+        monkeypatch.setattr(flows, '_last_snapshot_watch_tick', float('-inf'))
+        host.CoreMessage(frame_sync.EVENT_ID, None)
+    pump()
+    pump()
+    assert not list(tmp_path.rglob('*_snap_*'))
+    (source / 'new.png').write_bytes(b'new snapshot')
+    pump()
+    before = panel_ops._op_panel_state_stamp({})['stamp']
+    pump()
+    deadline = time.monotonic() + 2
+    while watch.busy and time.monotonic() < deadline:
+        time.sleep(.01)
+    pump()
+    outputs = list(tmp_path.rglob('shot_v001_snap_*.png'))
+    assert len(outputs) == 1
+    assert outputs[0].read_bytes() == b'new snapshot'
+    assert watch.status()['state'] == 'ready'
+    assert panel_ops._op_panel_state_stamp({})['stamp'] != before
+    pump()
+    assert len(list(tmp_path.rglob('shot_v001_snap_*.png'))) == 1
+
+
+def test_watch_failure_remains_visible_after_later_success(tmp_path):
+    import time
+    from sentinel.snapshots import SnapshotWatch
+    watch = SnapshotWatch()
+    def execute(path):
+        return (False, 'a.png failed') if path.endswith('a.png') else (True, 'copied b.png')
+    def tick():
+        watch.tick(True, str(tmp_path), 'A', str, execute)
+    def finish():
+        deadline = time.monotonic() + 2
+        while watch.busy and time.monotonic() < deadline:
+            time.sleep(.01)
+    tick()
+    (tmp_path / 'a.png').write_bytes(b'a')
+    (tmp_path / 'b.png').write_bytes(b'b')
+    tick()
+    tick()
+    finish()
+    tick()  # consume failure and start the next file in one host tick
+    assert watch.status().get('last_error') == 'a.png failed'
+    finish()
+    tick()
+    assert watch.status()['state'] == 'ready'
+    assert watch.status()['last_error'] == 'a.png failed'
+
+
+def test_failed_conversion_cleans_only_its_temporary_output(monkeypatch, tmp_path):
+    from pathlib import Path
+    from sentinel import snapshots
+    output_dir = tmp_path / 'out'
+    output_dir.mkdir()
+    previous = output_dir / 'scene_snap_001.png'
+    previous.write_bytes(b'keep')
+    def fail(source, output, slate_data=None):
+        Path(output).write_bytes(b'partial')
+        return False, 'decoder failed'
+    monkeypatch.setattr(snapshots, '_convert_exr_to_png', fail)
+    result = snapshots.run_snapshot_task({'source': str(tmp_path / 'new.exr'),
+        'output_dir': str(output_dir), 'scene_name': 'scene', 'slate': None})
+    assert result == (False, 'decoder failed')
+    assert list(output_dir.iterdir()) == [previous]
+    assert previous.read_bytes() == b'keep'

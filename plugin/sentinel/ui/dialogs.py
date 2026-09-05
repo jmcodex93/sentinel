@@ -61,6 +61,8 @@ def gate_dialog_can_proceed(blocking_items, fixable_items, decisions, reason):
         return value
 
     for item in blocking_items or []:
+        if item.get("unverified_count"):
+            return False  # A missing scan cannot be accepted as evidence.
         action = _decision(item.get("check_id"))
         if action == "baseline":
             continue
@@ -365,6 +367,9 @@ class GateTriageDialog(gui.GeDialog):
     def _label_for_item(self, item):
         check_id = item.get("check_id") or "check"
         count = int(item.get("new_count") or 0)
+        if item.get("unverified_count"):
+            return (f"{check_id}: {item['unverified_count']} unverified scan(s). "
+                    "Restore graph readability and retry QC.")
         lines = [f"{check_id}: {count} new violation(s)"]
         for violation in list(item.get("violations") or [])[:3]:
             lines.append(f"  - {_violation_label(violation)}")
@@ -487,7 +492,9 @@ class GateTriageDialog(gui.GeDialog):
                 self.SetBool(self._override_id(index), False)
                 self.SetBool(self._baseline_id(index), False)
                 try:
-                    self.Enable(self._baseline_id(index), not self.sidecar_invalid)
+                    self.Enable(self._baseline_id(index),
+                                not self.sidecar_invalid and not item.get("unverified_count"))
+                    self.Enable(self._override_id(index), not item.get("unverified_count"))
                 except Exception:
                     pass
         self.SetString(GateTriageIds.EDT_REASON, "")

@@ -131,6 +131,124 @@ def scan_snapshot_candidates(snap_dir, registry, now=None):
     return ready, updated, non_exr_alert
 
 
+class SnapshotWatch:
+    """Main-thread scheduler with one daemon converter and no queued C4D refs.
+
+    Unstarted files remain in the settle registry while busy. Switching context
+    primes a fresh registry, so old snapshots never acquire a new scene target.
+    An in-flight conversion may finish after disabling, at its captured target.
+    """
+    def __init__(self):
+        import queue
+        self._registry = {}
+        self._context = None
+        self._thread = None
+        self._results = queue.Queue(maxsize=1)
+        self._generation = 0
+        self._last_error = ""
+        self._status = {"state": "off", "message": ""}
+
+    @property
+    def busy(self):
+        return self._thread is not None and self._thread.is_alive()
+
+    def status(self):
+        return dict(self._status, last_error=self._last_error)
+
+    def tick(self, enabled, snap_dir, context, prepare, execute):
+        import queue
+        import threading
+        try:
+            generation, ok, message = self._results.get_nowait()
+            if generation == self._generation:
+                if not ok:
+                    self._last_error = message
+                self._status = {"state": "ready" if ok else "error", "message": message}
+        except queue.Empty:
+            pass
+        key = (os.path.normcase(os.path.abspath(snap_dir)), context) if enabled and snap_dir else None
+        if key != self._context:
+            self._generation += 1
+            self._last_error = ""
+            self._context = key
+            self._registry = {}
+            self._status = {"state": "watching" if key else "off", "message": ""}
+            if key:
+                _, initial, _ = scan_snapshot_candidates(snap_dir, {})
+                self._registry = {name: (m, size, "processed") for name, (m, size, _) in initial.items()}
+            return
+        if key is None:
+            return
+        if not os.path.isdir(snap_dir):
+            self._status = {"state": "error", "message": "Snapshot directory unavailable"}
+            return
+        ready, self._registry, _ = scan_snapshot_candidates(snap_dir, self._registry)
+        # Apply backpressure without allocating a task queue: unstarted files
+        # stay pending and are reconsidered at the next scan.
+        chosen = None if self.busy else next(iter(sorted(ready)), None)
+        for path in ready:
+            if path != chosen:
+                name = os.path.basename(path)
+                m, size, _ = self._registry[name]
+                self._registry[name] = (m, size, "pending")
+        if chosen is None:
+            return
+        try:
+            task = prepare(chosen)  # Only this callback may read C4D.
+        except Exception as exc:
+            self._last_error = str(exc)
+            self._status = {"state": "error", "message": str(exc)}
+            return
+        generation = self._generation
+        self._status = {"state": "running", "message": "Processing " + os.path.basename(chosen)}
+        def run():
+            try:
+                ok, message = execute(task)
+            except Exception as exc:
+                ok, message = False, str(exc)
+            self._results.put((generation, ok, message))
+        self._thread = threading.Thread(target=run, name="SentinelSnapshot", daemon=True)
+        self._thread.start()
+
+
+def run_snapshot_task(task):
+    """Filesystem/converter worker; task contains only captured scalar data."""
+    import shutil
+    import tempfile
+    source = task["source"]
+    output_dir = task["output_dir"]
+    os.makedirs(output_dir, exist_ok=True)
+    is_exr = source.lower().endswith(".exr")
+    ext = ".png" if is_exr else (os.path.splitext(source)[1] or ".png")
+    temporary = None
+    created_output = None
+    try:
+        if is_exr:
+            fd, temporary = tempfile.mkstemp(prefix=".sentinel_snapshot_", suffix=".png", dir=output_dir)
+            os.close(fd)
+            ok, error = _convert_exr_to_png(source, temporary, slate_data=task.get("slate"))
+            if not ok:
+                return False, error or "Conversion failed"
+        name = next_snapshot_name(os.listdir(output_dir), task["scene_name"], ext=ext)
+        output = os.path.join(output_dir, name)
+        # Exclusive creation protects snapshots from concurrent writers.
+        with open(temporary or source, "rb") as src, open(output, "xb") as dest:
+            created_output = output
+            shutil.copyfileobj(src, dest)
+        created_output = None
+        return True, ("converted " if is_exr else "copied ") + name
+    finally:
+        for path in (temporary, created_output):
+            if path:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+
+snapshot_watch = SnapshotWatch()
+
+
 # ── RenderView snapshot dir auto-detect — pure parser ─────────────────────
 
 def parse_rv_snapshot_dir(cfg_text):
@@ -198,7 +316,7 @@ def next_snapshot_name(existing_names, scene_name, ext=".png"):
     return f"{prefix}{highest + 1:03d}{ext}"
 
 
-def _get_stills_dir(doc, artist_name):
+def _get_stills_dir(doc, artist_name, create=True):
     """Get output directory: project_root/output/stills/Artist/YYMMDD/"""
     from datetime import datetime
     doc_path = doc.GetDocumentPath() or ""
@@ -212,7 +330,8 @@ def _get_stills_dir(doc, artist_name):
         artist_name or "Unknown",
         datetime.now().strftime("%y%m%d")
     )
-    os.makedirs(output_dir, exist_ok=True)
+    if create:
+        os.makedirs(output_dir, exist_ok=True)
     return output_dir
 
 def _find_latest_exr(snap_dir=None):

@@ -64,7 +64,9 @@ export function snapshotStatusLine(snapshots: PanelRenderSnapshots | null): stri
   if (snapshots === null) return "Snapshots status unavailable.";
   if (!snapshots.dir) return "No snapshot directory set.";
   const originChip = snapshots.origin === "auto" ? "auto-detected" : "manual";
-  return `${snapshots.dir} · ${originChip}`;
+  const message = snapshots.watch_enabled ? snapshots.watch_status?.message : "";
+  const error = snapshots.watch_enabled ? snapshots.watch_status?.last_error : "";
+  return `${snapshots.dir} · ${originChip}${message ? ` · ${message}` : ""}${error && error !== message ? ` · Last failure: ${error}` : ""}`;
 }
 
 /** Post-Render card status line: pass/fail + the report's generation

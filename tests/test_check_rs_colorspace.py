@@ -342,3 +342,140 @@ class TestFixRsColorspace:
         assert graph.set_port_calls == [
             ("sampler1", "colorspace", "RS_INPUT_COLORSPACE_SRGB")
         ]
+
+
+# Readiness regression: exercise graph -> check -> score -> reports/gates.
+@pytest.mark.parametrize('failure', ['walk', 'get_graph', 'materials', 'collect'])
+def test_unreadable_coverage_never_passes_qc_or_gate(matgraph_check, monkeypatch, failure, tmp_path):
+    from types import SimpleNamespace
+    from sentinel import gate
+    from sentinel.qc.score import compute_score
+    from sentinel.bridge.reports import qc_report_payload, group_qc_by_severity, top_qc_checks
+    from sentinel.bridge.forms import gate_state_payload, gate_can_proceed
+    from sentinel.ui.dialogs import gate_dialog_can_proceed
+    from sentinel.ui.reports import build_qc_report, build_baseline_artifact_details
+
+    graph = FakeGraph()
+    mat = FakeMaterial('unreadable_mat', graph=graph)
+    doc = FakeDocWithPath(tmp_path, [mat])
+    def unreadable(*args):
+        raise RuntimeError('simulated unreadable graph')
+    if failure == 'walk':
+        graph._view_root.raise_on_get_inner_nodes = True
+    elif failure == 'get_graph':
+        ref = mat.GetNodeMaterialReference()
+        monkeypatch.setattr(ref, 'GetGraph', unreadable)
+        monkeypatch.setattr(mat, 'GetNodeMaterialReference', lambda: ref)
+    elif failure == 'materials':
+        monkeypatch.setattr(doc, 'GetMaterials', unreadable)
+    else:
+        monkeypatch.setattr(matgraph_check, 'collect', unreadable)
+    result = matgraph_check.check_rs_colorspace(doc, rules_context=_FakeRulesContext())
+    assert result.to_legacy() == []
+    assert result.violations == []  # Unknown coverage is never baselineable.
+    assert len(result.metadata['unverified']) == 1
+    assert result.metadata['info'][0]['reason'] == 'scan_unverified'
+    assert matgraph_check.check_rs_colorspace(doc, rules_context=_FakeRulesContext()) is result
+    pair = {'legacy_result': [], 'structured_result': result, 'disabled': False}
+    results = {'rs_colorspace': pair}
+    invalid = tmp_path / 'invalid_baseline.json'
+    invalid.write_text('{invalid', encoding='utf-8')
+    for kwargs in ({}, {'baseline_entries': []}, {'baseline_path': str(invalid)},
+                   {'baseline_path': str(tmp_path / 'missing.json')}):
+        score = compute_score(results, **kwargs)
+        assert score['score'] == '12/13'
+        assert score['pass'] is False
+        assert score['counts']['rs_colorspace'] == 0
+        assert score['unverified_counts'] == {'rs_colorspace': 1}
+        assert gate.count_new_fails(score) == 1
+        assert 'unverified' in ' '.join(gate.build_preflight_issues(score)).lower()
+        evaluated = gate.evaluate_gate(score)
+        assert evaluated['passed'] is False
+        assert evaluated['fixable'] == []
+        assert evaluated['blocking'][0]['violations'] == []
+        assert evaluated['blocking'][0]['unverified_count'] == 1
+        assert gate_can_proceed(evaluated) is False
+        assert gate_dialog_can_proceed(evaluated['blocking'], [], {'rs_colorspace': 'baseline'}, 'accepted') is False
+        state = gate_state_payload(evaluated)
+        assert state['checks'][0]['has_fix'] is False
+        assert 'unverified' in state['checks'][0]['label'].lower()
+        report = qc_report_payload('shot.c4d', None, score, {'rs_colorspace': result.to_dict()})
+        row = next(r for r in report['checks'] if r['id'] == 'rs_colorspace')
+        assert row['status'] != 'ok'
+        assert row['unverified_count'] == 1
+        assert 'unverified' in row['details'][0]['message'].lower()
+        group = group_qc_by_severity(report['checks'])['fail'][0]
+        assert group['can_fix'] is False
+        assert group['accepted_all'] is False
+        assert top_qc_checks(report['checks'])[0]['check_id'] == 'rs_colorspace'
+        legacy_report = build_qc_report(doc, {}, '', qc_summary=score)
+        assert legacy_report['checks']['rs_colorspace']['status'] == 'UNVERIFIED'
+        if score.get('schema') == 2:
+            assert build_baseline_artifact_details(score)['rs_colorspace']['unverified_count'] == 1
+    disabled = SimpleNamespace(params={'checks_enabled': {'rs_colorspace': False}})
+    # Explicit disabled pair is also the contract produced by run_all_checks.
+    disabled_score = compute_score({'rs_colorspace': dict(pair, disabled=True)}, disabled, baseline_entries=[])
+    assert disabled_score['score'] == '12/12'
+    assert disabled_score['pass'] is True
+    assert disabled_score.get('unverified_counts', {}) == {}
+    assert gate.count_new_fails(disabled_score) == 0
+
+
+@pytest.mark.parametrize('brdf_kind,normal_port', [('standardmaterial', 'bump_input'), ('openpbrmaterial', 'geometry_normal')])
+def test_generic_named_sampler_keeps_bump_input_semantics(matgraph_check, brdf_kind, normal_port):
+    from test_matgraph_c4d import FakePort
+    from sentinel import fixes
+    graph = FakeGraph()
+    core = 'com.redshift3d.redshift4c4d.nodes.core.'
+    brdf = graph.add_node('brdf', core + brdf_kind)
+    brdf.inputs.add_child(FakePort(core + brdf_kind + '.' + normal_port, brdf))
+    bump = graph.add_node('bump', core + 'bumpmap')
+    bump.inputs.add_child(FakePort(core + 'bumpmap.input', bump))
+    bump.outputs.add_child(FakePort(core + 'bumpmap.out', bump))
+    sampler = _add_sampler(graph, 'sampler', '/tex/texture_123.png', 'RS_INPUT_COLORSPACE_SRGB')
+    _out_port(sampler, 'outcolor').connect_to(_in_port(bump, 'input'))
+    _out_port(bump, 'out').connect_to(_in_port(brdf, normal_port))
+    doc = FakeDoc([FakeMaterial('normal_mat', graph=graph)])
+    result = matgraph_check.check_rs_colorspace(doc, rules_context=_FakeRulesContext())
+    assert len(result.violations) == 1
+    assert result.to_legacy()[0]['channel'] == 'normal'
+    assert result.to_legacy()[0]['expected'] == 'RS_INPUT_COLORSPACE_RAW'
+    assert fixes.fix_rs_colorspace(doc) == {'written': 1, 'materials': 1}
+    assert graph.set_port_calls == [('sampler', 'colorspace', 'RS_INPUT_COLORSPACE_RAW')]
+
+
+def test_accepting_known_mismatch_does_not_accept_unreadable_material(matgraph_check):
+    from sentinel import baseline, gate
+    from sentinel.qc.score import compute_score
+    broken = FakeGraph()
+    broken._view_root.raise_on_get_inner_nodes = True
+    doc = FakeDoc([FakeMaterial('broken', graph=broken),
+                   FakeMaterial('known', graph=_mismatch_auto_foreign_graph())])
+    result = matgraph_check.check_rs_colorspace(doc, rules_context=_FakeRulesContext())
+    acceptance = baseline.entry_from_violation(result.to_dict()['violations'][0], 'Artist', 'Approved')
+    assert acceptance is not None
+    score = compute_score({'rs_colorspace': {'legacy_result': result.to_legacy(),
+                           'structured_result': result}}, baseline_entries=[acceptance])
+    assert score['counts']['rs_colorspace'] == 0
+    assert score['accepted_counts']['rs_colorspace'] == 1
+    assert score['unverified_counts']['rs_colorspace'] == 1
+    assert score['score'] == '12/13'
+    assert score['pass'] is False
+    assert gate.evaluate_gate(score)['blocking'][0]['unverified_count'] == 1
+
+
+def test_informational_colorspaces_preserve_clean_score_and_metadata(matgraph_check):
+    from sentinel.qc.score import compute_score
+    graph = _mismatch_auto_foreign_graph()
+    sampler = next(n for n in graph.nodes if n.node_id == 'sampler_mismatch')
+    tex0 = sampler.inputs.GetChildren()[0]
+    next(p for p in tex0.GetChildren() if p.GetId() == 'colorspace')._value = 'RS_INPUT_COLORSPACE_SRGB'
+    result = matgraph_check.check_rs_colorspace(FakeDoc([FakeMaterial('info', graph=graph)]),
+                                               rules_context=_FakeRulesContext())
+    assert result.to_legacy() == []
+    assert 'unverified' not in result.metadata
+    assert {r['reason'] for r in result.metadata['info']} == {'auto_unverified', 'foreign_cs'}
+    score = compute_score({'rs_colorspace': {'legacy_result': [], 'structured_result': result}}, baseline_entries=[])
+    assert score['score'] == '13/13'
+    assert score['pass'] is True
+    assert 'unverified_counts' not in score

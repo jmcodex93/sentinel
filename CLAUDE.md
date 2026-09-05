@@ -20,6 +20,9 @@ The plugin performs **13 quality checks** in real-time:
 
 Additional features: RS AOV management (Essentials/Production/Light Groups), Scene Collector, QC Report export, Render Presets with aspect ratio toggle, Texture Repathing tool (multi-renderer bulk find/replace + smart-fix), and a full suite of scene tools.
 
+## Product readiness tracking (2026-09-05)
+The current stabilization specification is `docs/superpowers/plans/2026-09-05-product-readiness.md`; evidence, release prerequisites and host acceptance live in `docs/audit/2026-09-05-product-readiness.md`. Read that record before claiming the commercial package or a C4D/OS combination verified. Historical release paragraphs below retain their original evidence and limitations. Installer and Doctor share `sentinel/payload.py`; the committed SPA must pass source/build parity in CI. Package/class changes still require a full C4D restart.
+
 ## Core Files (DO NOT DELETE)
 - `plugin/sentinel_panel.pyp` - Cinema 4D bootstrap only: inserts the plugin root on `sys.path`, imports the `sentinel/` package, keeps all `Register*` calls, and preserves the `__main__` guard.
 - `plugin/sentinel/` - Sentinel Python package. Current layout:

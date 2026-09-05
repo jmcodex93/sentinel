@@ -92,7 +92,12 @@ def _op_panel_state_stamp(payload):
         notice = renderwatch.latest_notice()
     except Exception:
         notice = None
-    return {"stamp": _stamp_for(doc), "notice": notice}
+    from sentinel.snapshots import snapshot_watch
+    status = snapshot_watch.status()
+    stamp = _stamp_for(doc)
+    if status["state"] != "off":
+        stamp += "|snapshot:" + status["state"] + ":" + status["message"] + ":" + status["last_error"]
+    return {"stamp": stamp, "notice": notice}
 
 
 # Palette action ids the overview surfaces as "currently runnable quick

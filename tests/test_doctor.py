@@ -49,12 +49,10 @@ def test_version_item_unreadable():
 
 # ── payload integrity ────────────────────────────────────────────────────────
 def _make_running_root(root):
-    os.makedirs(os.path.join(root, "res", "description"))
-    os.makedirs(os.path.join(root, "res", "strings_us"))
-    os.makedirs(os.path.join(root, "sentinel"))
-    os.makedirs(os.path.join(root, "abc_retime"))
-    Path(os.path.join(root, "res", "c4d_symbols.h")).write_text("x")
-    Path(os.path.join(root, "sentinel", "__init__.py")).write_text("x")
+    """Use the complete distributable, including the committed frontend."""
+    import shutil
+    source = Path(__file__).resolve().parents[1] / 'plugin'
+    shutil.copytree(source, root, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
 
 
 def test_payload_item_ok(tmp_path):

@@ -236,13 +236,15 @@ _CHECK_ENTRY_BY_ID = {entry.check_id: entry for entry in CHECK_REGISTRY}
 
 def _gate_item_payload(bucket, item):
     entry = _CHECK_ENTRY_BY_ID.get(item.get("check_id"))
+    unverified = item.get("unverified_count", 0)
+    label = entry.row_label if entry else (item.get("check_id") or "")
     return {
         "check_id": item.get("check_id") or "",
-        "label": entry.row_label if entry else (item.get("check_id") or ""),
+        "label": label + (f" — {unverified} unverified scan(s)" if unverified else ""),
         "severity": entry.severity if entry else "",
         "bucket": bucket,
         "blocks": bool(item.get("blocks")),
-        "has_fix": bool(entry.has_fix) if entry else False,
+        "has_fix": bool(entry and entry.has_fix and not unverified),
         "new_count": int(item.get("new_count") or 0),
         "violations": [
             _qc_violation_detail(v) for v in (item.get("violations") or [])

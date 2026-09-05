@@ -2075,3 +2075,39 @@ class TestDrainBudget:
     def test_defaults_are_reasonable(self):
         assert 1 <= webbridge.MainThreadQueue.MAX_ITEMS_PER_TICK <= 64
         assert 0.01 <= webbridge.MainThreadQueue.MAX_SECONDS_PER_TICK <= 1.0
+
+
+def test_real_queue_dispatch_failure_is_private_over_http(web_root):
+    q = webbridge.MainThreadQueue()
+    live = _LiveServer(web_root, api_handler=q.submit)
+    result = {}
+    client = threading.Thread(target=lambda: result.update(response=live.get('/api/report/qc')))
+    try:
+        client.start()
+        deadline = time.monotonic() + 3
+        while q._queue.empty() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        def fail(payload):
+            raise ValueError('/Users/private/scene.c4d secret')
+        q.drain(fail)
+        client.join(timeout=5)
+        response, body = result['response']
+        assert response.status == 500
+        assert json.loads(body) == {'error': 'internal_error'}
+    finally:
+        live.close()
+        client.join(timeout=5)
+
+
+def test_http_failure_log_omits_query_credentials(web_root, monkeypatch):
+    lines = []
+    monkeypatch.setattr('builtins.print', _capture_print(lines))
+    live = _LiveServer(web_root, api_handler=_raising_handler)
+    try:
+        live.get('/api/report/qc?private=do-not-log')
+        event = next(item for item in _structured_events(lines) if item['event'] == 'http.handler_failed')
+        assert event['fields']['path'] == '/api/report/qc'
+        assert live.token not in '\n'.join(lines)
+        assert 'do-not-log' not in '\n'.join(lines)
+    finally:
+        live.close()

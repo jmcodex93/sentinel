@@ -41,12 +41,14 @@ def evaluate_gate(score_summary: dict[str, Any], rules_context: Any = None) -> d
         "advisory": [],
         "passed": True,
     }
-    new_counts = score_summary.get("new_counts") or {}
+    new_counts = score_summary.get("new_counts") or score_summary.get("counts") or {}
+    unverified_counts = score_summary.get("unverified_counts") or {}
     baseline_matches = score_summary.get("baseline_matches") or {}
 
     for check_id in new_counts:
         new_count = new_counts.get(check_id, 0)
-        if new_count <= 0:
+        unverified_count = unverified_counts.get(check_id, 0)
+        if new_count <= 0 and unverified_count <= 0:
             continue
 
         entry = _registry_entry(check_id)
@@ -54,6 +56,9 @@ def evaluate_gate(score_summary: dict[str, Any], rules_context: Any = None) -> d
             continue
 
         level, blocks = classify_gate(entry, rules_context)
+        if unverified_count:
+            # No fix/baseline identity can resolve an unreadable graph.
+            level = LEVEL_BLOCKING if blocks else LEVEL_ADVISORY
         violations = list((baseline_matches.get(check_id) or {}).get("new") or [])
         item = {
             "check_id": check_id,
@@ -62,6 +67,8 @@ def evaluate_gate(score_summary: dict[str, Any], rules_context: Any = None) -> d
             "new_count": new_count,
             "violations": violations,
         }
+        if unverified_count:
+            item["unverified_count"] = unverified_count
         if level == LEVEL_FIXABLE:
             result["fixable"].append(item)
         elif level == LEVEL_BLOCKING:
@@ -139,6 +146,9 @@ def build_preflight_issues(score: dict[str, Any]) -> list[str]:
         count = counts.get(entry.check_id, 0)
         if count:
             issues.append(entry.preflight_template.format(n=count))
+        unverified = (score.get("unverified_counts") or {}).get(entry.check_id, 0)
+        if unverified:
+            issues.append(f"{entry.row_label}: {unverified} unverified scan(s)")
     return issues
 
 
@@ -158,6 +168,7 @@ def count_new_fails(score: dict[str, Any], rules_context: Any = None) -> int:
         if entry_severity(entry, rules_context) != "FAIL":
             continue
         total += counts.get(entry.check_id, 0)
+        total += (score.get("unverified_counts") or {}).get(entry.check_id, 0)
     return total
 
 

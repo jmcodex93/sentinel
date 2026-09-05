@@ -279,6 +279,8 @@ function ColumnResizer({
   );
 }
 
+const EMPTY_COLUMN_WIDTHS: Partial<Record<ResizableColumn, number>> = {};
+
 export function HubAssetsTable({
   assets,
   pending,
@@ -315,7 +317,7 @@ export function HubAssetsTable({
     overscan: 12,
   });
 
-  const widths = colWidths ?? {};
+  const widths = colWidths ?? EMPTY_COLUMN_WIDTHS;
   const gridColumns = gridColumnsFor(widths);
 
   const handleResize = useCallback(

@@ -1,4 +1,4 @@
-# Sentinel v1.9.0
+# Sentinel v1.38.0
 
 Quality control, render management, and workflow automation plugin for Cinema 4D production environments — keeping the watchdog spirit of YS Guardian.
 
@@ -14,13 +14,13 @@ Sentinel monitors Cinema 4D scenes in real-time with **13 quality checks**, catc
 
 **IMPORTANT**: The snapshot feature requires Python 3.x with Pillow and NumPy for EXR→PNG conversion with ACES tone mapping.
 
-**Tested on**: Cinema 4D 2024/2026 and Redshift. macOS and Windows.
+**Compatibility target**: Cinema 4D 2024+ with Redshift, macOS and Windows. Recorded live evidence primarily covers C4D 2026 on macOS; the current build still needs a complete Windows/C4D 2024 validation pass. See [product readiness](docs/audit/2026-09-05-product-readiness.md) for the release criteria.
 
 ## Core Features
 
 ### Pipeline Checks
 
-Twelve continuous quality checks to keep your C4D files clean:
+Thirteen continuous quality checks to keep your C4D files clean:
 
 - **Lights Organization** – Validates proper light group structure (Select + Fix)
 - **Visibility Consistency** – Detects viewport/render visibility mismatches (Select)
@@ -34,6 +34,7 @@ Twelve continuous quality checks to keep your C4D files clean:
 - **Take Validation** – Camera assigned per take, $take token in output paths (Info)
 - **FPS / Frame Range** – FPS, start frame = 1001 (VFX standard), frame step, timeline + preview alignment, all presets (Info + Fix)
 - **Cross-Aspect Safe Area** – Opt-in marked subjects stay inside safe-area regions across multi-format delivery aspects (Select + Info)
+- **RS Colorspace** – Audits Redshift texture colorspace against filename and material-port semantics (Select + Info + Fix)
 
 Status display with color coding provides instant visual feedback. Per-check Select/Info/Fix buttons for one-click correction. Auto-fix available for lights, cameras, and unused materials.
 

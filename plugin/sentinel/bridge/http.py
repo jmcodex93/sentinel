@@ -170,7 +170,12 @@ class _RequestHandler(http.server.BaseHTTPRequestHandler):
             payload["op"] = op
 
             result = self.server.api_handler(payload)
-            self._send_json(result, 200)
+            # Queue failures are diagnostic dictionaries for native callers.
+            # Only a generic failure may cross the HTTP boundary.
+            if isinstance(result, dict) and "traceback" in result:
+                self._send_json({"error": "internal_error"}, 500)
+            else:
+                self._send_json(result, 200)
         except Exception as exc:
             # Log the full traceback server-side but never leak local paths
             # or stack frames to the HTTP client (localhost-only is not a
@@ -180,7 +185,7 @@ class _RequestHandler(http.server.BaseHTTPRequestHandler):
                 "webbridge.http",
                 exc,
                 method=self.command,
-                path=self.path,
+                path=urllib.parse.urlsplit(self.path).path,
             )
             self._send_json({"error": "internal_error"}, 500)
 
@@ -270,7 +275,7 @@ class _RequestHandler(http.server.BaseHTTPRequestHandler):
                 "webbridge.http",
                 exc,
                 method=self.command,
-                path=self.path,
+                path=urllib.parse.urlsplit(self.path).path,
             )
             self._send_plain(404, b"thumb error")
 

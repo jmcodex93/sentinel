@@ -25,7 +25,10 @@ scope (it would be circular, since ``reports_dialog`` imports
 ``FORM_OPS`` from here); any need to reach back into it (``open_reports``)
 is a local import inside the function that needs it.
 """
+import hashlib
+import hmac
 import os
+import secrets
 
 import c4d
 from c4d import documents
@@ -42,7 +45,7 @@ from sentinel.fixes import (
     fix_rs_colorspace,
     fix_unused_materials,
 )
-from sentinel.notes import get_notes_path, load_notes, save_notes
+from sentinel.notes import _decode_notes, _empty_notes, get_notes_path, save_notes
 from sentinel.qc.score import count_violations, run_all_checks
 from sentinel.rules_context import active_rules_for_doc
 from sentinel.versioning import (
@@ -155,6 +158,33 @@ def _op_form_save_version_submit(payload):
 # Notes — mirrors ui/dialogs.py NotesDialog + ui/panel.py _handle_edit_notes
 # ---------------------------------------------------------------------------
 
+# Session-secret HMACs identify a sidecar without disclosing its path.
+_NOTES_CONTEXT_SECRET = secrets.token_bytes(32)
+
+
+def _notes_context(path):
+    normalized = os.path.normcase(os.path.realpath(os.path.abspath(path)))
+    return hmac.new(_NOTES_CONTEXT_SECRET, normalized.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _read_notes_snapshot(path):
+    """The editor's content and revision always describe the same bytes.
+
+    Only a genuinely missing sidecar becomes an empty draft. Decode and I/O
+    failures propagate so this boundary never inherits the native fallback.
+    """
+    try:
+        with open(path, "rb") as stream:
+            raw = stream.read()
+    except FileNotFoundError:
+        return _empty_notes(), hashlib.sha256(b"missing").hexdigest()
+    return _decode_notes(raw), hashlib.sha256(b"present:" + raw).hexdigest()
+
+
+def _notes_revision(path):
+    return _read_notes_snapshot(path)[1]
+
+
 def _op_form_notes_state(payload):
     """``form/notes/state`` — load the sidecar (or the empty default) and
     stamp ``scene`` the same way ``_handle_edit_notes`` does when it is
@@ -171,7 +201,10 @@ def _op_form_notes_state(payload):
     if not notes_path:
         return {"error": "no_scene_path"}
 
-    notes = load_notes(notes_path)
+    try:
+        notes, revision = _read_notes_snapshot(notes_path)
+    except (OSError, ValueError, UnicodeError):
+        return {"error": "notes_unreadable"}
     scene_base = notes.get("scene") or _notes_scene_base(doc)
 
     todos = [
@@ -182,6 +215,8 @@ def _op_form_notes_state(payload):
         "notes_text": notes.get("notes", ""),
         "todos": todos,
         "scene_base": scene_base,
+        "context": _notes_context(notes_path),
+        "revision": revision,
     }
 
 
@@ -200,12 +235,27 @@ def _op_form_notes_submit(payload):
     if not notes_path:
         return {"error": "no_scene_path"}
 
-    original = load_notes(notes_path)
+    context, revision = payload.get("context"), payload.get("revision")
+    if not isinstance(context, str) or not context or not isinstance(revision, str) or not revision:
+        return {"ok": False, "error": "notes_context_required"}
+    if not hmac.compare_digest(context.encode("utf-8"), _notes_context(notes_path).encode("ascii")):
+        return {"ok": False, "error": "scene_changed"}
+    try:
+        original, current_revision = _read_notes_snapshot(notes_path)
+        if not hmac.compare_digest(revision.encode("utf-8"), current_revision.encode("ascii")):
+            return {"ok": False, "error": "notes_changed"}
+    except (OSError, ValueError, UnicodeError):
+        return {"ok": False, "error": "notes_unreadable"}
     merged = webbridge.merge_notes_submission(
         original, payload.get("notes_text"), payload.get("todos"))
     if not merged.get("scene"):
         merged["scene"] = _notes_scene_base(doc)
 
+    try:
+        if revision != _notes_revision(notes_path):
+            return {"ok": False, "error": "notes_changed"}
+    except (OSError, ValueError, UnicodeError):
+        return {"ok": False, "error": "notes_unreadable"}
     if not save_notes(notes_path, merged):
         return {"ok": False, "error": "Failed to save notes file."}
     return {"ok": True}

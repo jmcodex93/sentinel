@@ -312,7 +312,7 @@ export async function submitSaveVersion(payload: SaveVersionSubmitPayload): Prom
 /** `GET /api/form/notes/state` — see web_ops.py `_op_form_notes_state`. */
 export async function fetchNotesState(): Promise<NotesStateResult> {
   if (isMock()) {
-    return { kind: "ok", data: mockNotes as NotesState };
+    return { kind: "ok", data: { ...mockNotes, context: "mock-notes", revision: "mock-revision" } as NotesState };
   }
   return fetchReport<NotesState>("/api/form/notes/state", {
     no_scene_path: "Save the scene to a folder first, then reopen Edit Notes.",
@@ -555,11 +555,11 @@ export async function postHubApply(changes: HubApplyChange[]): Promise<HubApplyR
 }
 
 /** `POST /api/hub/select_owner` — see `_op_hub_select_owner` in hub_ops.py. */
-export async function postHubSelectOwner(key: string): Promise<HubSelectOwnerResponse> {
+export async function postHubSelectOwner(key: string, expectedStamp?: string): Promise<HubSelectOwnerResponse> {
   if (isMock()) {
     return { ok: true, stamp: "mock-stamp" };
   }
-  return postForm<HubSelectOwnerResponse>("/api/hub/select_owner", { key });
+  return postForm<HubSelectOwnerResponse>("/api/hub/select_owner", { key, expected_stamp: expectedStamp });
 }
 
 /** `POST /api/hub/pick_path` — see `_op_hub_pick_path` in hub_ops.py
@@ -1494,3 +1494,23 @@ export async function postNewShotCreate(folder: string, name: string): Promise<N
   if (isMock()) return { ok: false, error: "bad_folder" };
   return postForm<NewShotCreateResponse>("/api/panel/tools/newshot_create", { folder, name });
 }
+
+// Atomic read contracts used by the live SPA. The original fetch functions
+// above stay compatible for standalone consumers and mock fixtures.
+async function fetchSnapshot<T>(path: string, mockRead: () => Promise<import('./snapshot').ReadResult<T>>): Promise<import('./snapshot').SnapshotRead<T>> {
+  if (isMock()) return { result: await mockRead(), stamp: "mock-stamp" };
+  const response = await fetchReport<{ data: T; stamp: string | null }>(`${path}?with_stamp=1`, {
+    no_document: "No active Cinema 4D document. Open a scene to continue.",
+  });
+  if (response.kind !== "ok") return { result: response, stamp: null };
+  if (!response.data || !("data" in response.data) || !("stamp" in response.data)) {
+    return { result: { kind: "error", message: "Server returned an invalid scene snapshot." }, stamp: null };
+  }
+  return { result: { kind: "ok", data: response.data.data }, stamp: response.data.stamp };
+}
+export const fetchPanelOverviewSnapshot = () => fetchSnapshot("/api/panel/overview", fetchPanelOverview);
+export const fetchPanelQcSnapshot = () => fetchSnapshot("/api/panel/qc", fetchPanelQc);
+export const fetchPanelRenderSnapshot = () => fetchSnapshot("/api/panel/render", fetchPanelRender);
+export const fetchHubInventorySnapshot = () => fetchSnapshot("/api/hub/inventory", fetchHubInventory);
+export const fetchPanelDeliverSnapshot = () => fetchSnapshot<PanelDeliverState>("/api/panel/deliver", async () => ({kind: "ok", data: await fetchPanelDeliver()}));
+export const fetchPanelFrameSnapshot = () => fetchSnapshot<PanelFrameState>("/api/panel/frame", async () => ({kind: "ok", data: await fetchPanelFrame()}));

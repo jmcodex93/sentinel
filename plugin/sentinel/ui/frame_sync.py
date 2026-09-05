@@ -204,6 +204,11 @@ if _c4d_plugins is not None:
                     renderwatch.tick_active_document()
                 except Exception:
                     pass
+                try:
+                    from sentinel.ui.flows import tick_snapshot_watch
+                    tick_snapshot_watch()
+                except Exception as exc:
+                    safe_print("Sentinel Snapshot Watch pump error: %s" % exc)
             return True
 
 else:  # pragma: no cover

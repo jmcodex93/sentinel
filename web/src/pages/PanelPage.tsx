@@ -11,12 +11,11 @@ import { EmptyState, ErrorState, LoadingState } from "../components/PageStates";
 import { Button } from "../components/form/Button";
 import {
   fetchPaletteActions,
-  fetchPanelDeliver,
-  fetchPanelFrame,
-  fetchPanelOverview,
-  fetchPanelQc,
-  fetchPanelRender,
-  fetchPanelStamp,
+  fetchPanelDeliverSnapshot,
+  fetchPanelFrameSnapshot,
+  fetchPanelOverviewSnapshot,
+  fetchPanelQcSnapshot,
+  fetchPanelRenderSnapshot,
   fetchPanelStampFull,
   isMock,
   postPanelOpenCollect,
@@ -42,6 +41,7 @@ import {
   postPanelTool,
   runPaletteAction,
 } from "../lib/api";
+import { SnapshotChannel } from "../lib/snapshot";
 import { railBadges, railMode, type PanelSection } from "../lib/panel";
 import { toolToast } from "../lib/panelTools";
 import { useToast } from "../lib/toast";
@@ -155,69 +155,49 @@ export function PanelPage() {
   const [frameState, setFrameState] = useState<PanelFrameState>(EMPTY_FRAME_STATE);
 
   const rootRef = useRef<HTMLDivElement>(null);
-  const stampRef = useRef<string | null>(null);
+  const channels = useRef({
+    overview: new SnapshotChannel(), qc: new SnapshotChannel(),
+    render: new SnapshotChannel(), frame: new SnapshotChannel(), deliver: new SnapshotChannel(),
+  });
+  const paletteSequence = useRef(0);
   const lastNoticeIdRef = useRef<number | null>(null);
 
-  const load = useCallback((silent: boolean) => {
+  const load = useCallback((silent: boolean, target: string | null = null) => {
     if (!silent) setState({ kind: "loading" });
-    fetchPanelOverview().then(async (result) => {
-      setState(result);
-      stampRef.current = result.kind === "ok" ? await fetchPanelStamp() : null;
-    });
+    void channels.current.overview.load(fetchPanelOverviewSnapshot, ({ result }) => setState(result), target);
+    const sequence = ++paletteSequence.current;
     fetchPaletteActions().then((result) => {
-      if (result.kind === "ok") setActions(result.data);
+      if (sequence === paletteSequence.current && result.kind === "ok") setActions(result.data);
     });
   }, []);
 
-  // `panel/qc` is its own fetch (Fase 6.1) — the section's full per-check
-  // FAIL/WARN/OK/disabled breakdown, not the top-3 summary `load` above
-  // already carries in `state.data.qc`. Fetched on entering the QC section
-  // and again on every stamp change while it's active (see the polling
-  // effect below), same "compare, then refetch only on change" idiom.
-  const loadQc = useCallback((silent: boolean) => {
+  const loadQc = useCallback((silent: boolean, target: string | null = null) => {
     if (!silent) setQcState({ kind: "loading" });
-    fetchPanelQc().then(async (result) => {
-      setQcState(result);
-      if (result.kind === "ok") stampRef.current = await fetchPanelStamp();
-    });
+    void channels.current.qc.load(fetchPanelQcSnapshot, ({ result }) => setQcState(result), target);
   }, []);
 
-  // `panel/render` (Fase 6.2) — same "own fetch on entering the section,
-  // own stamp-driven refetch" idiom as `panel/qc` above.
-  const loadRender = useCallback((silent: boolean) => {
+  const loadRender = useCallback((silent: boolean, target: string | null = null) => {
     if (!silent) setRenderState({ kind: "loading" });
-    fetchPanelRender().then(async (result) => {
-      setRenderState(result);
-      if (result.kind === "ok") stampRef.current = await fetchPanelStamp();
-    });
+    void channels.current.render.load(fetchPanelRenderSnapshot, ({ result }) => setRenderState(result), target);
   }, []);
 
-  // `panel/frame` (Fase 6.6) — the Frame sub-view's consolidated read.
-  // Lives under Render (opened via the Frame block's "Manage frame →"), so
-  // it fetches/polls alongside `panel/render` rather than its own section.
-  // `fetchPanelFrame` never rejects (it resolves to `EMPTY_FRAME_STATE`-shaped
-  // data on failure, see its docstring), so there's no `result.kind === "ok"`
-  // branch to gate the stamp re-anchor on — it always re-anchors, same as
-  // `loadDeliver`.
-  const loadFrame = useCallback((silent: boolean) => {
+  const loadFrame = useCallback((silent: boolean, target: string | null = null) => {
     if (!silent) setFrameState(EMPTY_FRAME_STATE);
-    fetchPanelFrame().then(async (data) => {
-      setFrameState(data);
-      stampRef.current = await fetchPanelStamp();
-    });
+    void channels.current.frame.load(fetchPanelFrameSnapshot, ({ result }) => {
+      setFrameState(result.kind === "ok" ? result.data : EMPTY_FRAME_STATE);
+    }, target);
   }, []);
 
-  // `panel/deliver` (Fase 6.3 Task 5) — same "own fetch on entering the
-  // section, own stamp-driven refetch" idiom as `panel/qc`/`panel/render`
-  // above. `fetchPanelDeliver` never rejects (it resolves to an all-null
-  // state on failure), so there's no `result.kind === "ok"` branch to gate
-  // the stamp re-anchor on — it always re-anchors.
-  const loadDeliver = useCallback((silent: boolean) => {
+  const loadDeliver = useCallback((silent: boolean, target: string | null = null) => {
     if (!silent) setDeliverState({ kind: "loading" });
-    fetchPanelDeliver().then(async (data) => {
-      setDeliverState({ kind: "ok", data });
-      stampRef.current = await fetchPanelStamp();
-    });
+    void channels.current.deliver.load(fetchPanelDeliverSnapshot, ({ result }) => {
+      setDeliverState({ kind: "ok", data: result.kind === "ok" ? result.data : { version: null, notes: null, deliver: null, stamp: null } });
+    }, target);
+  }, []);
+
+  useEffect(() => () => {
+    for (const channel of Object.values(channels.current)) channel.invalidate();
+    paletteSequence.current += 1;
   }, []);
 
   useEffect(() => {
@@ -253,31 +233,35 @@ export function PanelPage() {
     return () => observer.disconnect();
   }, []);
 
-  // Stamp polling — same "compare, then refetch only on change" idiom as
-  // HubPage's own polling effect. No live interval under `?mock=1` (no real
-  // document to drift from).
+  // Each view compares its own atomic snapshot; one fresh view cannot
+  // acknowledge changes for another. Only one stamp request is in flight.
   useEffect(() => {
     if (isMock()) return;
+    let cancelled = false;
+    let polling = false;
     const id = window.setInterval(async () => {
-      if (document.visibilityState !== "visible") return;
-      const { stamp: newStamp, notice } = await fetchPanelStampFull();
-      // Render-finished notice (peek server-side, dedupe by id here): toast
-      // once per notice — the in-C4D primary channel now that macOS banners
-      // proved swallowable by Focus/permissions (live-caught).
-      if (notice && notice.id !== lastNoticeIdRef.current) {
-        lastNoticeIdRef.current = notice.id;
-        toast({ message: notice.text, variant: "success" });
+      if (polling || document.visibilityState !== "visible") return;
+      polling = true;
+      try {
+        const { stamp, notice } = await fetchPanelStampFull();
+        if (cancelled) return;
+        if (notice && notice.id !== lastNoticeIdRef.current) {
+          lastNoticeIdRef.current = notice.id;
+          toast({ message: notice.text, variant: "success" });
+        }
+        const current = channels.current;
+        if (current.overview.needsRefresh(stamp)) load(true, stamp);
+        if (section === "qc" && current.qc.needsRefresh(stamp)) loadQc(true, stamp);
+        if (section === "render") {
+          if (current.render.needsRefresh(stamp)) loadRender(true, stamp);
+          if (current.frame.needsRefresh(stamp)) loadFrame(true, stamp);
+        }
+        if (section === "deliver" && current.deliver.needsRefresh(stamp)) loadDeliver(true, stamp);
+      } finally {
+        polling = false;
       }
-      if (newStamp === null || stampRef.current === null || newStamp === stampRef.current) return;
-      load(true);
-      if (section === "qc") loadQc(true);
-      if (section === "render") {
-        loadRender(true);
-        loadFrame(true);
-      }
-      if (section === "deliver") loadDeliver(true);
     }, POLL_INTERVAL_MS);
-    return () => window.clearInterval(id);
+    return () => { cancelled = true; window.clearInterval(id); };
   }, [load, loadQc, loadRender, loadFrame, loadDeliver, section, toast]);
 
   async function runFix(action: PaletteAction, confirm?: boolean) {
@@ -334,7 +318,6 @@ export function PanelPage() {
       toast({ message: response.error || "Select failed.", variant: "warn" });
       return;
     }
-    if (response.stamp) stampRef.current = response.stamp;
     const progress =
       response.total && response.total > 0 ? ` ${response.cursor_pos}/${response.total}` : "";
     toast({ message: `Selected in scene.${progress}`, variant: "success" });
@@ -347,8 +330,7 @@ export function PanelPage() {
     if (!response.ok) {
       return { ok: false, error: response.error };
     }
-    if (response.stamp) stampRef.current = response.stamp;
-    if (response.qc) setQcState({ kind: "ok", data: response.qc });
+    loadQc(true);
     toast({ message: "Accepted into the baseline.", variant: "success" });
     load(true); // keeps the rail/header QC badge in sync, same as runQcCardFix/runQcFixAll
     return { ok: true };
@@ -422,8 +404,7 @@ export function PanelPage() {
       toast({ message: response.error || "Fix all failed.", variant: "warn" });
       return;
     }
-    if (response.stamp) stampRef.current = response.stamp;
-    if (response.qc) setQcState({ kind: "ok", data: response.qc });
+    loadQc(true);
     toast({ message: "Fixed.", variant: "success" });
     load(true); // keeps the rail/header QC badge and the palette action list in sync
   }
@@ -439,8 +420,8 @@ export function PanelPage() {
       toast({ message: response.error || "Action failed.", variant: "warn" });
       return;
     }
-    if (response.stamp) stampRef.current = response.stamp;
-    if (response.render) setRenderState({ kind: "ok", data: response.render });
+    loadRender(true);
+    loadFrame(true);
     toast({ message: successMsg, variant: "success" });
     load(true);
   }
@@ -619,7 +600,6 @@ export function PanelPage() {
       }
       return;
     }
-    if (response.stamp) stampRef.current = response.stamp;
     toast({
       message: response.switched ? `Switched to ${filename}.` : `Opened ${filename}.`,
       variant: "success",

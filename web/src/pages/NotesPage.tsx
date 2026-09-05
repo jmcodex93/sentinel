@@ -97,13 +97,21 @@ export function NotesPage({
     setSubmitError(null);
     setPending(true);
     const response = await submitNotes({
+      context: data.context,
+      revision: data.revision,
       notes_text: notesText,
       todos: todos.map((todo) => ({ id: todo.id, text: todo.text, done: todo.done })),
     });
     setPending(false);
 
     if (!response.ok) {
-      setSubmitError(response.error || "Failed to save notes.");
+      const messages: Record<string, string> = {
+        scene_changed: "The active scene changed. Your draft is preserved. Return to the original scene to save it.",
+        notes_changed: "Notes changed on disk. Your draft is preserved. Copy it before reopening Notes to review the latest changes.",
+        notes_context_required: "This form is outdated. Copy your draft and reopen Notes before saving.",
+        notes_unreadable: "The notes file cannot be read. Your draft is preserved.",
+      };
+      setSubmitError(messages[response.error || ""] || response.error || "Failed to save notes.");
       return;
     }
     toast({ message: "Notes saved.", variant: "success" });

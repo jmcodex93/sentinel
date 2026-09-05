@@ -55,9 +55,9 @@ def entries_for_audit(materials):
     verdict and are what the check/fix below key off of — never
     re-derived from the material a second time.
 
-    A material entry carrying an ``error`` (the walk itself failed) is
-    skipped: auditing data known to be incomplete/wrong is exactly what
-    ``clean_dead_nodes_core`` also refuses to do, for the same reason.
+    A material entry carrying an ``error`` is excluded from mismatch
+    inference. ``check_rs_colorspace`` preserves that missing coverage as
+    unverified metadata, separately from baselineable violations.
     """
     entries = []
     for mat_entry in materials or []:
@@ -77,7 +77,7 @@ def entries_for_audit(materials):
     return entries
 
 
-def _rs_colorspace_result(legacy_items, info_rows=None):
+def _rs_colorspace_result(legacy_items, info_rows=None, unverified=None):
     """Build the ``CheckResult`` from an already-computed ``legacy_items``
     list (one dict per ``mismatch`` verdict). Mirrors ``render.py``'s
     ``_output_paths_result``/``_takes_result`` shape: called with a single
@@ -86,9 +86,12 @@ def _rs_colorspace_result(legacy_items, info_rows=None):
     ``info_rows`` — the same "structured extras are lost on a legacy-only
     cache hit" limitation those checks already accept), and with both args
     on a fresh compute (see ``check_rs_colorspace`` below)."""
+    metadata = {"legacy_count": len(legacy_items), "info": info_rows or []}
+    if unverified:
+        metadata["unverified"] = unverified
     result = CheckResult(
         check_id="rs_colorspace",
-        metadata={"legacy_count": len(legacy_items), "info": info_rows or []},
+        metadata=metadata,
         legacy_items=legacy_items,
     )
     for item in legacy_items:
@@ -132,8 +135,15 @@ def check_rs_colorspace(doc, rules_context=None):
 
     legacy_items = []
     info_rows = []
+    unverified = []
     try:
         materials = collect(doc)
+        unverified = [
+            {"material": entry.get("name") or "Unnamed material",
+             "reason": "scan_unverified"}
+            for entry in materials if entry.get("error")
+        ]
+        info_rows.extend(unverified)
         entries = entries_for_audit(materials)
         verdicts = audit_colorspaces(entries)
         for verdict in verdicts:
@@ -171,8 +181,10 @@ def check_rs_colorspace(doc, rules_context=None):
                     "reason": reason,
                 })
     except Exception:
-        legacy_items = []
-        info_rows = []
+        # A scan failure is missing evidence, never a clean result or a
+        # violation that a baseline could accept away.
+        unverified = [{"material": "Scene materials", "reason": "scan_unverified"}]
+        info_rows = unverified + info_rows
 
-    result = _rs_colorspace_result(legacy_items, info_rows)
+    result = _rs_colorspace_result(legacy_items, info_rows, unverified)
     return _store_result(doc, "rscs", legacy_items, result)

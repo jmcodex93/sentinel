@@ -112,6 +112,7 @@ def group_qc_by_severity(checks):
         new = row.get("new")
         accepted = row.get("accepted")
 
+        unverified = row.get("unverified_count", 0)
         card = {
             "id": check_id,
             "label": row.get("label"),
@@ -121,9 +122,9 @@ def group_qc_by_severity(checks):
             "accepted": accepted,
             "detail": row.get("details") or [],
             "can_select": "select" in actions,
-            "can_fix": "fix" in actions,
+            "can_fix": "fix" in actions and not (unverified and not row.get("count")),
             "fix_action_id": _FIX_ACTION_ID_BY_CHECK_ID.get(check_id),
-            "accepted_all": bool(new == 0 and (accepted or 0) > 0),
+            "accepted_all": bool(new == 0 and (accepted or 0) > 0 and not unverified),
         }
         if row.get("severity") == "FAIL":
             fail.append(card)
@@ -281,6 +282,8 @@ def _qc_info_detail(row):
             f"{material}: {file_name} is {assigned}, "
             f"{channel} expects {row.get('expected')}"
         )
+    elif reason == "scan_unverified":
+        message = f"{material}: material graph unverified — could not complete the scan"
     elif reason == "auto_unverified":
         message = f"{material}: {file_name} — auto, unverified"
     elif reason == "conflict":
@@ -347,6 +350,7 @@ def _qc_check_row(entry, score, structured_by_check, severity_overrides):
     check_id = entry.check_id
     disabled = check_id in (score.get("disabled") or [])
     has_baseline = "new_counts" in score
+    unverified = 0 if disabled else (score.get("unverified_counts") or {}).get(check_id, 0)
 
     if disabled:
         count = new = accepted = None
@@ -356,20 +360,23 @@ def _qc_check_row(entry, score, structured_by_check, severity_overrides):
         count = (score.get("counts") or {}).get(check_id, 0)
         new = (score.get("new_counts") or {}).get(check_id) if has_baseline else None
         accepted = (score.get("accepted_counts") or {}).get(check_id) if has_baseline else None
-        status = "ok" if not count else "fail"
+        status = "fail" if count or unverified else "ok"
         details = _qc_check_details(check_id, score, structured_by_check)
 
-    return {
+    row = {
         "id": check_id,
-        "label": entry.row_label,
+        "label": entry.row_label + (" — unverified" if unverified else ""),
         "severity": severity_overrides.get(check_id, entry.severity),
-        "has_fix": entry.has_fix,
+        "has_fix": entry.has_fix and not (unverified and not count),
         "status": status,
         "count": count,
         "new": new,
         "accepted": accepted,
         "details": details,
     }
+    if unverified:
+        row["unverified_count"] = unverified
+    return row
 
 
 def qc_report_payload(scene_name, ruleset, score, structured_by_check):
@@ -473,6 +480,7 @@ def top_qc_checks(checks, limit=3):
         count = entry.get("new")
         if count is None:
             count = entry.get("count")
+        count = (count or 0) + (entry.get("unverified_count") or 0)
         if not count:
             continue
         scored.append((count, entry))

@@ -12,7 +12,7 @@ import { Section } from "../components/Section";
 import { restoreFocus as restoreWebviewFocus } from "../lib/focus";
 import { formatBytes } from "../lib/format";
 import {
-  fetchHubInventory,
+  fetchHubInventorySnapshot,
   fetchHubJobStatus,
   fetchHubMeta,
   fetchHubMetaTotals,
@@ -44,6 +44,8 @@ import {
   type ResizableColumn,
   type SortSpec,
 } from "../lib/hubTable";
+import { SnapshotChannel } from "../lib/snapshot";
+import { loadAssetDetails } from "../lib/hubSnapshot";
 import { computeBulkChanges } from "../lib/repath";
 import { useToast } from "../lib/toast";
 import type {
@@ -91,7 +93,6 @@ const UI_STATE_SAVE_DEBOUNCE_MS = 500;
 type PageState = { kind: "loading" } | HubInventoryResult;
 
 const POLL_INTERVAL_MS = 2000;
-const META_CHUNK_SIZE = 64;
 
 function mergePending(prev: Map<string, string>, additions: Map<string, string>): Map<string, string> {
   if (additions.size === 0) return prev;
@@ -141,7 +142,8 @@ export function HubPage() {
 
   // Refs so the polling interval (set up once) always reads the latest
   // values without re-creating the interval on every keystroke/selection.
-  const stampRef = useRef<string | null>(null);
+  const inventoryChannel = useRef(new SnapshotChannel());
+  const detailsGeneration = useRef(0);
   const deliverRef = useRef<HTMLDivElement>(null);
   // Focus-restoration target for when a hub dialog (Switch Res / Shrink)
   // unmounts — full webview Cmd+Z diagnosis lives in lib/focus.ts (shared
@@ -192,12 +194,23 @@ export function HubPage() {
     [sort, persistUiState],
   );
 
-  const refreshInventory = useCallback(async (silent: boolean) => {
+  const refreshInventory = useCallback(async (silent: boolean, target: string | null = null) => {
+    // Invalidate the previous detail sweep immediately, including responses
+    // that arrive while the replacement inventory is still loading.
+    detailsGeneration.current += 1;
     if (!silent) setState({ kind: "loading" });
-    const result = await fetchHubInventory();
-    setState(result);
-    setSceneChanged(false);
-    stampRef.current = result.kind === "ok" ? await fetchHubStateStamp() : null;
+    await inventoryChannel.current.load(fetchHubInventorySnapshot, ({ result }) => {
+      setState(result);
+      setSceneChanged(false);
+      setMetas({});
+      setVariants({});
+      setMetaTotals(null);
+    }, target);
+  }, []);
+
+  useEffect(() => () => {
+    inventoryChannel.current.invalidate();
+    detailsGeneration.current += 1;
   }, []);
 
   useEffect(() => {
@@ -230,98 +243,43 @@ export function HubPage() {
     }
   }, [refreshInventory]);
 
-  // Meta sweep: after each inventory load, fetch header metadata for every
-  // asset key in chunks of 64 (sequential — 39-500 assets is at most ~8
-  // requests, simpler than viewport-tracking, and the server-side (path,
-  // mtime, size) cache makes repeat sweeps of unchanged assets free). Skipped
-  // when the key set is unchanged from the last sweep (e.g. a silent poll
-  // refresh with no new assets) so it doesn't re-hit the server every 2s.
-  const sweptKeysRef = useRef<string>("");
+  // A successful inventory response is a new snapshot even if its key
+  // set is unchanged. The server's stat cache makes stable file reads cheap.
   useEffect(() => {
     if (state.kind !== "ok") return;
-    const keys = state.data.assets.map((a) => a.key);
-    const signature = keys.slice().sort().join("|");
-    if (signature === sweptKeysRef.current) return;
-
+    const generation = detailsGeneration.current;
     let cancelled = false;
-    (async () => {
-      for (let i = 0; i < keys.length; i += META_CHUNK_SIZE) {
-        if (cancelled) return;
-        const chunk = keys.slice(i, i + META_CHUNK_SIZE);
-        const result = await fetchHubMeta(chunk);
-        if (cancelled) return;
-        if (Object.keys(result).length > 0) {
-          setMetas((prev) => ({ ...prev, ...result }));
-        }
-      }
-      if (cancelled) return;
-      const totals = await fetchHubMetaTotals();
-      if (cancelled) return;
-      setMetaTotals(totals);
-      // Stamped only on a completed, non-aborted sweep — an in-flight sweep
-      // cancelled by a same-signature re-run (e.g. the 2s poll firing a
-      // refreshInventory with an unchanged asset set) must be retried on
-      // the next effect run, not silently treated as done.
-      sweptKeysRef.current = signature;
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [state]);
-
-  // Variants sweep (Task 3, fase 5.3): resolution-sibling detection, same
-  // 64-chunk sequential pattern and re-arm-on-abort semantics as the meta
-  // sweep above. The plan allows this to run as its own effect with its own
-  // completion stamp rather than being literally chained after the meta
-  // sweep's promise — extracting a shared generic sweep helper out of the
-  // meta effect above wasn't a trivial refactor (the two write to different
-  // state setters and totals), so this stays a parallel effect keyed on the
-  // same `state`/key-signature, with its own `sweptVariantKeysRef` so a
-  // same-signature re-run (e.g. the 2s poll) skips re-fetching unchanged
-  // assets' variants exactly like the meta sweep does.
-  const sweptVariantKeysRef = useRef<string>("");
-  useEffect(() => {
-    if (state.kind !== "ok") return;
-    const keys = state.data.assets.map((a) => a.key);
-    const signature = keys.slice().sort().join("|");
-    if (signature === sweptVariantKeysRef.current) return;
-
-    let cancelled = false;
-    (async () => {
-      for (let i = 0; i < keys.length; i += META_CHUNK_SIZE) {
-        if (cancelled) return;
-        const chunk = keys.slice(i, i + META_CHUNK_SIZE);
-        const result = await fetchHubVariants(chunk);
-        if (cancelled) return;
-        if (Object.keys(result).length > 0) {
-          setVariants((prev) => ({ ...prev, ...result }));
-        }
-      }
-      if (cancelled) return;
-      sweptVariantKeysRef.current = signature;
-    })();
-    return () => {
-      cancelled = true;
-    };
+    const obsolete = () => cancelled || generation !== detailsGeneration.current;
+    void loadAssetDetails(state.data.assets.map((asset) => asset.key),
+      fetchHubMeta, fetchHubVariants, fetchHubMetaTotals, obsolete).then((details) => {
+      if (!details || obsolete()) return;
+      setMetas(details.metas);
+      setVariants(details.variants);
+      setMetaTotals(details.totals);
+    });
+    return () => { cancelled = true; };
   }, [state]);
 
   useEffect(() => {
-    // No polling under `?mock=1` — there is no live document to drift from,
-    // and the mocked stamp is a constant that would never fire a change
-    // anyway, but setting up a live interval in a mock/demo/screenshot
-    // context is still the wrong behavior to ship.
     if (isMock()) return;
+    let cancelled = false;
+    let polling = false;
     const id = window.setInterval(async () => {
-      if (document.visibilityState !== "visible") return;
-      const newStamp = await fetchHubStateStamp();
-      if (newStamp === null || stampRef.current === null || newStamp === stampRef.current) return;
-      if (pendingRef.current.size === 0) {
-        refreshInventory(true);
-      } else {
-        setSceneChanged(true);
+      if (polling || document.visibilityState !== "visible") return;
+      polling = true;
+      try {
+        const stamp = await fetchHubStateStamp();
+        if (cancelled || !inventoryChannel.current.needsRefresh(stamp)) return;
+        if (pendingRef.current.size === 0) {
+          void refreshInventory(true, stamp);
+        } else {
+          setSceneChanged(true);
+        }
+      } finally {
+        polling = false;
       }
     }, POLL_INTERVAL_MS);
-    return () => window.clearInterval(id);
+    return () => { cancelled = true; window.clearInterval(id); };
   }, [refreshInventory]);
 
   // Shrink job progress polling — 500ms while a job is queued/running,
@@ -377,7 +335,7 @@ export function HubPage() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [shrinkJob?.jobId]);
+  }, [shrinkJob?.jobId, toast, refreshInventory]);
 
   if (state.kind === "loading") return <LoadingState />;
   if (state.kind === "error") {
@@ -390,8 +348,10 @@ export function HubPage() {
   const data: HubInventory = state.data;
 
   async function handleOwnerClick(key: string) {
-    const res = await postHubSelectOwner(key);
-    if (res.stamp) stampRef.current = res.stamp;
+    const previous = inventoryChannel.current.currentStamp();
+    if (previous === null) return;
+    const res = await postHubSelectOwner(key, previous);
+    if (res.ok && res.stamp) inventoryChannel.current.acknowledge(res.stamp, previous);
     if (!res.ok) toast({ message: res.error || "Couldn't select the owner.", variant: "warn" });
   }
 
@@ -503,7 +463,6 @@ export function HubPage() {
       toast({ message: COPY_ERROR_MESSAGES[res.error ?? ""] ?? res.error ?? "Couldn't copy into project.", variant: "warn" });
       return;
     }
-    if (res.stamp) stampRef.current = res.stamp;
     const copied = res.copied ?? 0;
     const reused = res.reused ?? 0;
     const errorCount = res.errors?.length ?? 0;
@@ -534,7 +493,6 @@ export function HubPage() {
     }
     setSwitchResDialogOpen(false);
     restoreFocus();
-    if (res.stamp) stampRef.current = res.stamp;
     const switchedCount = res.switched?.length ?? 0;
     const skippedCount = res.skipped?.length ?? 0;
     const errorCount = res.errors?.length ?? 0;
@@ -542,12 +500,7 @@ export function HubPage() {
     if (skippedCount > 0) message += ` ${skippedCount} skipped.`;
     if (errorCount > 0) message += ` ${errorCount} error${errorCount === 1 ? "" : "s"}.`;
     toast({ message, variant: errorCount > 0 ? "warn" : "success" });
-    // Switched keys now resolve to a different sibling file — the cached
-    // variant groups for them still show the pre-switch basenames/px until
-    // re-swept, so force the parallel variants sweep effect above to refire
-    // even though the key SET is unchanged (its signature guard would
-    // otherwise skip a same-keys re-run).
-    sweptVariantKeysRef.current = "";
+    // Refresh also rebuilds metadata and siblings when keys stay unchanged.
     setSelectedKeys(new Set());
     anchorRef.current = null;
     await refreshInventory(true);
@@ -563,7 +516,6 @@ export function HubPage() {
       toast({ message: res.error || "Apply failed.", variant: "warn" });
       return;
     }
-    if (res.stamp) stampRef.current = res.stamp;
     const errorKeys = new Set((res.errors || []).map((e) => e.key));
     setPending((prev) => {
       const next = new Map<string, string>();

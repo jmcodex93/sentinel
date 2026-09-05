@@ -236,6 +236,28 @@ def compute_score(
             baseline_entries,
         )
         if summary is not None:
-            return summary
+            return _with_coverage(summary, results)
 
-    return _legacy_score(results, rules_context)
+    return _with_coverage(_legacy_score(results, rules_context), results)
+
+
+def _with_coverage(summary, results):
+    """Missing coverage remains in the denominator, outside baseline data.
+
+    Counts still mean observed violations. A failed read cannot manufacture
+    a violation identity or be hidden by accepting existing mismatches.
+    """
+    unverified = {}
+    for check_id in summary["counts"]:
+        structured = ((results or {}).get(check_id) or {}).get("structured_result") or {}
+        rows = (structured.get("metadata") or {}).get("unverified") or []
+        if rows:
+            unverified[check_id] = list(rows)
+    if unverified:
+        summary["unverified"] = unverified
+        summary["unverified_counts"] = {key: len(rows) for key, rows in unverified.items()}
+        passed = sum(1 for key, count in summary["counts"].items()
+                     if count == 0 and key not in unverified)
+        summary.update(passed=passed, score=f"{passed}/{summary['total']}")
+        summary["pass"] = passed == summary["total"]
+    return summary

@@ -361,7 +361,21 @@ def _dispatch(payload):
     handler = _OPS.get(op)
     if handler is None:
         return {"error": f"unknown op: {op!r}"}
-    return handler(payload)
+    if op == "hub/select_owner" and "expected_stamp" in payload:
+        if payload["expected_stamp"] != _OPS["hub/state_stamp"]({}).get("stamp"):
+            return {"ok": False, "error": "scene_changed"}
+    result = handler(payload)
+    # These reads and their stamps run consecutively in this same main-thread
+    # dispatch. Legacy/native callers keep the original unwrapped payload.
+    snapshot_reads = {"panel/overview", "panel/qc", "panel/render",
+                      "panel/frame", "panel/deliver", "hub/inventory"}
+    if op in snapshot_reads and payload.get("with_stamp") in (True, "1"):
+        if isinstance(result, dict) and "error" in result:
+            return result
+        stamp_op = "hub/state_stamp" if op.startswith("hub/") else "panel/state_stamp"
+        stamp_result = _OPS[stamp_op]({})
+        return {"data": result, "stamp": stamp_result.get("stamp")}
+    return result
 
 
 class ReportsDialog(gui.GeDialog):

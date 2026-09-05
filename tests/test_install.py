@@ -87,27 +87,10 @@ def test_discover_all_dedups(tmp_path):
 
 # ── payload verification ─────────────────────────────────────────────────────
 def _make_complete_payload(dest):
-    """A minimal payload that satisfies ``install.CRITICAL_PAYLOAD_PATHS``.
-
-    v1.36.2 changed that list, so this helper changed with it: ``ui/panel.py``
-    is gone (the native panel was retired in v1.25.0, and keeping it in the
-    critical list made the verifier fail on EVERY real install), replaced by
-    ``ui/panel_spa.py``; and ``c4d/`` was added, because the bundled scenes the
-    scene tools merge lived outside ``plugin/`` and never reached an install.
-    """
-    os.makedirs(os.path.join(dest, "sentinel", "ui"))
-    os.makedirs(os.path.join(dest, "res"))
-    os.makedirs(os.path.join(dest, "abc_retime"))
-    os.makedirs(os.path.join(dest, "c4d"))
-    Path(os.path.join(dest, "sentinel_panel.pyp")).write_text("x")
-    Path(os.path.join(dest, "sentinel", "__init__.py")).write_text("x")
-    Path(os.path.join(dest, "sentinel", "aovs.py")).write_text("x")
-    Path(os.path.join(dest, "sentinel", "postrender.py")).write_text("x")
-    Path(os.path.join(dest, "sentinel", "ui", "panel_spa.py")).write_text("x")
-    Path(os.path.join(dest, "res", "c4d_symbols.h")).write_text("x")
-    Path(os.path.join(dest, "exr_converter_external.py")).write_text("x")
-    Path(os.path.join(dest, "c4d", "new.c4d")).write_text("x")
-    Path(os.path.join(dest, "c4d", "nulls.c4d")).write_text("x")
+    """Use the complete distributable, including the committed frontend."""
+    import shutil
+    source = Path(__file__).resolve().parents[1] / 'plugin'
+    shutil.copytree(source, dest, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
 
 
 def test_verify_payload_complete(tmp_path):
@@ -174,3 +157,55 @@ def test_install_to_reports_verification(tmp_path):
     assert res["ok"] is True
     assert res["missing"] == []
     assert os.path.isdir(os.path.join(res["dest"]))
+
+@pytest.mark.parametrize('relative', ['web/index.html', 'web/assets/index.js', 'web/fonts/InterVariable.woff2'])
+def test_installer_and_doctor_reject_broken_frontend(tmp_path, relative):
+    import shutil
+    from sentinel import doctor
+    src = tmp_path / 'plugin'
+    shutil.copytree(ROOT / 'plugin', src)
+    index = src / 'web/index.html'
+    index.write_text('<script src="/assets/index.js"></script><link href="/assets/index.css" rel="stylesheet">')
+    (src / 'web/assets/index.js').write_text('export {}')
+    (src / 'web/assets/index.css').write_text('@font-face {src:url(/fonts/InterVariable.woff2)}')
+    (src / relative).unlink()
+    ok, missing = install.verify_payload(str(src))
+    assert not ok
+    assert relative in missing
+    assert doctor.build_payload_item(str(src))['status'] == doctor.FAIL
+
+
+def test_invalid_source_preserves_existing_install(tmp_path):
+    plugins = tmp_path / 'plugins'
+    dest = plugins / 'Sentinel'
+    dest.mkdir(parents=True)
+    (dest / 'sentinel_panel.pyp').write_text('working installation')
+    (dest / 'keep.py').write_text('keep')
+    source = tmp_path / 'incomplete'
+    source.mkdir()
+    (source / 'sentinel_panel.pyp').write_text('broken update')
+    result = install.install_to(str(plugins), str(source))
+    assert not result['ok']
+    assert (dest / 'sentinel_panel.pyp').read_text() == 'working installation'
+    assert (dest / 'keep.py').read_text() == 'keep'
+
+
+def test_copy_excludes_backup_and_development_debris(tmp_path):
+    src, dest = tmp_path / 'plugin', tmp_path / 'Sentinel'
+    src.mkdir()
+    for name in ['scene.c4d.bak', '.DS_Store', 'module.pyc']:
+        (src / name).write_text('debris')
+    for name in ['__pycache__', 'node_modules', '.pytest_cache', '.git', 'backup']:
+        (src / name).mkdir()
+        (src / name / 'junk').write_text('debris')
+    (src / 'backup' / 'scene.c4d@20260905_1100').write_text('C4D backup')
+    (src / 'scene.c4d').write_text('asset')
+    install.mirror_copy(str(src), str(dest))
+    assert sorted(p.name for p in dest.iterdir()) == ['scene.c4d']
+
+
+def test_empty_entrypoint_is_not_a_complete_frontend(tmp_path):
+    src = tmp_path / 'plugin'
+    _make_complete_payload(src)
+    (src / 'web/index.html').write_text('')
+    assert install.verify_payload(str(src))[0] is False

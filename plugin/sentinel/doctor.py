@@ -20,6 +20,8 @@ import os
 import platform
 import sys
 
+from sentinel.payload import verify_payload
+
 OK = "ok"
 WARN = "warn"
 FAIL = "fail"
@@ -32,13 +34,6 @@ GITHUB_OWNER_REPO = "jmcodex93/sentinel"
 _RELEASES_LATEST_URL = "https://api.github.com/repos/%s/releases/latest" % GITHUB_OWNER_REPO
 _TAGS_URL = "https://api.github.com/repos/%s/tags" % GITHUB_OWNER_REPO
 
-# Critical payload paths relative to the running plugin root (the folder that
-# holds sentinel_panel.pyp). Kept in sync with install.CRITICAL_PAYLOAD_PATHS.
-_RES_TRIPLET = [
-    os.path.join("res", "c4d_symbols.h"),
-    os.path.join("res", "description"),
-    os.path.join("res", "strings_us"),
-]
 
 
 def _item(item_id, label, status, detail="", hint=""):
@@ -87,18 +82,11 @@ def build_payload_item(root_dir):
         return _item("payload", "Plugin payload integrity", FAIL,
                      "Plugin root not found: %s" % root_dir,
                      "Reinstall with install.py so the full folder lands together.")
-    missing = []
-    for rel in _RES_TRIPLET:
-        if not os.path.exists(os.path.join(root_dir, rel)):
-            missing.append(rel)
-    if not os.path.isfile(os.path.join(root_dir, "sentinel", "__init__.py")):
-        missing.append(os.path.join("sentinel", "__init__.py"))
-    if not os.path.isdir(os.path.join(root_dir, "abc_retime")):
-        missing.append("abc_retime")
+    _, missing = verify_payload(root_dir)
 
     if not missing:
         return _item("payload", "Plugin payload integrity", OK,
-                     "res/ triplet, sentinel package and abc_retime all present.",
+                     "Plugin resources, bundled scenes and frontend assets are present.",
                      "")
     return _item(
         "payload", "Plugin payload integrity", FAIL,

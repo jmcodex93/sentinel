@@ -484,7 +484,8 @@ def run_collect_pipeline(doc, artist_name, target_dir, make_zip=False,
     `baseline_path`, `baseline_entries` (all optional; the manifest degrades
     gracefully when a key is absent).
 
-    Returns a result dict, or None if SaveProject failed / errored.
+    Returns a result dict with ``success`` true for complete deliveries and
+    an explicit ``error`` for incomplete ones.
     """
     from datetime import datetime
 
@@ -523,6 +524,10 @@ def run_collect_pipeline(doc, artist_name, target_dir, make_zip=False,
         except Exception as e:
             safe_print(f"Scene Collector: Could not pre-load notes: {e}")
 
+    original_history_path = get_history_path(original_full_path)
+    if original_history_path and not os.path.exists(original_history_path):
+        original_history_path = None
+
     # Capture the client report sidecar (<base>_report.html) before SaveProject
     # moves the doc — its base is already version-stripped, so it copies into the
     # delivery under the clean <original_base>_report.html name unchanged.
@@ -530,6 +535,25 @@ def run_collect_pipeline(doc, artist_name, target_dir, make_zip=False,
     original_report_path = report_html_path(original_full_path)
     if original_report_path and not os.path.exists(original_report_path):
         original_report_path = None
+
+    # C4D SaveProject writes <target-folder-name>.c4d. Resolve collision
+    # policy before it performs any write so an existing file at that path
+    # is never exposed to SaveProject's overwrite behavior.
+    saved_folder_basename = os.path.basename(target_dir.rstrip(os.sep)) + ".c4d"
+    saved_at = os.path.join(target_dir, saved_folder_basename)
+    desired_at = os.path.join(target_dir, delivery_filename)
+    if os.path.exists(saved_at):
+        return {"success": False, "error": "scene_collision",
+                "message": "Existing collected scene would be overwritten",
+                "target_dir": target_dir}
+
+    # If the clean name is occupied, retain SaveProject's fresh filename and
+    # use it consistently in the rescan, manifest, and return payload.
+    clean_name_available = saved_at == desired_at or not os.path.exists(desired_at)
+    effective_delivery_filename = (delivery_filename if clean_name_available
+                                   else saved_folder_basename)
+    effective_delivery_path = os.path.join(target_dir, effective_delivery_filename)
+    effective_delivery_base = os.path.splitext(effective_delivery_filename)[0]
 
     # ── Phase 2: Collect via C4D native ──
     _status("Saving project with assets…")
@@ -546,14 +570,14 @@ def run_collect_pipeline(doc, artist_name, target_dir, make_zip=False,
         result = c4d.documents.SaveProject(doc, flags, target_dir, assets, missing_assets)
 
         if not result:
-            c4d.gui.MessageDialog("Save Project failed!\n\nCheck console for details.")
             safe_print("Scene Collector: SaveProject returned False")
-            return None
+            return {"success": False, "error": "save_project_failed",
+                    "message": "SaveProject returned False", "target_dir": target_dir}
 
     except Exception as e:
-        c4d.gui.MessageDialog(f"Save Project error:\n{e}")
         safe_print(f"Scene Collector error: {e}")
-        return None
+        return {"success": False, "error": "save_project_error",
+                "message": str(e), "target_dir": target_dir}
 
     safe_print(f"Scene Collector: Collected {len(assets)} assets")
     if missing_assets:
@@ -563,41 +587,39 @@ def run_collect_pipeline(doc, artist_name, target_dir, make_zip=False,
     # C4D's SaveProject saves to <target_dir>/<folder_basename>.c4d. We rename
     # it to the clean original scene base (stripped of _v### suffix) so the
     # delivery has a clean identity matching the notes sidecar naming.
-    saved_folder_basename = os.path.basename(target_dir.rstrip(os.sep)) + ".c4d"
-    saved_at = os.path.join(target_dir, saved_folder_basename)
-    desired_at = os.path.join(target_dir, delivery_filename)
-
-    if saved_at != desired_at:
+    if saved_at != desired_at and clean_name_available:
         if os.path.exists(saved_at):
             try:
-                if os.path.exists(desired_at):
-                    # Defensive: refuse to overwrite an existing file
-                    safe_print(f"Scene Collector: refused to overwrite existing {delivery_filename}")
-                else:
-                    os.rename(saved_at, desired_at)
-                    safe_print(f"Scene Collector: Renamed {saved_folder_basename} -> {delivery_filename}")
-                    # Update the active doc's identity so the panel + future Cmd+S
-                    # reflect the renamed file
-                    try:
-                        doc.SetDocumentPath(target_dir)
-                        doc.SetDocumentName(delivery_filename)
-                        c4d.EventAdd()
-                    except Exception as e:
-                        safe_print(f"Scene Collector: Could not update doc metadata: {e}")
+                os.rename(saved_at, desired_at)
+                safe_print(f"Scene Collector: Renamed {saved_folder_basename} -> {delivery_filename}")
+                # Update the active doc's identity so the panel + future Cmd+S
+                # reflect the renamed file
+                try:
+                    doc.SetDocumentPath(target_dir)
+                    doc.SetDocumentName(delivery_filename)
+                    c4d.EventAdd()
+                except Exception as e:
+                    safe_print(f"Scene Collector: Could not update doc metadata: {e}")
             except Exception as e:
                 safe_print(f"Scene Collector: Could not rename to delivery name: {e}")
+                return {"success": False, "error": "scene_rename_failed",
+                        "message": str(e), "target_dir": target_dir,
+                        "delivery_filename": saved_folder_basename}
         else:
             safe_print(f"Scene Collector: expected file {saved_folder_basename} not found after SaveProject")
 
+    if not os.path.exists(effective_delivery_path):
+        safe_print(f"Scene Collector: effective scene missing after SaveProject: "
+                   f"{effective_delivery_filename}")
+        return {"success": False, "error": "scene_missing",
+                "message": "Collected scene file was not created",
+                "target_dir": target_dir,
+                "delivery_filename": effective_delivery_filename}
+
     # ── Phase 2.6: Re-scan the collected package (Collect Confiable, I4) ──
     _status("Re-scanning package…")
-    # saved_at only survives when the rename to the clean delivery name was
-    # refused (a stale delivery already sat in target_dir) — in that case it
-    # is the FRESH SaveProject output and must win, or the re-scan would
-    # audit the previous delivery instead of this one.
-    delivered_c4d = saved_at if os.path.exists(saved_at) else desired_at
     asset_entries, scan_status, required_plugins = \
-        _rescan_collected_package(delivered_c4d, target_dir)
+        _rescan_collected_package(effective_delivery_path, target_dir)
 
     # ── Phase 3: Generate manifest ──
     _status("Writing manifest…")
@@ -607,7 +629,7 @@ def run_collect_pipeline(doc, artist_name, target_dir, make_zip=False,
         "version": PLUGIN_NAME,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         # Delivery identity (clean name, what the receiver sees)
-        "scene": delivery_filename,
+        "scene": effective_delivery_filename,
         # Original version metadata (traceability — where this came from)
         "original_filename": original_doc_name,
         "original_version": original_version_int,
@@ -687,16 +709,18 @@ def run_collect_pipeline(doc, artist_name, target_dir, make_zip=False,
         if original_notes_path:
             try:
                 import shutil
-                shutil.copy2(original_notes_path, target_dir)
-                safe_print(f"Scene Collector: Notes sidecar copied to delivery: {os.path.basename(original_notes_path)}")
+                notes_name = f"{effective_delivery_base}_notes.json"
+                shutil.copy2(original_notes_path, os.path.join(target_dir, notes_name))
+                safe_print(f"Scene Collector: Notes sidecar copied to delivery: {notes_name}")
             except Exception as e:
                 safe_print(f"Scene Collector: Could not copy notes sidecar: {e}")
     else:
         manifest["notes"] = {"summary": "Notes: empty", "text": "", "todos": [], "pending_count": 0}
 
-    if baseline_collection_active and original_baseline_entries:
+    if baseline_collection_active:
+        baseline_name = f"{effective_delivery_base}_baseline.json"
         manifest["baseline"] = {
-            "sidecar": os.path.basename(original_baseline_path),
+            "sidecar": baseline_name,
             "acceptances": [
                 _accepted_entry_payload(entry)
                 for entry in original_baseline_entries
@@ -704,19 +728,26 @@ def run_collect_pipeline(doc, artist_name, target_dir, make_zip=False,
         }
         try:
             import shutil
-            shutil.copy2(original_baseline_path, target_dir)
-            safe_print(f"Scene Collector: Baseline sidecar copied to delivery: {os.path.basename(original_baseline_path)}")
+            shutil.copy2(original_baseline_path, os.path.join(target_dir, baseline_name))
+            safe_print(f"Scene Collector: Baseline sidecar copied to delivery: {baseline_name}")
         except Exception as e:
             safe_print(f"Scene Collector: Could not copy baseline sidecar: {e}")
-    else:
-        if baseline_collection_active:
-            manifest["baseline"] = {"sidecar": os.path.basename(original_baseline_path or ""), "acceptances": []}
+
+    if original_history_path:
+        try:
+            import shutil
+            history_name = f"{effective_delivery_base}_history.json"
+            shutil.copy2(original_history_path, os.path.join(target_dir, history_name))
+            manifest["history_sidecar"] = history_name
+            safe_print(f"Scene Collector: History sidecar copied to delivery: {history_name}")
+        except Exception as e:
+            safe_print(f"Scene Collector: Could not copy history sidecar: {e}")
 
     # ── Copy the client HTML report into the delivery (clean name) ──
     if original_report_path:
         try:
             import shutil
-            delivery_report_name = f"{original_base}_report.html"
+            delivery_report_name = f"{effective_delivery_base}_report.html"
             shutil.copy2(original_report_path, os.path.join(target_dir, delivery_report_name))
             manifest["client_report"] = delivery_report_name
             safe_print(f"Scene Collector: Client report copied to delivery: {delivery_report_name}")
@@ -741,6 +772,15 @@ def run_collect_pipeline(doc, artist_name, target_dir, make_zip=False,
         manifest, asset_entries, scan_status, required_plugins)
     if not manifest_engine.write_manifest_json(manifest, manifest_path):
         safe_print("Scene Collector: Could not save manifest atomically")
+        return {
+            "success": False,
+            "error": "manifest_write_failed",
+            "message": "Could not save sentinel_manifest.json",
+            "target_dir": target_dir,
+            "delivery_filename": effective_delivery_filename,
+            "manifest_path": manifest_path,
+            "manifest": manifest,
+        }
     else:
         safe_print(f"Scene Collector: Manifest saved to {manifest_path}")
 
@@ -759,8 +799,9 @@ def run_collect_pipeline(doc, artist_name, target_dir, make_zip=False,
             safe_print(f"Scene Collector: Zip failed: {e}")
 
     return {
+        "success": True,
         "target_dir": target_dir,
-        "delivery_filename": delivery_filename,
+        "delivery_filename": effective_delivery_filename,
         "assets_collected": len(assets),
         "assets_missing": len(missing_assets),
         "manifest_path": manifest_path,
@@ -783,7 +824,7 @@ def _rescan_collected_package(delivery_c4d_path, target_dir):
     failure returns ([], "failed", []) — never a silently-empty result.
     """
     from sentinel import manifest as manifest_engine
-    from sentinel.textures import scan_all_texture_paths
+    from sentinel.textures import scan_all_texture_paths, get_last_scan_meta
 
     tmp_doc = None
     try:
@@ -983,70 +1024,56 @@ def snapshot_save_still(doc, artist_name):
         c4d.gui.StatusSetText(f"Still saved: {png_path}")
 
 
-def snapshot_auto_convert(doc, artist_name, snap_path):
-    """Silent watchfolder handling — same output dir as snapshot_save_still but
-    NO MessageDialogs and NO Picture Viewer (modal/blocking calls would pause
-    the driving Timer). EXR snapshots get the full ACES convert. Display-
-    referred snapshots (.png/.jpg/.tif/... — Redshift wrote these because
-    "Save snapshots as EXR" is off) are already viewable, so they are
-    passthrough-copied into the stills dir instead: no slate burn-in, no ACES
-    grade, because the source is display-referred (already tonemapped), not
-    scene-linear — running it through the ACES pipeline would double-grade
-    it. Each output gets a unique "<scene>_snap_NNN<ext>" name (via
-    next_snapshot_name) so repeated same-session snapshots never overwrite
-    each other, and a .png convert and a copied .jpg share one counter.
-
-    Returns (success, message). On success, message is "converted <name>" or
-    "copied <name>" so the caller can build a verb-appropriate caption
-    without re-deriving it from the source extension. On failure, message is
-    a short error string. Never raises.
-    """
+def prepare_snapshot_task(doc, artist_name, snap_path):
+    """Capture C4D-dependent snapshot data on the main thread."""
     if not artist_name:
-        return False, "no artist name set"
-    if not snap_path or not os.path.exists(snap_path):
-        return False, "snapshot vanished before convert"
+        raise ValueError("Set an artist name in Settings before using Watch folder")
+    if not doc:
+        raise ValueError("No active document")
+    slate_data = None
+    if snap_path.lower().endswith(".exr"):
+        context = _active_rules_for_doc(doc)
+        if bool(context.params.get("slate", False)):
+            slate_data = build_slate_data(doc, artist_name)
+    return {
+        "source": snap_path,
+        "output_dir": _get_stills_dir(doc, artist_name, create=False),
+        "scene_name": os.path.splitext(doc.GetDocumentName() or "untitled")[0],
+        "slate": slate_data,
+    }
 
+
+def snapshot_auto_convert(doc, artist_name, snap_path):
+    """Compatibility wrapper for synchronous, dialog-free conversion."""
+    from sentinel.snapshots import run_snapshot_task
     try:
-        output_dir = _get_stills_dir(doc, artist_name)
-        doc_name = (doc.GetDocumentName() if doc else "") or "untitled"
-        scene_name = os.path.splitext(doc_name)[0]
-        is_exr = snap_path.lower().endswith(".exr")
+        return run_snapshot_task(prepare_snapshot_task(doc, artist_name, snap_path))
+    except Exception as exc:
+        safe_print("Auto-convert failed: %s" % exc)
+        return False, str(exc)
 
-        existing = os.listdir(output_dir) if os.path.isdir(output_dir) else []
-        out_ext = ".png" if is_exr else (os.path.splitext(snap_path)[1] or ".png")
-        out_name = next_snapshot_name(existing, scene_name, ext=out_ext)
-        out_path = os.path.join(output_dir, out_name)
 
-        if is_exr:
-            # Resolve opt-in review slate (project rules > machine setting > default OFF)
-            slate_data = None
-            try:
-                rules_context = _active_rules_for_doc(doc)
-                if bool(rules_context.params.get("slate", False)):
-                    slate_data = build_slate_data(doc, artist_name)
-            except Exception as e:
-                safe_print(f"Auto-convert slate resolution skipped: {e}")
+_last_snapshot_watch_tick = float("-inf")
 
-            success, error = _convert_exr_to_png(snap_path, out_path, slate_data=slate_data)
-            if not success:
-                safe_print(f"Auto-convert failed for {os.path.basename(snap_path)}: {error}")
-                return False, "conversion failed"
-            verb = "converted"
-        else:
-            import shutil
-            try:
-                shutil.copy2(snap_path, out_path)
-            except OSError as e:
-                safe_print(f"Auto-copy failed for {os.path.basename(snap_path)}: {e}")
-                return False, "copy failed"
-            verb = "copied"
 
-        dest_name = os.path.basename(out_path)
-        safe_print(f"Auto: {verb} {os.path.basename(snap_path)} -> {dest_name}")
-        return True, f"{verb} {dest_name}"
-    except Exception as e:
-        safe_print(f"Auto-convert error: {e}")
-        return False, "conversion error"
+def tick_snapshot_watch(now=None):
+    """Host pump: scan at 2.5s cadence and launch at most one converter."""
+    import time
+    from sentinel.snapshots import snapshot_watch, run_snapshot_task
+    global _last_snapshot_watch_tick
+    now = time.monotonic() if now is None else now
+    if now - _last_snapshot_watch_tick < 2.5:
+        return
+    _last_snapshot_watch_tick = now
+    enabled = GlobalSettings.get_snapshot_watch()
+    doc = c4d.documents.GetActiveDocument()
+    snap_dir, _ = get_effective_snapshot_dir() if enabled else (None, None)
+    artist = GlobalSettings.load_artist_name() if enabled else ""
+    context = (hash(doc), doc.GetDocumentPath(), doc.GetDocumentName(), artist) if doc else None
+    snapshot_watch.tick(
+        enabled and doc is not None, snap_dir, context,
+        lambda path: prepare_snapshot_task(doc, artist, path), run_snapshot_task)
+
 
 
 def _doc_full_path(doc):

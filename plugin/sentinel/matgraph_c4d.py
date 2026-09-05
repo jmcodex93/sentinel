@@ -58,7 +58,7 @@ AO-multiply sampler wired by matwire can therefore never be silently
 import c4d
 
 from sentinel.common.cache import check_cache
-from sentinel.matgraph import CS_RAW, CS_SRGB, PASS_THROUGH_ASSETS, find_dead_nodes
+from sentinel.matgraph import CS_RAW, CS_SRGB, PASS_THROUGH_ASSETS, PORT_TO_CHANNEL, find_dead_nodes
 from sentinel.matwire_c4d import _ASSETID_ATTR, _RS_OUTPUT
 from sentinel.textures import RS_NODESPACE
 
@@ -198,6 +198,8 @@ def _trace_dest_port(sampler_node):
     ``PASS_THROUGH_ASSETS`` (Color Correct, an AO layer, the glossiness
     Invert, Bump, an unused-today Ramp) until hitting the first
     non-pass-through target, whose FULL port id string is returned.
+    A mapped semantic utility input (e.g. bumpmap.input) terminates first:
+    its normal-map meaning would be lost at the downstream BRDF port.
 
     **Fan-out choice** (design doc leaves this to the implementation,
     documented here as instructed): if ``outcolor`` feeds more than one
@@ -235,6 +237,11 @@ def _trace_dest_port(sampler_node):
             assetid = str(target_node.GetValue(_ASSETID_ATTR) or "")
         except Exception:
             return None
+        port_id = str(target_port.GetId())
+        # Qualified semantic utility inputs (e.g. bumpmap.input) describe
+        # the texture itself; tracing through loses that signal at the BRDF.
+        if any("." in key and port_id.endswith(key) for key in PORT_TO_CHANNEL):
+            return port_id
         if any(term in assetid for term in PASS_THROUGH_ASSETS):
             next_port = _first_connected_output(target_node)
             if next_port is None:
@@ -267,16 +274,14 @@ def _safe_assetid(node):
         return ""
 
 
-def _rs_node_material_graph(mat):
-    """``mat``'s Redshift node graph, or ``None`` if it isn't (or can't be
-    read as) an RS node material.
+def _rs_node_material_graph(mat, strict=False):
+    """Return an RS graph or None for an out-of-scope material.
 
-    Deliberately swallows every exception into ``None`` here: this
-    function answers "is this material in scope at all", and a Standard/
-    non-node material failing that probe is the ORDINARY case ``collect()``
-    skips silently — never to be confused with an exception raised while
-    walking a material ALREADY identified as RS-node, which produces an
-    ``error`` entry instead of vanishing."""
+    A failing node-reference probe is normal for non-node materials.
+    Once a node reference exists, strict reads preserve HasSpace/GetGraph
+    failures for collect's error entry; mutation callers retain the safe
+    None fallback and skip the material instead of writing blindly.
+    """
     try:
         node_mat = mat.GetNodeMaterialReference()
     except Exception:
@@ -286,8 +291,13 @@ def _rs_node_material_graph(mat):
     try:
         if not node_mat.HasSpace(RS_NODESPACE):
             return None
-        return node_mat.GetGraph(RS_NODESPACE)
+        graph = node_mat.GetGraph(RS_NODESPACE)
+        if graph is None and strict:
+            raise RuntimeError("Redshift graph is unavailable")
+        return graph
     except Exception:
+        if strict:
+            raise
         return None
 
 
@@ -390,21 +400,23 @@ def collect(doc):
         return []
     try:
         materials = doc.GetMaterials() or []
-    except Exception:
-        materials = []
+    except Exception as exc:
+        entry = _empty_material_result()
+        entry.update(material=None, name="Scene materials", error=str(exc))
+        return [entry]
 
     results = []
     for mat in materials:
         if mat is None:
             continue
-        graph = _rs_node_material_graph(mat)
-        if graph is None:
-            continue  # not an RS node material — silent skip, not an error
         try:
             name = mat.GetName() or ""
         except Exception:
             name = ""
         try:
+            graph = _rs_node_material_graph(mat, strict=True)
+            if graph is None:
+                continue  # Non-RS/non-node materials are out of scope.
             entry = _walk_material(graph)
             entry["material"] = mat
             entry["name"] = name

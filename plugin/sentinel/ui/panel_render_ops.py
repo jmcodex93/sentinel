@@ -228,11 +228,13 @@ def _panel_snapshots_block(doc):
     Phase 3 IA consolidation) + the watch-folder toggle state."""
     from sentinel.ui.flows import get_effective_snapshot_dir
 
+    from sentinel.snapshots import snapshot_watch
     snap_dir, origin = get_effective_snapshot_dir()
     return {
         "dir": snap_dir,
         "origin": origin,
         "watch_enabled": GlobalSettings.get_snapshot_watch(),
+        "watch_status": snapshot_watch.status(),
     }
 
 

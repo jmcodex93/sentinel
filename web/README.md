@@ -1,6 +1,6 @@
 # Sentinel Reports — web source
 
-Vite + React 18 + TypeScript + Tailwind SPA for Sentinel Reports (dockable
+Vite + React 19 + TypeScript + Tailwind SPA for Sentinel Reports (dockable
 HTML report surfaces hosted inside Cinema 4D, starting with Delivery
 Summary). This is the **source**; the committed build lives in
 `../plugin/web/` — Sentinel artists don't have Node installed, so the
@@ -14,7 +14,8 @@ color/spacing/radius here comes from that file's tokens (see
 
 ```bash
 cd web
-npm ci               # or npm install on first setup
+nvm use              # Node 24, from .nvmrc
+npm ci               # install the locked toolchain
 npm run dev           # Vite dev server with HMR
 ```
 
@@ -29,6 +30,8 @@ need to iterate against a live manifest.
 Before syncing the plugin to Cinema 4D (or committing), rebuild:
 
 ```bash
+npm test
+npm run lint
 npm run build          # tsc -b && vite build -> ../plugin/web/ (emptied + rewritten)
 ```
 
@@ -61,3 +64,10 @@ defined in `src/types.ts`, or `{"error": "no_manifest"}` /
 `docs/superpowers/plans/2026-07-18-ui-foundation.md` (Task 3 Interfaces)
 for the canonical contract and `plugin/sentinel/manifest.py` for the real
 manifest fields it's built from.
+
+## Verification
+
+`.github/workflows/verify.yml` runs Python tests on Linux, macOS and Windows,
+then web tests, lint, typecheck/build and a committed-output comparison.
+These jobs validate portable code; they do not replace Cinema 4D/Redshift
+host testing on each supported platform. Use Python 3.11 for CI parity.
