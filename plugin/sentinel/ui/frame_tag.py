@@ -1363,6 +1363,17 @@ def run_full_sync(doc, tag):
 
     doc.StartUndo()
     try:
+        # Measured in C4D 2026.304: when take/override generation is undone
+        # with only the tag and generated nodes recorded, one Cmd+Z can remove
+        # a Frame tag that existed before the sync. Recording CHANGE on the
+        # host camera first preserves that pre-sync tag and its parameters
+        # while the generated takes are removed. The target and ordering here
+        # are the live-host result; duplicate tag undo entries, smaller change
+        # types, manual take entries, and disabling Take undo did not fix it.
+        try:
+            doc.AddUndo(_undo_type_change(), host)
+        except Exception:
+            pass
         # Unconditional undo anchor for the TAG itself: the prune's
         # take-link clears and the signature stamp below write to the tag's
         # BaseContainer, and with zero enabled formats the generation core

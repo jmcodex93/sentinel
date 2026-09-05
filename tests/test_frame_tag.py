@@ -664,6 +664,132 @@ def test_run_takes_generation_passes_format_defs_and_key_callbacks(sentinel_modu
     assert doc.undos.count((frame_tag._undo_type_change(), tag)) == 1
 
 
+def test_run_full_sync_anchors_camera_and_tag_before_take_generation(
+        sentinel_module, monkeypatch):
+    import importlib
+    frame_tag = importlib.import_module("sentinel.ui.frame_tag")
+
+    events = []
+
+    class FakeCam:
+        def GetName(self):
+            return "Hero"
+
+        def GetType(self):
+            return 5103
+
+    class FakeTagDict(dict):
+        def __init__(self, camera):
+            super().__init__(_base_tag(frame_tag, enabled_indexes=(0, 1)))
+            self.camera = camera
+
+        def GetObject(self):
+            return self.camera
+
+    class FakeDoc:
+        def StartUndo(self):
+            events.append("start")
+
+        def AddUndo(self, undo_type, target):
+            events.append(("undo", undo_type, target))
+
+        def EndUndo(self):
+            events.append("end")
+
+    camera = FakeCam()
+    tag = FakeTagDict(camera)
+    doc = FakeDoc()
+
+    def fake_generate(generated_doc, generated_tag):
+        assert generated_doc is doc
+        assert generated_tag is tag
+        events.append("generate")
+        return {"errors": []}
+
+    monkeypatch.setattr(frame_tag, "_run_takes_generation", fake_generate)
+    monkeypatch.setattr(
+        frame_tag, "_prune_orphaned_takes",
+        lambda pruned_doc, pruned_tag: events.append("prune") or 0,
+    )
+    monkeypatch.setattr(frame_tag, "_event_add", lambda: events.append("event"))
+
+    result = frame_tag.run_full_sync(doc, tag)
+
+    change = frame_tag._undo_type_change()
+    assert result["ok"] is True
+    assert events == [
+        "start",
+        ("undo", change, camera),
+        ("undo", change, tag),
+        "generate",
+        "prune",
+        "end",
+        "event",
+    ]
+
+
+def test_run_full_sync_zero_formats_keeps_prune_path_without_generation(
+        sentinel_module, monkeypatch):
+    import importlib
+    frame_tag = importlib.import_module("sentinel.ui.frame_tag")
+
+    events = []
+
+    class FakeCam:
+        def GetType(self):
+            return 5103
+
+    class FakeTagDict(dict):
+        def __init__(self, camera):
+            super().__init__(_base_tag(frame_tag, enabled_indexes=()))
+            self.camera = camera
+
+        def GetObject(self):
+            return self.camera
+
+    class FakeDoc:
+        def StartUndo(self):
+            events.append("start")
+
+        def AddUndo(self, undo_type, target):
+            events.append(("undo", undo_type, target))
+
+        def EndUndo(self):
+            events.append("end")
+
+    camera = FakeCam()
+    tag = FakeTagDict(camera)
+    doc = FakeDoc()
+
+    def fail_generate(*_args):
+        raise AssertionError("zero-format sync must not generate takes")
+
+    monkeypatch.setattr(frame_tag, "_run_takes_generation", fail_generate)
+    monkeypatch.setattr(
+        frame_tag, "_prune_orphaned_takes",
+        lambda pruned_doc, pruned_tag: events.append("prune") or 2,
+    )
+    monkeypatch.setattr(frame_tag, "_event_add", lambda: events.append("event"))
+
+    result = frame_tag.run_full_sync(doc, tag)
+
+    change = frame_tag._undo_type_change()
+    assert result == {
+        "ok": True,
+        "error": None,
+        "report": None,
+        "removed": 2,
+    }
+    assert events == [
+        "start",
+        ("undo", change, camera),
+        ("undo", change, tag),
+        "prune",
+        "end",
+        "event",
+    ]
+
+
 def test_set_viewing_accepts_slice_targets(sentinel_module):
     import importlib
     frame_tag = importlib.import_module("sentinel.ui.frame_tag")
