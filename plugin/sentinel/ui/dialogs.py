@@ -789,6 +789,7 @@ class SentinelSettingsDialog(gui.GeDialog):
     LABEL_SNAP_DIR = 1012
     LABEL_SNAP_DIR_HINT = 1013
     CHK_RENDER_NOTIFY = 1014
+    EDT_ARTIST_NAME = 1015
 
     # FPS choices in the combo
     FPS_OPTIONS = [24, 25, 30, 60]
@@ -813,6 +814,9 @@ class SentinelSettingsDialog(gui.GeDialog):
 
         self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
         self.GroupSpace(8, 4)
+        self.AddStaticText(0, c4d.BFH_LEFT, 260, 0, "Artist name:", 0)
+        self.AddEditText(self.EDT_ARTIST_NAME, c4d.BFH_SCALEFIT, 100, 0)
+
         self.AddStaticText(self.LABEL_STANDARD_FPS, c4d.BFH_LEFT, 260, 0, "Standard FPS:", 0)
         self.AddComboBox(self.COMBO_FPS, c4d.BFH_LEFT, 100, 0)
 
@@ -884,6 +888,8 @@ class SentinelSettingsDialog(gui.GeDialog):
         return True
 
     def InitValues(self):
+        self.SetString(self.EDT_ARTIST_NAME, GlobalSettings.load_artist_name())
+
         # Populate FPS combo + select current value
         for i, fps in enumerate(self.FPS_OPTIONS):
             self.AddChild(self.COMBO_FPS, i, f"{fps} fps")
@@ -1000,6 +1006,11 @@ class SentinelSettingsDialog(gui.GeDialog):
 
         if cid == self.BTN_SAVE:
             try:
+                # Artist name — blank is an intentional clear, matching the
+                # retired panel's editable artist field.
+                artist_name = (self.GetString(self.EDT_ARTIST_NAME) or "").strip()
+                GlobalSettings.save_artist_name(artist_name)
+
                 # Standard FPS
                 fps_idx = int(self.GetInt32(self.COMBO_FPS))
                 if not self._standard_fps_overridden and 0 <= fps_idx < len(self.FPS_OPTIONS):

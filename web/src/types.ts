@@ -353,6 +353,7 @@ export interface NotesSubmitResponse {
  */
 
 export interface SettingsState {
+  artist_name: string;
   fps: { value: number; options: number[]; locked: boolean; locked_reason: string | null };
   /** `value` is an index into `options` (0 = Nuke, 1 = After Effects). */
   compositor: { value: number; options: string[] };
@@ -369,6 +370,7 @@ export type SettingsStateResult =
   | { kind: "error"; message: string };
 
 export interface SettingsSubmitPayload {
+  artist_name: string;
   fps: number;
   compositor: number;
   multipart_default: boolean;

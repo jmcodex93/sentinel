@@ -114,3 +114,35 @@ class TestSettingsRenderNotify:
 
         assert response == {"ok": True}
         assert ("render_notify", 0) in set_calls
+
+    def test_state_and_submit_round_trip_artist_name(self, sentinel_module, monkeypatch):
+        from sentinel.ui import web_ops
+
+        set_calls = []
+        self._patch_settings(
+            monkeypatch,
+            store={"artist_name": "Motioneer"},
+            set_calls=set_calls,
+        )
+
+        state = web_ops._op_form_settings_state({})
+        response = web_ops._op_form_settings_submit({"artist_name": "  Javier  "})
+
+        assert state["artist_name"] == "Motioneer"
+        assert response == {"ok": True}
+        assert ("artist_name", "Javier") in set_calls
+
+    def test_older_submit_without_artist_preserves_it(self, sentinel_module, monkeypatch):
+        from sentinel.ui import web_ops
+
+        set_calls = []
+        self._patch_settings(
+            monkeypatch,
+            store={"artist_name": "Motioneer"},
+            set_calls=set_calls,
+        )
+
+        response = web_ops._op_form_settings_submit({"history_max": 10})
+
+        assert response == {"ok": True}
+        assert all(key != "artist_name" for key, _value in set_calls)

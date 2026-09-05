@@ -8,6 +8,7 @@ import { SubmitBar } from "../components/form/SubmitBar";
 import { TextInput } from "../components/form/TextInput";
 import { ErrorState, LoadingState } from "../components/PageStates";
 import { fetchSettingsState, submitSettings } from "../lib/api";
+import { settingsSubmitPayload } from "../lib/settings";
 import { useToast } from "../lib/toast";
 import type { SettingsState, SettingsStateResult } from "../types";
 
@@ -21,6 +22,7 @@ type PageState = { kind: "loading" } | SettingsStateResult;
 export function SettingsPage() {
   const { toast } = useToast();
   const [state, setState] = useState<PageState>({ kind: "loading" });
+  const [artistName, setArtistName] = useState("");
   const [fps, setFps] = useState(25);
   const [compositor, setCompositor] = useState(0);
   const [multipart, setMultipart] = useState(true);
@@ -38,6 +40,7 @@ export function SettingsPage() {
       setState(result);
       if (result.kind === "ok") {
         const d = result.data;
+        setArtistName(d.artist_name);
         setFps(d.fps.value);
         setCompositor(d.compositor.value);
         setMultipart(d.multipart_default);
@@ -64,16 +67,17 @@ export function SettingsPage() {
   async function handleSubmit() {
     setSubmitError(null);
     setPending(true);
-    const response = await submitSettings({
+    const response = await submitSettings(settingsSubmitPayload({
+      artistName,
       fps,
       compositor,
-      multipart_default: multipart,
+      multipart,
       slate,
-      render_notify: renderNotify,
-      mv_max_motion: mvMax,
-      snapshot_dir: snapshotDir,
-      history_max: historyMax,
-    });
+      renderNotify,
+      mvMax,
+      snapshotDir,
+      historyMax,
+    }));
     setPending(false);
 
     if (!response.ok) {
@@ -89,6 +93,19 @@ export function SettingsPage() {
       footer={<SubmitBar submitLabel="Save Settings" pending={pending} onSubmit={handleSubmit} error={submitError} />}
     >
       <div className="flex flex-col gap-4">
+        <FieldRow
+          label="Artist Name"
+          htmlFor="settings-artist-name"
+          hint="Used for Snapshot Watch folders and review records."
+        >
+          <TextInput
+            id="settings-artist-name"
+            value={artistName}
+            onChange={(e) => setArtistName(e.target.value)}
+            placeholder="Your name"
+          />
+        </FieldRow>
+
         <FieldRow label="Standard FPS" htmlFor="settings-fps">
           {data.fps.locked ? (
             <LockedField value={`${data.fps.value} fps`} reason={data.fps.locked_reason || "Locked"} />

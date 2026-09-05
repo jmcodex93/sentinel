@@ -325,7 +325,12 @@ def _op_form_settings_state(payload):
     except (TypeError, ValueError):
         render_notify = True
 
+    artist_name = GlobalSettings.load_artist_name()
+    if not isinstance(artist_name, str):
+        artist_name = ""
+
     return {
+        "artist_name": artist_name,
         "fps": {
             "value": int(fps_value),
             "options": list(webbridge.SETTINGS_FPS_OPTIONS),
@@ -365,6 +370,8 @@ def _op_form_settings_submit(payload):
         updates = webbridge.validate_settings_submit(
             payload, fps_locked=fps_locked, snapshot_dir_locked=snap_dir_locked)
 
+        if "artist_name" in updates:
+            GlobalSettings.save_artist_name(updates["artist_name"])
         if "standard_fps" in updates:
             GlobalSettings.set_standard_fps(updates["standard_fps"])
         if "comp_target" in updates:

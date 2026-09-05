@@ -1468,6 +1468,24 @@ class TestMergeNotesSubmission:
 # ---------------------------------------------------------------------------
 
 class TestValidateSettingsSubmit:
+    def test_artist_name_is_trimmed(self):
+        updates = webbridge.validate_settings_submit({
+            "artist_name": "  Motioneer  ",
+        })
+        assert updates == {"artist_name": "Motioneer"}
+
+    def test_blank_artist_name_is_an_explicit_clear(self):
+        updates = webbridge.validate_settings_submit({"artist_name": "   "})
+        assert updates == {"artist_name": ""}
+
+    def test_omitted_artist_name_is_not_written(self):
+        updates = webbridge.validate_settings_submit({"history_max": 10})
+        assert "artist_name" not in updates
+
+    def test_non_string_artist_name_is_not_written(self):
+        updates = webbridge.validate_settings_submit({"artist_name": 42})
+        assert "artist_name" not in updates
+
     def test_full_valid_payload_maps_every_field(self):
         updates = webbridge.validate_settings_submit({
             "fps": 30,

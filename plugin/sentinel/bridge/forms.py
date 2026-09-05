@@ -177,12 +177,18 @@ def validate_settings_submit(payload, fps_locked=False, snapshot_dir_locked=Fals
     error dialog for a bad combo index either. Never raises.
 
     Returns a dict of only the ``GlobalSettings`` keys to write, e.g.
-    ``{"standard_fps": 25, "comp_target": 0, "aov_multipart": 1,
-    "snapshot_slate": True, "mv_max_motion": 0, "snapshot_dir": "...",
-    "history_max_rows": 10}`` — any subset, never all keys are guaranteed
-    present.
+    ``{"artist_name": "Motioneer", "standard_fps": 25, "comp_target": 0,
+    "aov_multipart": 1, "snapshot_slate": True, "mv_max_motion": 0,
+    "snapshot_dir": "...", "history_max_rows": 10}`` — any subset, never
+    all keys are guaranteed present.
     """
     updates = {}
+
+    # The retired native panel trimmed the artist field before persisting it.
+    # Presence matters: an omitted key is an older client and must preserve the
+    # stored value, while an explicitly submitted blank clears it.
+    if "artist_name" in payload and isinstance(payload.get("artist_name"), str):
+        updates["artist_name"] = payload["artist_name"].strip()
 
     if not fps_locked:
         fps = _coerce_int(payload.get("fps"))
