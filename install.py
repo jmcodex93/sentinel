@@ -645,6 +645,8 @@ def _run_installs(targets, src_plugin_dir):
             print("  " + res["warning"])
         if res["error"]:
             print("  FAIL: %s" % res["error"])
+            if res["recovery"]:
+                print("  Recovery payload: %s" % res["recovery"])
             any_fail = True
             continue
         if res["ok"]:

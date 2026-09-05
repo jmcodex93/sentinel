@@ -345,6 +345,31 @@ def test_failed_activation_and_restore_reports_exact_recovery_payload(tmp_path, 
     assert (Path(result['recovery']) / 'sentinel_panel.pyp').read_bytes() == b'legacy panel\x00v1'
 
 
+def test_install_cli_prints_recovery_payload_on_failure(tmp_path, monkeypatch, capsys):
+    source = tmp_path / 'plugin'
+    source.mkdir()
+    recovery = tmp_path / 'Sentinel Backups' / 'backup-test' / 'payload'
+
+    monkeypatch.setattr(install, 'install_to', lambda _plugins, _source: {
+        'plugins_dir': str(tmp_path / 'plugins'),
+        'dest': str(tmp_path / 'plugins' / 'Sentinel'),
+        'ok': False,
+        'missing': [],
+        'warning': None,
+        'error': 'injected activation and restore failure',
+        'backup': None,
+        'recovery': str(recovery),
+        'state': 'recovery_required',
+    })
+
+    exit_code = install._run_installs([str(tmp_path / 'plugins')], str(source))
+
+    assert exit_code == 1
+    output = capsys.readouterr().out
+    assert 'FAIL: injected activation and restore failure' in output
+    assert 'Recovery payload: %s' % recovery in output
+
+
 def test_post_activation_verification_failure_restores_existing(tmp_path, monkeypatch):
     plugins = tmp_path / 'prefs' / 'plugins'
     dest = plugins / 'Sentinel'
