@@ -1848,6 +1848,25 @@ class TestHubPayloadHelpers:
              "total_bytes": 0, "unsized": 0, "by_type": {}})
         assert [a["has_thumb"] for a in payload["assets"]] == [False, False, False]
 
+    def test_inventory_payload_thumb_version_follows_the_file(self):
+        """Windows acceptance (2026-09-24): a texture replaced at the SAME
+        path kept its old thumbnail after Refresh — ``/thumb?key=`` never
+        changed, so the webview served its cached image. The payload carries
+        a version derived from mtime+size that the SPA puts in the URL."""
+        totals = {"count": 1, "missing": 0, "absolute": 0, "total_bytes": 0,
+                  "unsized": 0, "by_type": {}}
+
+        def version(**kw):
+            payload = webbridge.hub_inventory_payload([self._record(**kw)], totals)
+            return payload["assets"][0]["thumb_version"]
+
+        base = version(mtime=1000.5, size_bytes=181)
+        assert base
+        assert version(mtime=2000.0, size_bytes=181) != base   # same size, new file
+        assert version(mtime=1000.5, size_bytes=159) != base   # same mtime, new size
+        assert version(mtime=1000.5, size_bytes=181) == base   # stable = cacheable
+        assert version(resolved_path=None, status="missing") is None
+
     def test_resolve_repath_targets_maps_all_sharing_shaders(self):
         records = [self._record(), self._record(key="k2", repathable=False, tex_idxs=[])]
         targets, errors = webbridge.resolve_repath_targets(

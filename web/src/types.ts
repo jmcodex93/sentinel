@@ -518,6 +518,8 @@ export interface HubAsset {
   owners: HubOwner[];
   repathable: boolean;
   has_thumb: boolean;
+  /** mtime+size of the file; goes into the /thumb URL so a replaced file is refetched. */
+  thumb_version: string | null;
 }
 
 export interface HubTotals {

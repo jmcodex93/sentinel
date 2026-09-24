@@ -19,6 +19,8 @@ def hub_inventory_payload(records, totals, scene_name="", skipped=0):
     for rec in records:
         resolved = rec.get("resolved_path")
         ext = os.path.splitext(resolved or "")[1].lower()
+        has_thumb = (bool(resolved) and ext in _THUMB_EXTS
+                     and rec.get("status") != "missing")
         assets_out.append({
             "key": rec.get("key", ""),
             "path": rec.get("path", ""),
@@ -30,8 +32,12 @@ def hub_inventory_payload(records, totals, scene_name="", skipped=0):
             "owners": [{"name": n, "kind": k, "channel": c}
                        for (n, k, c) in rec.get("owners", [])],
             "repathable": bool(rec.get("repathable")),
-            "has_thumb": bool(resolved) and ext in _THUMB_EXTS
-            and rec.get("status") != "missing",
+            "has_thumb": has_thumb,
+            # Goes into the /thumb URL: the URL is otherwise stable per asset
+            # and served with max-age, so a file replaced at the same path
+            # would keep its old thumbnail after Refresh.
+            "thumb_version": ("%s-%s" % (rec.get("mtime"), rec.get("size_bytes"))
+                              if has_thumb else None),
         })
     totals_out = dict(totals)
     totals_out["total_label"] = _assets.format_size(totals.get("total_bytes"))

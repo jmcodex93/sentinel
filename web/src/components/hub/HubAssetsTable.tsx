@@ -20,6 +20,7 @@ import {
   clampColWidth,
   DEFAULT_COL_WIDTHS,
   gridColumnsFor,
+  thumbUrl,
   type ResizableColumn,
   type SortCol,
   type SortSpec,
@@ -123,7 +124,7 @@ function ThumbCell({ asset }: { asset: HubAsset }) {
     <div className="flex h-full items-center justify-center">
       <img
         loading="lazy"
-        src={`/thumb?key=${encodeURIComponent(asset.key)}`}
+        src={thumbUrl(asset)}
         alt=""
         className="h-6 w-6 rounded-sm object-cover"
         onError={() => setFailed(true)}

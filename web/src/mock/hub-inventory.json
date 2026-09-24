@@ -18,7 +18,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": true
+      "has_thumb": true,
+      "thumb_version": null
     },
     {
       "key": "tex_body_normal",
@@ -36,7 +37,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": true
+      "has_thumb": true,
+      "thumb_version": null
     },
     {
       "key": "tex_body_rough",
@@ -54,7 +56,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": true
+      "has_thumb": true,
+      "thumb_version": null
     },
     {
       "key": "tex_ground_diffuse",
@@ -72,7 +75,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": true
+      "has_thumb": true,
+      "thumb_version": null
     },
     {
       "key": "tex_ground_normal",
@@ -90,7 +94,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": true
+      "has_thumb": true,
+      "thumb_version": null
     },
     {
       "key": "tex_props_diffuse",
@@ -108,7 +113,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": true
+      "has_thumb": true,
+      "thumb_version": null
     },
     {
       "key": "tex_props_ao",
@@ -126,7 +132,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": true
+      "has_thumb": true,
+      "thumb_version": null
     },
     {
       "key": "tex_shared_noise",
@@ -149,7 +156,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": true
+      "has_thumb": true,
+      "thumb_version": null
     },
     {
       "key": "tex_label_diffuse",
@@ -167,7 +175,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": true
+      "has_thumb": true,
+      "thumb_version": null
     },
     {
       "key": "tex_glass_normal",
@@ -185,7 +194,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": true
+      "has_thumb": true,
+      "thumb_version": null
     },
     {
       "key": "hdri_dome_studio",
@@ -203,7 +213,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": true
+      "has_thumb": true,
+      "thumb_version": null
     },
     {
       "key": "hdri_dome_backup",
@@ -221,7 +232,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": true
+      "has_thumb": true,
+      "thumb_version": null
     },
     {
       "key": "abc_hero_anim",
@@ -239,7 +251,8 @@
         }
       ],
       "repathable": false,
-      "has_thumb": false
+      "has_thumb": false,
+      "thumb_version": null
     },
     {
       "key": "abc_crowd_sim",
@@ -257,7 +270,8 @@
         }
       ],
       "repathable": false,
-      "has_thumb": false
+      "has_thumb": false,
+      "thumb_version": null
     },
     {
       "key": "tex_old_metal",
@@ -275,7 +289,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": false
+      "has_thumb": false,
+      "thumb_version": null
     },
     {
       "key": "tex_missing_spec",
@@ -293,7 +308,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": false
+      "has_thumb": false,
+      "thumb_version": null
     },
     {
       "key": "hdri_missing_dome",
@@ -311,7 +327,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": false
+      "has_thumb": false,
+      "thumb_version": null
     },
     {
       "key": "abc_missing_debris",
@@ -329,7 +346,8 @@
         }
       ],
       "repathable": false,
-      "has_thumb": false
+      "has_thumb": false,
+      "thumb_version": null
     },
     {
       "key": "tex_abs_wood",
@@ -347,7 +365,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": true
+      "has_thumb": true,
+      "thumb_version": null
     },
     {
       "key": "tex_abs_metal",
@@ -365,7 +384,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": true
+      "has_thumb": true,
+      "thumb_version": null
     },
     {
       "key": "tex_abs_fabric",
@@ -383,7 +403,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": true
+      "has_thumb": true,
+      "thumb_version": null
     },
     {
       "key": "hdri_abs_studio",
@@ -401,7 +422,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": true
+      "has_thumb": true,
+      "thumb_version": null
     },
     {
       "key": "tex_empty_slot_a",
@@ -419,7 +441,8 @@
         }
       ],
       "repathable": false,
-      "has_thumb": false
+      "has_thumb": false,
+      "thumb_version": null
     },
     {
       "key": "tex_empty_slot_b",
@@ -437,7 +460,8 @@
         }
       ],
       "repathable": false,
-      "has_thumb": false
+      "has_thumb": false,
+      "thumb_version": null
     },
     {
       "key": "obj_empty_alembic",
@@ -455,7 +479,8 @@
         }
       ],
       "repathable": false,
-      "has_thumb": false
+      "has_thumb": false,
+      "thumb_version": null
     },
     {
       "key": "tex_asset_uri_a",
@@ -473,7 +498,8 @@
         }
       ],
       "repathable": false,
-      "has_thumb": false
+      "has_thumb": false,
+      "thumb_version": null
     },
     {
       "key": "tex_asset_uri_b",
@@ -491,7 +517,8 @@
         }
       ],
       "repathable": false,
-      "has_thumb": false
+      "has_thumb": false,
+      "thumb_version": null
     },
     {
       "key": "hdri_asset_uri_c",
@@ -509,7 +536,8 @@
         }
       ],
       "repathable": false,
-      "has_thumb": false
+      "has_thumb": false,
+      "thumb_version": null
     },
     {
       "key": "tex_sign_diffuse",
@@ -527,7 +555,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": true
+      "has_thumb": true,
+      "thumb_version": null
     },
     {
       "key": "tex_water_normal",
@@ -545,7 +574,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": true
+      "has_thumb": true,
+      "thumb_version": null
     },
     {
       "key": "hdri_dome_sunset",
@@ -563,7 +593,8 @@
         }
       ],
       "repathable": true,
-      "has_thumb": true
+      "has_thumb": true,
+      "thumb_version": null
     },
     {
       "key": "abc_secondary_anim",
@@ -581,7 +612,8 @@
         }
       ],
       "repathable": false,
-      "has_thumb": false
+      "has_thumb": false,
+      "thumb_version": null
     }
   ],
   "totals": {

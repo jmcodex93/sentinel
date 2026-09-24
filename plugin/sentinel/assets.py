@@ -308,10 +308,13 @@ def fit_column_widths(stored, order, budget, min_width):
     return shrunk
 
 
-def stat_sizes_batch(records, start, count, getsize=os.path.getsize):
-    """Fill size_bytes for records[start:start+count]. Meant to be called
-    from the dialog Timer in small batches so slow network mounts never
-    block the UI. Returns the next start index (== len when done)."""
+def stat_sizes_batch(records, start, count, getsize=os.path.getsize,
+                     getmtime=os.path.getmtime):
+    """Fill size_bytes (and mtime, when readable) for
+    records[start:start+count]. Meant to be called from the dialog Timer in
+    small batches so slow network mounts never block the UI. Returns the
+    next start index (== len when done). mtime versions the Hub thumbnail
+    URL, so a file replaced at the same path gets a fresh thumbnail."""
     end = min(len(records), start + count)
     for i in range(start, end):
         rec = records[i]
@@ -324,6 +327,11 @@ def stat_sizes_batch(records, start, count, getsize=os.path.getsize):
             rec["size_bytes"] = int(getsize(path))
         except Exception:
             rec["size_bytes"] = -1
+            continue
+        try:
+            rec["mtime"] = getmtime(path)
+        except Exception:
+            pass
     return end
 
 

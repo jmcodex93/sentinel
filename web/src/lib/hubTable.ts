@@ -449,3 +449,14 @@ export function collectStartRefusal(res: HubCollectStartResponse): { message: st
     message: `${where} already has files in it. Choose an empty or new folder — Sentinel never delivers on top of an existing delivery.`,
   };
 }
+
+/**
+ * `/thumb` URL for a row. The server serves thumbnails with `max-age`, and
+ * the key alone is stable per asset — without the version a texture replaced
+ * at the same path kept its old thumbnail after Refresh (Windows acceptance
+ * 2026-09-24). The server ignores `v`; it only busts the webview cache.
+ */
+export function thumbUrl(asset: Pick<HubAsset, "key" | "thumb_version">): string {
+  const base = `/thumb?key=${encodeURIComponent(asset.key)}`;
+  return asset.thumb_version ? `${base}&v=${encodeURIComponent(asset.thumb_version)}` : base;
+}

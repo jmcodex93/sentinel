@@ -11,6 +11,7 @@ import {
   shrinkPreview,
   sortAssets,
   switchTargets,
+  thumbUrl,
   type FacetState,
 } from "./hubTable";
 import type { HubAsset, HubMeta, HubVariant } from "../types";
@@ -27,6 +28,7 @@ function asset(overrides: Partial<HubAsset> & { key: string }): HubAsset {
     owners: [],
     repathable: true,
     has_thumb: false,
+    thumb_version: null,
   };
 }
 
@@ -503,5 +505,20 @@ describe("collectStartRefusal", () => {
     expect(collectStartRefusal({ ok: false, error: "unsaved_document" })).toBeNull();
     expect(collectStartRefusal({ ok: false, error: "gate_blocked" })).toBeNull();
     expect(collectStartRefusal({ ok: true, job_id: "j1" })).toBeNull();
+  });
+});
+
+describe("thumbUrl", () => {
+  it("versions the thumbnail URL so a replaced file is refetched", () => {
+    // Windows acceptance: same path, new file, Refresh → the old image stayed,
+    // because /thumb?key= never changed and is served with max-age.
+    const before = thumbUrl({ key: "k 1&x", thumb_version: "1000.5-181" });
+    const after = thumbUrl({ key: "k 1&x", thumb_version: "2000.0-159" });
+    expect(before).toBe("/thumb?key=k%201%26x&v=1000.5-181");
+    expect(after).not.toBe(before);
+  });
+
+  it("still builds a URL for a payload without a version", () => {
+    expect(thumbUrl({ key: "k", thumb_version: null })).toBe("/thumb?key=k");
   });
 });
