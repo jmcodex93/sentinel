@@ -79,6 +79,68 @@ def test_discover_missing_root_is_empty(tmp_path):
     assert install.discover_c4d_installs(str(tmp_path / "nope")) == []
 
 
+def _deny_listdir(monkeypatch, denied_root):
+    """Make os.listdir raise the way Windows did under the restricted agent
+    process in the Windows acceptance run (2026-09-24): WinError 5."""
+    real_listdir = os.listdir
+
+    def fake_listdir(path):
+        if os.path.normcase(str(path)) == os.path.normcase(str(denied_root)):
+            raise PermissionError(13, "Access is denied", str(path))
+        return real_listdir(path)
+
+    monkeypatch.setattr(install.os, "listdir", fake_listdir)
+
+
+def test_discover_reports_an_unreadable_root(tmp_path, monkeypatch):
+    root = tmp_path / "Maxon"
+    _make_mac_tree(str(root))
+    _deny_listdir(monkeypatch, root)
+    errors = []
+    assert install.discover_c4d_installs(str(root), errors=errors) == []
+    assert len(errors) == 1
+    assert errors[0]["root"] == str(root)
+    assert "Access is denied" in errors[0]["reason"]
+
+
+def test_discover_missing_root_is_not_an_error(tmp_path):
+    """No preferences folder = no C4D on this machine: quiet, not a failure."""
+    errors = []
+    assert install.discover_c4d_installs(str(tmp_path / "nope"), errors=errors) == []
+    assert errors == []
+
+
+def test_list_names_an_unreadable_root_instead_of_claiming_none(tmp_path, monkeypatch, capsys):
+    """Windows acceptance P2: `install.py --list` printed "No Cinema 4D
+    installations found" while C4D 2026 was installed — the real cause
+    (access denied on AppData/Maxon) was swallowed. The listing must say it
+    could not look, and exit non-zero."""
+    root = tmp_path / "Maxon"
+    _make_mac_tree(str(root))
+    _deny_listdir(monkeypatch, root)
+    monkeypatch.setattr(install, "default_prefs_roots", lambda: [str(root)])
+
+    exit_code = install.main(["--list"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "No Cinema 4D installations found" not in output
+    assert "Could not read" in output and str(root) in output
+    assert "Access is denied" in output
+    assert "--target" in output
+
+
+def test_all_with_an_unreadable_root_fails_instead_of_installing_nothing(
+        tmp_path, monkeypatch, capsys):
+    root = tmp_path / "Maxon"
+    _make_mac_tree(str(root))
+    _deny_listdir(monkeypatch, root)
+    monkeypatch.setattr(install, "default_prefs_roots", lambda: [str(root)])
+
+    assert install.main(["--all"]) == 1
+    assert "Could not read" in capsys.readouterr().out
+
+
 def test_discover_all_dedups(tmp_path):
     root = tmp_path / "Maxon"
     _make_mac_tree(str(root))

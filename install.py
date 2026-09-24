@@ -84,7 +84,7 @@ def parse_version_label(dir_name):
     return token.split("_", 1)[0]
 
 
-def discover_c4d_installs(prefs_root):
+def discover_c4d_installs(prefs_root, errors=None):
     """Discover Cinema 4D installs under a single preferences root.
 
     Pure: takes an explicit root so tests can pass a fake tree. Returns a list of
@@ -93,11 +93,22 @@ def discover_c4d_installs(prefs_root):
          "plugins_exists": bool}
     A directory qualifies if its name matches the C4D pattern; the plugins/ child
     need not exist yet (the installer creates it).
+
+    A missing root is normal (no C4D on this machine) and stays quiet. A root
+    that exists but cannot be read is NOT "no installs": when ``errors`` is a
+    list, ``{"root", "reason"}`` is appended so the caller can say so
+    (Windows acceptance 2026-09-24 — access denied was reported as "No
+    Cinema 4D installations found").
     """
     results = []
     try:
         entries = sorted(os.listdir(prefs_root))
-    except (OSError, TypeError):
+    except FileNotFoundError:
+        return results
+    except (OSError, TypeError) as exc:
+        if errors is not None and isinstance(exc, OSError):
+            errors.append({"root": str(prefs_root),
+                           "reason": exc.strerror or str(exc)})
         return results
 
     for name in entries:
@@ -121,14 +132,15 @@ def discover_c4d_installs(prefs_root):
     return results
 
 
-def discover_all_installs(prefs_roots=None):
-    """Discover installs across every configured prefs root (dedup by prefs_dir)."""
+def discover_all_installs(prefs_roots=None, errors=None):
+    """Discover installs across every configured prefs root (dedup by prefs_dir).
+    Unreadable roots are appended to ``errors`` (see discover_c4d_installs)."""
     if prefs_roots is None:
         prefs_roots = default_prefs_roots()
     seen = set()
     combined = []
     for root in prefs_roots:
-        for install in discover_c4d_installs(root):
+        for install in discover_c4d_installs(root, errors=errors):
             key = install["prefs_dir"]
             if key in seen:
                 continue
@@ -589,19 +601,26 @@ def _format_install_line(idx, install):
     return "  [%d] C4D %-8s  %s%s" % (idx, install["label"], install["plugins_dir"], flag)
 
 
-def _print_list(installs):
+def _print_list(installs, errors=()):
+    for err in errors:
+        print("Could not read %s: %s" % (err["root"], err["reason"]))
+    if errors:
+        print("Run from a normal user shell, or install explicitly with "
+              "--target <C4D preferences>/plugins (C4D: Edit > Preferences > "
+              "Open Preferences Folder).")
     if not installs:
-        print("No Cinema 4D installations found in the standard preferences paths.")
-        print("Roots searched: %s" % ", ".join(default_prefs_roots()))
+        if not errors:
+            print("No Cinema 4D installations found in the standard preferences paths.")
+            print("Roots searched: %s" % ", ".join(default_prefs_roots()))
         return
     print("Discovered Cinema 4D installations:")
     for i, install in enumerate(installs, 1):
         print(_format_install_line(i, install))
 
 
-def _prompt_selection(installs):
+def _prompt_selection(installs, errors=()):
     """Interactive picker. Returns the chosen install dicts (possibly empty)."""
-    _print_list(installs)
+    _print_list(installs, errors)
     if not installs:
         return []
     print("")
@@ -702,16 +721,23 @@ def main(argv=None):
     if args.target:
         return _run_installs([os.path.abspath(args.target)], src_plugin_dir)
 
-    installs = discover_all_installs()
+    errors = []
+    installs = discover_all_installs(errors=errors)
 
     if args.list:
-        _print_list(installs)
-        return 0
+        _print_list(installs, errors)
+        return 1 if errors else 0
 
     if args.all:
+        if errors:
+            # "Every install" is unknowable when a root could not be read.
+            _print_list(installs, errors)
+            return 1
         return _run_installs([i["plugins_dir"] for i in installs], src_plugin_dir)
 
-    targets = [i["plugins_dir"] for i in _prompt_selection(installs)]
+    targets = [i["plugins_dir"] for i in _prompt_selection(installs, errors)]
+    if errors and not targets:
+        return 1
     return _run_installs(targets, src_plugin_dir)
 
 
