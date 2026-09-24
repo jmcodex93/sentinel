@@ -15,6 +15,7 @@ import {
   startHubCollect,
   submitGate,
 } from "../../lib/api";
+import { collectStartRefusal } from "../../lib/hubTable";
 import { useToast } from "../../lib/toast";
 import type { GateBucket, GateCheck, GateState, HubCollectResult, HubJobStatus } from "../../types";
 
@@ -91,6 +92,13 @@ export function HubDeliverSection({
           setError(gateResult.kind === "error" ? gateResult.message : gateResult.reason);
           setPhase("error");
         }
+        return;
+      }
+      const refusal = collectStartRefusal(res);
+      if (refusal) {
+        // Back to the form (also from the gate step): the fix is the folder field.
+        setPhase("idle");
+        toast({ message: refusal.message, variant: "warn" });
         return;
       }
       setError(res.error || "Couldn't start delivery.");

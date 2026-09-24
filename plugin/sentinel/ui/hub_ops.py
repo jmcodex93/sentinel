@@ -911,6 +911,24 @@ def _build_preflight_payload_for_collect(doc, rules_context, score, baseline_pat
     }
 
 
+# Files the OS drops into a folder on its own (Finder the moment a folder is
+# opened, Explorer for thumbnails/view settings). None of them is a delivery.
+_OS_FOLDER_JUNK = frozenset({".ds_store", "desktop.ini", "thumbs.db"})
+
+
+def _delivery_target_occupied(target_dir):
+    """True when ``target_dir`` already holds something besides OS junk.
+
+    A missing or empty folder is a valid delivery target; anything else may
+    be a previous delivery, and collecting on top of it replaces that
+    delivery's manifest and leaves two scenes side by side (Windows
+    acceptance 2026-09-24, P1)."""
+    if not os.path.isdir(target_dir):
+        return False
+    return any(name.lower() not in _OS_FOLDER_JUNK
+               for name in os.listdir(target_dir))
+
+
 def _op_hub_collect_start(payload):
     """``hub/collect_start`` — kick off a Scene Collector run as a
     background job (``webbridge.JOBS``). Payload: ``target_dir``, ``zip``
@@ -931,6 +949,10 @@ def _op_hub_collect_start(payload):
         return {"ok": False, "error": "no_document"}
     if not doc.GetDocumentPath():
         return {"ok": False, "error": "unsaved_document"}
+    # Before the QC pre-flight: no gate triage for a delivery that will be
+    # refused anyway.
+    if _delivery_target_occupied(target_dir):
+        return {"ok": False, "error": "target_not_empty", "target_dir": target_dir}
 
     from sentinel.ui.flows import _baseline_path_for_doc, _current_module
 

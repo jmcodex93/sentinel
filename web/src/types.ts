@@ -634,6 +634,8 @@ export interface HubCollectStartResponse {
   ok: boolean;
   error?: string;
   job_id?: string;
+  /** Echoed with `error: "target_not_empty"` — the folder that was refused. */
+  target_dir?: string;
 }
 
 export interface HubCollectResult {
