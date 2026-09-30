@@ -457,11 +457,12 @@ def _touch_sparse_frame(folder, name, size):
 
 
 def test_render_history_path_strips_version_status():
-    assert versioning.render_history_path("/show/robot_010_v022_FINAL.c4d") == (
-        "/show/robot_010_render_history.json"
+    show = os.sep + "show"
+    assert versioning.render_history_path(os.path.join(show, "robot_010_v022_FINAL.c4d")) == (
+        os.path.join(show, "robot_010_render_history.json")
     )
-    assert versioning.render_history_path("/show/robot_010_v001.c4d") == (
-        "/show/robot_010_render_history.json"
+    assert versioning.render_history_path(os.path.join(show, "robot_010_v001.c4d")) == (
+        os.path.join(show, "robot_010_render_history.json")
     )
 
 
@@ -734,8 +735,8 @@ def test_resolve_output_template_uses_explicit_frame_token_signal(tmp_path):
         False,
     )
 
-    assert with_frame == (str(tmp_path), "SHOT_X_010_", "exr")
-    assert without_frame == (str(tmp_path), "SHOT_X_010", "exr")
+    assert with_frame == (tmp_path.as_posix(), "SHOT_X_010_", "exr")
+    assert without_frame == (tmp_path.as_posix(), "SHOT_X_010", "exr")
 
 
 def test_zfill_fallback_path_without_frame_uses_stem_prefix(tmp_path):
@@ -756,7 +757,7 @@ def test_unsaved_doc_manifest_uses_audit_folder(tmp_path):
         _state(raw_path="beauty", resolved_beauty_path="", doc_path="")
     ], str(tmp_path))
 
-    assert manifest[0]["folder"] == str(tmp_path)
+    assert manifest[0]["folder"] == tmp_path.as_posix()
 
 
 def test_low_variance_flat_plane_documents_mad_escape_and_warn_severity():

@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -88,9 +89,10 @@ def write_payload(path, entries):
 
 
 def test_get_baseline_path_strips_version_and_status():
-    path = baseline.get_baseline_path("/shots/robot_010_v014_TR.c4d")
+    shots = os.sep + "shots"
+    path = baseline.get_baseline_path(os.path.join(shots, "robot_010_v014_TR.c4d"))
 
-    assert path == "/shots/robot_010_baseline.json"
+    assert path == os.path.join(shots, "robot_010_baseline.json")
 
 
 def test_accept_five_then_match_same_five_reports_all_accepted(tmp_path):
