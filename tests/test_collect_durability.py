@@ -231,7 +231,8 @@ def test_collect_start_binds_document_and_path_into_job_spec(
 
         assert response == {"ok": True, "job_id": job_id}
         assert spec["document"] is doc
-        assert spec["document_path"] == os.path.join(str(tmp_path), "a_v001.c4d")
+        assert spec["document_path"] == os.path.normcase(os.path.abspath(
+            os.path.join(str(tmp_path), "a_v001.c4d")))
         assert spec["document_stamp"] == hub_ops._stamp_for(doc)
     finally:
         webbridge.JOBS = old

@@ -1161,10 +1161,14 @@ def _render_output_folder(doc):
                 _current_take(doc), _current_frame(doc))
     folder = os.path.dirname(str(raw)) if raw else ""
     if folder and "$" not in folder:
+        # ``normpath``: ``$prj`` resuelve a la ruta nativa del documento y el
+        # resto es lo que el artista tecleó (``/images``), así que en Windows
+        # la carpeta llegaba mixta (``C:\shot\proyecto/images``) — y es la
+        # que el parte del tag le enseña al artista.
         if os.path.isabs(folder):
-            return folder
+            return os.path.normpath(folder)
         if doc_path:
-            return os.path.join(doc_path, folder)
+            return os.path.normpath(os.path.join(doc_path, folder))
     return doc_path
 
 

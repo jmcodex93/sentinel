@@ -170,7 +170,7 @@ def test_verify_payload_missing_res(tmp_path):
     os.remove(os.path.join(dest, "res", "c4d_symbols.h"))
     ok, missing = install.verify_payload(dest)
     assert ok is False
-    assert os.path.join("res", "c4d_symbols.h") in missing
+    assert "res/c4d_symbols.h" in missing
 
 
 def test_verify_payload_empty_dest(tmp_path):
