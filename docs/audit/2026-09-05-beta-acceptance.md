@@ -54,7 +54,7 @@ Host coverage:
 |---|---|
 | Embedded C4D webview | Completed scoped installed-GUI acceptance after user-approved restart; see the follow-up record for Notes, Hub, Settings results and the remaining focus/settings-refresh limitations. |
 | RenderView snapshot capture | Completed in the subsequent GUI run: actual Redshift RenderView capture, persisted-directory auto-detection, exactly-once PNG conversion and off/on backlog protection. |
-| Windows/C4D | No reachable Windows host was supplied. The package and checklist below support the handoff, but no Windows result is claimed. |
+| Windows/C4D | Run on 2026-09-24 against this candidate: no global acceptance (Collect replaced an existing delivery), plus a stale Hub thumbnail and a misleading installer listing. All three corrected on `fix/windows-acceptance` and live-verified on macOS; a Windows retest is pending. See the [Windows acceptance record](2026-09-24-windows-acceptance.md). |
 | Network paths and interruption | Failure injection is covered locally; SMB/NAS permission/locking and interruption under real Windows remain unverified. |
 | Commercial launch | Ownership/third-party redistribution, registered IDs and the support matrix remain as recorded in the preceding product-readiness audit. No permission or commercial compatibility is inferred. |
 
