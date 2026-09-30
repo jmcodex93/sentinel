@@ -911,6 +911,24 @@ def _build_preflight_payload_for_collect(doc, rules_context, score, baseline_pat
     }
 
 
+# Files the OS drops into a folder on its own (Finder the moment a folder is
+# opened, Explorer for thumbnails/view settings). None of them is a delivery.
+_OS_FOLDER_JUNK = frozenset({".ds_store", "desktop.ini", "thumbs.db"})
+
+
+def _delivery_target_occupied(target_dir):
+    """True when ``target_dir`` already holds something besides OS junk.
+
+    A missing or empty folder is a valid delivery target; anything else may
+    be a previous delivery, and collecting on top of it replaces that
+    delivery's manifest and leaves two scenes side by side (Windows
+    acceptance 2026-09-24, P1)."""
+    if not os.path.isdir(target_dir):
+        return False
+    return any(name.lower() not in _OS_FOLDER_JUNK
+               for name in os.listdir(target_dir))
+
+
 def _op_hub_collect_start(payload):
     """``hub/collect_start`` — kick off a Scene Collector run as a
     background job (``webbridge.JOBS``). Payload: ``target_dir``, ``zip``
@@ -931,6 +949,10 @@ def _op_hub_collect_start(payload):
         return {"ok": False, "error": "no_document"}
     if not doc.GetDocumentPath():
         return {"ok": False, "error": "unsaved_document"}
+    # Before the QC pre-flight: no gate triage for a delivery that will be
+    # refused anyway.
+    if _delivery_target_occupied(target_dir):
+        return {"ok": False, "error": "target_not_empty", "target_dir": target_dir}
 
     from sentinel.ui.flows import _baseline_path_for_doc, _current_module
 
@@ -951,6 +973,10 @@ def _op_hub_collect_start(payload):
         gate_evaluated=gates_enabled, gate_ack=bool(payload.get("gate_ack")))
     try:
         job_id = webbridge.JOBS.start({
+            "document": doc,
+            "document_path": os.path.normcase(os.path.abspath(os.path.join(
+                doc.GetDocumentPath(), doc.GetDocumentName()))),
+            "document_stamp": _stamp_for(doc),
             "target_dir": target_dir,
             "zip": bool(payload.get("zip")),
             "preflight_payload": preflight_payload,
@@ -962,11 +988,24 @@ def _op_hub_collect_start(payload):
 
 def _run_collect_for_job(spec, on_status):
     """Isolated for testability (``pump_jobs`` failure-path test
-    monkeypatches this). Re-reads the active document (HTTP/job dispatch is
-    stateless, same convention as every other hub op)."""
-    doc = documents.GetActiveDocument()
-    if not doc:
+    monkeypatches this). Runs only when the queued document identity and
+    preflight state still match the active scene."""
+    active_doc = documents.GetActiveDocument()
+    if not active_doc:
         raise RuntimeError("no_document")
+    doc = spec.get("document")
+    if doc is None:
+        raise RuntimeError("stale_document")
+    expected_path = spec.get("document_path")
+    try:
+        current_path = os.path.normcase(os.path.abspath(os.path.join(
+            doc.GetDocumentPath(), doc.GetDocumentName())))
+    except Exception:
+        current_path = ""
+    expected_stamp = spec.get("document_stamp")
+    if doc != active_doc or (expected_path and current_path != expected_path) \
+            or (expected_stamp and _stamp_for(doc) != expected_stamp):
+        raise RuntimeError("stale_document")
     from sentinel.ui.flows import run_collect_pipeline
     return run_collect_pipeline(
         doc, GlobalSettings.load_artist_name(), spec["target_dir"],
@@ -1008,6 +1047,9 @@ def pump_jobs():
         result = _run_collect_for_job(spec, on_status)
         if not result:
             webbridge.JOBS.fail(job_id, "collect failed (SaveProject)")
+            return job_id
+        if result.get("success") is False:
+            webbridge.JOBS.fail(job_id, result.get("error") or "collect_failed")
             return job_id
         report = webbridge.delivery_report_payload(
             result.get("manifest") or {}, result.get("manifest_path") or "")

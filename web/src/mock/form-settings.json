@@ -1,4 +1,5 @@
 {
+  "artist_name": "Motioneer",
   "fps": { "value": 25, "options": [24, 25, 30, 60], "locked": true, "locked_reason": "defined by project ruleset" },
   "compositor": { "value": 0, "options": ["Nuke", "After Effects"] },
   "multipart_default": true,

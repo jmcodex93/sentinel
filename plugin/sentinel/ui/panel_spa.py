@@ -80,7 +80,10 @@ class PanelSPADialog(gui.GeDialog):
         self._html = None
 
     def _url(self, port):
-        return f"http://127.0.0.1:{port}/?page={_PANEL_PAGE}"
+        return (
+            f"http://127.0.0.1:{port}/?page={_PANEL_PAGE}"
+            f"&token={reports_dialog._api_token}"
+        )
 
     def CreateLayout(self):
         self.SetTitle("Sentinel Panel")

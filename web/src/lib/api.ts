@@ -67,6 +67,8 @@ import type {
   PanelRenderSection,
   MatwireCreateResult,
   MatwirePreviewResult,
+  NewShotCreateResponse,
+  NewShotPreviewResponse,
   RenameApplyResult,
   RenamePreviewResult,
   PaletteAction,
@@ -74,6 +76,8 @@ import type {
   PaletteRunResponse,
   QcReport,
   QcReportResult,
+  StandardPreviewResponse,
+  StandardPublishResponse,
   RenderValidationReport,
   RenderValidationReportResult,
   SaveVersionState,
@@ -88,6 +92,7 @@ import type {
   SupervisorReportResult,
 } from "../types";
 import type { RenameOps, RenameSource } from "./panelRename";
+import { tokenHeaders, withToken } from "./token";
 
 /** dispatch() in plugin/sentinel/ui/reports_dialog.py (Task 4) returns
  * `{"error": "no_manifest"}` when no sentinel_manifest.json sits next to
@@ -117,7 +122,7 @@ async function fetchReport<T>(
 ): Promise<{ kind: "ok"; data: T } | { kind: "empty"; reason: string } | { kind: "error"; message: string }> {
   let response: Response;
   try {
-    response = await fetch(path);
+    response = await fetch(withToken(path));
   } catch {
     return {
       kind: "error",
@@ -244,7 +249,7 @@ async function postForm<T extends { ok: boolean; error?: string }>(path: string,
   try {
     response = await fetch(path, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: tokenHeaders(),
       body: JSON.stringify(body),
     });
   } catch {
@@ -307,7 +312,7 @@ export async function submitSaveVersion(payload: SaveVersionSubmitPayload): Prom
 /** `GET /api/form/notes/state` — see web_ops.py `_op_form_notes_state`. */
 export async function fetchNotesState(): Promise<NotesStateResult> {
   if (isMock()) {
-    return { kind: "ok", data: mockNotes as NotesState };
+    return { kind: "ok", data: { ...mockNotes, context: "mock-notes", revision: "mock-revision" } as NotesState };
   }
   return fetchReport<NotesState>("/api/form/notes/state", {
     no_scene_path: "Save the scene to a folder first, then reopen Edit Notes.",
@@ -550,11 +555,11 @@ export async function postHubApply(changes: HubApplyChange[]): Promise<HubApplyR
 }
 
 /** `POST /api/hub/select_owner` — see `_op_hub_select_owner` in hub_ops.py. */
-export async function postHubSelectOwner(key: string): Promise<HubSelectOwnerResponse> {
+export async function postHubSelectOwner(key: string, expectedStamp?: string): Promise<HubSelectOwnerResponse> {
   if (isMock()) {
     return { ok: true, stamp: "mock-stamp" };
   }
-  return postForm<HubSelectOwnerResponse>("/api/hub/select_owner", { key });
+  return postForm<HubSelectOwnerResponse>("/api/hub/select_owner", { key, expected_stamp: expectedStamp });
 }
 
 /** `POST /api/hub/pick_path` — see `_op_hub_pick_path` in hub_ops.py
@@ -596,7 +601,7 @@ export async function fetchHubJobStatus(jobId: string): Promise<HubJobStatus> {
     return { job_id: jobId, state: "done", phase: "run", detail: "", pct: 100, result: null };
   }
   try {
-    const response = await fetch("/api/hub/job_status?job_id=" + encodeURIComponent(jobId));
+    const response = await fetch(withToken("/api/hub/job_status?job_id=" + encodeURIComponent(jobId)));
     return (await response.json()) as HubJobStatus;
   } catch {
     return { error: "Could not reach the Sentinel server. Is the Asset Hub still open in Cinema 4D?" };
@@ -657,7 +662,7 @@ export async function fetchHubMeta(keys: string[]): Promise<Record<string, HubMe
   try {
     const response = await fetch("/api/hub/meta", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: tokenHeaders(),
       body: JSON.stringify({ keys }),
     });
     const payload = await response.json();
@@ -700,7 +705,7 @@ export async function fetchHubMetaTotals(): Promise<HubMetaTotals> {
   }
 
   try {
-    const response = await fetch("/api/hub/meta_totals");
+    const response = await fetch(withToken("/api/hub/meta_totals"));
     if (!response.ok) return defaultTotals;
     return (await response.json()) as HubMetaTotals;
   } catch {
@@ -753,7 +758,7 @@ export async function fetchHubVariants(keys: string[]): Promise<Record<string, H
   try {
     const response = await fetch("/api/hub/variants", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: tokenHeaders(),
       body: JSON.stringify({ keys }),
     });
     const payload = await response.json();
@@ -788,7 +793,7 @@ export async function fetchHubUiState(): Promise<HubUiState> {
   }
 
   try {
-    const response = await fetch("/api/hub/ui_state");
+    const response = await fetch(withToken("/api/hub/ui_state"));
     if (!response.ok) return {};
     const payload = await response.json();
     if (payload && typeof payload === "object" && "state" in payload) {
@@ -811,7 +816,7 @@ export async function saveHubUiState(state: HubUiState): Promise<void> {
   try {
     await fetch("/api/hub/ui_state/save", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: tokenHeaders(),
       body: JSON.stringify({ state }),
     });
   } catch {
@@ -1153,7 +1158,7 @@ export async function fetchPanelDeliver(): Promise<PanelDeliverState> {
   try {
     response = await fetch("/api/panel/deliver", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: tokenHeaders(),
       body: JSON.stringify({}),
     });
   } catch {
@@ -1203,7 +1208,7 @@ export async function fetchPanelFrame(): Promise<PanelFrameState> {
   try {
     response = await fetch("/api/panel/frame", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: tokenHeaders(),
       body: JSON.stringify({}),
     });
   } catch {
@@ -1234,7 +1239,7 @@ export async function postPanelFrameSetViewing(
   try {
     const response = await fetch("/api/panel/frame/set_viewing", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: tokenHeaders(),
       body: JSON.stringify({ target }),
     });
     const data = (await response.json()) as { ok?: boolean; viewing?: string | null; error?: string | null };
@@ -1430,3 +1435,82 @@ export async function postMatwireCreate(
     material,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Project standard (v1.37) — see `_op_standard_preview` / `_op_standard_publish`
+// / `_op_newshot_preview` / `_op_newshot_create` in ui/standard_ops.py. Same
+// server-derives-from-scratch idiom as matwire: previews are read-only and
+// re-derive from the live scene/folder on every call, mutations re-derive
+// too rather than trusting a client-cached preview.
+// ---------------------------------------------------------------------------
+
+/** `POST /api/panel/tools/standard_preview` — server-derived QC + scene
+ * summary for publishing the project standard. `folder` is optional — an
+ * omitted folder does NOT fall back to any folder server-side, it just
+ * means the op reports QC/scene against the active document with no
+ * project folder to derive a pattern/diff/existing-rules against (those
+ * come back empty). `?mock=1` has no live document behind it, so it
+ * serves an informative failure. */
+export async function fetchStandardPreview(folder?: string): Promise<StandardPreviewResponse> {
+  if (isMock()) return { ok: false, error: "no_document" };
+  return postForm<StandardPreviewResponse>("/api/panel/tools/standard_preview", { folder });
+}
+
+/** `POST /api/panel/tools/standard_publish` — writes the standard scene +
+ * `sentinel_rules.json` to `folder` in one step. `exclude` = `[name,
+ * index]` pairs (see `ExcludeEntry`/`toggleExclude` in
+ * lib/panelStandard.ts); `pattern` is the shot-name token pattern to
+ * record (or `null`). `?mock=1` has nothing to publish, so it resolves an
+ * informative failure (same convention as `postMatwireCreate`). */
+export async function postStandardPublish(
+  folder: string,
+  exclude: [string, number][],
+  pattern: string | null,
+): Promise<StandardPublishResponse> {
+  if (isMock()) return { ok: false, error: "bad_folder" };
+  return postForm<StandardPublishResponse>("/api/panel/tools/standard_publish", {
+    folder,
+    exclude,
+    pattern,
+  });
+}
+
+/** `POST /api/panel/tools/newshot_preview` — resolves the project standard
+ * (ruleset + template scene) that a new shot under `folder` would inherit,
+ * without creating anything. `?mock=1` has no folder to resolve against,
+ * so it serves an informative failure. */
+export async function fetchNewShotPreview(folder: string): Promise<NewShotPreviewResponse> {
+  if (isMock()) return { ok: false, error: "bad_folder" };
+  return postForm<NewShotPreviewResponse>("/api/panel/tools/newshot_preview", { folder });
+}
+
+/** `POST /api/panel/tools/newshot_create` — copies the resolved standard
+ * scene to the destination the project's `shot_pattern` derives (e.g.
+ * `shots/{shot}/{shot}_v001.c4d`, possibly nested — see
+ * `projectstd.shot_destination`, NOT a flat `folder/<name>.c4d`) and
+ * (best-effort) opens it. `?mock=1` has nothing to copy, so it resolves an
+ * informative failure (same convention as `postStandardPublish`). */
+export async function postNewShotCreate(folder: string, name: string): Promise<NewShotCreateResponse> {
+  if (isMock()) return { ok: false, error: "bad_folder" };
+  return postForm<NewShotCreateResponse>("/api/panel/tools/newshot_create", { folder, name });
+}
+
+// Atomic read contracts used by the live SPA. The original fetch functions
+// above stay compatible for standalone consumers and mock fixtures.
+async function fetchSnapshot<T>(path: string, mockRead: () => Promise<import('./snapshot').ReadResult<T>>): Promise<import('./snapshot').SnapshotRead<T>> {
+  if (isMock()) return { result: await mockRead(), stamp: "mock-stamp" };
+  const response = await fetchReport<{ data: T; stamp: string | null }>(`${path}?with_stamp=1`, {
+    no_document: "No active Cinema 4D document. Open a scene to continue.",
+  });
+  if (response.kind !== "ok") return { result: response, stamp: null };
+  if (!response.data || !("data" in response.data) || !("stamp" in response.data)) {
+    return { result: { kind: "error", message: "Server returned an invalid scene snapshot." }, stamp: null };
+  }
+  return { result: { kind: "ok", data: response.data.data }, stamp: response.data.stamp };
+}
+export const fetchPanelOverviewSnapshot = () => fetchSnapshot("/api/panel/overview", fetchPanelOverview);
+export const fetchPanelQcSnapshot = () => fetchSnapshot("/api/panel/qc", fetchPanelQc);
+export const fetchPanelRenderSnapshot = () => fetchSnapshot("/api/panel/render", fetchPanelRender);
+export const fetchHubInventorySnapshot = () => fetchSnapshot("/api/hub/inventory", fetchHubInventory);
+export const fetchPanelDeliverSnapshot = () => fetchSnapshot<PanelDeliverState>("/api/panel/deliver", async () => ({kind: "ok", data: await fetchPanelDeliver()}));
+export const fetchPanelFrameSnapshot = () => fetchSnapshot<PanelFrameState>("/api/panel/frame", async () => ({kind: "ok", data: await fetchPanelFrame()}));

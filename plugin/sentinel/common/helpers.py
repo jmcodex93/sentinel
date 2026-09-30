@@ -5,14 +5,18 @@ import os
 import subprocess
 import sys
 
+from .logging import info as _log_info
+
 
 def safe_print(msg):
-    """Print to console with null safety. Prefix matches plugin brand."""
+    """Compatibility console logger; new code should emit named events."""
+    if msg is None:
+        return
     try:
-        if msg is not None:
-            print(f"[Sentinel] {msg}")
-    except (UnicodeEncodeError, AttributeError):
-        pass  # Print failed, continue silently
+        message = str(msg)
+    except Exception:
+        message = "<unrepresentable>"
+    _log_info("legacy.message", "legacy", message=message)
 
 
 def open_in_explorer(path):

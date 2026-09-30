@@ -16,6 +16,19 @@ import pytest
 from sentinel import webbridge
 
 
+def _structured_events(lines):
+    prefix = "[Sentinel] "
+    return [json.loads(line[len(prefix):]) for line in lines
+            if line.startswith(prefix)]
+
+
+def _capture_print(lines):
+    def capture(*args, **kwargs):
+        separator = kwargs.get("sep", " ")
+        lines.append(separator.join(str(item) for item in args))
+    return capture
+
+
 # ---------------------------------------------------------------------------
 # MainThreadQueue
 # ---------------------------------------------------------------------------
@@ -80,9 +93,13 @@ class TestMainThreadQueueRoundTrip:
             q.submit({"op": "never-drained"}, timeout=0.05)
         assert "keep the Reports window open" in str(exc_info.value)
 
-    def test_drain_dispatch_exception_returns_error_dict_not_raised(self):
+    def test_drain_dispatch_exception_returns_error_dict_not_raised(
+        self, monkeypatch
+    ):
         q = webbridge.MainThreadQueue()
         results = {}
+        lines = []
+        monkeypatch.setattr("builtins.print", _capture_print(lines))
 
         def worker():
             results["value"] = q.submit({"op": "boom"}, timeout=5.0)
@@ -104,6 +121,10 @@ class TestMainThreadQueueRoundTrip:
         assert "kaboom" in results["value"]["error"]
         assert "traceback" in results["value"]
         assert "ValueError" in results["value"]["traceback"]
+        event = _structured_events(lines)[0]
+        assert event["event"] == "queue.dispatch_failed"
+        assert event["component"] == "webbridge.runtime"
+        assert event["fields"]["op"] == "boom"
 
     def test_drain_empty_queue_is_noop(self):
         q = webbridge.MainThreadQueue()
@@ -251,14 +272,18 @@ class _LiveServer:
         kwargs = {}
         if ports is not None:
             kwargs["ports"] = ports
-        self.server, self.port = webbridge.create_server(
+        self.server, self.port, self.token = webbridge.create_server(
             str(web_root), api_handler, **kwargs)
         self.thread = webbridge.start_server_thread(self.server)
+
+    def _auth_path(self, path):
+        joiner = "&" if "?" in path else "?"
+        return f"{path}{joiner}token={self.token}"
 
     def get(self, path):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         try:
-            conn.request("GET", path)
+            conn.request("GET", self._auth_path(path))
             resp = conn.getresponse()
             body = resp.read()
             return resp, body
@@ -270,7 +295,8 @@ class _LiveServer:
         try:
             data = json.dumps(body_obj or {}).encode("utf-8")
             conn.request("POST", path, body=data,
-                          headers={"Content-Type": "application/json"})
+                          headers={"Content-Type": "application/json",
+                                   "X-Sentinel-Token": self.token})
             resp = conn.getresponse()
             body = resp.read()
             return resp, body
@@ -405,11 +431,15 @@ class TestApiRouting:
     def test_handler_exception_returns_500_with_error(self, web_root):
         live = _LiveServer(web_root, api_handler=_raising_handler)
         try:
-            resp, body = live.get("/api/whatever")
+            # Use a declared read-only op name so the request reaches the
+            # handler (an unknown GET op is now 405 before dispatch).
+            resp, body = live.get("/api/report/qc")
             assert resp.status == 500
             data = json.loads(body)
             assert "error" in data
-            assert "handler exploded" in data["error"]
+            # Block-1: the client sees a generic internal_error — the full
+            # traceback goes to the server-side log only (no path/stack leak).
+            assert data["error"] == "internal_error"
         finally:
             live.close()
 
@@ -429,7 +459,7 @@ class TestPortSelection:
         occupied.listen(1)
         busy_port = occupied.getsockname()[1]
         try:
-            server, port = webbridge.create_server(
+            server, port, _token = webbridge.create_server(
                 str(web_root), _echo_handler,
                 ports=range(busy_port, busy_port + 3))
             webbridge.start_server_thread(server)
@@ -662,7 +692,8 @@ def _legacy_score_fixture(counts=None, disabled=None):
     """Shaped like qc.score._legacy_score()'s return (no baseline sidecar)."""
     counts = counts or {}
     disabled = disabled or []
-    total = 12 - len(disabled)
+    # v1.38: check #13 (RS Colorspace) joins the registry — 13, not 12.
+    total = 13 - len(disabled)
     passed = total - sum(1 for v in counts.values() if v)
     return {
         "score": f"{passed}/{total}",
@@ -683,9 +714,11 @@ class TestQcReportPayload:
         assert [c["id"] for c in payload["checks"]] == [
             "lights", "vis", "keys", "cam", "rdc", "textures", "unused_mats",
             "names", "output", "takes", "fps_range", "cross_aspect",
+            # v1.38: check #13 (RS Colorspace) joins the registry, last.
+            "rs_colorspace",
         ]
         assert payload["score"] == {
-            "score": "12/12", "passed": 12, "total": 12,
+            "score": "13/13", "passed": 13, "total": 13,
             "disabled_count": 0, "baseline_status": None,
         }
         assert payload["disabled"] == []
@@ -790,6 +823,86 @@ class TestQcReportPayload:
         assert names_row["count"] == 75
         assert len(names_row["details"]) == 50
 
+    def test_metadata_info_rows_preferred_over_violations(self):
+        """v1.38 review fix: check #13 (RS Colorspace) ships a richer
+        Info picture in ``CheckResult.metadata["info"]`` (mismatch + the
+        non-counted auto_unverified/conflict/foreign_cs verdicts) — when
+        present and non-empty, ``_qc_check_details`` must show THAT, not
+        the (narrower) ``violations`` list, which only ever holds the
+        counted mismatches."""
+        score = _legacy_score_fixture(counts={"rs_colorspace": 1})
+        structured = {"rs_colorspace": {
+            "check_id": "rs_colorspace",
+            "violations": [
+                _violation("rs_colorspace", "spike_mat", "mismatch only"),
+            ],
+            "metadata": {
+                "legacy_count": 1,
+                "info": [
+                    {"material": "spike_mat", "file": "basecolor.png",
+                     "assigned": "RS_INPUT_COLORSPACE_RAW", "channel": "basecolor",
+                     "expected": "RS_INPUT_COLORSPACE_SRGB", "reason": "mismatch"},
+                    {"material": "spike_mat", "file": "rough.png",
+                     "assigned": None, "channel": "roughness", "reason": "auto_unverified"},
+                    {"material": "spike_mat", "file": "metal.png",
+                     "assigned": "OCIO_custom", "channel": "metalness",
+                     "reason": "foreign_cs"},
+                ],
+            },
+        }}
+        payload = webbridge.qc_report_payload("scene.c4d", {}, score, structured)
+        row = next(c for c in payload["checks"] if c["id"] == "rs_colorspace")
+        # 3 info rows, NOT the 1-entry violations list.
+        assert len(row["details"]) == 3
+        reasons = [d["extras"]["reason"] for d in row["details"]]
+        assert reasons == ["mismatch", "auto_unverified", "foreign_cs"]
+        # Each line names the material/file and its reason in human-readable form.
+        assert "spike_mat" in row["details"][0]["message"]
+        assert "basecolor.png" in row["details"][0]["message"]
+        assert "auto" in row["details"][1]["message"].lower()
+        assert "unverified" in row["details"][1]["message"].lower()
+        assert "conflict" not in row["details"][1]["message"].lower()
+        assert "metal.png" in row["details"][2]["message"]
+        assert "OCIO_custom" in row["details"][2]["message"]
+
+    def test_info_detail_with_no_reason_omits_bare_none(self):
+        """Review fix (Minor 6, final v1.38 review): an info row with no
+        ``reason`` key at all (``.get`` -> ``None``) must NOT render the
+        literal string "None" as if it were a real reason — the old
+        catch-all f-string did exactly that (``"mat: file — None"``),
+        which reads as a genuine (bogus) reason instead of "this row is
+        missing data"."""
+        from sentinel.bridge.reports import _qc_info_detail
+
+        detail = _qc_info_detail({"material": "spike_mat", "file": "x.png"})
+        assert detail["message"] == "spike_mat: x.png"
+        assert "None" not in detail["message"]
+
+    def test_info_detail_with_unrecognized_reason_shown_bare(self):
+        """A real (non-empty) reason string this function doesn't
+        special-case renders as-is, unlike the None case above."""
+        from sentinel.bridge.reports import _qc_info_detail
+
+        detail = _qc_info_detail(
+            {"material": "spike_mat", "file": "x.png", "reason": "some_new_reason"})
+        assert detail["message"] == "spike_mat: x.png — some_new_reason"
+
+    def test_metadata_info_absent_falls_back_to_violations(self):
+        """Regression pin: a check without ``metadata.info`` (i.e. every
+        check except rs_colorspace today, and rs_colorspace itself when it
+        has nothing to report) keeps showing its plain ``violations`` list,
+        completely unchanged."""
+        score = _legacy_score_fixture(counts={"lights": 1})
+        structured = {"lights": _structured("lights", [
+            _violation("lights", "/Rig/Key Light", "Light outside lights group"),
+        ])}
+        payload = webbridge.qc_report_payload("scene.c4d", {}, score, structured)
+        lights_row = next(c for c in payload["checks"] if c["id"] == "lights")
+        assert lights_row["details"] == [
+            {"label": "/Rig/Key Light", "message": "Light outside lights group",
+             "extras": None},
+        ]
+
     def test_non_dict_violation_never_raises(self):
         score = _legacy_score_fixture(counts={"lights": 1})
         structured = {"lights": _structured("lights", ["not-a-dict"])}
@@ -801,7 +914,8 @@ class TestQcReportPayload:
     def test_empty_score_never_raises(self):
         payload = webbridge.qc_report_payload("", None, {}, None)
         assert payload["scene"] == ""
-        assert len(payload["checks"]) == 12
+        # v1.38: check #13 (RS Colorspace) joins the registry — 13, not 12.
+        assert len(payload["checks"]) == 13
         assert payload["disabled"] == []
 
 
@@ -823,7 +937,9 @@ class TestGroupQcBySeverity:
         warn_ids = {c["id"] for c in grouped["warn"]}
         assert fail_ids == {"lights", "rdc"}
         assert warn_ids == {"vis"}
-        assert grouped["ok_count"] == 8
+        # v1.38: check #13 (RS Colorspace) joins the registry, so with 1
+        # disabled + 2 fail + 1 warn, OK is 13 - 1 - 2 - 1 = 9 (was 8/12).
+        assert grouped["ok_count"] == 9
         assert grouped["disabled_count"] == 1
 
     def test_card_action_flags_from_registry_not_invented(self):
@@ -855,6 +971,48 @@ class TestGroupQcBySeverity:
         assert by_id["cam"]["fix_action_id"] == "fix_cameras"
         assert by_id["unused_mats"]["fix_action_id"] == "fix_materials"
         assert by_id["fps_range"]["fix_action_id"] == "fix_fps"
+
+    def test_every_has_fix_check_has_a_palette_fix_action_id(self):
+        """Structural pin (residual of the final v1.38 review): the
+        rs_colorspace gap was an INSTANCE of a recurrable class — a
+        ``has_fix`` registry entry with no ``_FIX_ACTION_ID_BY_CHECK_ID``
+        mapping ships a rendered-but-permanently-disabled Fix button.
+        The docstring on the mapping declares it unenforced; this test
+        enforces it, so QC #14+ fails here instead of in the artist's
+        panel."""
+        from sentinel.qc.registry import CHECK_REGISTRY
+        from sentinel.bridge.reports import _FIX_ACTION_ID_BY_CHECK_ID
+        missing = [entry.check_id for entry in CHECK_REGISTRY
+                   if entry.has_fix
+                   and entry.check_id not in _FIX_ACTION_ID_BY_CHECK_ID]
+        assert missing == [], (
+            f"has_fix checks without a palette fix action: {missing}")
+
+    def test_rs_colorspace_fix_action_id_resolves_not_none(self):
+        """Review fix (Important 1, final v1.38 review): ``rs_colorspace``
+        was the FIRST ``has_fix`` check to ship with no matching
+        ``PALETTE_ACTIONS`` entry — its card's Fix button rendered but
+        ``fix_action_id`` was ``None``, so the button was permanently
+        disabled with no tooltip explaining why. A ``fix_rs_colorspace``
+        palette action now closes that gap."""
+        score = _legacy_score_fixture(counts={"rs_colorspace": 1})
+        payload = webbridge.qc_report_payload("scene.c4d", {}, score, {})
+        grouped = webbridge.group_qc_by_severity(payload["checks"])
+        row = next(c for c in grouped["fail"] if c["id"] == "rs_colorspace")
+        assert row["fix_action_id"] == "fix_rs_colorspace"
+        assert row["can_fix"] is True
+
+    def test_fix_rs_colorspace_palette_action_registered(self):
+        """The action id ``group_qc_by_severity`` now points at must
+        actually exist in ``PALETTE_ACTIONS`` — otherwise the SPA would
+        render a Fix button wired to an id ``palette/run`` doesn't know."""
+        assert "fix_rs_colorspace" in webbridge.PALETTE_ACTION_BY_ID
+        action = webbridge.PALETTE_ACTION_BY_ID["fix_rs_colorspace"]
+        assert action["check_id"] == "rs_colorspace"
+        # Reversible in one undo (writes only the two whitelisted RS
+        # colorspace constants) — no confirm gate, same as fix_lights/
+        # fix_cameras, unlike fix_materials/fix_fps.
+        assert not action.get("requires_confirm")
 
     def test_accepted_all_true_when_new_is_zero_and_accepted_positive(self):
         score = {
@@ -890,7 +1048,9 @@ class TestGroupQcBySeverity:
         grouped = webbridge.group_qc_by_severity(payload["checks"])
         assert grouped["fail"] == []
         assert grouped["warn"] == []
-        assert grouped["ok_count"] == 11
+        # v1.38: check #13 (RS Colorspace) joins the registry — 13 - 1
+        # disabled = 12 OK (was 11/12).
+        assert grouped["ok_count"] == 12
         assert grouped["disabled_count"] == 1
 
     def test_empty_checks_never_raises(self):
@@ -1114,7 +1274,7 @@ class TestServerLifecycle:
         # create_server() without start_server_thread() means serve_forever
         # never ran; stop_server must still return instead of blocking
         # forever on shutdown()'s wait for a loop that will never notice it.
-        server, _port = webbridge.create_server(str(web_root), _echo_handler)
+        server, _port, _token = webbridge.create_server(str(web_root), _echo_handler)
         webbridge.stop_server(server)
 
 
@@ -1308,6 +1468,24 @@ class TestMergeNotesSubmission:
 # ---------------------------------------------------------------------------
 
 class TestValidateSettingsSubmit:
+    def test_artist_name_is_trimmed(self):
+        updates = webbridge.validate_settings_submit({
+            "artist_name": "  Motioneer  ",
+        })
+        assert updates == {"artist_name": "Motioneer"}
+
+    def test_blank_artist_name_is_an_explicit_clear(self):
+        updates = webbridge.validate_settings_submit({"artist_name": "   "})
+        assert updates == {"artist_name": ""}
+
+    def test_omitted_artist_name_is_not_written(self):
+        updates = webbridge.validate_settings_submit({"history_max": 10})
+        assert "artist_name" not in updates
+
+    def test_non_string_artist_name_is_not_written(self):
+        updates = webbridge.validate_settings_submit({"artist_name": 42})
+        assert "artist_name" not in updates
+
     def test_full_valid_payload_maps_every_field(self):
         updates = webbridge.validate_settings_submit({
             "fps": 30,
@@ -1602,6 +1780,21 @@ class TestJobRegistry:
         b = reg.start({"n": 2})
         assert b != a and reg.status(b)["state"] == "pending"
 
+    def test_fail_emits_a_structured_job_event(self, monkeypatch):
+        lines = []
+        monkeypatch.setattr("builtins.print", _capture_print(lines))
+        reg = webbridge.JobRegistry()
+        job_id = reg.start({"kind": "collect"})
+        reg.fail(job_id, "disk full")
+
+        event = _structured_events(lines)[0]
+        assert event["event"] == "job.failed"
+        assert event["component"] == "webbridge.runtime"
+        assert event["fields"] == {
+            "error": "disk full",
+            "job_id": job_id,
+        }
+
     def test_take_pending_empty_and_unknown_status(self):
         reg = webbridge.JobRegistry()
         assert reg.take_pending() is None
@@ -1655,6 +1848,25 @@ class TestHubPayloadHelpers:
              "total_bytes": 0, "unsized": 0, "by_type": {}})
         assert [a["has_thumb"] for a in payload["assets"]] == [False, False, False]
 
+    def test_inventory_payload_thumb_version_follows_the_file(self):
+        """Windows acceptance (2026-09-24): a texture replaced at the SAME
+        path kept its old thumbnail after Refresh — ``/thumb?key=`` never
+        changed, so the webview served its cached image. The payload carries
+        a version derived from mtime+size that the SPA puts in the URL."""
+        totals = {"count": 1, "missing": 0, "absolute": 0, "total_bytes": 0,
+                  "unsized": 0, "by_type": {}}
+
+        def version(**kw):
+            payload = webbridge.hub_inventory_payload([self._record(**kw)], totals)
+            return payload["assets"][0]["thumb_version"]
+
+        base = version(mtime=1000.5, size_bytes=181)
+        assert base
+        assert version(mtime=2000.0, size_bytes=181) != base   # same size, new file
+        assert version(mtime=1000.5, size_bytes=159) != base   # same mtime, new size
+        assert version(mtime=1000.5, size_bytes=181) == base   # stable = cacheable
+        assert version(resolved_path=None, status="missing") is None
+
     def test_resolve_repath_targets_maps_all_sharing_shaders(self):
         records = [self._record(), self._record(key="k2", repathable=False, tex_idxs=[])]
         targets, errors = webbridge.resolve_repath_targets(
@@ -1677,3 +1889,262 @@ class TestHubPayloadHelpers:
         assert webbridge.collect_phase_pct("Writing manifest…") == ("manifest", 80)
         assert webbridge.collect_phase_pct("Zipping 3/9…") == ("zip", 90)
         assert webbridge.collect_phase_pct("anything else") == ("run", None)
+
+
+# ---------------------------------------------------------------------------
+# Block-1 local-API hardening: token auth, method policy, host/origin checks,
+# body cap, no-traceback-leak.
+# ---------------------------------------------------------------------------
+
+class TestApiHardening:
+    def _raw_request(self, live, method, path, headers=None, body=None):
+        conn = http.client.HTTPConnection("127.0.0.1", live.port, timeout=5)
+        try:
+            conn.request(method, path, body=body, headers=headers or {})
+            resp = conn.getresponse()
+            data = resp.read()
+            return resp, data
+        finally:
+            conn.close()
+
+    def test_api_without_token_is_401(self, web_root):
+        live = _LiveServer(web_root)
+        try:
+            resp, _ = self._raw_request(live, "GET", "/api/report/qc")
+            assert resp.status == 401
+            resp, _ = self._raw_request(
+                live, "POST", "/api/form/settings/submit",
+                headers={"Content-Type": "application/json"},
+                body=b"{}")
+            assert resp.status == 401
+        finally:
+            live.close()
+
+    def test_api_with_wrong_token_is_401(self, web_root):
+        live = _LiveServer(web_root)
+        try:
+            resp, _ = self._raw_request(
+                live, "GET", "/api/report/qc?token=deadbeef")
+            assert resp.status == 401
+        finally:
+            live.close()
+
+    def test_static_served_without_token(self, web_root):
+        # The SPA shell must boot from the URL bar before JS runs; static
+        # files stay token-free by design.
+        live = _LiveServer(web_root)
+        try:
+            resp, body = self._raw_request(live, "GET", "/index.html")
+            assert resp.status == 200
+            assert b"INDEX" in body
+        finally:
+            live.close()
+
+    def test_get_mutation_op_is_405(self, web_root):
+        # GET is reserved for read-only ops; a mutation op via GET is
+        # rejected even with a valid token.
+        live = _LiveServer(web_root)
+        try:
+            resp, _ = self._raw_request(
+                live, "GET", f"/api/form/settings/submit?token={live.token}")
+            assert resp.status == 405
+        finally:
+            live.close()
+
+    def test_unknown_get_op_is_405(self, web_root):
+        live = _LiveServer(web_root)
+        try:
+            resp, _ = self._raw_request(
+                live, "GET", f"/api/not_a_real_op?token={live.token}")
+            assert resp.status == 405
+        finally:
+            live.close()
+
+    def test_bad_host_is_403(self, web_root):
+        live = _LiveServer(web_root)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", live.port, timeout=5)
+            try:
+                conn.request("GET", "/index.html",
+                              headers={"Host": "evil.example.com:8347"})
+                resp = conn.getresponse()
+                resp.read()
+                assert resp.status == 403
+            finally:
+                conn.close()
+        finally:
+            live.close()
+
+    def test_cross_origin_post_is_403(self, web_root):
+        live = _LiveServer(web_root)
+        try:
+            resp, _ = self._raw_request(
+                live, "POST", "/api/form/settings/submit",
+                headers={"Content-Type": "application/json",
+                         "Origin": "https://evil.example.com",
+                         "X-Sentinel-Token": live.token},
+                body=b"{}")
+            assert resp.status == 403
+        finally:
+            live.close()
+
+    def test_oversized_body_is_413(self, web_root):
+        live = _LiveServer(web_root)
+        try:
+            # Declare an oversized Content-Length but send only the headers:
+            # the server must answer 413 from the header alone without
+            # reading (or waiting for) the full body.
+            conn = http.client.HTTPConnection("127.0.0.1", live.port, timeout=5)
+            try:
+                conn.putrequest("POST", "/api/form/settings/submit")
+                conn.putheader("Content-Type", "application/json")
+                conn.putheader("X-Sentinel-Token", live.token)
+                conn.putheader("Content-Length",
+                               str(webbridge.MAX_BODY_BYTES + 1))
+                conn.endheaders()
+                resp = conn.getresponse()
+                data = resp.read()
+                assert resp.status == 413
+                assert json.loads(data)["error"] == "payload_too_large"
+            finally:
+                conn.close()
+        finally:
+            live.close()
+
+    def test_non_json_content_type_is_415(self, web_root):
+        live = _LiveServer(web_root)
+        try:
+            resp, _ = self._raw_request(
+                live, "POST", "/api/form/settings/submit",
+                headers={"Content-Type": "text/plain",
+                         "X-Sentinel-Token": live.token},
+                body=b"hello")
+            assert resp.status == 415
+        finally:
+            live.close()
+
+    def test_handler_error_does_not_leak_traceback(
+        self, web_root, monkeypatch
+    ):
+        lines = []
+        monkeypatch.setattr("builtins.print", _capture_print(lines))
+        live = _LiveServer(web_root, api_handler=_raising_handler)
+        try:
+            resp, data = self._raw_request(
+                live, "GET", f"/api/report/qc?token={live.token}")
+            assert resp.status == 500
+            payload = json.loads(data)
+            assert payload["error"] == "internal_error"
+            # No local paths or exception text leak to the client.
+            assert b"handler exploded" not in data
+            assert b"RuntimeError" not in data
+            assert b"/Users/" not in data
+            events = _structured_events(lines)
+            handler_event = next(
+                item for item in events
+                if item["event"] == "http.handler_failed"
+            )
+            assert handler_event["component"] == "webbridge.http"
+            assert handler_event["fields"]["method"] == "GET"
+            assert handler_event["fields"]["path"].startswith("/api/report/qc")
+        finally:
+            live.close()
+
+    def test_token_is_unique_per_instance(self, web_root):
+        s1 = webbridge.create_server(str(web_root), _echo_handler)[0]
+        s2 = webbridge.create_server(str(web_root), _echo_handler)[0]
+        try:
+            assert s1.api_token != s2.api_token
+        finally:
+            webbridge.stop_server(s1)
+            webbridge.stop_server(s2)
+
+
+# ---------------------------------------------------------------------------
+# Block-3 threading: drain budget + backlog telemetry.
+# ---------------------------------------------------------------------------
+
+class TestDrainBudget:
+    def _fill(self, q, n):
+        for i in range(n):
+            q._queue.put(webbridge._QueuedRequest({"i": i}))
+
+    def test_max_items_defers_rest(self):
+        q = webbridge.MainThreadQueue()
+        self._fill(q, 5)
+        seen = []
+        q.drain(seen.append, max_items=2, max_seconds=10.0)
+        assert len(seen) == 2
+        assert q.last_drain_backlog == 3
+        assert q.backlog_high == 1
+
+    def test_second_drain_picks_up_leftovers(self):
+        q = webbridge.MainThreadQueue()
+        self._fill(q, 5)
+        seen = []
+        q.drain(seen.append, max_items=2, max_seconds=10.0)
+        q.drain(seen.append, max_items=10, max_seconds=10.0)
+        assert len(seen) == 5
+        assert q.last_drain_backlog == 0
+
+    def test_empty_drain_resets_backlog(self):
+        q = webbridge.MainThreadQueue()
+        self._fill(q, 5)
+        q.drain(lambda p: None, max_items=1, max_seconds=10.0)
+        assert q.last_drain_backlog > 0
+        q.drain(lambda p: None, max_items=100, max_seconds=10.0)
+        assert q.last_drain_backlog == 0
+
+    def test_cancelled_requests_do_not_count_toward_budget(self):
+        q = webbridge.MainThreadQueue()
+        self._fill(q, 4)
+        # Cancel the first two directly (simulating timed-out submits).
+        first = q._queue.get_nowait()
+        with first.lock:
+            first.cancelled = True
+        second = q._queue.get_nowait()
+        with second.lock:
+            second.cancelled = True
+        seen = []
+        q.drain(seen.append, max_items=10, max_seconds=10.0)
+        assert len(seen) == 2  # only the non-cancelled dispatched
+
+    def test_defaults_are_reasonable(self):
+        assert 1 <= webbridge.MainThreadQueue.MAX_ITEMS_PER_TICK <= 64
+        assert 0.01 <= webbridge.MainThreadQueue.MAX_SECONDS_PER_TICK <= 1.0
+
+
+def test_real_queue_dispatch_failure_is_private_over_http(web_root):
+    q = webbridge.MainThreadQueue()
+    live = _LiveServer(web_root, api_handler=q.submit)
+    result = {}
+    client = threading.Thread(target=lambda: result.update(response=live.get('/api/report/qc')))
+    try:
+        client.start()
+        deadline = time.monotonic() + 3
+        while q._queue.empty() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        def fail(payload):
+            raise ValueError('/Users/private/scene.c4d secret')
+        q.drain(fail)
+        client.join(timeout=5)
+        response, body = result['response']
+        assert response.status == 500
+        assert json.loads(body) == {'error': 'internal_error'}
+    finally:
+        live.close()
+        client.join(timeout=5)
+
+
+def test_http_failure_log_omits_query_credentials(web_root, monkeypatch):
+    lines = []
+    monkeypatch.setattr('builtins.print', _capture_print(lines))
+    live = _LiveServer(web_root, api_handler=_raising_handler)
+    try:
+        live.get('/api/report/qc?private=do-not-log')
+        event = next(item for item in _structured_events(lines) if item['event'] == 'http.handler_failed')
+        assert event['fields']['path'] == '/api/report/qc'
+        assert live.token not in '\n'.join(lines)
+        assert 'do-not-log' not in '\n'.join(lines)
+    finally:
+        live.close()

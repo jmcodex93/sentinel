@@ -190,21 +190,29 @@ def is_regression(versions, window=REGRESSION_WINDOW):
     """True when the last ``window`` scored versions strictly worsen over time.
 
     ``versions`` is newest-first (as stored). We take the most recent ``window``
-    entries that carry a parseable score and require the passed-count to be
-    strictly descending chronologically (older > ... > newer).
+    entries that carry a parseable score and compare the passed *ratio*
+    (passed/total), not just the numerator — otherwise a change in the total
+    (checks enabled/disabled between versions) produces false regressions or
+    hides real ones. When denominators differ across the window we declare
+    the trajectory incomparable and return False rather than guess.
     """
     scored = []
     for entry in versions:
         parsed = parse_score(entry.get("qc_score"))
         if parsed is not None:
-            scored.append(parsed[0])
+            scored.append(parsed)
         if len(scored) >= window:
             break
     if len(scored) < window:
         return False
+    totals = {total for _, total in scored}
+    if len(totals) > 1:
+        # Denominators changed (checks toggled / registry evolved) — the
+        # raw counts are not comparable; do not flag a regression.
+        return False
     # scored is newest-first; strictly descending over time == newest < ... < oldest.
     for i in range(len(scored) - 1):
-        if not scored[i] < scored[i + 1]:
+        if not scored[i][0] < scored[i + 1][0]:
             return False
     return True
 
@@ -303,7 +311,7 @@ def build_shot_summary(history_path, data, notes, now, label_map=None):
         filename[: -len(_HISTORY_SUFFIX)] if filename.endswith(_HISTORY_SUFFIX) else filename
     )
 
-    todos = (notes or {}).get("todos") or []
+    todos = [t for t in ((notes or {}).get("todos") or []) if isinstance(t, dict)]
     todos_total = len(todos)
     todos_pending = sum(1 for t in todos if not t.get("done"))
 

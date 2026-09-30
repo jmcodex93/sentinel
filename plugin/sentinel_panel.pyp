@@ -13,12 +13,27 @@ import sentinel
 from sentinel import PLUGIN_NAME
 from sentinel.common.constants import PLUGIN_ID
 from sentinel.common.helpers import safe_print
+from sentinel.common.logging import exception as log_exception
+from sentinel.common.logging import info as log_info
+from sentinel.common.logging import warning as log_warning
 from sentinel.common.settings import GlobalSettings
 from sentinel.ui import dialogs as _dialogs
 from sentinel.ui import ids as _ids
 from sentinel.ui import user_areas as _user_areas
 from sentinel.common.constants import SENTINEL_PANEL_SPA_PLUGIN_ID
 from sentinel.ui.panel_spa import SentinelPanelSPACmd, SentinelPaletteCmd
+
+
+def _log_registration(plugin, plugin_id, ok, **fields):
+    logger = log_info if ok else log_warning
+    logger(
+        "plugin.registration",
+        "bootstrap",
+        plugin=plugin,
+        plugin_id=plugin_id,
+        ok=bool(ok),
+        **fields,
+    )
 
 # Phase 4 Task 4 — Command Palette. Own CommandData (distinct from
 # PLUGIN_ID/the main panel) so the artist can bind it a shortcut
@@ -170,10 +185,8 @@ def Register():
         help="Open the Sentinel Panel (SPA)",
         dat=SentinelPanelSPACmd()
     )
-    if ok_panel_spa:
-        safe_print("Sentinel Panel (SPA) registered successfully")
-    else:
-        safe_print("Failed to register Sentinel Panel (SPA)")
+    _log_registration("Sentinel Panel (SPA)", SENTINEL_PANEL_SPA_PLUGIN_ID,
+                      ok_panel_spa)
 
     # Command Palette (Phase 4 Task 4) — separate CommandData, own shortcut
     # slot in Preferences > Customize Commands (search "Sentinel: Command
@@ -186,10 +199,8 @@ def Register():
         help="Open the Sentinel Command Palette (assign a shortcut in Preferences > Customize Commands)",
         dat=SentinelPaletteCmd()
     )
-    if ok_palette:
-        safe_print("Sentinel Command Palette registered successfully")
-    else:
-        safe_print("Failed to register Sentinel Command Palette")
+    _log_registration("Sentinel Command Palette", SENTINEL_PALETTE_PLUGIN_ID,
+                      ok_palette)
 
     # (The v1.5.6 Safe-Area Overlay ObjectData was retired in v1.8.0 — the
     # Sentinel Frame per-camera tag draws the viewport guides directly.)
@@ -217,17 +228,20 @@ def Register():
                 description="Tsentinelframe",
                 icon=frame_icon,
             )
-            if frame_tag_ok:
-                safe_print("Sentinel Frame (TagData) registered")
-            else:
-                safe_print("Failed to register Sentinel Frame TagData — "
-                           "tag workflow disabled, panel still works")
+            _log_registration("Sentinel Frame", SENTINEL_FRAME_TAG_PLUGIN_ID,
+                              frame_tag_ok)
         except Exception as e:
-            safe_print(f"Sentinel Frame registration crashed: {e} — "
-                       "tag workflow disabled, panel still works")
+            log_exception(
+                "plugin.registration_failed", "bootstrap", e,
+                plugin="Sentinel Frame",
+                plugin_id=SENTINEL_FRAME_TAG_PLUGIN_ID,
+            )
     else:
         reason = f" ({_FRAME_TAG_IMPORT_ERROR})" if _FRAME_TAG_IMPORT_ERROR else ""
-        safe_print(f"TagData API unavailable{reason} — Sentinel Frame tag disabled")
+        _log_registration(
+            "Sentinel Frame", SENTINEL_FRAME_TAG_PLUGIN_ID, False,
+            reason=f"TagData API unavailable{reason}",
+        )
 
     # Sentinel Pin (TagData) — one tag = one pin state store (v1.35;
     # rehecho durante el propio v1.35 desde un modelo de seis slots por
@@ -265,15 +279,20 @@ def Register():
                 description="Tsentinelpin",
                 icon=icon,
             )
-            if pin_tag_ok:
-                safe_print("Sentinel Pin (TagData) registered")
-            else:
-                safe_print("Failed to register Sentinel Pin TagData")
+            _log_registration("Sentinel Pin", SENTINEL_PIN_TAG_PLUGIN_ID,
+                              pin_tag_ok)
         except Exception as e:
-            safe_print(f"Sentinel Pin registration crashed: {e}")
+            log_exception(
+                "plugin.registration_failed", "bootstrap", e,
+                plugin="Sentinel Pin",
+                plugin_id=SENTINEL_PIN_TAG_PLUGIN_ID,
+            )
     else:
         reason = f" ({_PIN_TAG_IMPORT_ERROR})" if _PIN_TAG_IMPORT_ERROR else ""
-        safe_print(f"TagData API unavailable{reason} — Sentinel Pin tag disabled")
+        _log_registration(
+            "Sentinel Pin", SENTINEL_PIN_TAG_PLUGIN_ID, False,
+            reason=f"TagData API unavailable{reason}",
+        )
 
     # Sentinel Variants (TagData) — un tag = un CONJUNTO de opciones sobre
     # el null de anclaje (v1.36). No TAG_IMPLEMENTS_DRAW_FUNCTION: no dibuja
@@ -309,15 +328,20 @@ def Register():
                 description="Tsentinelvariants",
                 icon=icon,
             )
-            if variant_tag_ok:
-                safe_print("Sentinel Variants (TagData) registered")
-            else:
-                safe_print("Failed to register Sentinel Variants TagData")
+            _log_registration("Sentinel Variants",
+                              SENTINEL_VARIANT_TAG_PLUGIN_ID, variant_tag_ok)
         except Exception as e:
-            safe_print(f"Sentinel Variants registration crashed: {e}")
+            log_exception(
+                "plugin.registration_failed", "bootstrap", e,
+                plugin="Sentinel Variants",
+                plugin_id=SENTINEL_VARIANT_TAG_PLUGIN_ID,
+            )
     else:
         reason = f" ({_VARIANT_TAG_IMPORT_ERROR})" if _VARIANT_TAG_IMPORT_ERROR else ""
-        safe_print(f"TagData API unavailable{reason} — Sentinel Variants tag disabled")
+        _log_registration(
+            "Sentinel Variants", SENTINEL_VARIANT_TAG_PLUGIN_ID, False,
+            reason=f"TagData API unavailable{reason}",
+        )
 
     # Frame v2 auto-sync pump (MessageData): drains the debounced per-tag sync
     # queue on main thread. Non-fatal on failure — the tag still works, just
@@ -330,10 +354,14 @@ def Register():
                 info=0,
                 dat=_frame_sync.FrameSyncMessageData(),
             )
-            safe_print("Sentinel Frame Sync (MessageData) registered"
-                       if sync_ok else "Failed to register Sentinel Frame Sync")
+            _log_registration("Sentinel Frame Sync", _frame_sync.PLUGIN_ID,
+                              sync_ok)
         except Exception as e:
-            safe_print(f"Sentinel Frame Sync registration crashed: {e}")
+            log_exception(
+                "plugin.registration_failed", "bootstrap", e,
+                plugin="Sentinel Frame Sync",
+                plugin_id=_frame_sync.PLUGIN_ID,
+            )
 
     return ok_panel_spa
 

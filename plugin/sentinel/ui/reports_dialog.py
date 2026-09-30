@@ -60,6 +60,7 @@ from sentinel.ui.panel_render_ops import PANEL_RENDER_OPS
 from sentinel.ui.panel_deliver_ops import PANEL_DELIVER_OPS
 from sentinel.ui.panel_tools_ops import PANEL_TOOLS_OPS
 from sentinel.ui.panel_frame_ops import PANEL_FRAME_OPS
+from sentinel.ui.standard_ops import STANDARD_OPS
 from sentinel.ui.web_ops import FORM_OPS
 from sentinel import webbridge
 from sentinel.webbridge import (
@@ -91,6 +92,7 @@ _WEB_ROOT = os.path.join(_ROOT, "web")
 _server = None
 _queue = None
 _port = None
+_api_token = None
 
 # Strong references to every currently-open ReportsDialog/FormDialog
 # instance, keyed by page ("palette" -> its FormDialog; a single slot for
@@ -142,9 +144,11 @@ def ensure_server():
     # dialog's Timer drains it on the main thread (the cross-thread hand-off
     # webbridge.py documents) — hub/job_status is the one op answered right
     # here on the server thread, see _api_entry's own docstring for why.
-    _server, _port = create_server(_WEB_ROOT, _api_entry)
+    global _api_token
+    _server, _port, _token = create_server(_WEB_ROOT, _api_entry)
     start_server_thread(_server)
     safe_print(f"Sentinel Reports server listening on 127.0.0.1:{_port}")
+    _api_token = _token
     return _port
 
 
@@ -327,6 +331,7 @@ _OPS = {
     **PANEL_DELIVER_OPS,
     **PANEL_TOOLS_OPS,
     **PANEL_FRAME_OPS,
+    **STANDARD_OPS,
 }
 
 
@@ -356,7 +361,21 @@ def _dispatch(payload):
     handler = _OPS.get(op)
     if handler is None:
         return {"error": f"unknown op: {op!r}"}
-    return handler(payload)
+    if op == "hub/select_owner" and "expected_stamp" in payload:
+        if payload["expected_stamp"] != _OPS["hub/state_stamp"]({}).get("stamp"):
+            return {"ok": False, "error": "scene_changed"}
+    result = handler(payload)
+    # These reads and their stamps run consecutively in this same main-thread
+    # dispatch. Legacy/native callers keep the original unwrapped payload.
+    snapshot_reads = {"panel/overview", "panel/qc", "panel/render",
+                      "panel/frame", "panel/deliver", "hub/inventory"}
+    if op in snapshot_reads and payload.get("with_stamp") in (True, "1"):
+        if isinstance(result, dict) and "error" in result:
+            return result
+        stamp_op = "hub/state_stamp" if op.startswith("hub/") else "panel/state_stamp"
+        stamp_result = _OPS[stamp_op]({})
+        return {"data": result, "stamp": stamp_result.get("stamp")}
+    return result
 
 
 class ReportsDialog(gui.GeDialog):
@@ -381,7 +400,10 @@ class ReportsDialog(gui.GeDialog):
 
     def _url(self):
         base = f"http://127.0.0.1:{self._port}/"
-        return f"{base}?page={self._page}" if self._page else base
+        params = [f"token={_api_token}"]
+        if self._page:
+            params.insert(0, f"page={self._page}")
+        return base + "?" + "&".join(params)
 
     def CreateLayout(self):
         self.SetTitle("Sentinel Reports")
@@ -495,7 +517,7 @@ class FormDialog(gui.GeDialog):
         self._query = query or {}
 
     def _url(self):
-        url = f"http://127.0.0.1:{self._port}/?page={self._page}"
+        url = f"http://127.0.0.1:{self._port}/?page={self._page}&token={_api_token}"
         for key, value in sorted(self._query.items()):
             url += "&%s=%s" % (key, urllib.parse.quote(str(value)))
         return url

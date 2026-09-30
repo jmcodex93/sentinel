@@ -8,6 +8,19 @@ import c4d
 from c4d import plugins
 
 from sentinel import framing
+from sentinel.ui.tag_support import (
+    add_description_group,
+    add_description_parameter,
+    command_id_from_data as _command_id_from_data,
+    desc_level_id as _desc_level_id,
+    description_parent,
+    document_from_node as _doc_from_node,
+    event_add as _event_add,
+    is_main_thread as _is_main_thread,
+    node_creator_type,
+    safe_node_name as _safe_node_name,
+    set_bc_value as _set_bc_value,
+)
 from sentinel.multiformat import (
     MULTIFORMAT_DEFS,
     compute_format_output_path,
@@ -294,27 +307,6 @@ def _host_is_valid_camera(tag):
     return is_valid_camera_host(_node_type(_tag_host(tag)))
 
 
-def _desc_level_id(cid):
-    try:
-        return int(cid[0].id)
-    except Exception:
-        try:
-            return int(cid)
-        except Exception:
-            return 0
-
-
-def _set_bc_value(bc, method_name, key, value):
-    method = getattr(bc, method_name, None)
-    if callable(method):
-        method(key, value)
-    else:
-        try:
-            bc[key] = value
-        except Exception:
-            pass
-
-
 def _set_node_value(node, param_id, value):
     try:
         node[param_id] = value
@@ -381,49 +373,16 @@ def _dim_color(color, factor=0.58):
 
 
 def _node_creator_type(node):
-    try:
-        return node.GetType()
-    except Exception:
-        return SENTINEL_FRAME_TAG_PLUGIN_ID
+    return node_creator_type(node, SENTINEL_FRAME_TAG_PLUGIN_ID)
 
 
 def _description_parent(param_id, dtype, node):
-    return c4d.DescID(c4d.DescLevel(param_id, dtype, _node_creator_type(node)))
-
-
-def _doc_from_node(node):
-    getter = getattr(node, "GetDocument", None)
-    if callable(getter):
-        try:
-            doc = getter()
-            if doc is not None:
-                return doc
-        except Exception:
-            pass
-    try:
-        return c4d.documents.GetActiveDocument()
-    except Exception:
-        return None
+    return description_parent(
+        node, param_id, dtype, SENTINEL_FRAME_TAG_PLUGIN_ID
+    )
 
 
 from sentinel.rules_context import active_rules_for_doc as _active_rules_for_doc
-
-
-def _is_main_thread():
-    threading_module = getattr(c4d, "threading", None)
-    checker = getattr(threading_module, "GeIsMainThread", None)
-    if callable(checker):
-        try:
-            return bool(checker())
-        except Exception:
-            return False
-    checker = getattr(c4d, "GeIsMainThread", None)
-    if callable(checker):
-        try:
-            return bool(checker())
-        except Exception:
-            return False
-    return True
 
 
 def _master_aspect_for_doc(doc):
@@ -968,18 +927,6 @@ def _draw_hud_text(bd, x, y, text):
         pass
 
 
-def _safe_node_name(node, fallback=""):
-    getter = getattr(node, "GetName", None)
-    if callable(getter):
-        try:
-            name = getter()
-            if name:
-                return str(name)
-        except Exception:
-            pass
-    return str(fallback or "")
-
-
 def _show_message(text):
     try:
         c4d.gui.MessageDialog(str(text))
@@ -992,13 +939,6 @@ def _ask_question(text):
         return bool(c4d.gui.QuestionDialog(str(text)))
     except Exception:
         return False
-
-
-def _event_add():
-    try:
-        c4d.EventAdd()
-    except Exception:
-        pass
 
 
 def _undo_type_change():
@@ -1131,14 +1071,6 @@ def _is_stale_from_signature(node):
     if not saved:
         return False
     return _params_signature_for_takes(node) != saved
-
-
-def _command_id_from_data(data):
-    try:
-        cid = data["id"]
-    except Exception:
-        cid = None
-    return _desc_level_id(cid)
 
 
 def _force_viewport_refresh():
@@ -1431,6 +1363,17 @@ def run_full_sync(doc, tag):
 
     doc.StartUndo()
     try:
+        # Measured in C4D 2026.304: when take/override generation is undone
+        # with only the tag and generated nodes recorded, one Cmd+Z can remove
+        # a Frame tag that existed before the sync. Recording CHANGE on the
+        # host camera first preserves that pre-sync tag and its parameters
+        # while the generated takes are removed. The target and ordering here
+        # are the live-host result; duplicate tag undo entries, smaller change
+        # types, manual take entries, and disabling Take undo did not fix it.
+        try:
+            doc.AddUndo(_undo_type_change(), host)
+        except Exception:
+            pass
         # Unconditional undo anchor for the TAG itself: the prune's
         # take-link clears and the signature stamp below write to the tag's
         # BaseContainer, and with zero enabled formats the generation core
@@ -1746,63 +1689,41 @@ class SentinelFrameTag(_TagDataBase):
         cycle=None,
         animatable=True,
     ):
-        desc_id = _description_parent(parameter_id, dtype, node)
-        bc = c4d.GetCustomDatatypeDefault(dtype)
-        _set_bc_value(bc, "SetString", c4d.DESC_NAME, name)
-        _set_bc_value(bc, "SetString", c4d.DESC_SHORT_NAME, name)
-        if not animatable:
-            # The formats grid feeds the Take GENERATOR (auto-sync regenerates
-            # on change) — keyframing these params is meaningless, and the
-            # per-cell keyframe diamonds were the single biggest width cost in
-            # the AM grid (live design feedback, v1.29 polish).
-            animate_off = getattr(c4d, "DESC_ANIMATE_OFF", None)
-            if animate_off is not None:
-                _set_bc_value(bc, "SetInt32", c4d.DESC_ANIMATE, animate_off)
-        if minimum is not None:
-            _set_bc_value(bc, "SetFloat", c4d.DESC_MIN, float(minimum))
-            _set_bc_value(bc, "SetFloat", c4d.DESC_MINSLIDER, float(minimum))
-        if maximum is not None:
-            _set_bc_value(bc, "SetFloat", c4d.DESC_MAX, float(maximum))
-            _set_bc_value(bc, "SetFloat", c4d.DESC_MAXSLIDER, float(maximum))
-        if step is not None:
-            _set_bc_value(bc, "SetFloat", c4d.DESC_STEP, float(step))
+        unit = None
         if dtype == c4d.DTYPE_REAL and parameter_id != ID_LINE_WIDTH:
-            # Every other REAL here is a genuine 0-1 fraction (opacity, dim,
-            # nudge) — but Line Width is a literal pixel-ish thickness (0.5-4)
-            # that Draw consumes raw; the percent unit would render 2.0 as
-            # "200%" in the AM (review finding).
-            _set_bc_value(bc, "SetInt32", c4d.DESC_UNIT, c4d.DESC_UNIT_PERCENT)
+            unit = c4d.DESC_UNIT_PERCENT
+        custom_gui = None
         if dtype == c4d.DTYPE_BUTTON:
-            # A DTYPE_BUTTON only renders as a clickable button when its
-            # customgui is CUSTOMGUI_BUTTON; without this the Actions group
-            # shows up empty in the Attribute Manager.
-            button_gui = getattr(c4d, "CUSTOMGUI_BUTTON", None)
-            if button_gui is not None:
-                _set_bc_value(bc, "SetInt32", c4d.DESC_CUSTOMGUI, button_gui)
-        if cycle is not None:
-            cycle_bc = c4d.BaseContainer()
-            for value, label in cycle:
-                _set_bc_value(cycle_bc, "SetString", int(value), label)
-            _set_bc_value(bc, "SetContainer", c4d.DESC_CYCLE, cycle_bc)
-        try:
-            return bool(description.SetParameter(desc_id, bc, parent))
-        except Exception:
-            return False
+            custom_gui = getattr(c4d, "CUSTOMGUI_BUTTON", None)
+        return add_description_parameter(
+            node,
+            description,
+            parameter_id,
+            dtype,
+            name,
+            parent,
+            SENTINEL_FRAME_TAG_PLUGIN_ID,
+            animatable=animatable,
+            minimum=minimum,
+            maximum=maximum,
+            step=step,
+            unit=unit,
+            cycle=cycle,
+            custom_gui=custom_gui,
+        )
 
     def _set_description_group(self, node, description, group_id, name, parent,
                                columns=None, titlebar=True):
-        desc_id = _description_parent(group_id, c4d.DTYPE_GROUP, node)
-        bc = c4d.GetCustomDatatypeDefault(c4d.DTYPE_GROUP)
-        _set_bc_value(bc, "SetString", c4d.DESC_NAME, name)
-        _set_bc_value(bc, "SetString", c4d.DESC_SHORT_NAME, name)
-        _set_bc_value(bc, "SetBool", c4d.DESC_TITLEBAR, bool(titlebar))
-        _set_bc_value(bc, "SetBool", c4d.DESC_DEFAULT, False)
-        if columns is not None:
-            _set_bc_value(bc, "SetInt32", c4d.DESC_COLUMNS, int(columns))
-        try:
-            return bool(description.SetParameter(desc_id, bc, parent))
-        except Exception:
-            return False
+        return add_description_group(
+            node,
+            description,
+            group_id,
+            name,
+            parent,
+            SENTINEL_FRAME_TAG_PLUGIN_ID,
+            columns=columns,
+            titlebar=titlebar,
+        )
 
     def Init(self, node, isCloneInit=False):
         for param_id in (

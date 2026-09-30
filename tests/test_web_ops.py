@@ -52,6 +52,22 @@ class TestPaletteRunConfirmGate:
         assert response != {"ok": False, "error": "confirm_required"}
         assert response == {"ok": False, "error": "No active document"}
 
+    def test_fix_rs_colorspace_action_resolves_and_dispatches(self, sentinel_module):
+        """Review fix (Important 1, final v1.38 review): ``fix_rs_colorspace``
+        must be a real, dispatchable palette action — not
+        ``{"error": "unknown palette action: 'fix_rs_colorspace'"}`` — and,
+        like fix_lights/fix_cameras, never gated behind confirm_required.
+        The fake harness's ``documents.GetActiveDocument()`` always returns
+        None, so this can't run the fix end to end here, but reaching
+        "No active document" (the next real check) proves the id resolved
+        and reached ``_palette_fix``'s dispatch, not the unknown-action
+        fallback."""
+        from sentinel.ui import web_ops
+
+        response = web_ops._op_palette_run({"id": "fix_rs_colorspace"})
+
+        assert response == {"ok": False, "error": "No active document"}
+
 
 class TestSettingsRenderNotify:
     """``render_notify`` across ``form/settings/state`` / ``form/settings/submit``
@@ -98,3 +114,35 @@ class TestSettingsRenderNotify:
 
         assert response == {"ok": True}
         assert ("render_notify", 0) in set_calls
+
+    def test_state_and_submit_round_trip_artist_name(self, sentinel_module, monkeypatch):
+        from sentinel.ui import web_ops
+
+        set_calls = []
+        self._patch_settings(
+            monkeypatch,
+            store={"artist_name": "Motioneer"},
+            set_calls=set_calls,
+        )
+
+        state = web_ops._op_form_settings_state({})
+        response = web_ops._op_form_settings_submit({"artist_name": "  Javier  "})
+
+        assert state["artist_name"] == "Motioneer"
+        assert response == {"ok": True}
+        assert ("artist_name", "Javier") in set_calls
+
+    def test_older_submit_without_artist_preserves_it(self, sentinel_module, monkeypatch):
+        from sentinel.ui import web_ops
+
+        set_calls = []
+        self._patch_settings(
+            monkeypatch,
+            store={"artist_name": "Motioneer"},
+            set_calls=set_calls,
+        )
+
+        response = web_ops._op_form_settings_submit({"history_max": 10})
+
+        assert response == {"ok": True}
+        assert all(key != "artist_name" for key, _value in set_calls)

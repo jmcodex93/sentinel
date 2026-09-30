@@ -1,4 +1,4 @@
-# Sentinel v1.9.0
+# Sentinel v1.38.0
 
 Quality control, render management, and workflow automation plugin for Cinema 4D production environments — keeping the watchdog spirit of YS Guardian.
 
@@ -10,17 +10,17 @@ Quality control, render management, and workflow automation plugin for Cinema 4D
 
 Sentinel is a Cinema 4D plugin that **watches your scene in real-time** and helps you ship cleaner renders. It runs continuous quality checks, manages render presets and Redshift AOVs, captures versioned saves with full metadata, and automates the boring parts of mograph delivery.
 
-Sentinel monitors Cinema 4D scenes in real-time with **12 quality checks**, catching production issues before they reach the render farm. It also provides **Redshift AOV management** (Essentials/Production tiers with per-compositor config), **Scene Collector** (pre-flight QC + asset collection + manifest), and a full suite of scene tools: camera rigs (by keyframe wizard Riccardo Bottoni), abc_retime integration (by Austin Marola & Axis), Hierarchy→Layers, Solo Layers, Drop to Floor, and more.
+Sentinel monitors Cinema 4D scenes in real-time with **13 quality checks**, catching production issues before they reach the render farm. It also provides **Redshift AOV management** (Essentials/Production tiers with per-compositor config), **Scene Collector** (pre-flight QC + asset collection + manifest), and a full suite of scene tools: camera rigs (by keyframe wizard Riccardo Bottoni), abc_retime integration (by Austin Marola & Axis), Hierarchy→Layers, Solo Layers, Drop to Floor, and more.
 
 **IMPORTANT**: The snapshot feature requires Python 3.x with Pillow and NumPy for EXR→PNG conversion with ACES tone mapping.
 
-**Tested on**: Cinema 4D 2024/2026 and Redshift. macOS and Windows.
+**Compatibility target**: Cinema 4D 2024+ with Redshift, macOS and Windows. Recorded live evidence primarily covers C4D 2026 on macOS; the current build still needs a complete Windows/C4D 2024 validation pass. See [product readiness](docs/audit/2026-09-05-product-readiness.md) for the release criteria and [beta acceptance](docs/audit/2026-09-05-beta-acceptance.md) for host results, recovery and the Windows checklist, plus [installed GUI acceptance](docs/audit/2026-09-05-gui-acceptance.md) for the latest macOS checks and usability follow-ups.
 
 ## Core Features
 
 ### Pipeline Checks
 
-Twelve continuous quality checks to keep your C4D files clean:
+Thirteen continuous quality checks to keep your C4D files clean:
 
 - **Lights Organization** – Validates proper light group structure (Select + Fix)
 - **Visibility Consistency** – Detects viewport/render visibility mismatches (Select)
@@ -34,6 +34,7 @@ Twelve continuous quality checks to keep your C4D files clean:
 - **Take Validation** – Camera assigned per take, $take token in output paths (Info)
 - **FPS / Frame Range** – FPS, start frame = 1001 (VFX standard), frame step, timeline + preview alignment, all presets (Info + Fix)
 - **Cross-Aspect Safe Area** – Opt-in marked subjects stay inside safe-area regions across multi-format delivery aspects (Select + Info)
+- **RS Colorspace** – Audits Redshift texture colorspace against filename and material-port semantics (Select + Info + Fix)
 
 Status display with color coding provides instant visual feedback. Per-check Select/Info/Fix buttons for one-click correction. Auto-fix available for lights, cameras, and unused materials.
 
@@ -184,7 +185,7 @@ C4D's `SaveProject` saves the project using the delivery folder's name. Sentinel
 - Manifest preserves traceability: `original_filename`, `original_version`, `original_status`
 
 #### QC Report Export
-One-click JSON export with quality score, scene complexity stats, and detailed results for all 12 checks.
+One-click JSON export with quality score, scene complexity stats, and detailed results for all 13 checks.
 
 ### Asset Management
 
@@ -260,19 +261,24 @@ This system maintains color accuracy by matching your scene's ACES tone mapping,
 
 ### Quick Install (macOS / Windows) — `install.py`
 
-The cross-platform installer detects every Cinema 4D version on your machine and
-copies the plugin into the one(s) you choose (no hardcoded paths):
+Close Cinema 4D first. The cross-platform installer detects Cinema 4D preference
+folders and can install into one or more versions:
 
 ```bash
 python3 install.py            # interactive: pick one, several, or all
 python3 install.py --list     # just list the C4D installs it found
 python3 install.py --all      # install into every detected C4D
 python3 install.py --target "/path/to/Maxon Cinema 4D 2026_XXXX/plugins"
+python3 install.py --target "/path/to/.../plugins" --rollback latest
 ```
 
-It mirror-copies the whole `plugin/` payload into `<plugins>/Sentinel/` (pruning
-orphaned files), verifies the critical files landed, and warns if an old
-`YS_Guardian/` folder is still present. Restart Cinema 4D afterwards.
+It validates and stages the complete payload outside C4D's scanned plugin
+directory, verifies the staged file hashes, and then activates it. Successful
+updates retain the previous payload under the preference folder's
+`Sentinel Backups/` directory. Rollback verifies that recorded snapshot before
+restoring it and retains the displaced version as another backup. See
+[INSTALLATION_README.md](INSTALLATION_README.md) for named-backup recovery and
+candidate identity details. Fully restart Cinema 4D afterwards.
 
 For snapshot EXR→PNG conversion, install the Python deps once:
 `pip3 install Pillow numpy OpenEXR`.
@@ -283,11 +289,13 @@ diagnostic block for bug reports.
 
 ### Manual Install (macOS / Windows)
 
-1. Copy the `plugin/` folder contents to your Cinema 4D plugins directory
+1. Close Cinema 4D and copy the `plugin/` folder contents to `<plugins>/Sentinel/`
 2. For snapshot features: install Python dependencies (`pip3 install Pillow numpy OpenEXR`)
 3. Restart Cinema 4D
 
-Sentinel is a bootstrap-plus-package plugin: `sentinel_panel.pyp` registers the C4D plugins and imports the `sentinel/` package. Keep `sentinel_panel.pyp`, `sentinel/`, `res/`, and `abc_retime/` together when installing or updating.
+Sentinel is a bootstrap-plus-package plugin: `sentinel_panel.pyp` registers the
+C4D plugins and imports the `sentinel/` package. Keep the entire payload
+together. Manual copying bypasses the installer's staging and rollback record.
 
 ### Redshift Configuration
 
@@ -311,7 +319,7 @@ The installer creates the cache directory automatically. This configuration is r
 
 ### Quality Workflow
 
-Status display shows real-time results for all 12 checks:
+Status display shows real-time results for all 13 checks:
 
 ```
 [FAIL] LIGHTS        : 3 lights outside lights group     [Select] [Fix]

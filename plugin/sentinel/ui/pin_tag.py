@@ -38,6 +38,19 @@ from c4d import plugins
 
 from sentinel import pins
 from sentinel.common.helpers import safe_print
+from sentinel.ui.tag_support import (
+    add_description_group,
+    add_description_parameter,
+    command_id_from_data as _command_id_from_data,
+    desc_level_id as _desc_level_id,
+    description_parent,
+    document_from_node as _doc_from_node,
+    event_add as _event_add,
+    is_main_thread as _is_main_thread,
+    node_creator_type,
+    safe_node_name as _safe_node_name,
+    set_bc_value as _set_bc_value,
+)
 
 SENTINEL_PIN_TAG_PLUGIN_ID = 2099078
 SENTINEL_PIN_TAG_DESCRIPTION = "Tsentinelpin"
@@ -319,84 +332,14 @@ _TRANSFORM_ID_MIN = 903
 _TRANSFORM_ID_MAX = 927
 
 
-# --- Small c4d helpers (copied pattern from frame_tag.py, not imported —
-# these two tags are independent plugins and should not couple through
-# private helpers) ----------------------------------------------------------
-
-def _set_bc_value(bc, method_name, key, value):
-    method = getattr(bc, method_name, None)
-    if callable(method):
-        method(key, value)
-    else:
-        try:
-            bc[key] = value
-        except Exception:
-            pass
-
-
-def _desc_level_id(cid):
-    try:
-        return int(cid[0].id)
-    except Exception:
-        try:
-            return int(cid)
-        except Exception:
-            return 0
-
+# --- Tag-specific adapters around the shared C4D host primitives ---------
 
 def _node_creator_type(node):
-    try:
-        return node.GetType()
-    except Exception:
-        return SENTINEL_PIN_TAG_PLUGIN_ID
+    return node_creator_type(node, SENTINEL_PIN_TAG_PLUGIN_ID)
 
 
 def _description_parent(param_id, dtype, node):
-    return c4d.DescID(c4d.DescLevel(param_id, dtype, _node_creator_type(node)))
-
-
-def _doc_from_node(node):
-    getter = getattr(node, "GetDocument", None)
-    if callable(getter):
-        try:
-            doc = getter()
-            if doc is not None:
-                return doc
-        except Exception:
-            pass
-    try:
-        return c4d.documents.GetActiveDocument()
-    except Exception:
-        return None
-
-
-def _is_main_thread():
-    threading_module = getattr(c4d, "threading", None)
-    checker = getattr(threading_module, "GeIsMainThread", None)
-    if callable(checker):
-        try:
-            return bool(checker())
-        except Exception:
-            return False
-    checker = getattr(c4d, "GeIsMainThread", None)
-    if callable(checker):
-        try:
-            return bool(checker())
-        except Exception:
-            return False
-    return True
-
-
-def _safe_node_name(node, fallback=""):
-    getter = getattr(node, "GetName", None)
-    if callable(getter):
-        try:
-            name = getter()
-            if name:
-                return str(name)
-        except Exception:
-            pass
-    return str(fallback or "")
+    return description_parent(node, param_id, dtype, SENTINEL_PIN_TAG_PLUGIN_ID)
 
 
 def _safe_node_type(node):
@@ -410,21 +353,6 @@ def _safe_node_type(node):
         except Exception:
             return 0
     return 0
-
-
-def _event_add():
-    try:
-        c4d.EventAdd()
-    except Exception:
-        pass
-
-
-def _command_id_from_data(data):
-    try:
-        cid = data["id"]
-    except Exception:
-        cid = None
-    return _desc_level_id(cid)
 
 
 # --- Timestamp formatting (Spanish, matches the rest of the row's copy) ---
@@ -2021,49 +1949,33 @@ class SentinelPinTag(_TagDataBase):
         self, node, description, parameter_id, dtype, name, parent,
         animatable=True,
     ):
-        desc_id = _description_parent(parameter_id, dtype, node)
-        bc = c4d.GetCustomDatatypeDefault(dtype)
-        _set_bc_value(bc, "SetString", c4d.DESC_NAME, name)
-        _set_bc_value(bc, "SetString", c4d.DESC_SHORT_NAME, name)
-        if not animatable:
-            # Every row param is a state snapshot / an action trigger, never
-            # something to keyframe — the Frame tag learned live that
-            # animatable params render a diamond per row and the diamonds
-            # were the biggest cost in row width (v1.29 polish, carried here
-            # as a day-one constraint per the brief, not rediscovered).
-            animate_off = getattr(c4d, "DESC_ANIMATE_OFF", None)
-            if animate_off is not None:
-                _set_bc_value(bc, "SetInt32", c4d.DESC_ANIMATE, animate_off)
+        custom_gui = None
         if dtype == c4d.DTYPE_BUTTON:
-            # Without CUSTOMGUI_BUTTON a DTYPE_BUTTON renders as an empty
-            # cell, not a clickable button (frame_tag.py:1775, confirmed live
-            # in that tag — carried here rather than rediscovered).
-            button_gui = getattr(c4d, "CUSTOMGUI_BUTTON", None)
-            if button_gui is not None:
-                _set_bc_value(bc, "SetInt32", c4d.DESC_CUSTOMGUI, button_gui)
-        try:
-            return bool(description.SetParameter(desc_id, bc, parent))
-        except Exception:
-            return False
+            custom_gui = getattr(c4d, "CUSTOMGUI_BUTTON", None)
+        return add_description_parameter(
+            node,
+            description,
+            parameter_id,
+            dtype,
+            name,
+            parent,
+            SENTINEL_PIN_TAG_PLUGIN_ID,
+            animatable=animatable,
+            custom_gui=custom_gui,
+        )
 
     def _set_description_group(self, node, description, group_id, name, parent,
                                 columns=None, titlebar=True):
-        # Copied pattern from frame_tag.py, not imported — these two tags
-        # are independent plugins and should not couple through private
-        # helpers (same rule the module docstring states for the small
-        # c4d helpers above).
-        desc_id = _description_parent(group_id, c4d.DTYPE_GROUP, node)
-        bc = c4d.GetCustomDatatypeDefault(c4d.DTYPE_GROUP)
-        _set_bc_value(bc, "SetString", c4d.DESC_NAME, name)
-        _set_bc_value(bc, "SetString", c4d.DESC_SHORT_NAME, name)
-        _set_bc_value(bc, "SetBool", c4d.DESC_TITLEBAR, bool(titlebar))
-        _set_bc_value(bc, "SetBool", c4d.DESC_DEFAULT, False)
-        if columns is not None:
-            _set_bc_value(bc, "SetInt32", c4d.DESC_COLUMNS, int(columns))
-        try:
-            return bool(description.SetParameter(desc_id, bc, parent))
-        except Exception:
-            return False
+        return add_description_group(
+            node,
+            description,
+            group_id,
+            name,
+            parent,
+            SENTINEL_PIN_TAG_PLUGIN_ID,
+            columns=columns,
+            titlebar=titlebar,
+        )
 
     def Init(self, node, isCloneInit=False):
         # v1.36.1: an ordinary pin is born wearing the accent, so it reads

@@ -24,9 +24,18 @@ def doc_path_for_rules(doc):
 
 
 def machine_rule_settings():
-    """Machine-level rule overrides (currently just the studio standard FPS)."""
+    """Machine-level rule overrides (studio FPS + snapshot slate toggle).
+
+    Both keys must match what the pure ``rules._load_machine_settings``
+    collects from GlobalSettings; the two loaders are intentionally kept
+    in sync. Dropping ``slate`` here silently ignored the machine-level
+    Review Slate preference.
+    """
     try:
-        return {"standard_fps": GlobalSettings.get_standard_fps()}
+        return {
+            "standard_fps": GlobalSettings.get_standard_fps(),
+            "slate": GlobalSettings.get_snapshot_slate(),
+        }
     except Exception:
         return {}
 

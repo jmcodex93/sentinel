@@ -320,6 +320,8 @@ export interface NotesTodo {
 }
 
 export interface NotesState {
+  context: string;
+  revision: string;
   notes_text: string;
   todos: NotesTodo[];
   scene_base: string;
@@ -331,6 +333,8 @@ export type NotesStateResult =
   | { kind: "error"; message: string };
 
 export interface NotesSubmitPayload {
+  context: string;
+  revision: string;
   notes_text: string;
   todos: NotesTodo[];
 }
@@ -349,6 +353,7 @@ export interface NotesSubmitResponse {
  */
 
 export interface SettingsState {
+  artist_name: string;
   fps: { value: number; options: number[]; locked: boolean; locked_reason: string | null };
   /** `value` is an index into `options` (0 = Nuke, 1 = After Effects). */
   compositor: { value: number; options: string[] };
@@ -365,6 +370,7 @@ export type SettingsStateResult =
   | { kind: "error"; message: string };
 
 export interface SettingsSubmitPayload {
+  artist_name: string;
   fps: number;
   compositor: number;
   multipart_default: boolean;
@@ -512,6 +518,8 @@ export interface HubAsset {
   owners: HubOwner[];
   repathable: boolean;
   has_thumb: boolean;
+  /** mtime+size of the file; goes into the /thumb URL so a replaced file is refetched. */
+  thumb_version: string | null;
 }
 
 export interface HubTotals {
@@ -628,6 +636,8 @@ export interface HubCollectStartResponse {
   ok: boolean;
   error?: string;
   job_id?: string;
+  /** Echoed with `error: "target_not_empty"` — the folder that was refused. */
+  target_dir?: string;
 }
 
 export interface HubCollectResult {
@@ -1006,6 +1016,7 @@ export interface PanelRenderSnapshots {
   dir: string | null;
   origin: "auto" | "manual";
   watch_enabled: boolean;
+  watch_status?: { state: "off" | "watching" | "running" | "ready" | "error"; message: string; last_error?: string };
 }
 
 export interface PanelRenderPostrenderAvailable {
@@ -1214,6 +1225,8 @@ export interface PanelToolResult {
   removed?: number;
   removed_broken?: number;
   removed_dupes?: number;
+  /** `panel/tools/clean_dead_nodes` — RS node materials found. */
+  materials?: number;
   keys?: number;
   objects?: number;
   frames?: number;
@@ -1337,5 +1350,86 @@ export interface MatwireCreateResult {
   created?: number;
   materials?: string[];
   errors?: [string, string][];
+  error?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Project standard (v1.37) — see `_op_standard_preview` / `_op_standard_publish`
+// / `_op_newshot_preview` / `_op_newshot_create` in ui/standard_ops.py.
+// ---------------------------------------------------------------------------
+
+/** `POST /api/panel/tools/standard_preview` — see `_op_standard_preview` in
+ * ui/standard_ops.py. `error` is one of `no_document` / `unsaved` /
+ * `bad_folder`. `pattern` is the detected shot-name token pattern (or
+ * `null` if none could be inferred); `wont_travel` is the fixed copy of
+ * what a publish never carries forward (version history/notes/TODOs, the
+ * file's own version number — see `projectstd.WONT_TRAVEL`), not a list
+ * of excluded scene objects. */
+export interface StandardPreviewResponse {
+  ok: boolean;
+  qc?: {
+    passed: number;
+    total: number;
+    pass: boolean;
+    failing: string[];
+  };
+  scene?: {
+    fps: number;
+    start_frame: number;
+    presets: string[];
+    objects: { name: string; index: number; children: boolean }[];
+  };
+  pattern?: string | null;
+  existing_rules?: boolean;
+  diff?: string[];
+  wont_travel?: string[];
+  error?: string;
+}
+
+/** `POST /api/panel/tools/standard_publish` — see `_op_standard_publish` in
+ * ui/standard_ops.py. `exclude` on the request is `[name, index]` pairs
+ * (mirrors `ExcludeEntry` in lib/panelStandard.ts). `error` is one of
+ * `no_document` / `unsaved` / `bad_folder` / `qc_failing` / `scene_changed`
+ * / `rules_unreadable` / `bad_pattern` / `save_failed` / `write_failed`;
+ * `failing` rides along with `qc_failing` so the SPA can name the
+ * blockers without a second round-trip. */
+export interface StandardPublishResponse {
+  ok: boolean;
+  scene_path?: string;
+  rules_path?: string;
+  excluded?: number;
+  error?: string;
+  failing?: string[];
+}
+
+/** `POST /api/panel/tools/newshot_preview` — see `_op_newshot_preview` in
+ * ui/standard_ops.py. `error` is one of `bad_folder` / `no_standard` /
+ * `no_template` / `template_missing`; on `no_standard` the server echoes
+ * back the single `folder` it was given as `searched` (not a list of
+ * ancestor folders walked). `published` mirrors the ruleset's own
+ * metadata about who last published the standard (or `null` if the
+ * ruleset doesn't carry it). */
+export interface NewShotPreviewResponse {
+  ok: boolean;
+  rules_path?: string;
+  project_dir?: string;
+  template?: string;
+  template_exists?: boolean;
+  pattern?: string;
+  published?: Record<string, string> | null;
+  error?: string;
+  searched?: string;
+}
+
+/** `POST /api/panel/tools/newshot_create` — see `_op_newshot_create` in
+ * ui/standard_ops.py. `error` is one of `bad_folder` / `no_standard` /
+ * `no_template` / `template_missing` / `bad_name` / `exists` /
+ * `copy_failed`; `path` rides along with `exists`/`copy_failed` so the SPA
+ * can point at the offending destination. `opened` is true when Sentinel
+ * also loaded the new shot into C4D (best-effort, never blocks the copy). */
+export interface NewShotCreateResponse {
+  ok: boolean;
+  path?: string;
+  opened?: boolean;
   error?: string;
 }

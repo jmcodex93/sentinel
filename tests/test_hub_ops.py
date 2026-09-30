@@ -84,6 +84,58 @@ class TestHubCollectJob:
         from sentinel.ui import hub_ops
         assert hub_ops.HUB_OPS["hub/collect_start"]({}) == {"ok": False, "error": "no_target"}
 
+    def test_collect_start_refuses_an_occupied_target(self, sentinel_module, tmp_path, monkeypatch):
+        """Windows acceptance (2026-09-24), P1: a second delivery into the
+        same folder replaced the first delivery's ``sentinel_manifest.json``
+        and left TWO scenes side by side (the clean-name rename was refused,
+        so the fresh scene kept the folder's name). A delivery is a sealed
+        record: collecting on top of one must be refused before anything is
+        written — and before the QC pre-flight runs, so the artist is not
+        walked through a gate triage only to fail afterwards."""
+        from sentinel import webbridge
+        from sentinel.ui import hub_ops
+
+        target = tmp_path / "Entrega á B"
+        target.mkdir()
+        (target / "sentinel_manifest.json").write_text("{}")
+
+        class _Doc:
+            def GetDocumentPath(self):
+                return str(tmp_path)
+
+        monkeypatch.setattr(hub_ops.documents, "GetActiveDocument", lambda: _Doc())
+        monkeypatch.setattr(hub_ops, "run_all_checks",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("QC ran")))
+        old = webbridge.JOBS
+        webbridge.JOBS = webbridge.JobRegistry()
+        try:
+            response = hub_ops.HUB_OPS["hub/collect_start"]({"target_dir": str(target)})
+            assert response == {"ok": False, "error": "target_not_empty",
+                                "target_dir": str(target)}
+            assert hub_ops.pump_jobs() is None  # no job was queued
+        finally:
+            webbridge.JOBS = old
+        assert os.listdir(target) == ["sentinel_manifest.json"]
+
+    def test_delivery_target_free_when_missing_or_empty(self, sentinel_module, tmp_path):
+        from sentinel.ui import hub_ops
+        assert hub_ops._delivery_target_occupied(str(tmp_path / "new")) is False
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        assert hub_ops._delivery_target_occupied(str(empty)) is False
+
+    def test_delivery_target_ignores_os_folder_junk(self, sentinel_module, tmp_path):
+        """Finder drops ``.DS_Store`` into a freshly created folder the moment
+        it is opened; Explorer drops ``desktop.ini``/``Thumbs.db``. None of
+        them is a delivery, and refusing on them would reject the empty
+        folder the artist just made."""
+        from sentinel.ui import hub_ops
+        for junk in (".DS_Store", "desktop.ini", "Thumbs.db"):
+            (tmp_path / junk).write_text("")
+        assert hub_ops._delivery_target_occupied(str(tmp_path)) is False
+        (tmp_path / "B.c4d").write_text("")
+        assert hub_ops._delivery_target_occupied(str(tmp_path)) is True
+
     def test_pump_jobs_noop_when_no_pending(self, sentinel_module):
         from sentinel import webbridge
         from sentinel.ui import hub_ops

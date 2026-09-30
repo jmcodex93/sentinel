@@ -65,7 +65,8 @@ from c4d import documents
 
 from sentinel import assets as assets_engine
 from sentinel import webbridge
-from sentinel.common.helpers import _iter_objs, safe_print
+from sentinel.common.helpers import _iter_objs
+from sentinel.common.logging import exception as log_exception
 from sentinel.common.settings import GlobalSettings
 from sentinel.notes import get_notes_path, load_notes
 from sentinel.qc.registry import CHECK_REGISTRY
@@ -91,7 +92,12 @@ def _op_panel_state_stamp(payload):
         notice = renderwatch.latest_notice()
     except Exception:
         notice = None
-    return {"stamp": _stamp_for(doc), "notice": notice}
+    from sentinel.snapshots import snapshot_watch
+    status = snapshot_watch.status()
+    stamp = _stamp_for(doc)
+    if status["state"] != "off":
+        stamp += "|snapshot:" + status["state"] + ":" + status["message"] + ":" + status["last_error"]
+    return {"stamp": stamp, "notice": notice}
 
 
 # Palette action ids the overview surfaces as "currently runnable quick
@@ -354,7 +360,7 @@ def _guarded_block(name, builder, doc):
     ONE subsystem (e.g. a broken asset scan, an unreadable notes sidecar)
     must never blank the whole dashboard — same isolation pattern
     ``ui/panel.py`` ``_sync_ui_from_doc`` uses per-field (~line 985-1013,
-    each block wrapped in its own ``try/except`` with a ``safe_print`` on
+    each block wrapped in its own ``try/except`` with a structured event on
     failure, so one bad read doesn't take down the others). A failed block
     comes back as ``None`` — the SPA renders that card as unavailable
     instead of the whole response erroring out.
@@ -362,7 +368,12 @@ def _guarded_block(name, builder, doc):
     try:
         return builder(doc)
     except Exception as exc:
-        safe_print(f"panel/overview: {name} block failed: {exc}")
+        log_exception(
+            "panel.block_failed",
+            "panel.overview",
+            exc,
+            block=name,
+        )
         return None
 
 
@@ -521,13 +532,18 @@ def _advance_cursor(prior_pos, prior_total, new_total):
 
 def _qc_flagged_items(check_id, legacy_result):
     """The list of concrete items (objects, or materials for
-    ``unused_mats``) one check's ``legacy_result`` flags, in cycle order.
-    ``cross_aspect``'s ``legacy_result`` is a list of violation dicts keyed
-    by ``"object"`` — deduped here the same way the native
-    ``_qc_select_cross_aspect`` handler dedupes (an object can violate more
-    than one format). Every other selectable check's ``legacy_result`` is
-    already the flagged-item list itself (materials for ``unused_mats``,
-    objects otherwise).
+    ``unused_mats``/``rs_colorspace``) one check's ``legacy_result`` flags,
+    in cycle order. ``cross_aspect``'s ``legacy_result`` is a list of
+    violation dicts keyed by ``"object"`` — deduped here the same way the
+    native ``_qc_select_cross_aspect`` handler dedupes (an object can
+    violate more than one format). ``rs_colorspace``'s ``legacy_result`` is
+    likewise a list of per-mismatch violation dicts (one per offending
+    sampler, so ``len()`` matches the check's own violation count — see
+    ``checks/matgraph.py``), keyed by ``"material"`` instead of
+    ``"object"``: a material with two mismatched samplers must still cycle
+    as ONE selectable item, not two. Every other selectable check's
+    ``legacy_result`` is already the flagged-item list itself (materials
+    for ``unused_mats``, objects otherwise).
     """
     if check_id == "cross_aspect":
         objs = []
@@ -539,6 +555,16 @@ def _qc_flagged_items(check_id, legacy_result):
             seen.add(id(obj))
             objs.append(obj)
         return objs
+    if check_id == "rs_colorspace":
+        mats = []
+        seen = set()
+        for violation in legacy_result or []:
+            mat = violation.get("material") if isinstance(violation, dict) else None
+            if mat is None or id(mat) in seen:
+                continue
+            seen.add(id(mat))
+            mats.append(mat)
+        return mats
     return list(legacy_result or [])
 
 
@@ -564,13 +590,16 @@ def _select_objects(doc, objs):
 
 def _select_single_qc_item(doc, check_id, item):
     """Select exactly ONE flagged item in the scene — the cycle-one-per-click
-    counterpart to the old select-all. ``unused_mats`` cycles MATERIALS
-    (deselect-all-materials then ``SetBit(BIT_ACTIVE)`` on the one, same
-    primitive ``_qc_select_unused_mats`` uses); every other check cycles
-    OBJECTS via the native ``ui/panel._select_objects`` helper (which itself
-    deselects everything first), passed a single-item list.
+    counterpart to the old select-all. ``unused_mats``/``rs_colorspace``
+    cycle MATERIALS (deselect-all-materials then ``SetBit(BIT_ACTIVE)`` on
+    the one, same primitive ``_qc_select_unused_mats`` uses — ``item`` here
+    is already a bare ``BaseMaterial``, per ``_qc_flagged_items``'s
+    dedupe-by-``"material"`` for ``rs_colorspace``, never the violation
+    dict itself); every other check cycles OBJECTS via the native
+    ``ui/panel._select_objects`` helper (which itself deselects everything
+    first), passed a single-item list.
     """
-    if check_id == "unused_mats":
+    if check_id in ("unused_mats", "rs_colorspace"):
         for mat in doc.GetMaterials():
             mat.DelBit(c4d.BIT_ACTIVE)
         if item is not None:

@@ -367,6 +367,18 @@ class TestTotalsAndSizes:
         assert nxt == 3                                          # clamped to len
         assert recs[2]["size_bytes"] == -1                       # stat failed
 
+    def test_stat_sizes_batch_records_mtime(self, tmp_path):
+        """The Hub thumbnail URL is versioned by mtime: a texture replaced at
+        the same path (Windows acceptance 2026-09-24) must yield a new URL,
+        or the webview keeps showing the old image from its HTTP cache."""
+        f = tmp_path / "a.png"; f.write_bytes(b"x")
+        os.utime(f, (1000, 1234))
+        recs = [{"resolved_path": str(f), "size_bytes": None},
+                {"resolved_path": str(tmp_path / "gone.png"), "size_bytes": None}]
+        assets.stat_sizes_batch(recs, 0, 2)
+        assert recs[0]["mtime"] == 1234
+        assert recs[1].get("mtime") is None
+
 
 class TestSearchFolderForMissing:
     def test_build_index_and_cap(self, tmp_path):

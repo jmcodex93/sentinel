@@ -6,6 +6,7 @@ import os
 import time
 
 from sentinel.common.helpers import safe_print
+from sentinel.common.sidecars import decode_sidecar_json
 from sentinel.versioning import parse_version_filename
 
 # Pure helpers for managing per-scene notes + TODOs in a sidecar JSON
@@ -41,26 +42,30 @@ def _empty_notes():
     }
 
 
+def _decode_notes(raw):
+    """Decode and normalize one read; callers choose strict or tolerant I/O."""
+    data = decode_sidecar_json(raw)
+    if not isinstance(data, dict):
+        raise ValueError("Notes sidecar must contain an object")
+    if not isinstance(data.get("notes"), str):
+        data["notes"] = ""
+    if not isinstance(data.get("todos"), list):
+        data["todos"] = []
+    else:
+        data["todos"] = [t for t in data["todos"] if isinstance(t, dict)]
+    data.setdefault("scene", "")
+    data.setdefault("updated", "")
+    return data
+
+
 def load_notes(notes_path):
     """Load notes JSON. Always returns a valid dict (defaults if missing/malformed)."""
     default = _empty_notes()
     if not notes_path or not os.path.exists(notes_path):
         return default
     try:
-        with open(notes_path, 'r') as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            return default
-        # Ensure required fields exist
-        if "notes" not in data or not isinstance(data.get("notes"), str):
-            data["notes"] = ""
-        if "todos" not in data or not isinstance(data.get("todos"), list):
-            data["todos"] = []
-        if "scene" not in data:
-            data["scene"] = ""
-        if "updated" not in data:
-            data["updated"] = ""
-        return data
+        with open(notes_path, 'rb') as f:
+            return _decode_notes(f.read())
     except Exception as e:
         safe_print(f"Could not load notes: {e}")
         return default
@@ -71,6 +76,7 @@ def save_notes(notes_path, data):
     if not notes_path or data is None:
         return False
     from datetime import datetime
+    tmp_path = f"{notes_path}.tmp.{os.getpid()}"
     try:
         if not isinstance(data, dict):
             return False
@@ -79,10 +85,16 @@ def save_notes(notes_path, data):
         data.setdefault("notes", "")
         data.setdefault("todos", [])
         data["updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with open(notes_path, 'w') as f:
+        with open(tmp_path, 'w', encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, notes_path)
         return True
     except Exception as e:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
         safe_print(f"Could not save notes: {e}")
         return False
 
@@ -193,4 +205,3 @@ def has_pending_todos(notes):
     if not isinstance(notes, dict):
         return False
     return any(not t.get("done") for t in (notes.get("todos") or []))
-

@@ -7,7 +7,15 @@ import re as _re
 
 try:
     from sentinel.common.helpers import safe_print
+    from sentinel.common.sidecars import decode_sidecar_json
 except ModuleNotFoundError:
+    # baseline/postrender also load this pure module directly by file path.
+    # Keep the shared decoder available without requiring package sys.path.
+    import runpy
+    decode_sidecar_json = runpy.run_path(
+        os.path.join(os.path.dirname(__file__), "common", "sidecars.py")
+    )["decode_sidecar_json"]
+
     def safe_print(*args, **kwargs):
         print(*args, **kwargs)
 
@@ -16,8 +24,8 @@ except ModuleNotFoundError:
 import re as _re
 
 # Version + optional status tag suffix (e.g. _v003, _v003_TR, _v003_CR, _v003_PITCH).
-# Status must be alphanumeric (letters first); we sanitize on write.
-_VERSION_RE = _re.compile(r'_v(\d+)(?:_([A-Za-z][A-Za-z0-9]*))?$', _re.IGNORECASE)
+# Status must be alphanumeric; this matches the sanitizer used on write.
+_VERSION_RE = _re.compile(r'_v(\d+)(?:_([A-Za-z0-9]+))?$', _re.IGNORECASE)
 
 # Mograph-native review status tags. Convention from Matthew Creed / community.
 STATUS_NONE = ""        # WIP — no suffix
@@ -121,8 +129,8 @@ def load_history(history_path):
     if not history_path or not os.path.exists(history_path):
         return default
     try:
-        with open(history_path, 'r') as f:
-            data = json.load(f)
+        with open(history_path, 'rb') as f:
+            data = decode_sidecar_json(f.read())
         if not isinstance(data, dict) or "versions" not in data or not isinstance(data["versions"], list):
             safe_print(f"History file malformed, ignoring: {history_path}")
             return default
@@ -136,11 +144,18 @@ def save_history(history_path, history_data):
     """Write history JSON. Returns True/False."""
     if not history_path:
         return False
+    tmp_path = f"{history_path}.tmp.{os.getpid()}"
     try:
-        with open(history_path, 'w') as f:
+        with open(tmp_path, 'w', encoding="utf-8") as f:
             json.dump(history_data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, history_path)
         return True
     except Exception as e:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
         safe_print(f"Could not save history: {e}")
         return False
 

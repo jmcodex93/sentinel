@@ -2,6 +2,21 @@
 
 > Originally **YS Guardian** (Yambo Studio). Rebranded to Sentinel in v1.5.0 — see CLAUDE.md and README.md for the heritage and attribution.
 
+## v1.37 — El estándar del proyecto ✅ (mergeada + LIVE-VERIFIED 2026-08-10)
+Spec: `docs/superpowers/specs/2026-08-07-project-standard-design.md` · Plan: `docs/superpowers/plans/2026-08-07-project-standard.md`
+- [x] Publicar el estándar desde un shot que pasa el QC (ruleset derivado + `sentinel_standard.c4d` limpio, preview curado, procedencia, diff al republicar)
+- [x] Nuevo shot desde el estándar (patrón de carpetas declarado, tres negativas, sin fallback al `new.c4d` del plugin)
+- [x] Claves de ruleset `shot_pattern` + `published`; motor puro `projectstd.py`; ops `standard_ops.py`; subvistas SPA en Tools → Project
+- [x] Verificación live en C4D (C4D 2026.303, 2026-08-10): checklist completo — publicar con exclusión, puerta QC, republish con diff y clave manual superviviente, nuevo shot desde subcarpeta con QC 12/12, las tres negativas + asimetría de Reset All, bad_pattern, cero `.tmp` residual
+- [ ] **QC #14 — los assets que el proyecto declara**: tercera pieza del análisis, con su propio spec futuro (identidad, baseline y fontanería de informe propias; aporta valor incluso sin "nuevo shot")
+
+## v1.38 — Material Graph ✅ (mergeada; LIVE-VERIFIED 2026-08-28)
+Spec aprobada: `docs/superpowers/specs/2026-08-25-material-graph-qc-design.md`
+- [x] **QC #13 "RS Colorspace"** (FAIL, ON) — audita el colorspace de cada Texture Sampler RS con doble señal (nombre vía tablas MatWire + puerto BRDF de destino; conflicto→Info); auto NUNCA es violación — verificado en el spike (`audit_colorspaces`, `assigned is None` → `auto_unverified` incondicional, Info, jamás mismatch, sin importar lo que auto haya resuelto). Select/Info/Fix, undo 1 paso. Caza la trampa ACEScg en materiales existentes (nadie audita esto; NodeFlow solo asigna al crear). Score pasa a X/13.
+- [x] **Tools → Cleanup → "Clean Dead Nodes"** — NO es QC (decisión v1.30: limpiadores = botones acción→toast): borra nodos sin camino al Output (roots = todos los puertos; sinks StoreColorToAOV vivos), conservador, un Cmd+Z. Comparte walk y motor puro (`matgraph.py`) con el check.
+- [x] Mini-spike live previo obligatorio (HECHO 2026-08-27: docs/research/2026-08-27-matgraph-spike.md): combo strings pre/post-OCIO, legibilidad del auto, walk sobre material ajeno a matwire, receta de undo del borrado de nodos.
+- Contexto: el Wrangler standalone quedó NO-GO (Render Flow de Boghma ocupa la autoría, ver spike §12); la auditoría de grafos es lo que refuerza el claim de preflight. Autoría explícitamente fuera de alcance.
+
 ## Completed (v1.0.4 → v1.4.0)
 
 ### Fase 1 — Fix & Foundation ✅
@@ -578,24 +593,11 @@ After 5 rounds of community-naming exploration (covering watchdog/guardian synon
 
 ---
 
-## Pending — Next Phases
+## Next phases — reconciled 2026-09-05
 
 ### Tier A — Production Workflow polish (high impact, easy)
 
-> Most of this tier already shipped across v1.4.1–v1.5.1 (FPS/Range validation, Smart Save, Status Tags, Browse Versions, Scene Notes). What remains:
-
-#### Review Slate on Snapshots
-Burn metadata into Save Still PNGs:
-- Shot ID, Artist name, Frame number, Date, Resolution
-- Small overlay bar at bottom (like editorial slates)
-- Supervisor instantly knows the context of every image
-
-**Why**: Unnamed PNGs on a server are useless without context. Every image should be self-documenting.
-
-#### FPS Settings UI (polish for QC #11)
-Add a dropdown or settings dialog to change the studio standard FPS without editing the JSON manually. Group FPS/Range issues by category in Info dialog (FPS / Range / Timeline) for clearer reading.
-
-**Why**: Currently only configurable via `sentinel_settings.json`. Most artists won't open it.
+The review slate, FPS settings UI, Smart Save, status tags, version browser and scene notes already exist. Stabilization and host verification are tracked in [product readiness](docs/audit/2026-09-05-product-readiness.md); these are no longer new-feature work.
 
 ### Tier B — Asset Health & Validation (high impact, medium effort)
 
@@ -650,17 +652,17 @@ Dos conjuntos cuyos **anclajes se llamen igual** escriben los mismos nombres de 
 
 #### Sentinel Frame follow-ups *(deferred in the v1.8.0 plan)*
 - Format catalog: cinema (2.39 / 1.85 / 2:1) + print (A4 / A3 / Letter) — needs QC-name-matching-compatible ids.
-- User-defined custom formats (ratio/resolution) — cheap given the dynamic description.
-- QC #13 "Take override drift" — verify overrides still apply after save (frail C4D Takes; today mitigated by idempotent re-run + staleness hash).
+- User-defined custom ratio/resolution: shipped in Frame v2.1 (v1.29).
+- Future check "Take override drift" (QC #13 is already RS Colorspace) — verify overrides still apply after save (frail C4D Takes; today mitigated by idempotent re-run + staleness hash).
 - Versioned/updatable platform safe-area presets (per-platform dates, refreshable from a shared ruleset).
-- Slice-takes (tiles) from C4DMultiFrame; stage/ortho cameras; advanced multi-tag (several configs per camera).
+- Slice-takes: shipped in v1.29. Stage/ortho cameras and advanced multi-tag configurations remain separate future work.
 - Confirm whether QC score **severity weighting** (FAIL vs WARN) is still display-only after Quality Gates.
 
-#### MessageData Plugin
-Background monitoring with panel closed. Invasive — reconsider when plugin is mature.
+#### MessageData Plugin — implemented
+`FrameSyncMessageData` already provides background host events/timers. Coverage of each watcher is a stabilization concern, not a missing plugin architecture.
 
-#### Template Configurable
-Supervisor chooses .c4d template from shared server. Add "..." button next to Reset All.
+#### Template configurable — implemented via project rules
+`template_scene` selects the studio `.c4d` template, with explicit missing-template errors. A dedicated picker is optional UI work; template support itself is already present.
 
 #### Retirado: Force 9:16 *(v1.36.4 — no reponer)*
 El botón **Force 9:16** del bloque Preset se retiró a decisión del artista, con
@@ -704,7 +706,7 @@ Fase 1 (fundación: DESIGN.md + webbridge + Reports/Delivery Summary) entregada 
 - [x] **Fase 6.0 — Host dockeable + shell + Overview** ✅ (v1.19.0, spec madre `2026-07-21-panel-spa-design.md`): `SentinelPanelSPA` registrado en paralelo al panel nativo (intacto), rail adaptativo (<560px iconos+badges / ≥560px sidebar), header + dashboard "salud del shot" de 4 tarjetas (QC/Assets/Render/Versión) con quick-fixes vía palette y deep-links a Hub/Reports. Motor `panel_ops.py` (`panel/state_stamp`, `panel/overview` con bloques aislados, `panel/open_form`) sobre los motores existentes, sin lógica duplicada. Spike PostWebMessage resuelto (push descartado, polling de stamp). **Spike de dock del webview VERIFICADO en vivo** (dockea como panel nativo, breakpoint del rail 560px responde, Cmd+Z atraviesa dockeado con foco, polling refresca — escena real SHOT_18 con overview correcto QC 6/12 + 39 assets). pytest 690, vitest 60. Placeholders honestos: las secciones QC/Render/Deliver/Tools del dashboard son contenido de 6.1-6.4, no de este release.
 - [x] **Fase 6.1 — Sección QC** ✅ (v1.20.0, spec `2026-07-22-panel-qc-design.md`): sección QC del panel (tras Overview) — tarjetas FAIL/WARN + línea plegada `N OK · M disabled`, acción directa por tarjeta (Select/Fix/Info/Accept inline) sin popups, Fix-all. Ops `panel/qc` (read-only, scoring compartido en una pasada) + `panel/qc/select`/`accept`/`fix_all` (mutaciones, reutilizan las ramas de `_op_form_gate_submit`), `webbridge.group_qc_by_severity` puro. `CHECK_REGISTRY` sigue siendo la única fuente de severidad/capacidades. Pestaña QC nativa intacta (retiro es 6.4). pytest 730, vitest 72. **Verificación live VERIFICADA** (C4D 2026.302, MCP + usuario): sección QC renderiza, accept sella baseline y sube score, select cicla, fix refresca, sin popups; fixes cazados en vivo (crash React #31 detail-lista, accept-sin-guardar, denominador=total, stills por token — RS-LookDev score 6/12→11/12).
 - [x] **Fase 6.2 — Sección Render** ✅ (v1.21.0, spec `2026-07-22-panel-render-design.md`): sección Render del panel (tras QC) — bloques apilados con status en cabecera (Preset · Sentinel Frame · AOVs · Snapshots · Post-Render), acción directa por bloque sin popups. Bloque AOVs reorganizado por estructura real de acción tras el live: status `N AOVs` (solo conteo), **Coverage** = botones Essentials/Production aditivos sin confirm, **Light Groups** = toggle explícito on/off (`panel/render/set_light_groups`, idempotente, ya NO es un valor de `aov_tier`), **Output** = switch `Multi-Part EXR / Direct output` (`panel/render/set_multipart`, sustituye a `toggle_multipart`); Show AOVs movido a la cabecera del bloque y resolviendo nombres amigables vía `aovs.aov_type_name` (antes números de tipo RS en crudo). Ops `panel_render_ops.py`: `panel/render` read-only con bloques AISLADOS (un fallo no blanquea el resto) + mutaciones que reutilizan los motores nativos vía núcleos sin-diálogo extraídos (`_apply_preset_core`, `_force_render_settings_core`, `_toggle_aspect_core`, `_add_sentinel_frame_tag_core`, `_toggle_light_groups_core`, `snapshot_save_still_core`, `snapshot_open_folder_core`) — más extracciones de las previstas en spec, mismo patrón de seguridad (un `MessageDialog` en el drain de la cola congelaría C4D entero). Confirm gate **solo** en Reset All + Force 9:16 (genuinamente destructivas); tiers AOV y toggles light_groups/multipart son aditivos/idempotentes y NO piden confirm. Validate = deep-link a Reports → Render Validation. SPA: `RenderSection` + `RenderBlock` compartido, `panelRender.ts` puro. Pestaña Render nativa intacta (retiro es 6.4). pytest 794, vitest 93. **Verificación live VERIFICADA** (C4D 2026.302, MCP + usuario, SHOT_18): 5 bloques correctos, sin freeze en add_frame_tag, reset_all/aov_tier/save_still confirmados sin modal/Picture-Viewer desde el op, confirm solo en las 2 destructivas, set_light_groups idempotente en ambas direcciones, nombres en Show AOVs, switch Multi-Part OK, Cmd+Z revierte frame-tag. Fixes cazados en vivo: nombres AOV, switch Multi-Part, reorg del bloque AOVs, confirm retirado de tiers aditivos.
-- **Fase 6.3-6.4 (pendientes)**: resto de la migración del panel nativo a la SPA — paridad de pestañas Versions/Tools, retiro gradual del panel nativo
+- [x] **Fases 6.3–6.5**: Deliver/Tools migrated to the SPA; native panel retired in v1.25.0. The preceding phase descriptions are historical release records.
 
 ### Deuda conocida (Asset Hub v1.11)
 

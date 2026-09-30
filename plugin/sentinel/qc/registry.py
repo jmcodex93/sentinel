@@ -215,6 +215,22 @@ CHECK_REGISTRY = [
         structured_kwargs={"sample_strategy": "current_frame"},
         legacy_kwargs={"sample_strategy": "current_frame"},
     ),
+    CheckEntry(
+        check_id="rs_colorspace",
+        row_label="RS Colorspace",
+        label_ok="Texture colorspaces match their channels",
+        label_fail_template="{n} colorspace mismatch(es)",
+        names_key=None,
+        severity="FAIL",
+        has_fix=True,
+        structured_fn="matgraph.check_rs_colorspace",
+        legacy_fn="matgraph.check_rs_colorspace",
+        preflight_template="  {n} colorspace mismatches",
+        report_key="rs_colorspace",
+        actions=("select", "info", "fix"),
+        fix_fn="fixes.fix_rs_colorspace",
+        fix_scope="document",
+    ),
 ]
 
 
@@ -271,6 +287,35 @@ def validate_registry(entries):
     return True
 
 
+def validate_registry_resolvable(panel_module=None):
+    """Every structured_fn / legacy_fn / fix_fn in the registry resolves.
+
+    Structural validation (validate_registry) runs at import; this goes one
+    step further and actually imports each module and getattr's each name —
+    a typo'd function reference fails HERE (in CI / at plugin load) instead
+    of surfacing as a runtime AttributeError mid-QC-run.
+
+    Returns a list of (check_id, fn_ref) that failed to resolve; empty list
+    means every reference is callable. Never raises for resolution misses
+    (the caller decides policy), only for the same malformed-entry errors
+    validate_registry raises.
+    """
+    failures = []
+    for entry in CHECK_REGISTRY:
+        check_id = entry.check_id
+        for attr in ("structured_fn", "legacy_fn", "fix_fn"):
+            fn_ref = getattr(entry, attr, None)
+            if not fn_ref:
+                continue
+            try:
+                fn = resolve_function(fn_ref, panel_module)
+                if not callable(fn):
+                    failures.append((check_id, f"{fn_ref}: not callable"))
+            except Exception as exc:
+                failures.append((check_id, f"{fn_ref}: {exc}"))
+    return failures
+
+
 def resolve_function(fn_ref, panel_module=None):
     """Resolve a registry function reference lazily."""
     source, func_name = fn_ref.split(".", 1)
@@ -284,6 +329,8 @@ def resolve_function(fn_ref, panel_module=None):
         module = import_module("sentinel.checks.assets")
     elif source == "safe_areas":
         module = import_module("sentinel.checks.safe_areas")
+    elif source == "matgraph":
+        module = import_module("sentinel.checks.matgraph")
     elif source == "panel":
         if panel_module is None:
             raise ValueError(f"Panel module is required to resolve {fn_ref}")

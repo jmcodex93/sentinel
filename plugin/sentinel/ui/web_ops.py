@@ -25,7 +25,10 @@ scope (it would be circular, since ``reports_dialog`` imports
 ``FORM_OPS`` from here); any need to reach back into it (``open_reports``)
 is a local import inside the function that needs it.
 """
+import hashlib
+import hmac
 import os
+import secrets
 
 import c4d
 from c4d import documents
@@ -39,9 +42,10 @@ from sentinel.fixes import (
     fix_camera_shift,
     fix_fps_range,
     fix_lights,
+    fix_rs_colorspace,
     fix_unused_materials,
 )
-from sentinel.notes import get_notes_path, load_notes, save_notes
+from sentinel.notes import _decode_notes, _empty_notes, get_notes_path, save_notes
 from sentinel.qc.score import count_violations, run_all_checks
 from sentinel.rules_context import active_rules_for_doc
 from sentinel.versioning import (
@@ -154,6 +158,33 @@ def _op_form_save_version_submit(payload):
 # Notes — mirrors ui/dialogs.py NotesDialog + ui/panel.py _handle_edit_notes
 # ---------------------------------------------------------------------------
 
+# Session-secret HMACs identify a sidecar without disclosing its path.
+_NOTES_CONTEXT_SECRET = secrets.token_bytes(32)
+
+
+def _notes_context(path):
+    normalized = os.path.normcase(os.path.realpath(os.path.abspath(path)))
+    return hmac.new(_NOTES_CONTEXT_SECRET, normalized.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _read_notes_snapshot(path):
+    """The editor's content and revision always describe the same bytes.
+
+    Only a genuinely missing sidecar becomes an empty draft. Decode and I/O
+    failures propagate so this boundary never inherits the native fallback.
+    """
+    try:
+        with open(path, "rb") as stream:
+            raw = stream.read()
+    except FileNotFoundError:
+        return _empty_notes(), hashlib.sha256(b"missing").hexdigest()
+    return _decode_notes(raw), hashlib.sha256(b"present:" + raw).hexdigest()
+
+
+def _notes_revision(path):
+    return _read_notes_snapshot(path)[1]
+
+
 def _op_form_notes_state(payload):
     """``form/notes/state`` — load the sidecar (or the empty default) and
     stamp ``scene`` the same way ``_handle_edit_notes`` does when it is
@@ -170,7 +201,10 @@ def _op_form_notes_state(payload):
     if not notes_path:
         return {"error": "no_scene_path"}
 
-    notes = load_notes(notes_path)
+    try:
+        notes, revision = _read_notes_snapshot(notes_path)
+    except (OSError, ValueError, UnicodeError):
+        return {"error": "notes_unreadable"}
     scene_base = notes.get("scene") or _notes_scene_base(doc)
 
     todos = [
@@ -181,6 +215,8 @@ def _op_form_notes_state(payload):
         "notes_text": notes.get("notes", ""),
         "todos": todos,
         "scene_base": scene_base,
+        "context": _notes_context(notes_path),
+        "revision": revision,
     }
 
 
@@ -199,12 +235,27 @@ def _op_form_notes_submit(payload):
     if not notes_path:
         return {"error": "no_scene_path"}
 
-    original = load_notes(notes_path)
+    context, revision = payload.get("context"), payload.get("revision")
+    if not isinstance(context, str) or not context or not isinstance(revision, str) or not revision:
+        return {"ok": False, "error": "notes_context_required"}
+    if not hmac.compare_digest(context.encode("utf-8"), _notes_context(notes_path).encode("ascii")):
+        return {"ok": False, "error": "scene_changed"}
+    try:
+        original, current_revision = _read_notes_snapshot(notes_path)
+        if not hmac.compare_digest(revision.encode("utf-8"), current_revision.encode("ascii")):
+            return {"ok": False, "error": "notes_changed"}
+    except (OSError, ValueError, UnicodeError):
+        return {"ok": False, "error": "notes_unreadable"}
     merged = webbridge.merge_notes_submission(
         original, payload.get("notes_text"), payload.get("todos"))
     if not merged.get("scene"):
         merged["scene"] = _notes_scene_base(doc)
 
+    try:
+        if revision != _notes_revision(notes_path):
+            return {"ok": False, "error": "notes_changed"}
+    except (OSError, ValueError, UnicodeError):
+        return {"ok": False, "error": "notes_unreadable"}
     if not save_notes(notes_path, merged):
         return {"ok": False, "error": "Failed to save notes file."}
     return {"ok": True}
@@ -274,7 +325,12 @@ def _op_form_settings_state(payload):
     except (TypeError, ValueError):
         render_notify = True
 
+    artist_name = GlobalSettings.load_artist_name()
+    if not isinstance(artist_name, str):
+        artist_name = ""
+
     return {
+        "artist_name": artist_name,
         "fps": {
             "value": int(fps_value),
             "options": list(webbridge.SETTINGS_FPS_OPTIONS),
@@ -314,6 +370,8 @@ def _op_form_settings_submit(payload):
         updates = webbridge.validate_settings_submit(
             payload, fps_locked=fps_locked, snapshot_dir_locked=snap_dir_locked)
 
+        if "artist_name" in updates:
+            GlobalSettings.save_artist_name(updates["artist_name"])
         if "standard_fps" in updates:
             GlobalSettings.set_standard_fps(updates["standard_fps"])
         if "comp_target" in updates:
@@ -502,7 +560,7 @@ def _op_palette_actions(payload):
     PALETTE_ACTIONS``) plus live ``enabled``/``reason`` gating: whether a
     document is open/saved, and the current violation count for each
     Quick Fix action's check_id (a single ``run_all_checks`` pass reused
-    across all four — cheaper than four separate QC runs). Read-only.
+    across all five — cheaper than five separate QC runs). Read-only.
     """
     from sentinel.ui.flows import _current_module
 
@@ -515,8 +573,16 @@ def _op_palette_actions(payload):
         for check_id in _PALETTE_FIX_CHECK_ID.values():
             pair = registry_results.get(check_id) or {}
             qc_counts[check_id] = count_violations(check_id, pair.get("legacy_result"))
+        # fps_range and rs_colorspace are both document-scoped fixes whose
+        # action id (fix_fps / fix_rs_colorspace) differs from their
+        # check_id, so they're not in _PALETTE_FIX_CHECK_ID's values (that
+        # dict maps action_id -> check_id for the three per-object fixes)
+        # and need their own explicit lookup here.
         fps_pair = registry_results.get("fps_range") or {}
         qc_counts["fps_range"] = count_violations("fps_range", fps_pair.get("legacy_result"))
+        rs_colorspace_pair = registry_results.get("rs_colorspace") or {}
+        qc_counts["rs_colorspace"] = count_violations(
+            "rs_colorspace", rs_colorspace_pair.get("legacy_result"))
 
     return {"actions": webbridge.palette_actions_payload(doc is not None, doc_saved, qc_counts)}
 
@@ -550,10 +616,15 @@ def _palette_open_reports(doc, action_id):
 def _palette_fix(doc, action_id):
     """Runs the exact same fix_* engine call the panel's own
     ``_qc_fix_lights``/``_qc_fix_cam``/``_qc_fix_unused_mats``/
-    ``_qc_fix_fps_range`` handlers make. ``fix_lights``/``fix_cameras``
-    never had a native confirm (reversible, low-impact, status-bar-only —
-    see panel.py). ``fix_materials``/``fix_fps`` DO have a native
-    ``QuestionDialog`` gate (DECISIÓN, "must stay" per
+    ``_qc_fix_fps_range`` handlers make. ``fix_lights``/``fix_cameras``/
+    ``fix_rs_colorspace`` never had a native confirm (reversible in a
+    single undo, status-bar-only — see panel.py, and for
+    ``fix_rs_colorspace`` the ``PALETTE_ACTIONS`` comment in forms.py:
+    it only ever writes the two whitelisted RS colorspace constants,
+    never deletes anything or rewrites render presets, so it doesn't meet
+    the DECISIÓN bar the two confirmed fixes were classified against).
+    ``fix_materials``/``fix_fps`` DO have a native ``QuestionDialog`` gate
+    (DECISIÓN, "must stay" per
     docs/superpowers/specs/2026-07-19-popup-triage.md:101-102 — destructive
     material delete, and a preview+confirm before rewriting every render
     preset's FPS/range) — this function is only ever reached for those two
@@ -568,6 +639,13 @@ def _palette_fix(doc, action_id):
         if not fixes:
             return {"ok": True, "message": "No FPS/range issues to fix"}
         return {"ok": True, "message": f"Applied {len(fixes)} FPS/range fix(es)"}
+
+    if action_id == "fix_rs_colorspace":
+        result = fix_rs_colorspace(doc)
+        written = (result or {}).get("written", 0)
+        if not written:
+            return {"ok": True, "message": "No colorspace mismatches to fix"}
+        return {"ok": True, "message": f"Fixed {written} colorspace mismatch(es)"}
 
     check_id = _PALETTE_FIX_CHECK_ID[action_id]
     rules_context = active_rules_for_doc(doc)
@@ -638,7 +716,8 @@ def _op_palette_run(payload):
         return _palette_open_hub(doc)
     if action_id in _PALETTE_REPORT_PAGES:
         return _palette_open_reports(doc, action_id)
-    if action_id in _PALETTE_FIX_CHECK_ID or action_id == "fix_fps":
+    if action_id in _PALETTE_FIX_CHECK_ID or action_id in (
+            "fix_fps", "fix_rs_colorspace"):
         if not doc:
             return {"ok": False, "error": "No active document"}
         return _palette_fix(doc, action_id)

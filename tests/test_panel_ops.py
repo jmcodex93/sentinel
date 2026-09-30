@@ -101,7 +101,7 @@ class TestValidateSelectCheckId:
     def test_selectable_check_ids_pass(self, sentinel_module):
         from sentinel.ui import panel_ops
         for check_id in ("lights", "vis", "keys", "cam", "unused_mats",
-                          "names", "cross_aspect"):
+                          "names", "cross_aspect", "rs_colorspace"):
             assert panel_ops._validate_select_check_id(check_id) is None
 
     def test_info_only_check_id_rejected(self, sentinel_module):
@@ -163,10 +163,21 @@ class TestQcFlaggedItems:
         ]
         assert panel_ops._qc_flagged_items("cross_aspect", violations) == [obj_a, obj_b]
 
+    def test_rs_colorspace_dedupes_by_material(self, sentinel_module):
+        from sentinel.ui import panel_ops
+        mat_a, mat_b = object(), object()
+        violations = [
+            {"material": mat_a, "file": "a.png"},
+            {"material": mat_a, "file": "b.png"},
+            {"material": mat_b, "file": "c.png"},
+        ]
+        assert panel_ops._qc_flagged_items("rs_colorspace", violations) == [mat_a, mat_b]
+
     def test_none_legacy_result_returns_empty_list(self, sentinel_module):
         from sentinel.ui import panel_ops
         assert panel_ops._qc_flagged_items("lights", None) == []
         assert panel_ops._qc_flagged_items("cross_aspect", None) == []
+        assert panel_ops._qc_flagged_items("rs_colorspace", None) == []
 
 
 class TestQcAcceptUnsavedDocument:

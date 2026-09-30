@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import math
 from dataclasses import dataclass
 from numbers import Integral, Real
 from pathlib import Path
@@ -54,6 +55,13 @@ DEFAULTS = {
     # pointing at the same file the day that ships. Reset All is *a*
     # consumer of the studio template scene, not its owner.
     "template_scene": "",
+    # v1.37: folder pattern for new shots, derived at publish time from where
+    # the blessed shot lived relative to the project folder. "" = not declared.
+    "shot_pattern": "",
+    # v1.37: publish provenance — who published the standard and when. Replace
+    # semantics (NOT in MAP_MERGE_KEYS): a republish is a new provenance, not
+    # a merge of authors. Informational; no engine consumer reads it to decide.
+    "published": {},
 }
 
 _RULES_CACHE: dict[str, dict[str, Any]] = {}
@@ -342,6 +350,35 @@ def _primary_source(field_sources: dict[str, str]) -> str:
     return "defaults"
 
 
+# Path-segment hygiene shared by shot_pattern validation and (via import in
+# projectstd) shot names. Rules studied from the Work Flow plugin's structure
+# editor (boghma.com, 2026-08 — concepts only, no code seen): a segment that
+# cannot exist as a Windows folder is rejected at validation time instead of
+# being discovered on the artist's machine. Cross-platform is a project
+# constraint (macOS + Windows).
+_WINDOWS_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10)),
+}
+_INVALID_SEGMENT_CHARS = set('<>:"|?*')
+
+
+def valid_path_segment(segment: str) -> bool:
+    """True when ``segment`` can be a folder/file name on every platform we
+    ship on. ``{shot}`` placeholders are stripped before judging so the
+    pattern segment ``{shot}_v001.c4d`` is judged on its literal part."""
+    literal = segment.replace("{shot}", "s")
+    if not literal or literal in (".", ".."):
+        return False
+    if literal != literal.rstrip(". "):
+        return False
+    if any(ch in _INVALID_SEGMENT_CHARS for ch in literal):
+        return False
+    if literal.split(".")[0].upper() in _WINDOWS_RESERVED:
+        return False
+    return True
+
+
 def _validate_key(key: str, value: Any) -> tuple[bool, Any, str | None]:
     if key == "standard_fps":
         if _is_int_like(value):
@@ -382,6 +419,26 @@ def _validate_key(key: str, value: Any) -> tuple[bool, Any, str | None]:
             return True, value.strip(), None
         return False, None, "expected a non-empty path string"
 
+    if key == "shot_pattern":
+        if not isinstance(value, str) or not value.strip():
+            return False, None, "expected a non-empty pattern string"
+        pattern = value.strip().replace("\\", "/")
+        if "{shot}" not in pattern:
+            return False, None, "pattern must contain {shot}"
+        if pattern.startswith("/") or ":" in pattern.split("/")[0]:
+            return False, None, "pattern must be relative to the project folder"
+        segments = [s for s in pattern.split("/") if s]
+        if not segments or not all(valid_path_segment(s) for s in segments):
+            return False, None, "pattern contains an invalid path segment"
+        return True, pattern, None
+
+    if key == "published":
+        if not isinstance(value, dict):
+            return False, None, "expected an object"
+        if not all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+            return False, None, "expected string keys and values"
+        return True, dict(value), None
+
     return False, None, "unknown key"
 
 
@@ -398,8 +455,15 @@ def _validate_safe_area_insets(value: Any) -> tuple[bool, Any, str | None]:
         for side in ("top", "bottom", "left", "right"):
             if side not in insets:
                 return False, None, f"format '{fmt_id}' missing '{side}'"
-            if not _is_number(insets[side]):
-                return False, None, f"format '{fmt_id}' side '{side}' expected a number"
+            v = insets[side]
+            if not _is_number(v) or not math.isfinite(v):
+                return False, None, f"format '{fmt_id}' side '{side}' expected a finite number"
+            if not (0 <= v < 1):
+                return False, None, f"format '{fmt_id}' side '{side}' must be in [0, 1)"
+        if insets["left"] + insets["right"] >= 1:
+            return False, None, f"format '{fmt_id}': left + right must be < 1"
+        if insets["top"] + insets["bottom"] >= 1:
+            return False, None, f"format '{fmt_id}': top + bottom must be < 1"
         normalized[fmt_id] = {
             "top": insets["top"],
             "bottom": insets["bottom"],

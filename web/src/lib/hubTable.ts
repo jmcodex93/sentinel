@@ -1,4 +1,4 @@
-import type { HubAsset, HubMeta, HubVariant } from "../types";
+import type { HubAsset, HubCollectStartResponse, HubMeta, HubVariant } from "../types";
 
 /**
  * Pure sort/facet/resize helpers for the Asset Hub table (Task 5,
@@ -431,4 +431,32 @@ export function sanitizeColWidths(value: unknown): Partial<Record<ResizableColum
 export function gridColumnsFor(colWidths: Partial<Record<ResizableColumn, number>>): string {
   const w = (id: ResizableColumn) => `${colWidths[id] ?? DEFAULT_COL_WIDTHS[id]}px`;
   return `40px minmax(160px, 1fr) ${w("type")} ${w("res")} ${w("status")} ${w("size")} ${w("vram")} ${w("usedby")}`;
+}
+
+/**
+ * A `hub/collect_start` refusal the artist fixes on the form itself, or
+ * `null` for everything else (those keep going to the error screen).
+ *
+ * `target_not_empty`: the server refuses to deliver on top of an existing
+ * delivery (Windows acceptance 2026-09-24, P1 — a second collect replaced
+ * the first delivery's manifest). Retrying the same folder can never
+ * succeed, so an error screen with Retry would be a dead end.
+ */
+export function collectStartRefusal(res: HubCollectStartResponse): { message: string } | null {
+  if (res.ok || res.error !== "target_not_empty") return null;
+  const where = res.target_dir ? `"${res.target_dir}"` : "That folder";
+  return {
+    message: `${where} already has files in it. Choose an empty or new folder — Sentinel never delivers on top of an existing delivery.`,
+  };
+}
+
+/**
+ * `/thumb` URL for a row. The server serves thumbnails with `max-age`, and
+ * the key alone is stable per asset — without the version a texture replaced
+ * at the same path kept its old thumbnail after Refresh (Windows acceptance
+ * 2026-09-24). The server ignores `v`; it only busts the webview cache.
+ */
+export function thumbUrl(asset: Pick<HubAsset, "key" | "thumb_version">): string {
+  const base = `/thumb?key=${encodeURIComponent(asset.key)}`;
+  return asset.thumb_version ? `${base}&v=${encodeURIComponent(asset.thumb_version)}` : base;
 }
