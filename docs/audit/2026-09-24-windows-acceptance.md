@@ -47,6 +47,18 @@ Two unexpected C4D exits were recorded without evidence against Sentinel (no App
   - First Collect into a new `Entrega á B`: delivered. Deliver Again into the same folder: refused with the warn toast, form kept; SHA256 of `B.c4d`, `sentinel_manifest.json` and `tex/textura B.png` identical before and after, no file added.
   - Collect into a fresh folder holding only `.DS_Store`: delivered normally.
 
+## Automated test suite on Windows — 2026-09-30
+
+`.github/workflows/verify.yml` runs pytest on `windows-latest` alongside ubuntu and macOS (GitHub-hosted runner, Python 3.11, only `pytest` installed).
+
+- **First run** (PR #14, run 36717060800): 16 failed, 1762 passed. The failures predated that PR and had one cause: path separators.
+- **Fixed in PR #15** (merged `bff726e`). Each case was classified before touching anything:
+  - *Production wrong — 10 tests, fixed in code.* Each function produced a path with mixed separators on Windows. `assets.find_res_variants` normalized to `/` (as its docstring promises) and then joined with `os.path.join`, which adds `\` on Windows; it now joins with `posixpath.join`. Shader data was never affected, because `hub/switch_res` only takes the basename from that path. `postrender.report_path_for_doc` and `_render_history_target` normalized *local* paths to `/` before joining, so the report path shown in the Validate dialog read `C:/shots\x_sentinel_render_report.json`; they now keep the native form. The deliberate `/` normalization of render paths from another OS in the manifest is unchanged. `variant_tag._render_output_folder` returned `$prj` (native) + what the artist typed (`/images`) as-is, and that folder appears in the tag's report row; it now goes through `os.path.normpath`.
+  - *Test wrong — 6 tests, fixed in the tests (approved before editing).* Production was correct and the test hardcoded POSIX or expected the raw path. `get_baseline_path` and `render_history_path` join natively, like the other sidecars. `resolve_output_template` and the manifest `folder` are `/` by design. `payload.verify_payload` reports canonical `/` ids. The collect job's `document_path` is a `normcase`+`abspath` identity key on both sides.
+- **Result:** run 36718693740 (PR #15) and run 36719298189 (PR #16) — all four jobs green; Windows **1778 passed, 1 skipped, 0 failed**. The one skip is `tests/test_slate.py`, which needs numpy and Pillow; CI does not install them, and it skips on macOS and Linux the same way.
+
+This is unit-test coverage on a Windows runner, not host acceptance: no Cinema 4D runs there, so it says nothing about the plugin inside C4D on Windows. The retest below still closes this record.
+
 ## Remaining for a Windows retest
 
-Repeat on a new candidate built from `fix/windows-acceptance`: Collect into an occupied folder, thumbnail after same-path replacement, clean install and `--list` from a normal user session, a UNC/SMB path with spaces and accents, the Frame tag inspection keeping the `_bugreports` text if C4D exits, and rollback when a genuine previous backup exists. The external Python with OpenEXR/numpy/Pillow must be discoverable at C4D startup; the run only proved it by prepending a venv to the process `PATH`.
+Repeat on a new candidate built from `main` (it now includes `fix/windows-acceptance` and the separator fixes above): Collect into an occupied folder, thumbnail after same-path replacement, clean install and `--list` from a normal user session, a UNC/SMB path with spaces and accents, the Frame tag inspection keeping the `_bugreports` text if C4D exits, and rollback when a genuine previous backup exists. The external Python with OpenEXR/numpy/Pillow must be discoverable at C4D startup; the run only proved it by prepending a venv to the process `PATH`.
