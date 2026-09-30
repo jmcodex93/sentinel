@@ -126,6 +126,33 @@ def test_python_item_found(tmp_path):
     assert item["status"] == doctor.OK
 
 
+def test_python_item_bare_name_resolved_on_path(tmp_path, monkeypatch):
+    """Windows acceptance round 2 (2026-09-30): discovery returns the bare
+    name ``python`` when the interpreter comes from PATH, and the EXR
+    converter ran fine with it — but Doctor tested ``os.path.exists("python")``
+    and warned that no Python was found. A bare name is resolved on PATH, the
+    way the converter's subprocess resolves it."""
+    real = tmp_path / "Scripts" / "python.exe"
+    real.parent.mkdir()
+    real.write_text("x")
+    monkeypatch.setattr(doctor.shutil, "which",
+                        lambda name: str(real) if name == "python" else None)
+    item = doctor.build_python_item("python")
+    assert item["status"] == doctor.OK
+    assert str(real) in item["detail"]
+
+
+def test_python_item_bare_name_not_on_path_warns(monkeypatch):
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: None)
+    item = doctor.build_python_item("python")
+    assert item["status"] == doctor.WARN
+
+
+def test_python_item_absolute_path_that_is_gone_warns(tmp_path):
+    item = doctor.build_python_item(str(tmp_path / "gone" / "python3"))
+    assert item["status"] == doctor.WARN
+
+
 def test_python_item_missing_warns():
     item = doctor.build_python_item(None)
     assert item["status"] == doctor.WARN
