@@ -555,7 +555,11 @@ def _load_render_history(path):
 
 
 def _render_history_target(base_or_folder):
-    base_or_folder = _normalized_path(base_or_folder)
+    # Deliberately NOT ``_normalized_path``: this is a path ON THIS MACHINE
+    # (the open scene or the folder the artist just picked), not a render path
+    # authored on another OS. Normalizing it to ``/`` and then ``os.path.join``-ing
+    # produced a mixed ``C:/shots\x_render_history.json`` on Windows.
+    base_or_folder = str(base_or_folder or "")
     if not base_or_folder:
         return None
     # A render folder can legitimately contain a dot in its leaf name (e.g. ".../final.v2"),
@@ -592,9 +596,14 @@ def append_render_history(base_or_folder, summary):
 
 
 def report_path_for_doc(doc_path, audit_folder):
-    """Return the render report path for a saved doc, or audit folder fallback."""
-    doc_path = _normalized_path(doc_path)
-    audit_folder = _normalized_path(audit_folder)
+    """Return the render report path for a saved doc, or audit folder fallback.
+
+    Both inputs are local paths (the open scene, the folder the artist picked),
+    so they keep their native form — see ``_render_history_target``. The
+    result is shown to the artist ("Report: ...") and must not come back with
+    mixed separators on Windows."""
+    doc_path = str(doc_path or "")
+    audit_folder = str(audit_folder or "")
     if doc_path:
         folder = os.path.dirname(doc_path)
         name_no_ext = os.path.splitext(os.path.basename(doc_path))[0]

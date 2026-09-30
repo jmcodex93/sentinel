@@ -4,6 +4,7 @@ Stdlib only. NEVER import c4d here: C4D reads live in the thin adapter in
 ui/flows.py (same pattern as manifest.py / postrender.py).
 """
 import os
+import posixpath
 import re
 import zipfile
 
@@ -632,7 +633,10 @@ def find_res_variants(records, list_dir=os.listdir):
     (`D:\\proj\\tex\\a.png`) opened on macOS has no separators
     `os.path.dirname`/`os.path.basename` recognize there, so without the
     normalization `dirname` would return `''`, `list_dir('')` would list
-    the cwd, and the record would silently drop out of every group.
+    the cwd, and the record would silently drop out of every group. The
+    join is `posixpath.join`, not `os.path.join`: `dir_path` is already in
+    `/` form, and on Windows `os.path.join` would glue it to the entry with
+    a `\\`, handing back a mixed-separator path (`/proj/tex\\a_4k.png`).
     """
     dir_listings = {}
     result = {}
@@ -669,14 +673,14 @@ def find_res_variants(records, list_dir=os.listdir):
                     continue
                 e_prefix, e_px, e_suffix = entry_split
                 if e_prefix.lower() == prefix_key and e_suffix.lower() == suffix_key:
-                    group.append({"path": os.path.join(dir_path, entry), "px": e_px})
+                    group.append({"path": posixpath.join(dir_path, entry), "px": e_px})
 
             bare_name = prefix.rstrip("_-.") + suffix
             if bare_name.lower() != basename.lower():
                 entries_lower = {e.lower(): e for e in entries}
                 found = entries_lower.get(bare_name.lower())
                 if found:
-                    group.append({"path": os.path.join(dir_path, found), "px": None})
+                    group.append({"path": posixpath.join(dir_path, found), "px": None})
         else:
             stem, ext = os.path.splitext(basename)
             candidate_prefixes = {(stem + d).lower() for d in ("_", "-", ".")}
@@ -688,10 +692,10 @@ def find_res_variants(records, list_dir=os.listdir):
                     continue
                 e_prefix, e_px, e_suffix = entry_split
                 if e_prefix.lower() in candidate_prefixes and e_suffix.lower() == ext_key:
-                    group.append({"path": os.path.join(dir_path, entry), "px": e_px})
+                    group.append({"path": posixpath.join(dir_path, entry), "px": e_px})
 
             if group:
-                group.append({"path": os.path.join(dir_path, basename), "px": None})
+                group.append({"path": posixpath.join(dir_path, basename), "px": None})
 
         if len(group) < 2:
             continue
