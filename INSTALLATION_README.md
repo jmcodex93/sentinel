@@ -4,6 +4,16 @@ This candidate contains the complete `plugin/` payload and a standard-library
 installer. Close every target Cinema 4D process before installing or rolling
 back. A full restart is required; **Reload Python Plugins is not sufficient**.
 
+## Requirements
+
+- **Cinema 4D 2026.4 or newer** with Redshift. On Windows, C4D 2026.3.x can
+  close when the Sentinel Frame tag is expanded in the Attribute Manager;
+  Doctor warns about it. 2026.4 does not have the problem.
+- A Python 3 to run `install.py` (any recent version).
+- For snapshot EXR → PNG conversion only: an external Python with OpenEXR,
+  numpy and Pillow (see *Snapshot EXR conversion* below). Everything else
+  runs inside Cinema 4D's own Python.
+
 ## Install or update
 
 From the extracted candidate directory:
@@ -53,6 +63,43 @@ closed, keeping `sentinel_panel.pyp`, `sentinel/`, `res/`, `abc_retime/`, `c4d/`
 
 After starting Cinema 4D, open Sentinel's **Doctor** from the panel footer to
 check the running payload and environment.
+
+## Snapshot EXR conversion (external Python)
+
+Snapshot Watch converts Redshift EXR snapshots to PNG with an ACES transform
+that Cinema 4D's own Python can't do. It runs in a separate Python that must
+have **OpenEXR, numpy and Pillow**. Without it the rest of Sentinel works
+normally; Doctor reports "No system Python 3 with OpenEXR + numpy + Pillow".
+
+Sentinel looks for that Python when Cinema 4D starts, in these places only:
+
+| System | Where Sentinel looks |
+|---|---|
+| Windows | `python` / `python3` on the PATH, `C:\Program Files\Python*\python.exe`, `%LOCALAPPDATA%\Programs\Python\Python*\python.exe` |
+| macOS | `/usr/bin/python3`, `/usr/local/bin/python3`, `/opt/homebrew/bin/python3` (not the PATH) |
+
+It tries each one and uses the first that imports all three libraries.
+
+**Windows.** OpenEXR has no package for Python 3.14 yet (`pip` answers "No
+matching distribution"), so install **Python 3.12** from python.org with the
+default per-user option, then:
+
+```powershell
+py -3.12 -m pip install OpenEXR numpy Pillow
+py -3.12 -c "import OpenEXR, numpy, PIL; print('OK')"
+```
+
+**macOS.** Install the libraries into one of the three interpreters above, for
+example:
+
+```bash
+/usr/local/bin/python3 -m pip install OpenEXR numpy Pillow
+```
+
+Then **restart Cinema 4D** (the search runs at startup) and check Doctor: the
+"External Python (EXR converter)" row should say *Found* with the path. In
+RenderView, enable *Save snapshots as EXR* (Preferences → Snapshots); Redshift
+does not persist that option between sessions.
 
 ## Candidate identity
 

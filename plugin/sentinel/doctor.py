@@ -76,6 +76,27 @@ def build_c4d_version_item(version_int, tested=TESTED_C4D_MAJORS):
         "bug report." % " / ".join(str(t) for t in tested))
 
 
+def build_known_issue_items(version_int, system):
+    """Known problems of a specific host, as Doctor items (empty when none).
+
+    Windows + C4D 2026.3.x: expanding the Sentinel Frame tag in the Attribute
+    Manager closed C4D (native null call in gui.module, reproduced by hand in
+    the Windows acceptance, 2026-10-01); 2026.4.0 does not crash and is the
+    studio standard. See docs/audit/2026-09-24-windows-acceptance.md."""
+    items = []
+    try:
+        version = int(version_int)
+    except (TypeError, ValueError):
+        return items
+    if system == "Windows" and 2026300 <= version < 2026400:
+        items.append(_item(
+            "known_issue_frame", "Known issue (this C4D version)", WARN,
+            "Windows + Cinema 4D 2026.3: expanding the Sentinel Frame tag in "
+            "the Attribute Manager can close Cinema 4D.",
+            "Update to Cinema 4D 2026.4 or newer — the studio standard."))
+    return items
+
+
 def build_payload_item(root_dir):
     """Check the running install's payload integrity (res triplet, package,
     abc_retime). ``root_dir`` is the folder containing sentinel_panel.pyp."""
@@ -405,6 +426,7 @@ def run_all_diagnostics():
 
     items = [
         build_c4d_version_item(version_int),
+        *build_known_issue_items(version_int, platform.system()),
         build_payload_item(root),
         build_settings_item(settings_path, legacy_path),
         build_renderers_item(renderers),

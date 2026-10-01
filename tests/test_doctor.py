@@ -239,3 +239,25 @@ def test_check_for_update_offline_degrades(monkeypatch):
     item = doctor.check_for_update(current_version="1.9.0", timeout=1)
     assert item["status"] == doctor.INFO
     assert item["id"] == "update"
+
+
+# ── Known host issues ────────────────────────────────────────────────────────
+
+
+def test_windows_2026_3_warns_about_the_frame_tag_crash():
+    """Windows acceptance (2026-09-30 / 2026-10-01): on Windows with C4D
+    2026.3.4, expanding the Sentinel Frame tag in the Attribute Manager closed
+    C4D (native null call, reproduced by hand); 2026.4.0 is fine. The studio
+    standardised on 2026.4.0, so a machine left on 2026.3.x must be told."""
+    items = doctor.build_known_issue_items(2026304, "Windows")
+    assert len(items) == 1
+    assert items[0]["status"] == doctor.WARN
+    assert "2026.4" in items[0]["hint"]
+    assert "Frame" in items[0]["detail"]
+
+
+def test_no_known_issue_elsewhere():
+    assert doctor.build_known_issue_items(2026400, "Windows") == []
+    assert doctor.build_known_issue_items(2026299, "Windows") == []
+    assert doctor.build_known_issue_items(2026304, "Darwin") == []
+    assert doctor.build_known_issue_items(None, "Windows") == []
