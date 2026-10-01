@@ -5,7 +5,7 @@ import c4d
 
 from sentinel.common.cache import check_cache
 from sentinel.common.constants import DEFAULT_OBJECT_NAMES, MAX_OBJECTS_PER_CHECK
-from sentinel.common.helpers import _any_ancestor_named, _iter_objs, safe_print
+from sentinel.common.helpers import _any_ancestor_named, _iter_objs, container_ids_of_type, safe_print
 from sentinel.qc.results import (
     CheckResult,
     cached_result as _cached_result,
@@ -396,7 +396,7 @@ def check_unused_materials(doc):
                     try:
                         bc = tag.GetDataInstance()
                         if bc:
-                            for desc_id, _ in bc:
+                            for desc_id in container_ids_of_type(bc, c4d.DA_ALIASLINK, c4d.NOTOK):
                                 link = bc.GetLink(desc_id, doc)
                                 if link and link.IsInstanceOf(c4d.Mbase):
                                     used_mats.add(link.GetName())
@@ -411,7 +411,7 @@ def check_unused_materials(doc):
                     try:
                         bc = shader.GetDataInstance()
                         if bc:
-                            for desc_id, _ in bc:
+                            for desc_id in container_ids_of_type(bc, c4d.DA_ALIASLINK, c4d.NOTOK):
                                 link = bc.GetLink(desc_id, doc)
                                 if link and link.IsInstanceOf(c4d.Mbase):
                                     used_mats.add(link.GetName())
