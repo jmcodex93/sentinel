@@ -121,6 +121,6 @@ Reading: the crash is in C4D's native GUI code (null function call while buildin
 
 Acceptance on **C4D 2026.4.0 (clean profile, Sentinel only)** is complete except the visual check of RenderView's EXR box. Still open:
 
-1. **C4D 2026.3.4 on Windows:** to know whether the Frame crash needs a Sentinel workaround or is a C4D bug fixed in 2026.4, expand MAIN on a Sentinel Frame tag on 2026.3.4 with a clean profile and Sentinel as the only plugin. If it crashes, bisect the Frame description (hide the swatch, the button, the column grid) on that version; if it passes, re-add Boghma, then Arnold/Octane. Otherwise document 2026.3.4 on Windows as unsupported for the Frame tag.
+1. **C4D 2026.3.4 on Windows — not pursued (decision 2026-10-01):** the studio works on **C4D 2026.4.0**. The Frame-tag crash on Windows 2026.3.4 stays a documented known limitation of that version; it is not investigated further unless someone has to stay on it (then: 2026.3.4 with a clean profile and Sentinel alone, and bisect the Frame description if it still crashes).
 2. **Other plugins restored on 2026.4.0:** the PASS covers Sentinel alone; repeat the Frame and Hub checks with the studio's usual plugins loaded.
 3. **`http.handler_failed`:** capture the full console text if it appears again.
