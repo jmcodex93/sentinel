@@ -59,6 +59,44 @@ Two unexpected C4D exits were recorded without evidence against Sentinel (no App
 
 This is unit-test coverage on a Windows runner, not host acceptance: no Cinema 4D runs there, so it says nothing about the plugin inside C4D on Windows. The retest below still closes this record.
 
+## Round 2 — 2026-09-30
+
+Second external run on the same machine (report `aceptacion-sentinel-windows-ronda2.md`; its evidence folder was not shared with this record). Candidate `5c32d9c07bf7` (build `5c32d9c07bf7-20260930T131907Z`); ZIP SHA256 matched, 122/122 package files and 120/120 installed files verified, also inside the running C4D process. Windows 11 Pro 25H2 build 26200.9457, C4D 2026.3.4, Redshift DLL 2026.9.0.0 (updated since round 1).
+
+**Verdict: no global acceptance**, because the full UI runs of the Frame inspection and Hub Switch res ended in C4D crashes. No functional regression was found, and every round-1 finding is closed.
+
+| Area | Result |
+|---|---|
+| Install from a normal session: `--list`, `--target` with a real backup of `323049e`, loaded identity | PASS |
+| Rollback to `323049e` and reinstall of `5c32d9c`, both verified inside C4D | PASS |
+| Collect into an occupied folder (round-1 P1): warning, form kept, hashes identical, no new file | PASS |
+| Collect into folders holding only `desktop.ini` / only `Thumbs.db`; reopen of the delivery | PASS |
+| Hub thumbnail after same-path replacement + Refresh | PASS |
+| Validate Render Output on a real 3-frame sequence: report path only with `\` | PASS |
+| Variants render-all with `$prj/images`: two PNGs, starting option kept, folder with `\` (the report goes to the status bar; the retest list wrongly said "tag row") | PASS |
+| Notes and Collect on a real UNC share (`\\deepspace9.local\home`, spaces and accents) | PASS (engine/handlers inside C4D; the visual draft on UNC not covered) |
+| Real RenderView EXR → exactly one PNG, no backlog reprocessing on off/on | PASS, with the external Python exposed only to the C4D process |
+| Regression: Panel, Doctor, Settings with accents across restart, Notes A→B→A + external edit, Frame Takes + one Undo, Pin, Variants save/reopen, AOV one Undo | PASS (Pin/Variants/AOV/Frame through their engines, not every button) |
+| Hub Switch res, full UI | FAIL — C4D crashed when selecting the 2k row, before pressing Switch res. The handler alone passed 2k→4k, `ok`, save/reopen and one Undo |
+| Frame tag inspection, full UI | FAIL — C4D crashed when expanding MAIN in the Attribute Manager |
+| Doctor with the external Python on PATH | FAIL — plugin defect, see below |
+| EXR conversion on a normal startup | PENDING — no suitable external Python is discoverable (environment) |
+
+**Crashes — open, not attributed.** Both are `ACCESS_VIOLATION 0xC0000005` at address `0x0` with the first stack frame in `gui.module.xdl64` (16:09:28 expanding MAIN on the Frame tag; 16:55:14 clicking a row in the Hub webview). The report classifies them as C4D/environment on the user's statement; the cause was not isolated and other plugins were loaded. Round 1 also had an unexplained exit during Frame inspection, so three exits across two rounds happened while a Sentinel UI was in use — a pattern that neither proves nor rules out Sentinel. Evidence needed: the two `_BugReport.txt` texts, and the same two actions repeated with only Sentinel installed.
+
+*Crash report analysis (2026-10-01, from the full evidence folder):*
+- Both reports have the **same faulting stack, offset for offset**: on the main thread, during window-message processing, `gui.module.xdl64` calls through a null function pointer (`rip = 0`). There is **no `python311.dll` frame** on that thread, so no Sentinel Python code was executing at the moment of the fault. Two different actions (expanding a tag in the Attribute Manager, clicking a row in the Hub webview) end at one identical native site.
+- Both happened **1–3 s after the tester's automated controller captured the window and clicked**: the screenshot before the Frame crash was written at 16:09:27, the crash at 16:09:28.39; the Hub screenshot at 16:55:12, the crash at 16:55:14.77. The C4D Python process had `_ctypes.pyd` loaded, which Sentinel does not use (no `ctypes` anywhere in `plugin/`), so other code ran inside C4D's Python during the session. The sessions were heavy: 7 and 16 open documents (several duplicates), about 10.6 GB in use. Arnold (C4DtoA) and Octane 1.9.5 were also loaded.
+- The Critical_Log holds thousands of `CRITICAL: Stop [ge_container.h(523)]` (plus `ge_container.h(602)` and `basecontainer.cpp(353)`) in bursts of roughly 440/920/1800 that line up with scene-scanning actions (Collect, the scripted native phases, Variants render, Hub). **Measured live on macOS (C4D 2026.304, 2026-10-01, C4D stdout captured): Sentinel produces them.** With a one-cube scene open and the panel closed: 0. Opening the panel: 928 (882 × 523, 36 × 602, 10 × 353), the same burst size as on Windows. Sources: `textures.py` and `checks/scene.py` iterated every `(id, value)` of material/object/tag/shader containers and called `GetFilename` / `GetLink` on every id whatever its type (the 523/602 stops); and the texture scan read `obj[root, REDSHIFT_FILE_PATH]` for the five RS file refs on every object, Redshift or not (the 353 stops, 5 per object per scan). Fixed on `fix/doctor-python-on-path`: the scans walk only the ids of the requested type (`GetIndexId`/`GetType`), and the RS refs are read only when the object's container has that root. After the fix: 0 stops with panel, QC and Hub, also on a scene with a Redshift dome light whose HDR is still detected (two owners, as before). The stops are assertions C4D logs and continues past; nothing links them to the null call.
+- The same live run showed every Sentinel dialog `Timer` returning `True`, which C4D 2026.304 rejects with `TypeError: Timer expected None, not bool` on every 25 ms tick (1410 tracebacks within seconds). Also fixed (0 after). Neither defect explains a null function call in `gui.module`, but both added constant work and console noise to the sessions that crashed.
+- Reading: the crash evidence does not point at Sentinel, and the timing points at the UI automation in a long, heavy session. To close it, repeat both actions **by hand** in a fresh C4D session with few documents, on a candidate with these fixes; if they pass, the crashes are not a Sentinel defect.
+
+**Doctor false warning — fixed.** Windows discovery returns the bare name `python` when the interpreter comes from PATH, and the converter's subprocess resolves it, but `doctor.build_python_item` tested `os.path.exists("python")` and warned that no Python was found while conversion worked. Doctor now resolves a bare name with `shutil.which` and shows the real path; an absolute path that no longer exists still warns. Tests failed first; mutations (no PATH resolution, accepting a path without checking it exists) each broke a test; full suite 1793 passed.
+
 ## Remaining for a Windows retest
 
-Repeat on a new candidate built from `main` (it now includes `fix/windows-acceptance` and the separator fixes above): Collect into an occupied folder, thumbnail after same-path replacement, clean install and `--list` from a normal user session, a UNC/SMB path with spaces and accents, the Frame tag inspection keeping the `_bugreports` text if C4D exits, and rollback when a genuine previous backup exists. The three production paths changed by the separator fix have only been exercised by unit tests, so check them inside C4D too: the report path shown by Validate Render Output after a validation (native `\` form, no mixed separators), the output folder in a Sentinel Variants tag's report row after rendering all options with a render path such as `$prj/images`, and Hub Switch res between two resolution variants of a texture (the shader is relinked to the right file and the scene still resolves it). The external Python with OpenEXR/numpy/Pillow must be discoverable at C4D startup; the run only proved it by prepending a venv to the process `PATH`.
+On a candidate that includes the Doctor fix:
+
+1. Doctor with the external Python on PATH reports it as found, with its resolved path.
+2. With only Sentinel as a third-party plugin: expand MAIN on a Sentinel Frame tag, and select a row in the Hub and run Switch res between two resolution variants (relinked to the right file, `ok`, one Undo). Keep `_bugreports` text for any exit. If both pass, repeat with the usual plugins loaded to see whether another plugin is involved.
+3. Make a suitable external Python (OpenEXR, numpy, Pillow) discoverable at a normal C4D startup (on PATH as `python`/`python3`, or in one of the install locations Sentinel searches), then confirm Doctor and a real EXR snapshot conversion without any process-level PATH change.

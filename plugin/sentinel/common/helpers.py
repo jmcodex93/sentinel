@@ -81,3 +81,25 @@ def _any_ancestor_named(o, names_lower):
         p = p.GetUp()
         depth += 1
     return False
+
+
+def container_ids_of_type(bc, dtype, notok=-1):
+    """Ids of the entries of ``bc`` whose data type is ``dtype``.
+
+    Walks ids with ``GetIndexId``/``GetType`` instead of iterating
+    ``(id, value)`` pairs: iterating converts every value, and calling a typed
+    getter (``GetFilename``, ``GetLink``) on an entry of another type makes C4D
+    assert. Measured live: a whole-container scan printed hundreds of
+    ``CRITICAL: Stop [ge_container.h(523)]`` per pass. ``dtype``/``notok`` are
+    passed in (``c4d.DA_FILENAME``, ``c4d.NOTOK``) so this stays c4d-free.
+    """
+    if bc is None:
+        return
+    index = 0
+    while True:
+        cid = bc.GetIndexId(index)
+        if cid == notok:
+            return
+        if bc.GetType(cid) == dtype:
+            yield cid
+        index += 1

@@ -25,7 +25,7 @@ def get_last_scan_meta():
     """Metadata dict from the most recent scan_all_texture_paths call."""
     return dict(_LAST_SCAN_META)
 
-from sentinel.common.helpers import _iter_objs, safe_print
+from sentinel.common.helpers import _iter_objs, container_ids_of_type, safe_print
 
 try:
     import maxon
@@ -528,7 +528,8 @@ def scan_all_texture_paths(doc):
             try:
                 bc = mat.GetDataInstance()
                 if bc:
-                    for desc_id, _ in bc:
+                    for desc_id in container_ids_of_type(
+                            bc, c4d.DA_FILENAME, c4d.NOTOK):
                         try:
                             fp = bc.GetFilename(desc_id)
                             if fp and str(fp).strip():
@@ -604,7 +605,8 @@ def scan_all_texture_paths(doc):
                         try:
                             bc = obj.GetDataInstance()
                             if bc:
-                                for desc_id, _ in bc:
+                                for desc_id in container_ids_of_type(
+                                        bc, c4d.DA_FILENAME, c4d.NOTOK):
                                     try:
                                         fp = bc.GetFilename(desc_id)
                                         if fp and str(fp).strip():
@@ -653,20 +655,16 @@ def scan_all_texture_paths(doc):
                         # access pattern (per renderEngine reference).
                         file_path_id = getattr(c4d, "REDSHIFT_FILE_PATH", None)
                         if file_path_id is not None:
-                            for const_name, channel in RS_OBJECT_FILE_REFS:
-                                root_id = getattr(c4d, const_name, None)
-                                if root_id is None:
-                                    continue
-                                try:
-                                    value = obj[root_id, file_path_id]
-                                except Exception:
-                                    continue
-                                if value and str(value).strip():
-                                    _add("rs_object_fileref", obj, obj_name,
-                                         channel,
-                                         {"root_id": root_id,
-                                          "field_id": file_path_id},
-                                         str(value))
+                            rs_refs = [(getattr(c4d, const_name, None), channel)
+                                       for const_name, channel in RS_OBJECT_FILE_REFS]
+                            for root_id, channel, value in _rs_object_file_refs(
+                                    obj, [r for r in rs_refs if r[0] is not None],
+                                    file_path_id):
+                                _add("rs_object_fileref", obj, obj_name,
+                                     channel,
+                                     {"root_id": root_id,
+                                      "field_id": file_path_id},
+                                     str(value))
 
                         if len(records) >= _SCAN_RECORD_CAP:
                             break
@@ -678,6 +676,33 @@ def scan_all_texture_paths(doc):
 
     _LAST_SCAN_META = _finish_meta(len(records) >= _SCAN_RECORD_CAP)
     return records
+
+
+def _rs_object_file_refs(obj, refs, file_path_id):
+    """Redshift compound-DescID file refs (``obj[root_id, REDSHIFT_FILE_PATH]``)
+    present on ``obj``, as ``[(root_id, channel, path)]``.
+
+    Reads a root only when the object's container has it: reading it on any
+    other object (a cube, a null) makes C4D assert — measured live, one
+    ``CRITICAL: Stop [basecontainer.cpp(353)]`` per entry of
+    RS_OBJECT_FILE_REFS for every object, on every scan."""
+    found = []
+    try:
+        bc = obj.GetDataInstance()
+    except Exception:
+        return found
+    if bc is None:
+        return found
+    for root_id, channel in refs:
+        try:
+            if not bc.GetType(root_id):
+                continue
+            value = obj[root_id, file_path_id]
+        except Exception:
+            continue
+        if value and str(value).strip():
+            found.append((root_id, channel, value))
+    return found
 
 
 def _scan_node_graph(root_node, host_mat, mat_name, source_type, add_fn,

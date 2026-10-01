@@ -18,6 +18,7 @@ degrades to an INFO item when offline — never an error.
 import json
 import os
 import platform
+import shutil
 import sys
 
 from sentinel.payload import verify_payload
@@ -154,10 +155,18 @@ def build_renderers_item(renderers):
 
 
 def build_python_item(python_path):
-    """External Python (for the EXR->PNG converter)."""
-    if python_path and os.path.exists(python_path):
+    """External Python (for the EXR->PNG converter).
+
+    Discovery returns a bare name (``python``) when the interpreter comes
+    from PATH — the converter's subprocess resolves it there, so Doctor does
+    too instead of testing the bare name as a file (Windows acceptance round
+    2, 2026-09-30: a working converter was reported as missing)."""
+    resolved = python_path
+    if python_path and not os.path.dirname(python_path):
+        resolved = shutil.which(python_path)
+    if resolved and os.path.exists(resolved):
         return _item("ext_python", "External Python (EXR converter)", OK,
-                     "Found: %s" % python_path,
+                     "Found: %s" % resolved,
                      "")
     return _item(
         "ext_python", "External Python (EXR converter)", WARN,

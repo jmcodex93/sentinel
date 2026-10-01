@@ -56,3 +56,21 @@ class TestPanelOverviewReachableFromReportsDialog:
         assert "panel/overview" in reports_dialog._OPS
         assert "panel/state_stamp" in reports_dialog._OPS
         assert "panel/open_form" in reports_dialog._OPS
+
+
+class TestDialogTimersReturnNone:
+    """C4D 2026.304 requires ``GeDialog.Timer`` to return None. Measured live
+    (macOS, 2026-10-01): returning True raised ``TypeError: Timer expected
+    None, not bool`` on every 25 ms tick — 1410 tracebacks on the console
+    within seconds of opening the panel. The tick's work ran before the
+    return, so nothing looked broken, but the exception fired ~40 times a
+    second for as long as the panel was open."""
+
+    def test_panel_timer_returns_none(self, sentinel_module):
+        from sentinel.ui import panel_spa
+        assert panel_spa.PanelSPADialog().Timer(None) is None
+
+    def test_reports_and_form_timers_return_none(self, sentinel_module):
+        from sentinel.ui import reports_dialog
+        assert reports_dialog.ReportsDialog(8347).Timer(None) is None
+        assert reports_dialog.FormDialog(8347, "settings").Timer(None) is None
