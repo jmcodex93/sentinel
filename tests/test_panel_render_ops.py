@@ -1136,11 +1136,16 @@ class _UndoableDoc:
     real C4D drops it), and a bracket that registered nothing does NOT push
     an undo step (measured: an empty bracket materializes no step).
 
-    Honest about what it is NOT: the live probe also showed the ACTIVE
-    render data coming back on undo, which nothing here models — no test
-    below claims it. It also does not model undo COALESCING, so "one step"
-    here means "the code opened exactly one bracket", which is the property
-    the production code controls.
+    The ACTIVE render data is modeled as re-measured on 2026-10-01 (C4D
+    2026.304, throwaway documents, ``CallCommand(12105)``), which corrected
+    the v1.36.3 claim that DELETE/NEW alone brought it back: they do not —
+    after the undo, C4D leaves the LAST render data active. Only an
+    ``AddUndo(UNDOTYPE_BITS, previously_active)`` registered in the bracket
+    restores it (``BIT_ACTIVERENDERDATA`` lives on the node);
+    ``UNDOTYPE_ACTIVATE`` and ``UNDOTYPE_CHANGE_SMALL`` on the document did
+    not. It does not model undo COALESCING, so "one step" here means "the
+    code opened exactly one bracket", which is the property the production
+    code controls.
     """
 
     def __init__(self, render_datas=(), path=""):
@@ -1214,6 +1219,8 @@ class _UndoableDoc:
             self._bracket.append(("reinsert", target, self.render_datas.index(target)))
         elif undo_type == c4d.UNDOTYPE_NEW:
             self._bracket.append(("remove", target, None))
+        elif undo_type == c4d.UNDOTYPE_BITS:
+            self._bracket.append(("bits", target, None))
         else:
             raise AssertionError("unexpected undo type for render data: %r" % (undo_type,))
 
@@ -1232,9 +1239,13 @@ class _UndoableDoc:
             if kind == "reinsert":
                 target.doc = self
                 self.render_datas.insert(index, target)
+            elif kind == "bits":
+                self._active = target
             else:
                 if target in self.render_datas:
                     self.render_datas.remove(target)
+        if self._active not in self.render_datas:
+            self._active = self.render_datas[-1] if self.render_datas else None
         return True
 
     def preset_names(self):
@@ -1273,6 +1284,25 @@ class TestResetAllIsUndoable:
 
         assert doc.do_undo() is True
         assert doc.preset_names() == before
+
+    def test_single_undo_restores_which_preset_was_active(self, sentinel_module, monkeypatch):
+        """Live, 2026-10-01 (C4D 2026.304): after Reset All + one Cmd+Z the
+        presets came back in order but the LAST one was left active instead
+        of the artist's (`test_denoise` → `My Render Setting`; on a project
+        template `viejo_cliente` → `My Render Setting`). The active preset
+        sits in the middle here on purpose: an active-last fixture would
+        pass by accident, which is how v1.36.3 believed this worked."""
+        from sentinel.ui import scene_tools
+        _install_template(monkeypatch, scene_tools)
+
+        doc = _UndoableDoc([_UndoableRD("CLIENTE_9x16_final"),
+                            _UndoableRD("test_denoise"),
+                            _UndoableRD("My Render Setting")])
+        doc.SetActiveRenderData(doc.render_datas[1])
+
+        scene_tools._force_render_settings_core(doc)
+        assert doc.do_undo() is True
+        assert doc.GetActiveRenderData().GetName() == "test_denoise"
 
     def test_reset_all_opens_exactly_one_undo_bracket(self, sentinel_module, monkeypatch):
         from sentinel.ui import scene_tools

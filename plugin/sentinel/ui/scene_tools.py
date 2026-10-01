@@ -698,6 +698,14 @@ def _force_render_settings_core(doc, update_ui=None):
 
         doc.StartUndo()
         try:
+            # Which preset is active lives in BIT_ACTIVERENDERDATA on the node,
+            # and DELETE/NEW undo does not bring it back: measured 2026-10-01
+            # (C4D 2026.304), one Undo left the LAST preset active. Recording
+            # the active one's bits first is what restores it (ACTIVATE or a
+            # CHANGE_SMALL on the document did not).
+            previous_active = doc.GetActiveRenderData()
+            if previous_active is not None:
+                doc.AddUndo(c4d.UNDOTYPE_BITS, previous_active)
             # Remove existing presets (AddUndo BEFORE the mutation, once per
             # render data — the "works with one, breaks with N" trap).
             rd = doc.GetFirstRenderData()
