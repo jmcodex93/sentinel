@@ -439,7 +439,8 @@ class ReportsDialog(gui.GeDialog):
             pump_jobs()
         except Exception:
             pass  # a job failure is recorded in JOBS; the Timer never raises
-        return True
+        # No return value: C4D 2026.304 raises "Timer expected None, not bool"
+        # on every tick when Timer returns True.
 
     def DestroyWindow(self):
         # Server/queue are module-level and outlive this dialog instance —
@@ -554,7 +555,8 @@ class FormDialog(gui.GeDialog):
             pump_jobs()
         except Exception:
             pass  # a job failure is recorded in JOBS; the Timer never raises
-        return True
+        # No return value: C4D 2026.304 raises "Timer expected None, not bool"
+        # on every tick when Timer returns True.
 
     def DestroyWindow(self):
         # Server/queue are module-level and outlive this dialog instance —
