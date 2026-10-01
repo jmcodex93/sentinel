@@ -91,9 +91,9 @@ def build_known_issue_items(version_int, system):
     if system == "Windows" and 2026300 <= version < 2026400:
         items.append(_item(
             "known_issue_frame", "Known issue (this C4D version)", WARN,
-            "Windows + Cinema 4D 2026.3: expanding the Sentinel Frame tag in "
-            "the Attribute Manager can close Cinema 4D.",
-            "Update to Cinema 4D 2026.4 or newer — the studio standard."))
+            "Windows + Cinema 4D 2026.3: on one host, expanding the Sentinel "
+            "Frame tag in the Attribute Manager closed Cinema 4D.",
+            "If it happens to you, Cinema 4D 2026.4 does not have the problem."))
     return items
 
 

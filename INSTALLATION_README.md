@@ -6,9 +6,11 @@ back. A full restart is required; **Reload Python Plugins is not sufficient**.
 
 ## Requirements
 
-- **Cinema 4D 2026.4 or newer** with Redshift. On Windows, C4D 2026.3.x can
-  close when the Sentinel Frame tag is expanded in the Attribute Manager;
-  Doctor warns about it. 2026.4 does not have the problem.
+- **Cinema 4D 2024 or newer** with Redshift. Tested: 2026.4 on Windows,
+  2026.3 on macOS, and 2025 on Windows. Known issue: on one Windows host with
+  C4D 2026.3.4 and other plugins loaded, expanding the Sentinel Frame tag in
+  the Attribute Manager closed C4D; Doctor shows a warning on that version. If
+  it happens to you, 2026.4 does not have the problem.
 - A Python 3 to run `install.py` (any recent version).
 - For snapshot EXR → PNG conversion only: an external Python with OpenEXR,
   numpy and Pillow (see *Snapshot EXR conversion* below). Everything else

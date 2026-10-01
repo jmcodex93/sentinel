@@ -6,7 +6,7 @@ Quality control, render management and delivery tools for Cinema 4D + Redshift p
 
 > Sentinel began as [YS Guardian](https://github.com/yamb0x/ys-guardian), built at Yambo Studio (v1.0: 5 QC checks, render presets, scene tools, snapshot conversion). It has since grown into a much larger tool — modular QC engine, project rulesets, delivery pipeline, web-based panel, Sentinel Frame/Pin/Variants, material tools — developed and maintained by Javier Melgar.
 
-**Compatibility target:** Cinema 4D 2024+ with Redshift, macOS and Windows. Recorded evidence: C4D 2026.4.0 on Windows 11 (accepted) and C4D 2026.3 on macOS (live-checked); C4D 2026.3.4 on Windows has a known Sentinel Frame crash, so use 2026.4.0 there. Release criteria and host results: [Windows acceptance](docs/audit/2026-09-24-windows-acceptance.md), [product readiness](docs/audit/2026-09-05-product-readiness.md), [beta acceptance](docs/audit/2026-09-05-beta-acceptance.md), [GUI acceptance](docs/audit/2026-09-05-gui-acceptance.md).
+**Compatibility target:** Cinema 4D 2024+ with Redshift, macOS and Windows. Recorded evidence: C4D 2026.4.0 on Windows 11 (accepted), C4D 2026.3 on macOS (live-checked) and C4D 2025 on Windows (Frame check passed). Known issue: C4D 2026.3.4 on one Windows host with other plugins loaded closed when the Sentinel Frame tag was expanded; 2026.4.0 does not. Release criteria and host results: [Windows acceptance](docs/audit/2026-09-24-windows-acceptance.md), [product readiness](docs/audit/2026-09-05-product-readiness.md), [beta acceptance](docs/audit/2026-09-05-beta-acceptance.md), [GUI acceptance](docs/audit/2026-09-05-gui-acceptance.md).
 
 ## What it does
 
