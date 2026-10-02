@@ -1926,3 +1926,31 @@ def test_save_still_passes_on_the_render_view_post_notice(sentinel_module, monke
     monkeypatch.setattr(panel_render_ops, "_stamp_for", lambda d: "s")
     response = panel_render_ops.PANEL_RENDER_OPS["panel/render/save_still"]({})
     assert response == {"ok": True, "stamp": "s", "render": {}, "notice": "not reproduced: bloom"}
+
+
+def test_snapshots_block_reports_destination_source_slate_and_isolates_failures(sentinel_module, monkeypatch, tmp_path):
+    from sentinel import snapshots
+    from sentinel.ui import flows, panel_render_ops
+    from sentinel.common.settings import GlobalSettings
+
+    class Rules:
+        params = {"slate": True}
+        field_sources = {"slate": "project"}
+
+    monkeypatch.setattr(flows, "get_effective_snapshot_dir", lambda: (str(tmp_path), "auto"))
+    monkeypatch.setattr(flows, "_active_rules_for_doc", lambda doc: Rules())
+    monkeypatch.setattr(GlobalSettings, "get_snapshot_watch", lambda: False)
+    monkeypatch.setattr(GlobalSettings, "load_artist_name", lambda: "Javier")
+    monkeypatch.setattr(snapshots, "stills_location", lambda doc, artist: ("/p/output/stills/Javier/261002", "output/stills/Javier/261002"))
+    monkeypatch.setattr(snapshots, "snapshot_source_state", lambda d: {"newest_ext": ".rssnap2", "alert": "non_exr"})
+    block = panel_render_ops._panel_snapshots_block(_FakeDocBase())
+    assert block["artist_name"] == "Javier" and block["stills_rel"] == "output/stills/Javier/261002"
+    assert block["source"] == {"newest_ext": ".rssnap2", "alert": "non_exr"}
+    assert block["slate"] == {"enabled": True, "source": "project"}
+
+    def boom(*args):
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(snapshots, "snapshot_source_state", boom)
+    block = panel_render_ops._panel_snapshots_block(_FakeDocBase())
+    assert block["source"] is None and block["stills_rel"] == "output/stills/Javier/261002"

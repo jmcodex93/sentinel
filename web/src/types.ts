@@ -1013,10 +1013,20 @@ export interface PanelRenderAovsOk {
 export type PanelRenderAovs = PanelRenderAovsOk | { error: "redshift_unavailable" };
 
 export interface PanelRenderSnapshots {
+  /** RenderView snapshot folder (the SOURCE). */
   dir: string | null;
   origin: "auto" | "manual";
   watch_enabled: boolean;
   watch_status?: { state: "off" | "watching" | "running" | "ready" | "error"; message: string; last_error?: string };
+  /** Settings artist name; "" blocks Save Still / Watch (stills are filed per artist). */
+  artist_name?: string;
+  /** Where the PNGs land (the DESTINATION), absolute and relative to the project
+   * (null for an unsaved scene). Both computed server-side. */
+  stills_dir?: string | null;
+  stills_rel?: string | null;
+  /** What the source folder says about RenderView's "Save snapshots as EXR". */
+  source?: { newest_ext: string | null; alert: "non_exr" | "empty" | "missing" | null } | null;
+  slate?: { enabled: boolean; source: string } | null;
 }
 
 export interface PanelRenderPostrenderAvailable {

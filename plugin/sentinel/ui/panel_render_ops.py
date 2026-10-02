@@ -228,14 +228,40 @@ def _panel_snapshots_block(doc):
     Phase 3 IA consolidation) + the watch-folder toggle state."""
     from sentinel.ui.flows import get_effective_snapshot_dir
 
-    from sentinel.snapshots import snapshot_watch
+    from sentinel import snapshots
     snap_dir, origin = get_effective_snapshot_dir()
-    return {
+    block = {
         "dir": snap_dir,
         "origin": origin,
         "watch_enabled": GlobalSettings.get_snapshot_watch(),
-        "watch_status": snapshot_watch.status(),
+        "watch_status": snapshots.snapshot_watch.status(),
+        "artist_name": "",
+        "stills_dir": None,
+        "stills_rel": None,
+        "source": None,
+        "slate": None,
     }
+    # Each extra read on its own: one failing must not blank the block.
+    try:
+        block["artist_name"] = GlobalSettings.load_artist_name() or ""
+    except Exception as exc:
+        safe_print("Snapshots block: artist name unavailable (%s)" % exc)
+    try:
+        block["stills_dir"], block["stills_rel"] = snapshots.stills_location(doc, block["artist_name"])
+    except Exception as exc:
+        safe_print("Snapshots block: stills folder unavailable (%s)" % exc)
+    try:
+        block["source"] = snapshots.snapshot_source_state(snap_dir)
+    except Exception as exc:
+        safe_print("Snapshots block: source folder unreadable (%s)" % exc)
+    try:
+        from sentinel.ui.flows import _active_rules_for_doc
+        context = _active_rules_for_doc(doc)
+        block["slate"] = {"enabled": bool(context.params.get("slate", False)),
+                          "source": context.field_sources.get("slate", "defaults")}
+    except Exception as exc:
+        safe_print("Snapshots block: slate state unavailable (%s)" % exc)
+    return block
 
 
 def _panel_postrender_block(doc):

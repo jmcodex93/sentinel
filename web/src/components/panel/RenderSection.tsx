@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { Button } from "../form/Button";
-import { Checkbox } from "../form/Checkbox";
 import { SegmentedControl } from "../form/SegmentedControl";
 import { Select } from "../form/Select";
 import { fetchPanelRenderAovList } from "../../lib/api";
@@ -11,7 +10,11 @@ import {
   postrenderStatusLine,
   presetOptionLabel,
   presetStatusLine,
+  slateSummary,
+  snapshotSourceAlert,
+  snapshotSourceLine,
   snapshotStatusLine,
+  watchCaption,
 } from "../../lib/panelRender";
 import type {
   PanelFrameState,
@@ -100,6 +103,7 @@ export function RenderSection({
   onSetLightGroups,
   onSetMultipart,
   onToggleWatch,
+  onOpenSettings,
   onSaveStill,
   onOpenFolder,
   onValidate,
@@ -147,6 +151,8 @@ export function RenderSection({
    * quick clicks can't race a read-then-flip. */
   onSetMultipart: (enabled: boolean) => void;
   onToggleWatch: () => void;
+  /** Opens the Settings window — the artist name lives there. */
+  onOpenSettings: () => void;
   onSaveStill: () => void;
   onOpenFolder: () => void;
   onValidate: () => void;
@@ -378,21 +384,70 @@ export function RenderSection({
         )}
       </RenderBlock>
 
-      {/* Snapshots */}
+      {/* Snapshots — leads with where the PNGs land; the RenderView folder is
+          the source caption. Preconditions (artist name, EXR setting) are
+          said up front, inline, instead of failing after a click. */}
       <RenderBlock title="Snapshots" status={snapshotStatusLine(snapshots)}>
         {snapshots === null ? null : (
-          <>
-            <Button variant="secondary" disabled={false} onClick={onSaveStill}>
-              Save Still
-            </Button>
-            <Button variant="secondary" disabled={!snapshots.dir} onClick={onOpenFolder}>
-              Open Folder
-            </Button>
-            <Button variant="secondary" disabled={false} onClick={() => setRenderView("slate")}>
-              Slate…
-            </Button>
-            <Checkbox checked={snapshots.watch_enabled} disabled={false} onChange={onToggleWatch} label="Watch folder" />
-          </>
+          <div className="flex w-full flex-col gap-2">
+            <p className="text-caption" style={{ color: "var(--color-ink-secondary)" }} title={snapshots.dir ?? undefined}>
+              {snapshotSourceLine(snapshots)}
+            </p>
+            {!snapshots.artist_name && (
+              <p className="text-caption" style={{ color: "var(--color-status-warn)" }}>
+                Stills are filed per artist — set your name first.{" "}
+                <button type="button" onClick={onOpenSettings} style={{ color: "var(--color-primary)" }}>
+                  Open Settings →
+                </button>
+              </p>
+            )}
+            {(() => {
+              const alert = snapshotSourceAlert(snapshots);
+              return alert ? (
+                <p className="text-caption" style={{ color: alert.tone === "warn" ? "var(--color-status-warn)" : "var(--color-ink-secondary)" }}>
+                  {alert.text}
+                </p>
+              ) : null;
+            })()}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="secondary" disabled={!snapshots.artist_name} onClick={onSaveStill}>
+                Save Still
+              </Button>
+              <Button variant="secondary" disabled={!snapshots.artist_name || !snapshots.stills_dir} onClick={onOpenFolder}>
+                Open Stills
+              </Button>
+            </div>
+            <ActionRow label="Watch folder">
+              <SegmentedControl
+                options={[
+                  { value: "off", label: "off" },
+                  { value: "on", label: "on" },
+                ]}
+                value={snapshots.watch_enabled ? "on" : "off"}
+                disabled={!snapshots.artist_name && !snapshots.watch_enabled}
+                onChange={(value) => {
+                  if ((value === "on") !== snapshots.watch_enabled) onToggleWatch();
+                }}
+              />
+            </ActionRow>
+            {(() => {
+              const caption = watchCaption(snapshots);
+              const color = caption.tone === "fail" ? "var(--color-status-fail)"
+                : caption.tone === "warn" ? "var(--color-status-warn)" : "var(--color-ink-secondary)";
+              return <p className="text-caption" style={{ color, overflowWrap: "anywhere" }}>{caption.text}</p>;
+            })()}
+            <ActionRow label="Slate">
+              <span className="text-body" style={{ color: "var(--color-ink)" }}>{slateSummary(snapshots.slate)}</span>
+              <button
+                type="button"
+                onClick={() => setRenderView("slate")}
+                className="text-caption ml-auto"
+                style={{ color: "var(--color-primary)" }}
+              >
+                Edit →
+              </button>
+            </ActionRow>
+          </div>
         )}
       </RenderBlock>
 

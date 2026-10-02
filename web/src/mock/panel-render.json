@@ -3,11 +3,31 @@
     "preset_name": "RS-LookDev 2026",
     "preset_index": 4,
     "presets": [
-      { "index": 0, "name": "Previz", "standard": true },
-      { "index": 1, "name": "Pre-Render", "standard": true },
-      { "index": 2, "name": "Render", "standard": true },
-      { "index": 3, "name": "Stills", "standard": true },
-      { "index": 4, "name": "RS-LookDev 2026", "standard": false }
+      {
+        "index": 0,
+        "name": "Previz",
+        "standard": true
+      },
+      {
+        "index": 1,
+        "name": "Pre-Render",
+        "standard": true
+      },
+      {
+        "index": 2,
+        "name": "Render",
+        "standard": true
+      },
+      {
+        "index": 3,
+        "name": "Stills",
+        "standard": true
+      },
+      {
+        "index": 4,
+        "name": "RS-LookDev 2026",
+        "standard": false
+      }
     ],
     "fps": 25,
     "resolution": "1920x1080"
@@ -21,12 +41,31 @@
     "multipart": true,
     "target": "Nuke",
     "light_groups": true,
-    "light_group_names": ["fg", "bg", "rim"]
+    "light_group_names": [
+      "fg",
+      "bg",
+      "rim"
+    ]
   },
   "snapshots": {
     "dir": "/Users/artist/projects/shot_018/renders/snapshots",
     "origin": "auto",
-    "watch_enabled": true
+    "watch_enabled": true,
+    "artist_name": "JM",
+    "stills_dir": "/Users/artist/projects/shot_018/output/stills/JM/261002",
+    "stills_rel": "output/stills/JM/261002",
+    "source": {
+      "newest_ext": ".rssnap2",
+      "alert": "non_exr"
+    },
+    "slate": {
+      "enabled": true,
+      "source": "project"
+    },
+    "watch_status": {
+      "state": "ready",
+      "message": "converted SHOT_18_snap_003.png \u00b7 RenderView post applied: LUT Cinema Look 11 50%"
+    }
   },
   "postrender": {
     "available": true,

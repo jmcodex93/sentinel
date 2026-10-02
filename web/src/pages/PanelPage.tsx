@@ -574,7 +574,7 @@ export function PanelPage() {
     setBusyRenderId("open_folder");
     const response = await postPanelRenderOpenFolder();
     setBusyRenderId(null);
-    applyRenderMutation(response, "Folder opened.");
+    applyRenderMutation(response, "Stills folder opened.");
   }
 
   /** `panel/deliver/open_version` — opening a version is non-destructive
@@ -763,6 +763,7 @@ export function PanelPage() {
                   onSetLightGroups={handleSetLightGroups}
                   onSetMultipart={handleSetMultipart}
                   onToggleWatch={handleToggleWatch}
+                  onOpenSettings={handleOpenSettings}
                   onSaveStill={handleSaveStill}
                   onOpenFolder={handleOpenFolder}
                   onValidate={() => handleDeepLink("open_reports_render_validation")}

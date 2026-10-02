@@ -7,7 +7,11 @@ import {
   presetOptionLabel,
   presetStatusLine,
   stillSavedToast,
+  slateSummary,
+  snapshotSourceAlert,
+  snapshotSourceLine,
   snapshotStatusLine,
+  watchCaption,
 } from "./panelRender";
 import type {
   PanelRenderAovs,
@@ -124,31 +128,51 @@ describe("aovStatusLine", () => {
 });
 
 describe("snapshotStatusLine", () => {
-  it("formats the directory and an auto-detected origin chip", () => {
-    const snapshots: PanelRenderSnapshots = {
-      dir: "/Users/artist/renders/snapshots",
-      origin: "auto",
-      watch_enabled: true,
-    };
-    expect(snapshotStatusLine(snapshots)).toBe("/Users/artist/renders/snapshots · auto-detected");
+  const base: PanelRenderSnapshots = {
+    dir: "/Users/artist/Desktop/rv_snaps", origin: "auto", watch_enabled: false,
+    stills_dir: "/projects/ACME/output/stills/Javier/261002", stills_rel: "output/stills/Javier/261002",
+  };
+
+  it("leads with where the PNGs land, relative to the project", () => {
+    expect(snapshotStatusLine(base)).toBe("→ output/stills/Javier/261002");
   });
 
-  it("formats a manual-fallback origin chip", () => {
-    const snapshots: PanelRenderSnapshots = {
-      dir: "/Users/artist/renders/snapshots",
-      origin: "manual",
-      watch_enabled: false,
-    };
-    expect(snapshotStatusLine(snapshots)).toBe("/Users/artist/renders/snapshots · manual");
+  it("names the absolute fallback for an unsaved scene", () => {
+    expect(snapshotStatusLine({ ...base, stills_rel: null })).toBe(
+      "→ /projects/ACME/output/stills/Javier/261002 · unsaved scene");
   });
 
-  it("reports no directory set", () => {
-    const snapshots: PanelRenderSnapshots = { dir: null, origin: "manual", watch_enabled: false };
-    expect(snapshotStatusLine(snapshots)).toBe("No snapshot directory set.");
-  });
-
-  it("renders an unavailable note for a null block", () => {
+  it("renders unavailable notes", () => {
+    expect(snapshotStatusLine({ ...base, stills_dir: null })).toBe("Stills folder unavailable.");
     expect(snapshotStatusLine(null)).toBe("Snapshots status unavailable.");
+  });
+
+  it("shows the source tail and 'manual' only for the fallback", () => {
+    expect(snapshotSourceLine(base)).toBe("Source: …/Desktop/rv_snaps");
+    expect(snapshotSourceLine({ ...base, origin: "manual" })).toBe("Source: …/Desktop/rv_snaps · manual");
+    expect(snapshotSourceLine({ ...base, dir: null })).toContain("no RenderView snapshot folder");
+  });
+
+  it("warns when RenderView stopped writing EXR", () => {
+    const alert = snapshotSourceAlert({ ...base, source: { newest_ext: ".rssnap2", alert: "non_exr" } });
+    expect(alert?.tone).toBe("warn");
+    expect(alert?.text).toContain(".rssnap2");
+    expect(snapshotSourceAlert({ ...base, source: { newest_ext: ".exr", alert: null } })).toBeNull();
+    expect(snapshotSourceAlert({ ...base, source: { newest_ext: null, alert: "empty" } })?.tone).toBe("secondary");
+  });
+
+  it("describes the watch state, colouring only problems", () => {
+    expect(watchCaption(base).text).toContain("Off");
+    const on = { ...base, watch_enabled: true };
+    expect(watchCaption({ ...on, watch_status: { state: "watching", message: "" } })).toEqual({ tone: "secondary", text: "Watching" });
+    expect(watchCaption({ ...on, watch_status: { state: "ready", message: "converted a.png · RenderView post applied: LUT X 49%" } }).tone).toBe("secondary");
+    expect(watchCaption({ ...on, watch_status: { state: "ready", message: "converted a.png · not reproduced: bloom" } }).tone).toBe("warn");
+    expect(watchCaption({ ...on, watch_status: { state: "error", message: "x", last_error: "decoder failed" } })).toEqual({ tone: "fail", text: "Failed: decoder failed" });
+  });
+
+  it("summarises the slate and who decided it", () => {
+    expect(slateSummary({ enabled: true, source: "project" })).toBe("on · project ruleset");
+    expect(slateSummary({ enabled: false, source: "defaults" })).toBe("off · default");
   });
 });
 
