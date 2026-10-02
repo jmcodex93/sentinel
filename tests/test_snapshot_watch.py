@@ -713,3 +713,58 @@ def test_stills_location_is_relative_to_the_project_for_saved_scenes(tmp_path):
     assert parts[:3] == ["output", "stills", "Javier"] and len(parts) == 4
     _abs, rel = snapshots.stills_location(Doc(""), "")
     assert rel is None and "<artist>" in _abs
+
+
+def test_publish_numbered_never_overwrites_and_skips_a_taken_number(tmp_path, monkeypatch):
+    from sentinel import snapshots
+    src = tmp_path / "src.png"
+    src.write_bytes(b"new")
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "shot_snap_001.png").write_bytes(b"old")
+    assert snapshots.publish_numbered(str(src), str(out), "shot") == "shot_snap_002.png"
+    assert (out / "shot_snap_001.png").read_bytes() == b"old"
+    # Another writer claims 003 between listing and creating: 004 is used.
+    real = snapshots.next_snapshot_name
+    calls = []
+    def racing(names, scene, ext=".png"):
+        name = real(names, scene, ext)
+        if not calls:
+            (out / name).write_bytes(b"other writer")
+        calls.append(name)
+        return name
+    monkeypatch.setattr(snapshots, "next_snapshot_name", racing)
+    assert snapshots.publish_numbered(str(src), str(out), "shot") == "shot_snap_004.png"
+    assert (out / "shot_snap_003.png").read_bytes() == b"other writer"
+    assert (out / "shot_snap_004.png").read_bytes() == b"new"
+
+
+def test_save_still_numbers_each_still_instead_of_overwriting(sentinel_module, monkeypatch, tmp_path):
+    from pathlib import Path
+    from sentinel.ui import flows
+    out = tmp_path / "stills"
+    out.mkdir()
+
+    class Doc:
+        def GetDocumentName(self):
+            return "shot_v001.c4d"
+
+    class Rules:
+        params = {"slate": False}
+
+    monkeypatch.setattr(flows, "get_effective_snapshot_dir", lambda: (str(tmp_path), "auto"))
+    monkeypatch.setattr(flows, "_find_latest_exr", lambda d: (str(tmp_path / "a.exr"), None))
+    monkeypatch.setattr(flows, "_get_stills_dir", lambda doc, artist: str(out))
+    monkeypatch.setattr(flows, "_active_rules_for_doc", lambda doc: Rules())
+    monkeypatch.setattr(flows, "_in_c4d_conversion", lambda doc, slate: {})
+    shots = iter([b"first", b"second"])
+    def convert(exr, png, slate_data=None):
+        Path(png).write_bytes(next(shots))
+        return True, None
+    monkeypatch.setattr(flows, "_convert_exr_to_png", convert)
+    first = flows.snapshot_save_still_core(Doc(), "Artist")
+    second = flows.snapshot_save_still_core(Doc(), "Artist")
+    assert Path(first["path"]).name == "shot_v001_snap_001.png"
+    assert Path(second["path"]).name == "shot_v001_snap_002.png"
+    assert sorted(p.name for p in out.iterdir()) == ["shot_v001_snap_001.png", "shot_v001_snap_002.png"]
+    assert (out / "shot_v001_snap_001.png").read_bytes() == b"first"
