@@ -102,7 +102,6 @@ export function RenderSection({
   onToggleWatch,
   onSaveStill,
   onOpenFolder,
-  onPreviewSlate,
   onValidate,
   onConfirm,
   onCancelConfirm,
@@ -150,7 +149,6 @@ export function RenderSection({
   onToggleWatch: () => void;
   onSaveStill: () => void;
   onOpenFolder: () => void;
-  onPreviewSlate: () => void;
   onValidate: () => void;
   onConfirm: () => void;
   onCancelConfirm: () => void;
@@ -167,7 +165,7 @@ export function RenderSection({
   const isBusy = busy !== null;
 
   if (renderView === "slate") {
-    return <SlateSubview onBack={() => setRenderView("main")} onOpenFullSize={onPreviewSlate} />;
+    return <SlateSubview onBack={() => setRenderView("main")} />;
   }
 
   if (renderView === "frame") {

@@ -1060,20 +1060,7 @@ export interface PanelRenderMutationResponse {
    * with no custom presets in the scene loses nothing and isn't red. */
   confirm_verb?: string;
   destructive?: boolean;
-  /** Only on `panel/render/preview_slate` — see `snapshot_preview_slate_core`. */
-  preview?: PanelSlatePreview;
   /** `save_still`: the RenderView post re-applied or not reproduced (rvpost). */
-  notice?: string;
-}
-
-/** Where a slate preview came from and how it was drawn. `font` is the
- * PostScript name found (`Inter-Regular`, `ArialMT`) or `"system"`. */
-export interface PanelSlatePreview {
-  path: string;
-  source: "snapshot" | "placeholder";
-  font: string;
-  slate_enabled: boolean;
-  /** RenderView post re-applied / not reproduced on that snapshot, or "". */
   notice?: string;
 }
 
@@ -1485,6 +1472,15 @@ export interface SlatePreviewResponse {
   source?: "snapshot" | "placeholder";
   font?: string;
   notice?: string;
+  /** What the automatic {post} would show for this snapshot ("" = none). */
+  post?: string;
+  /** Real strip height / text size the size slider gives on this image. */
+  strip_px?: number;
+  text_px?: number;
+  /** The 16 px legibility floor, not the multiplier, decided the height. */
+  at_min?: boolean;
+  /** Only for `open: true` (View at 100 %): the temp file opened. */
+  path?: string;
 }
 
 /** `panel/slate/save` — confirm-gated write to the project ruleset. */

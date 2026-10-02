@@ -1106,17 +1106,6 @@ export async function postPanelRenderSaveStill(): Promise<PanelRenderMutationRes
   return postForm<PanelRenderMutationResponse>("/api/panel/render/save_still", {});
 }
 
-/** `POST /api/panel/render/preview_slate` — see `_op_panel_render_preview_slate`. */
-export async function postPanelRenderPreviewSlate(): Promise<PanelRenderMutationResponse> {
-  if (isMock()) {
-    return {
-      ...mockPanelRenderMutation("preview_slate"),
-      preview: { path: "/tmp/sentinel_slate_preview.png", source: "snapshot", font: "Inter-Regular", slate_enabled: true },
-    };
-  }
-  return postForm<PanelRenderMutationResponse>("/api/panel/render/preview_slate", {});
-}
-
 /** `POST /api/panel/slate/state` — see `_op_slate_state` in ui/slate_ops.py. */
 export async function fetchSlateState(): Promise<SlateState> {
   if (isMock()) {
@@ -1130,9 +1119,16 @@ export async function fetchSlateState(): Promise<SlateState> {
 }
 
 /** `POST /api/panel/slate/preview` — the slate drawn by C4D with an UNSAVED style. */
-export async function fetchSlatePreview(style: SlateStyle): Promise<SlatePreviewResponse> {
-  if (isMock()) return { ok: false, error: "needs_2025_2" };
-  return postForm<SlatePreviewResponse>("/api/panel/slate/preview", { style });
+export async function fetchSlatePreview(
+  style: SlateStyle,
+  options: { enabled?: boolean; open?: boolean } = {},
+): Promise<SlatePreviewResponse> {
+  if (isMock()) {
+    return { ok: true, image: undefined, source: "snapshot", font: "Inter-Regular",
+      notice: "RenderView post applied: LUT Cinema Look 11 50%", post: "LUT Cinema Look 11 50%",
+      strip_px: 24, text_px: 12, at_min: false };
+  }
+  return postForm<SlatePreviewResponse>("/api/panel/slate/preview", { style, ...options });
 }
 
 /** `POST /api/panel/slate/save` — writes `slate` + `slate_style` to the

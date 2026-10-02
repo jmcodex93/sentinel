@@ -6,8 +6,6 @@ import {
   postrenderStatusLine,
   presetOptionLabel,
   presetStatusLine,
-  slatePreviewError,
-  slatePreviewMessage,
   stillSavedToast,
   snapshotStatusLine,
 } from "./panelRender";
@@ -200,30 +198,6 @@ describe("isDestructiveRenderOp", () => {
   });
 });
 
-describe("slate preview copy", () => {
-  const base = { path: "/tmp/p.png", source: "snapshot" as const, font: "Inter-Regular", slate_enabled: true };
-
-  it("says what the preview was drawn on", () => {
-    expect(slatePreviewMessage(base)).toBe("Slate preview opened on the latest snapshot.");
-    expect(slatePreviewMessage({ ...base, source: "placeholder" })).toBe(
-      "Slate preview opened on a grey frame (no snapshot yet).",
-    );
-  });
-
-  it("names a fallback font and a disabled slate", () => {
-    const message = slatePreviewMessage({ ...base, font: "ArialMT", slate_enabled: false });
-    expect(message).toContain("Drawn in Arial");
-    expect(message).toContain("The slate is off for this scene.");
-    expect(slatePreviewMessage({ ...base, font: "system" })).toContain("system font");
-  });
-
-  it("explains the errors", () => {
-    expect(slatePreviewError("needs_2025_2")).toBe("Slate preview needs Cinema 4D 2025.2 or newer.");
-    expect(slatePreviewError(undefined)).toBe("Slate preview failed.");
-    expect(slatePreviewError("Could not write x")).toBe("Could not write x");
-  });
-});
-
 describe("save still toast", () => {
   it("is a plain success without a notice", () => {
     expect(stillSavedToast(undefined)).toEqual({ message: "Still saved.", variant: "success" });
@@ -233,10 +207,5 @@ describe("save still toast", () => {
     const warn = stillSavedToast("RenderView post applied: LUT Look 49% · not reproduced: bloom");
     expect(warn.variant).toBe("warn");
     expect(warn.message).toBe("Still saved. RenderView post applied: LUT Look 49% · not reproduced: bloom.");
-  });
-  it("adds the notice to the slate preview message", () => {
-    const message = slatePreviewMessage({ path: "/p", source: "snapshot", font: "Inter-Regular",
-      slate_enabled: true, notice: "RenderView post applied: RGB curve" });
-    expect(message).toContain("RenderView post applied: RGB curve.");
   });
 });

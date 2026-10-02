@@ -28,11 +28,34 @@ export const SLATE_SLOTS: { slot: SlateSlotName; label: string }[] = [
 const LABELS: Record<string, string> = Object.fromEntries(SLATE_FIELDS.map((f) => [f.token, f.label]));
 
 /** Chip text for a slot item: a lone token shows its label ("Shot"); text
- * with tokens shows them as ‹Label› inside the literal text. */
+ * with tokens shows them as {Label} inside the literal text ("f{Frame}"). */
 export function itemLabel(item: string): string {
   const lone = /^\{([a-z_]+)\}$/.exec(item);
   if (lone) return LABELS[lone[1]] ?? item;
-  return item.replace(/\{([a-z_]+)\}/g, (_m, token: string) => `‹${LABELS[token] ?? token}›`);
+  return item.replace(/\{([a-z_]+)\}/g, (_m, token: string) => `{${LABELS[token] ?? token}}`);
+}
+
+/** Fields the "Add" menu offers for a slot: the ones not already in it. */
+export function fieldsToAdd(items: string[]): { token: string; label: string }[] {
+  return SLATE_FIELDS.filter((f) => !items.includes(`{${f.token}}`));
+}
+
+/** True when {post} is placed in any slot (then nothing is added automatically). */
+export function postPlaced(style: SlateStyle): boolean {
+  return Object.values(style.slots).some((items) => items.some((item) => item.includes("{post}")));
+}
+
+/** `…/<parent>/sentinel_rules.json` for display; the full path goes in a title. */
+export function shortPath(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.length >= 2 ? `…/${parts.slice(-2).join("/")}` : path;
+}
+
+/** The size slider's readout: "×0.8 · 39 px", "· min" at the legibility floor. */
+export function sizeReadout(size: number, stripPx?: number, atMin?: boolean): string {
+  const base = `×${size.toFixed(1)}`;
+  if (stripPx === undefined) return base;
+  return `${base} · ${stripPx} px${atMin ? " · min" : ""}`;
 }
 
 /** True when the item is only a field (as opposed to literal text). */
@@ -78,7 +101,7 @@ export const DEFAULT_SLATE_STYLE: SlateStyle = {
 
 export const SLATE_ERROR_COPY: Record<string, string> = {
   no_document: "Open a scene first.",
-  unsaved: "Save the scene first: the slate is stored with the project's rules.",
+  unsaved: "Save the scene first — the slate is stored with the project's rules.",
   bad_style: "That slate setting is not valid.",
   needs_2025_2: "The slate preview needs Cinema 4D 2025.2 or newer.",
   preview_failed: "Could not draw the preview.",

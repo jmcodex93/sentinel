@@ -188,6 +188,15 @@ def strip_height(image_height, size=1.0):
     return max(MIN_SCALED_STRIP, int(round(base * size)))
 
 
+def strip_metrics(image_height, size=1.0):
+    """What the size slider really gives: ``{"strip_px", "text_px", "at_min"}``
+    (``at_min`` when the legibility floor, not the multiplier, decided)."""
+    base = max(float(MIN_STRIP), image_height * 0.045)
+    strip = strip_height(image_height, size)
+    return {"strip_px": strip, "text_px": int(round(font_size(strip))),
+            "at_min": base * size < MIN_SCALED_STRIP}
+
+
 def font_size(strip_h):
     """Text size in pixels for a strip of ``strip_h``."""
     return strip_h * 0.5

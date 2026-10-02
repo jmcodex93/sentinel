@@ -75,14 +75,27 @@ def _op_slate_preview(payload):
     snap_dir, _origin = flows.get_effective_snapshot_dir()
     exr_path, _ = flows._find_latest_exr(snap_dir) if snap_dir else (None, None)
     converter = snapshot_c4d.color_converter(doc) if exr_path else None
+    enabled = payload.get("enabled", True) is not False
+    full_size = bool(payload.get("open"))
     try:
-        png, source, notice = snapshot_c4d.preview_png(slate_data, font, style,
-                                                       exr_path=exr_path, converter=converter)
+        png, info = snapshot_c4d.preview_png(slate_data, font, style, exr_path=exr_path,
+                                             converter=converter, enabled=enabled,
+                                             max_width=None if full_size else 960)
     except Exception as exc:
         safe_print("Slate preview failed: %s" % exc)
         return {"ok": False, "error": "preview_failed", "detail": str(exc)}
-    return {"ok": True, "image": "data:image/png;base64," + base64.b64encode(png).decode("ascii"),
-            "source": source, "font": font_name, "notice": notice}
+    if full_size:
+        # "View at 100 %": the DRAFT, full size, in the system viewer — the
+        # temp folder, never the stills folder.
+        import tempfile
+        from sentinel.common.helpers import open_in_explorer
+        path = os.path.join(tempfile.gettempdir(), "sentinel_slate_preview.png")
+        with open(path, "wb") as fh:
+            fh.write(png)
+        open_in_explorer(path)
+        return dict(info, ok=True, path=path, font=font_name)
+    return dict(info, ok=True, font=font_name,
+                image="data:image/png;base64," + base64.b64encode(png).decode("ascii"))
 
 
 def _read_raw(path):
@@ -96,6 +109,12 @@ def _read_raw(path):
     except Exception:
         return None, False
     return (raw, True) if isinstance(raw, dict) else (None, False)
+
+
+def _short(path):
+    """``…/<parent>/sentinel_rules.json`` — the full path rides in ``path``."""
+    parent = os.path.basename(os.path.dirname(path))
+    return "…/%s/%s" % (parent, os.path.basename(path)) if parent else path
 
 
 def _same_dir(a, b):
@@ -152,8 +171,8 @@ def _op_slate_save(payload):
     if not payload.get("confirm"):
         return {"ok": False, "error": "confirm_required",
                 "confirm_label": "Save the slate to %s — it changes for everyone in this "
-                                 "project: %s." % (path, "; ".join(lines)),
-                "confirm_verb": "Save for the team", "destructive": False,
+                                 "project:\n%s" % (_short(path), "\n".join("• " + l for l in lines)),
+                "confirm_verb": "Save for the project", "destructive": False,
                 "path": path, "changes": lines}
 
     new_raw = dict(existing)

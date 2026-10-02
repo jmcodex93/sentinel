@@ -1185,38 +1185,6 @@ def open_version_core(path):
     return {"ok": False, "error": "load_failed"}
 
 
-def snapshot_preview_slate_core(doc, artist_name):
-    """Dialog-free "Preview slate": the project's slate on the newest snapshot
-    (or a grey frame when there is none), written to the temp folder — never
-    the stills folder, so a preview never lands in a delivery — and opened in
-    the system image viewer. Works whether or not the slate is enabled, so a
-    supervisor can tune ``slate_style`` before switching it on.
-
-    Returns ``{"ok", "path", "source", "slate_enabled", "font"}`` or
-    ``{"ok": False, "error": "needs_2025_2"|...}``.
-    """
-    import tempfile
-    from sentinel import snapshot_c4d
-    if not snapshot_c4d.ocio_available():
-        return {"ok": False, "error": "needs_2025_2"}
-    context = _active_rules_for_doc(doc)
-    slate_data = build_slate_data(doc, artist_name or "", project=_rules_project(context))
-    style = context.params.get("slate_style")
-    font, font_name = snapshot_c4d.resolve_slate_font()
-    snap_dir, _origin = get_effective_snapshot_dir()
-    exr_path, _ = _find_latest_exr(snap_dir) if snap_dir else (None, None)
-    converter = snapshot_c4d.color_converter(doc) if exr_path else None
-    path = os.path.join(tempfile.gettempdir(), "sentinel_slate_preview.png")
-    ok, error, source = snapshot_c4d.preview_slate(path, slate_data, font, style,
-                                                   exr_path=exr_path, converter=converter)
-    if not ok:
-        return {"ok": False, "error": error or "preview_failed"}
-    open_in_explorer(path)
-    return {"ok": True, "path": path, "source": source, "font": font_name,
-            "slate_enabled": bool(context.params.get("slate", False)),
-            "notice": error or ""}
-
-
 def snapshot_open_folder_core(doc, artist_name):
     """Dialog-free core of ``snapshot_open_folder`` (Fase 6.2 Task 2) — the
     cross-platform ``open_in_explorer`` call itself is a plain OS-level

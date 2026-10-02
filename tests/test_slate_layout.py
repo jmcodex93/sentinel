@@ -297,3 +297,8 @@ def test_style_diff_names_each_change():
         "position: below → overlay", "size: 1.0 → 1.5", "status badge: on → off",
         "center: (empty) → ACME"]
     assert slate.style_diff(old, old) == []
+
+
+def test_strip_metrics_say_what_the_size_really_gives():
+    assert slate.strip_metrics(1080, 0.8) == {"strip_px": 39, "text_px": 20, "at_min": False}
+    assert slate.strip_metrics(520, 0.5) == {"strip_px": 16, "text_px": 8, "at_min": True}

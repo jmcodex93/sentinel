@@ -244,31 +244,6 @@ def convert_snapshot(exr_path, png_path, converter, slate=None, font=None, style
         return False, "Conversion failed: %s" % exc
 
 
-def preview_slate(png_path, slate, font, style, exr_path=None, converter=None):
-    """Write a slate preview to ``png_path``: the given snapshot converted for
-    real, or a neutral grey 1920×1080 frame when there is none.
-    Returns ``(ok, error, source)`` with source ``"snapshot"``/``"placeholder"``."""
-    if exr_path and converter is not None:
-        ok, error = convert_snapshot(exr_path, png_path, converter, slate=slate,
-                                     font=font, style=style)
-        return ok, error, "snapshot"
-    try:
-        width, height = 1920, 1080
-        image = bitmaps.BaseBitmap()
-        if image.Init(width, height, 24) != c4d.IMAGERESULT_OK:
-            return False, "Could not allocate the preview", "placeholder"
-        grey = bytearray([92, 92, 92] * width)
-        for y in range(height):
-            image.SetPixelCnt(0, y, width, grey, 3, c4d.COLORMODE_RGB, c4d.PIXELCNT_0)
-        fields = dict(slate or {}, resolution="%dx%d" % (width, height))
-        out = compose_slate(image, fields, font, style)
-        if out.Save(png_path, c4d.FILTER_PNG) != c4d.IMAGERESULT_OK:
-            return False, "Could not write %s" % png_path, "placeholder"
-        return True, None, "placeholder"
-    except Exception as exc:
-        return False, "Preview failed: %s" % exc, "placeholder"
-
-
 _PREVIEW_BASE = {}
 
 
@@ -298,25 +273,29 @@ def _grey_frame(width=1920, height=1080):
     return image
 
 
-def preview_png(slate, font, style, exr_path=None, converter=None, max_width=960):
-    """PNG bytes of the slate drawn with ``style`` on the newest snapshot (or a
-    grey frame), scaled to ``max_width`` for the panel. Returns
-    ``(png_bytes, source, notice)``. The slate is drawn at full size first, so
-    the preview is the real layout, only smaller."""
+def preview_png(slate, font, style, exr_path=None, converter=None, max_width=960,
+                enabled=True):
+    """PNG bytes of the snapshot (or a grey frame) with the slate drawn with
+    ``style`` — none when ``enabled`` is False — scaled to ``max_width`` (None
+    = full size). Returns ``(png_bytes, info)``: ``source``, ``notice``,
+    ``post`` (what the automatic {post} would say) and the strip metrics. The
+    slate is drawn at full size first, so the preview is the real layout."""
     import tempfile
     if exr_path and converter is not None:
         base = _preview_base(exr_path, converter)
         image = base["image"]
         fields = slate_fields(base["attrs"], slate, image.GetSize())
         fields["post"] = base["post"]
-        source, notice = "snapshot", base["notice"]
+        info = {"source": "snapshot", "notice": base["notice"], "post": base["post"]}
     else:
         image = _grey_frame()
         fields = dict(slate or {}, resolution="1920x1080")
-        source, notice = "placeholder", ""
-    composed = compose_slate(image, fields, font, style)
+        info = {"source": "placeholder", "notice": "", "post": ""}
+    style = style or slate_layout.DEFAULT_STYLE
+    info.update(slate_layout.strip_metrics(image.GetSize()[1], style.get("size", 1.0)))
+    composed = compose_slate(image, fields, font, style) if enabled else image
     width, height = composed.GetSize()
-    if width > max_width:
+    if max_width and width > max_width:
         small = bitmaps.BaseBitmap()
         new_h = max(1, int(round(height * max_width / float(width))))
         if small.Init(max_width, new_h, 24) != c4d.IMAGERESULT_OK:
@@ -329,7 +308,7 @@ def preview_png(slate, font, style, exr_path=None, converter=None, max_width=960
         if composed.Save(path, c4d.FILTER_PNG) != c4d.IMAGERESULT_OK:
             raise RuntimeError("Could not encode the preview")
         with open(path, "rb") as fh:
-            return fh.read(), source, notice
+            return fh.read(), info
     finally:
         try:
             os.remove(path)
