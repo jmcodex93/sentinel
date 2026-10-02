@@ -131,6 +131,42 @@ def validate_style(value):
     return True, style, None
 
 
+def compact_style(style):
+    """Only what differs from the defaults, for writing to the ruleset —
+    defaults written out would freeze them in the project file (the same rule
+    as Publish standard). ``{}`` means "the default slate"."""
+    out = {}
+    for key, default in DEFAULT_STYLE.items():
+        if key == "slots":
+            slots = {name: list(style["slots"][name]) for name in SLOT_NAMES
+                     if style["slots"].get(name, []) != default[name]}
+            if slots:
+                out["slots"] = slots
+        elif style.get(key, default) != default:
+            out[key] = style[key]
+    return out
+
+
+def _slot_text(entries):
+    return " · ".join(entries) if entries else "(empty)"
+
+
+def style_diff(old, new):
+    """Human lines for what saving ``new`` over ``old`` changes (both complete
+    styles, as ``validate_style`` returns them). Empty when nothing changes."""
+    lines = []
+    for key, label in (("position", "position"), ("size", "size"),
+                       ("badge", "status badge"), ("show_post", "RenderView post")):
+        if old.get(key) != new.get(key):
+            fmt = (lambda v: "on" if v else "off") if isinstance(new.get(key), bool) else str
+            lines.append("%s: %s → %s" % (label, fmt(old.get(key)), fmt(new.get(key))))
+    for name in SLOT_NAMES:
+        if old["slots"].get(name) != new["slots"].get(name):
+            lines.append("%s: %s → %s" % (name, _slot_text(old["slots"].get(name)),
+                                          _slot_text(new["slots"].get(name))))
+    return lines
+
+
 def render_item(item, fields):
     """Fill an item's tokens; '' when it has tokens and all of them are empty."""
     tokens = _TOKEN.findall(item)

@@ -269,3 +269,22 @@ def test_show_post_off_hides_it_and_a_placed_post_is_not_duplicated():
 def test_automatic_post_is_dropped_before_the_left_slot_when_tight():
     texts = [op[2] for op in slate.slate_ops(700, 40, 20, POSTED, mono)]
     assert texts == ["robot_010 · v007   ", "TR · 9/12", "Javièr"]
+
+
+# ── saving from the panel ────────────────────────────────────────────────────
+def test_compact_style_keeps_only_what_differs_from_the_default():
+    assert slate.compact_style(slate.default_style()) == {}
+    ok, style, _ = slate.validate_style({"position": "overlay", "slots": {"center": ["ACME"]}})
+    assert slate.compact_style(style) == {"position": "overlay", "slots": {"center": ["ACME"]}}
+    ok, again, _ = slate.validate_style(slate.compact_style(style))
+    assert again == style      # compact → validate round-trips to the same style
+
+
+def test_style_diff_names_each_change():
+    old = slate.default_style()
+    ok, new, _ = slate.validate_style({"position": "overlay", "badge": False, "size": 1.5,
+                                       "slots": {"center": ["ACME"]}})
+    assert slate.style_diff(old, new) == [
+        "position: below → overlay", "size: 1.0 → 1.5", "status badge: on → off",
+        "center: (empty) → ACME"]
+    assert slate.style_diff(old, old) == []

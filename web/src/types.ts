@@ -1448,3 +1448,56 @@ export interface NewShotCreateResponse {
   opened?: boolean;
   error?: string;
 }
+
+/** Snapshot slate look — `slate_style` in sentinel_rules.json, validated by
+ * `slate.validate_style` on the server (the panel never trusts its copy). */
+export type SlateSlotName = "left" | "center" | "right";
+export interface SlateStyle {
+  position: "below" | "overlay";
+  slots: Record<SlateSlotName, string[]>;
+  badge: boolean;
+  size: number;
+  show_post: boolean;
+}
+
+/** `panel/slate/state` — see `_state` in ui/slate_ops.py. */
+export interface SlateState {
+  ok: boolean;
+  error?: string;
+  enabled: boolean;
+  enabled_source: string;
+  style: SlateStyle;
+  style_source: string;
+  /** Active project ruleset, or "" when the scene has none (Save asks for a folder). */
+  rules_path: string;
+  scene_saved: boolean;
+  tokens: string[];
+  warnings: string[];
+}
+
+/** `panel/slate/preview` — the slate drawn by C4D with an unsaved style. */
+export interface SlatePreviewResponse {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  /** `data:image/png;base64,…` */
+  image?: string;
+  source?: "snapshot" | "placeholder";
+  font?: string;
+  notice?: string;
+}
+
+/** `panel/slate/save` — confirm-gated write to the project ruleset. */
+export interface SlateSaveResponse {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  confirm_label?: string;
+  confirm_verb?: string;
+  destructive?: boolean;
+  path?: string;
+  changes?: string[];
+  unchanged?: boolean;
+  searched?: string[];
+  state?: SlateState;
+}

@@ -267,3 +267,71 @@ def preview_slate(png_path, slate, font, style, exr_path=None, converter=None):
         return True, None, "placeholder"
     except Exception as exc:
         return False, "Preview failed: %s" % exc, "placeholder"
+
+
+_PREVIEW_BASE = {}
+
+
+def _preview_base(exr_path, converter):
+    """The converted snapshot (OCIO view + RenderView post) for previews,
+    cached per file and mtime: re-drawing the slate on it takes milliseconds,
+    converting the EXR again takes a second or more."""
+    from sentinel.snapshots import read_exr_attributes
+    key = (exr_path, os.path.getmtime(exr_path))
+    if _PREVIEW_BASE.get("key") != key:
+        attrs = read_exr_attributes(exr_path)
+        plan = rvpost.post_plan(attrs)
+        image = convert_exr(exr_path, converter, plan if rvpost.plan_is_active(plan) else None)
+        _PREVIEW_BASE.clear()
+        _PREVIEW_BASE.update(key=key, image=image, attrs=attrs,
+                             post=rvpost.applied_label(plan), notice=rvpost.describe(plan))
+    return _PREVIEW_BASE
+
+
+def _grey_frame(width=1920, height=1080):
+    image = bitmaps.BaseBitmap()
+    if image.Init(width, height, 24) != c4d.IMAGERESULT_OK:
+        raise RuntimeError("Could not allocate the preview")
+    grey = bytearray([92, 92, 92] * width)
+    for y in range(height):
+        image.SetPixelCnt(0, y, width, grey, 3, c4d.COLORMODE_RGB, c4d.PIXELCNT_0)
+    return image
+
+
+def preview_png(slate, font, style, exr_path=None, converter=None, max_width=960):
+    """PNG bytes of the slate drawn with ``style`` on the newest snapshot (or a
+    grey frame), scaled to ``max_width`` for the panel. Returns
+    ``(png_bytes, source, notice)``. The slate is drawn at full size first, so
+    the preview is the real layout, only smaller."""
+    import tempfile
+    if exr_path and converter is not None:
+        base = _preview_base(exr_path, converter)
+        image = base["image"]
+        fields = slate_fields(base["attrs"], slate, image.GetSize())
+        fields["post"] = base["post"]
+        source, notice = "snapshot", base["notice"]
+    else:
+        image = _grey_frame()
+        fields = dict(slate or {}, resolution="1920x1080")
+        source, notice = "placeholder", ""
+    composed = compose_slate(image, fields, font, style)
+    width, height = composed.GetSize()
+    if width > max_width:
+        small = bitmaps.BaseBitmap()
+        new_h = max(1, int(round(height * max_width / float(width))))
+        if small.Init(max_width, new_h, 24) != c4d.IMAGERESULT_OK:
+            raise RuntimeError("Could not allocate the scaled preview")
+        composed.ScaleIt(small, 256, True, False)
+        composed = small
+    handle, path = tempfile.mkstemp(prefix="sentinel_slate_", suffix=".png")
+    os.close(handle)
+    try:
+        if composed.Save(path, c4d.FILTER_PNG) != c4d.IMAGERESULT_OK:
+            raise RuntimeError("Could not encode the preview")
+        with open(path, "rb") as fh:
+            return fh.read(), source, notice
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass

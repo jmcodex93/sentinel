@@ -20,6 +20,7 @@ import type {
 } from "../../types";
 import { ConfirmBar } from "../ConfirmBar";
 import { FrameSubview } from "./FrameSubview";
+import { SlateSubview } from "./SlateSubview";
 import { SectionGroup } from "../SectionGroup";
 
 /** A single stacked block — title + status line + actions row, per the
@@ -162,8 +163,12 @@ export function RenderSection({
   onSetViewing: (target: string) => void;
 }) {
   const [aovListState, setAovListState] = useState<AovListState>({ kind: "idle" });
-  const [renderView, setRenderView] = useState<"main" | "frame">("main");
+  const [renderView, setRenderView] = useState<"main" | "frame" | "slate">("main");
   const isBusy = busy !== null;
+
+  if (renderView === "slate") {
+    return <SlateSubview onBack={() => setRenderView("main")} onOpenFullSize={onPreviewSlate} />;
+  }
 
   if (renderView === "frame") {
     return (
@@ -385,8 +390,8 @@ export function RenderSection({
             <Button variant="secondary" disabled={!snapshots.dir} onClick={onOpenFolder}>
               Open Folder
             </Button>
-            <Button variant="secondary" disabled={false} onClick={onPreviewSlate}>
-              Preview Slate
+            <Button variant="secondary" disabled={false} onClick={() => setRenderView("slate")}>
+              Slate…
             </Button>
             <Checkbox checked={snapshots.watch_enabled} disabled={false} onChange={onToggleWatch} label="Watch folder" />
           </>

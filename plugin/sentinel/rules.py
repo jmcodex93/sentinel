@@ -122,23 +122,26 @@ def get_active_rules(
     return context
 
 
-def discover_rules_file(scene_dir: str | os.PathLike[str] | None) -> tuple[str | None, list[str]]:
-    """Find the nearest sentinel_rules.json at scene_dir or up to 3 ancestors."""
+def discovery_dirs(scene_dir: str | os.PathLike[str] | None) -> list[str]:
+    """Folders searched for a ruleset: the scene folder and up to 3 ancestors,
+    nearest first. A ruleset written anywhere else is never read."""
     if not scene_dir:
-        return None, []
-
+        return []
     current = Path(scene_dir).expanduser()
-    found: list[str] = []
+    dirs: list[str] = []
     for _level in range(4):
-        candidate = current / RULES_FILENAME
-        if candidate.is_file():
-            found.append(str(candidate))
-
+        dirs.append(str(current))
         parent = current.parent
         if parent == current:
             break
         current = parent
+    return dirs
 
+
+def discover_rules_file(scene_dir: str | os.PathLike[str] | None) -> tuple[str | None, list[str]]:
+    """Find the nearest sentinel_rules.json at scene_dir or up to 3 ancestors."""
+    found = [str(Path(d) / RULES_FILENAME) for d in discovery_dirs(scene_dir)
+             if (Path(d) / RULES_FILENAME).is_file()]
     if not found:
         return None, []
     return found[0], found[1:]
