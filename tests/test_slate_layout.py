@@ -239,3 +239,33 @@ def test_post_token_shows_the_look_and_vanishes_without_one():
     ops = slate.slate_ops(1920, 49, 29, dict(SLATE, post=""), mono, style)
     assert ops[-1][2] == "Javièr"
     assert ("sentinel:post", "LUT Look 49%") in slate.slate_metadata(dict(SLATE, post="LUT Look 49%"))
+
+
+# ── show_post: the re-applied RenderView post appears on its own ───────────
+POSTED = dict(SLATE, post="LUT Look 50% + RGB curve")
+
+
+def test_post_shows_in_the_centre_automatically():
+    ops = slate.slate_ops(1920, 49, 29, POSTED, mono)
+    assert [op[2] for op in ops] == ["robot_010 · v007   ", "TR · 9/12",
+                                     "LUT Look 50% + RGB curve", "Javièr  ·  2026-10-02  ·  1024"]
+    assert ops[2][0] == (1920 - mono("LUT Look 50% + RGB curve")) // 2
+
+
+def test_no_post_keeps_the_original_slate():
+    assert slate.slate_ops(1920, 49, 29, dict(SLATE, post=""), mono) == \
+        slate.slate_ops(1920, 49, 29, SLATE, mono)
+
+
+def test_show_post_off_hides_it_and_a_placed_post_is_not_duplicated():
+    ok, style, _ = slate.validate_style({"show_post": False})
+    assert ok and "LUT Look 50% + RGB curve" not in [op[2] for op in slate.slate_ops(1920, 49, 29, POSTED, mono, style)]
+    ok, style, _ = slate.validate_style({"slots": {"right": ["{post}"]}})
+    texts = [op[2] for op in slate.slate_ops(1920, 49, 29, POSTED, mono, style)]
+    assert texts.count("LUT Look 50% + RGB curve") == 1 and texts[-1] == "LUT Look 50% + RGB curve"
+    assert not slate.validate_style({"show_post": "yes"})[0]
+
+
+def test_automatic_post_is_dropped_before_the_left_slot_when_tight():
+    texts = [op[2] for op in slate.slate_ops(700, 40, 20, POSTED, mono)]
+    assert texts == ["robot_010 · v007   ", "TR · 9/12", "Javièr"]

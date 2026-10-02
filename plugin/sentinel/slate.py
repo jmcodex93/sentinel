@@ -76,6 +76,9 @@ DEFAULT_STYLE = {
               "right": ["{artist}", "{date}", "{frame}"]},
     "badge": True,
     "size": 1.0,
+    # When the snapshot carries RenderView post that Sentinel re-applied, show
+    # it ({post}) in the centre, unless the project already placed {post}.
+    "show_post": True,
 }
 _TOKEN = re.compile(r"\{([a-z_]+)\}")
 
@@ -98,10 +101,10 @@ def validate_style(value):
             if item not in POSITIONS:
                 return False, None, "position must be one of %s" % ", ".join(POSITIONS)
             style["position"] = item
-        elif key == "badge":
+        elif key in ("badge", "show_post"):
             if not isinstance(item, bool):
-                return False, None, "badge must be true or false"
-            style["badge"] = item
+                return False, None, "%s must be true or false" % key
+            style[key] = item
         elif key == "size":
             if isinstance(item, bool) or not isinstance(item, (int, float)) \
                     or not SIZE_RANGE[0] <= item <= SIZE_RANGE[1]:
@@ -170,6 +173,10 @@ def slate_ops(width, strip_h, text_h, fields, measure, style=None):
     ty = max(0, (strip_h - text_h) // 2)
     items = {slot: [t for t in (render_item(i, fields) for i in style["slots"].get(slot, [])) if t]
              for slot in SLOT_NAMES}
+    placed = any("{post}" in entry for entries in style["slots"].values() for entry in entries)
+    auto_post = bool(style.get("show_post", True) and fields.get("post") and not placed)
+    if auto_post:
+        items["center"].append(str(fields["post"]))
     badge = format_badge_label(fields) if style.get("badge", True) else ""
 
     def texts():
@@ -194,6 +201,12 @@ def slate_ops(width, strip_h, text_h, fields, measure, style=None):
     for slot in ("right", "center", "left"):
         while not fits(t) and len(items[slot]) > 1:
             items[slot].pop()
+            t = texts()
+        if slot == "right" and auto_post and not fits(t):
+            # The automatic post is extra information: it goes whole, before
+            # anything the project asked for in the centre or the left.
+            items["center"].pop()
+            auto_post = False
             t = texts()
     if not fits(t):
         lw, cw, rw = widths(t)
