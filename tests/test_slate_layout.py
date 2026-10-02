@@ -125,3 +125,106 @@ def test_badge_colours_labels_and_lines_match_the_legacy_slate():
     assert slate.format_badge_label({}) == "WIP"
     assert slate.build_slate_lines({}) == ("—", "")
     assert slate.build_slate_lines(SLATE) == ("robot_010 · v007", "Javièr  ·  2026-10-02  ·  1024")
+
+
+# ── slate_style: validation and defaults ─────────────────────────────────────
+def test_validate_style_fills_defaults_for_what_is_not_declared():
+    ok, style, _ = slate.validate_style({"size": 1.5, "slots": {"center": ["ACME"]}})
+    assert ok
+    assert style["size"] == 1.5 and style["position"] == "below" and style["badge"] is True
+    assert style["slots"] == {"left": ["{shot}", "{version}"], "center": ["ACME"],
+                              "right": ["{artist}", "{date}", "{frame}"]}
+
+
+@pytest.mark.parametrize("value, fragment", [
+    ({"position": "above"}, "position"),
+    ({"size": 3}, "size"),
+    ({"size": True}, "size"),
+    ({"badge": "yes"}, "badge"),
+    ({"slots": {"top": []}}, "unknown slot 'top'"),
+    ({"slots": {"left": "{shot}"}}, "list of strings"),
+    ({"slots": {"left": ["{shoot}"]}}, "unknown token {shoot}"),
+    ({"slots": {"left": ["x" * 81]}}, "longer than"),
+    ({"colour": "red"}, "unknown option 'colour'"),
+    ("below", "expected an object"),
+])
+def test_validate_style_rejects_bad_values_by_name(value, fragment):
+    ok, style, reason = slate.validate_style(value)
+    assert not ok and style is None
+    assert fragment in reason
+
+
+def test_default_style_reproduces_the_original_slate():
+    assert slate.slate_ops(1920, 49, 29, SLATE, mono) == \
+        slate.slate_ops(1920, 49, 29, SLATE, mono, slate.default_style())
+
+
+# ── tokens and slots ─────────────────────────────────────────────────────────
+def test_item_with_only_empty_tokens_disappears_with_its_separator():
+    style = slate.default_style()
+    ops = slate.slate_ops(1920, 49, 29, dict(SLATE, version=""), mono, style)
+    assert ops[0][2] == "robot_010   "
+    style["slots"]["left"] = ["ACME", "{project}", "{shot}"]
+    ops = slate.slate_ops(1920, 49, 29, SLATE, mono, style)
+    assert ops[0][2] == "ACME · robot_010   "
+
+
+def test_render_item_fills_tokens_and_keeps_literal_text():
+    fields = {"take": "cam_A", "resolution": "1920x1080"}
+    assert slate.render_item("Take {take} @ {resolution}", fields) == "Take cam_A @ 1920x1080"
+    assert slate.render_item("Client review", fields) == "Client review"
+    assert slate.render_item("{camera}", fields) == ""
+
+
+def test_center_slot_is_centred_and_badge_can_be_switched_off():
+    style = slate.default_style()
+    style["slots"]["center"] = ["ACME"]
+    style["badge"] = False
+    ops = slate.slate_ops(1000, 40, 20, SLATE, mono, style)
+    assert [op[2] for op in ops] == ["robot_010 · v007   ", "ACME", "Javièr  ·  2026-10-02  ·  1024"]
+    assert ops[1][0] == (1000 - mono("ACME")) // 2
+
+
+def test_overflow_drops_right_items_first_and_never_the_badge():
+    # room 460 px: left+badge 280, full right 300 → frame, then date, dropped
+    texts = [op[2] for op in slate.slate_ops(480, 40, 20, SLATE, mono)]
+    assert texts == ["robot_010 · v007   ", "TR · 9/12", "Javièr"]
+    # room 580 px: only the frame has to go
+    texts = [op[2] for op in slate.slate_ops(600, 40, 20, SLATE, mono)]
+    assert texts[2] == "Javièr  ·  2026-10-02"
+
+
+def test_a_single_item_too_long_is_ellipsized():
+    style = slate.default_style()
+    style["slots"]["right"] = ["{artist}"]
+    ops = slate.slate_ops(400, 40, 20, dict(SLATE, artist="A" * 60), mono, style)
+    right = ops[-1][2]
+    assert right.endswith("…") and mono(right) <= 400
+
+
+def test_size_scales_the_strip():
+    assert slate.strip_height(1080, 2.0) == 97
+    assert slate.strip_height(1080, 0.5) == 24
+
+
+def test_overlay_row_blends_the_bar_and_keeps_text_opaque():
+    image = bytearray([200, 200, 200] * 2)
+    strip = bytes(list(slate.SLATE_STRIP_BG) + [233, 237, 242])
+    out = slate.overlay_row(image, strip)
+    a = slate.OVERLAY_ALPHA
+    assert list(out[:3]) == [int(200 * (1 - a) + c * a + 0.5) for c in slate.SLATE_STRIP_BG]
+    assert list(out[3:]) == [233, 237, 242]
+
+
+def test_metadata_includes_extra_fields_when_present():
+    meta = dict(slate.slate_metadata(dict(SLATE, take="cam_A", view="ACES 1.0 SDR-video", camera="")))
+    assert meta["sentinel:take"] == "cam_A"
+    assert meta["sentinel:view"] == "ACES 1.0 SDR-video"
+    assert "sentinel:camera" not in meta
+
+
+def test_item_with_literal_text_but_empty_tokens_disappears_whole():
+    """'f{frame}' without a frame must not leave a stray 'f' in the slate."""
+    assert slate.render_item("f{frame}", {"frame": ""}) == ""
+    assert slate.render_item("Take {take}", {}) == ""
+    assert slate.render_item("{date} {time}", {"date": "2026-10-02"}) == "2026-10-02"

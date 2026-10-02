@@ -101,6 +101,7 @@ export function RenderSection({
   onToggleWatch,
   onSaveStill,
   onOpenFolder,
+  onPreviewSlate,
   onValidate,
   onConfirm,
   onCancelConfirm,
@@ -148,6 +149,7 @@ export function RenderSection({
   onToggleWatch: () => void;
   onSaveStill: () => void;
   onOpenFolder: () => void;
+  onPreviewSlate: () => void;
   onValidate: () => void;
   onConfirm: () => void;
   onCancelConfirm: () => void;
@@ -382,6 +384,9 @@ export function RenderSection({
             </Button>
             <Button variant="secondary" disabled={!snapshots.dir} onClick={onOpenFolder}>
               Open Folder
+            </Button>
+            <Button variant="secondary" disabled={false} onClick={onPreviewSlate}>
+              Preview Slate
             </Button>
             <Checkbox checked={snapshots.watch_enabled} disabled={false} onChange={onToggleWatch} label="Watch folder" />
           </>

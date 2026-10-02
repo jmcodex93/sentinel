@@ -6,6 +6,8 @@ import {
   postrenderStatusLine,
   presetOptionLabel,
   presetStatusLine,
+  slatePreviewError,
+  slatePreviewMessage,
   snapshotStatusLine,
 } from "./panelRender";
 import type {
@@ -194,5 +196,29 @@ describe("isDestructiveRenderOp", () => {
     expect(isDestructiveRenderOp("toggle_watchfolder")).toBe(false);
     expect(isDestructiveRenderOp("save_still")).toBe(false);
     expect(isDestructiveRenderOp("open_folder")).toBe(false);
+  });
+});
+
+describe("slate preview copy", () => {
+  const base = { path: "/tmp/p.png", source: "snapshot" as const, font: "Inter-Regular", slate_enabled: true };
+
+  it("says what the preview was drawn on", () => {
+    expect(slatePreviewMessage(base)).toBe("Slate preview opened on the latest snapshot.");
+    expect(slatePreviewMessage({ ...base, source: "placeholder" })).toBe(
+      "Slate preview opened on a grey frame (no snapshot yet).",
+    );
+  });
+
+  it("names a fallback font and a disabled slate", () => {
+    const message = slatePreviewMessage({ ...base, font: "ArialMT", slate_enabled: false });
+    expect(message).toContain("Drawn in Arial");
+    expect(message).toContain("The slate is off for this scene.");
+    expect(slatePreviewMessage({ ...base, font: "system" })).toContain("system font");
+  });
+
+  it("explains the errors", () => {
+    expect(slatePreviewError("needs_2025_2")).toBe("Slate preview needs Cinema 4D 2025.2 or newer.");
+    expect(slatePreviewError(undefined)).toBe("Slate preview failed.");
+    expect(slatePreviewError("Could not write x")).toBe("Could not write x");
   });
 });

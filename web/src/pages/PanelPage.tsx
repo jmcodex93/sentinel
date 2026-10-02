@@ -31,6 +31,7 @@ import {
   postPanelRenderAddFrameTag,
   postPanelRenderAovTier,
   postPanelRenderOpenFolder,
+  postPanelRenderPreviewSlate,
   postPanelRenderResetAll,
   postPanelRenderSaveStill,
   postPanelRenderSelectFrameTag,
@@ -43,6 +44,7 @@ import {
 } from "../lib/api";
 import { SnapshotChannel } from "../lib/snapshot";
 import { railBadges, railMode, type PanelSection } from "../lib/panel";
+import { slatePreviewError, slatePreviewMessage } from "../lib/panelRender";
 import { toolToast } from "../lib/panelTools";
 import { useToast } from "../lib/toast";
 import type {
@@ -563,6 +565,17 @@ export function PanelPage() {
     applyRenderMutation(response, "Still saved.");
   }
 
+  async function handlePreviewSlate() {
+    setBusyRenderId("preview_slate");
+    const response = await postPanelRenderPreviewSlate();
+    setBusyRenderId(null);
+    if (!response.ok || !response.preview) {
+      toast({ message: slatePreviewError(response.error), variant: "warn" });
+      return;
+    }
+    toast({ message: slatePreviewMessage(response.preview), variant: "info" });
+  }
+
   async function handleOpenFolder() {
     setBusyRenderId("open_folder");
     const response = await postPanelRenderOpenFolder();
@@ -758,6 +771,7 @@ export function PanelPage() {
                   onToggleWatch={handleToggleWatch}
                   onSaveStill={handleSaveStill}
                   onOpenFolder={handleOpenFolder}
+                  onPreviewSlate={handlePreviewSlate}
                   onValidate={() => handleDeepLink("open_reports_render_validation")}
                   onConfirm={() => renderConfirm && runRenderDestructive(renderConfirm.op, true)}
                   onCancelConfirm={() => setRenderConfirm(null)}

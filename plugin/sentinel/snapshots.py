@@ -235,7 +235,8 @@ def run_snapshot_task(task):
             if task.get("ocio") is not None:
                 from sentinel.snapshot_c4d import convert_snapshot
                 ok, error = convert_snapshot(source, temporary, task["ocio"],
-                                             slate=task.get("slate"), font=task.get("font"))
+                                             slate=task.get("slate"), font=task.get("font"),
+                                             style=task.get("slate_style"))
             else:
                 ok, error = _convert_exr_to_png(source, temporary, slate_data=task.get("slate"))
             if not ok:
@@ -258,6 +259,70 @@ def run_snapshot_task(task):
 
 
 snapshot_watch = SnapshotWatch()
+
+
+# ── EXR header — what RenderView recorded with each snapshot ─────────────
+
+_EXR_MAGIC = b"\x76\x2f\x31\x01"
+_EXR_HEADER_LIMIT = 4 * 1024 * 1024
+
+
+def read_exr_attributes(path):
+    """``{name: value}`` for the string/int/float/double attributes of an EXR's
+    first header. Pure, stdlib only; ``{}`` when the file is not a readable
+    EXR. Redshift snapshots carry hundreds of attributes, including
+    ``FrameID``, ``capDate`` and the RenderView OCIO view (``ocioView``)."""
+    import struct
+    attrs = {}
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read(_EXR_HEADER_LIMIT)
+    except OSError:
+        return attrs
+    if data[:4] != _EXR_MAGIC:
+        return attrs
+    pos = 8
+    while pos < len(data):
+        end = data.find(b"\x00", pos)
+        if end < 0 or end == pos:          # empty name ends the header
+            break
+        name = data[pos:end].decode("latin-1")
+        tend = data.find(b"\x00", end + 1)
+        if tend < 0 or tend + 5 > len(data):
+            break
+        kind = data[end + 1:tend]
+        size = struct.unpack("<i", data[tend + 1:tend + 5])[0]
+        value = data[tend + 5:tend + 5 + size]
+        if size < 0 or len(value) < size:
+            break
+        if kind == b"string":
+            attrs[name] = value.decode("utf-8", "replace")
+        elif kind == b"int" and size == 4:
+            attrs[name] = struct.unpack("<i", value)[0]
+        elif kind == b"float" and size == 4:
+            attrs[name] = struct.unpack("<f", value)[0]
+        elif kind == b"double" and size == 8:
+            attrs[name] = struct.unpack("<d", value)[0]
+        pos = tend + 5 + size
+    return attrs
+
+
+def snapshot_capture_fields(attrs):
+    """Slate fields RenderView recorded at capture time: frame, date, time, view.
+
+    ``capDate`` is ``YYYY:MM:DD HH:MM:SS``. Missing attributes are omitted, so
+    the caller keeps its own fallback (the document frame, today's date).
+    """
+    fields = {}
+    if isinstance(attrs.get("FrameID"), int):
+        fields["frame"] = attrs["FrameID"]
+    stamp = str(attrs.get("capDate") or "").strip()
+    if len(stamp) >= 16 and stamp[4] == ":" and stamp[7] == ":":
+        fields["date"] = stamp[:10].replace(":", "-")
+        fields["time"] = stamp[11:16]
+    if attrs.get("ocioView"):
+        fields["view"] = str(attrs["ocioView"])
+    return fields
 
 
 # ── RenderView snapshot dir auto-detect — pure parser ─────────────────────
@@ -406,25 +471,43 @@ def _find_system_python():
 _CACHED_PYTHON = None
 
 
-def build_slate_data(doc, artist_name, frame=None):
+def build_slate_data(doc, artist_name, frame=None, project=""):
     """Assemble the review-slate fields from the doc + its version history.
 
     Pure adapter: reads the LATEST entry of the scene's ``<base>_history.json``
     via sentinel.versioning and combines it with shot (active take/doc) + now.
+    Also the extra slate tokens: ``scene`` (base name without ``_v###``),
+    ``take`` (empty on the Main take), ``camera`` and ``time``. ``project`` is
+    passed in (the folder of the active ruleset). Frame, date, time and view
+    are replaced at conversion time by what the snapshot EXR recorded.
     Returns a JSON-serializable dict; never raises.
     """
     from datetime import datetime
-    from sentinel.versioning import get_latest_version_info
+    from sentinel.versioning import get_latest_version_info, parse_version_filename
 
     shot = ""
+    take = ""
     try:
         td = doc.GetTakeData() if doc else None
         if td:
             cur = td.GetCurrentTake()
             if cur:
                 shot = cur.GetName() or ""
+                if cur != td.GetMainTake():
+                    take = shot
     except Exception:
         shot = ""
+    scene = ""
+    try:
+        scene = parse_version_filename(os.path.splitext(doc.GetDocumentName() or "")[0])[0]
+    except Exception:
+        scene = ""
+    camera = ""
+    try:
+        cam = doc.GetRenderBaseDraw().GetSceneCamera(doc)
+        camera = cam.GetName() if cam else ""
+    except Exception:
+        camera = ""
     if not shot and doc:
         try:
             shot = os.path.splitext(doc.GetDocumentName() or "")[0]
@@ -459,7 +542,12 @@ def build_slate_data(doc, artist_name, frame=None):
         "score": score,
         "artist": artist_name or "",
         "date": datetime.now().strftime("%Y-%m-%d"),
+        "time": datetime.now().strftime("%H:%M"),
         "frame": frame if frame is not None else "",
+        "scene": scene or "",
+        "take": take or "",
+        "camera": camera or "",
+        "project": project or "",
     }
 
 

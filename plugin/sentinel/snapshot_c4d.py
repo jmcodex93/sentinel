@@ -133,10 +133,8 @@ def convert_exr(path, converter):
     return out
 
 
-def compose_slate(image, slate, font):
-    """Return a new bitmap: ``image`` with the slate strip appended below."""
-    width, height = image.GetSize()
-    strip_h = slate_layout.strip_height(height)
+def _draw_strip(width, strip_h, fields, font, style):
+    """The slate strip as its own 24-bit bitmap (opaque background)."""
     size = slate_layout.font_size(strip_h)
     clip = bitmaps.GeClipMap()
     if not clip.Init(width, strip_h, 24):
@@ -149,26 +147,55 @@ def compose_slate(image, slate, font):
         bitmaps.GeClipMap.SetFontSize(desc, c4d.GE_FONT_SIZE_INTERNAL, size)
         clip.SetFont(desc, size)
         for x, y, text, rgb in slate_layout.slate_ops(width, strip_h, clip.TextHeight(),
-                                                       slate, clip.TextWidth):
+                                                       fields, clip.TextWidth, style):
             clip.SetColor(*rgb, 255)
             clip.TextAt(x, y, text)
     finally:
         clip.EndDraw()
-    strip = clip.GetBitmap().GetClone()  # the clip map owns its bitmap
+    return clip.GetBitmap().GetClone()  # the clip map owns its bitmap
+
+
+def compose_slate(image, fields, font, style=None):
+    """Return a new bitmap with the slate: a strip below the image (default,
+    the image pixels untouched) or a bar drawn over its bottom edge
+    (``position: overlay``, same dimensions)."""
+    style = style or slate_layout.DEFAULT_STYLE
+    width, height = image.GetSize()
+    strip_h = min(slate_layout.strip_height(height, style.get("size", 1.0)), height)
+    strip = _draw_strip(width, strip_h, fields, font, style)
+    overlay = style.get("position") == "overlay"
     out = bitmaps.BaseBitmap()
-    if out.Init(width, height + strip_h, 24) != c4d.IMAGERESULT_OK:
+    if out.Init(width, height + (0 if overlay else strip_h), 24) != c4d.IMAGERESULT_OK:
         raise RuntimeError("Could not allocate the slated image")
     line = bytearray(width * 3)
     for y in range(height):
         image.GetPixelCnt(0, y, width, line, 3, c4d.COLORMODE_RGB, c4d.PIXELCNT_0)
         out.SetPixelCnt(0, y, width, line, 3, c4d.COLORMODE_RGB, c4d.PIXELCNT_0)
+    strip_line = bytearray(width * 3)
+    top = height - strip_h if overlay else height
     for y in range(strip_h):
-        strip.GetPixelCnt(0, y, width, line, 3, c4d.COLORMODE_RGB, c4d.PIXELCNT_0)
-        out.SetPixelCnt(0, height + y, width, line, 3, c4d.COLORMODE_RGB, c4d.PIXELCNT_0)
+        strip.GetPixelCnt(0, y, width, strip_line, 3, c4d.COLORMODE_RGB, c4d.PIXELCNT_0)
+        if overlay:
+            image.GetPixelCnt(0, top + y, width, line, 3, c4d.COLORMODE_RGB, c4d.PIXELCNT_0)
+            row = slate_layout.overlay_row(line, strip_line)
+        else:
+            row = strip_line
+        out.SetPixelCnt(0, top + y, width, row, 3, c4d.COLORMODE_RGB, c4d.PIXELCNT_0)
     return out
 
 
-def convert_snapshot(exr_path, png_path, converter, slate=None, font=None):
+def slate_fields(exr_path, slate, size):
+    """The slate's fields for this snapshot: what Sentinel collected on the
+    main thread, overridden by what RenderView recorded in the EXR (frame,
+    capture date/time, OCIO view), plus the image resolution."""
+    from sentinel.snapshots import read_exr_attributes, snapshot_capture_fields
+    fields = dict(slate or {})
+    fields.update(snapshot_capture_fields(read_exr_attributes(exr_path)))
+    fields["resolution"] = "%dx%d" % size
+    return fields
+
+
+def convert_snapshot(exr_path, png_path, converter, slate=None, font=None, style=None):
     """EXR -> PNG at ``png_path`` (overwritten), with the slate when given.
 
     Returns ``(ok, error)`` like the external converter. Safe in a worker
@@ -176,16 +203,44 @@ def convert_snapshot(exr_path, png_path, converter, slate=None, font=None):
     """
     try:
         image = convert_exr(exr_path, converter)
+        fields = None
         if slate:
-            image = compose_slate(image, slate, font if font is not None else
-                                  bitmaps.GeClipMap.GetDefaultFont(c4d.GE_FONT_DEFAULT_SYSTEM))
+            fields = slate_fields(exr_path, slate, image.GetSize())
+            image = compose_slate(image, fields, font if font is not None else
+                                  bitmaps.GeClipMap.GetDefaultFont(c4d.GE_FONT_DEFAULT_SYSTEM),
+                                  style)
         if image.Save(png_path, c4d.FILTER_PNG) != c4d.IMAGERESULT_OK:
             return False, "Could not write %s" % png_path
-        if slate:
+        if fields:
             with open(png_path, "rb") as handle:
                 data = handle.read()
             with open(png_path, "wb") as handle:
-                handle.write(slate_layout.insert_png_text(data, slate_layout.slate_metadata(slate)))
+                handle.write(slate_layout.insert_png_text(data, slate_layout.slate_metadata(fields)))
         return True, None
     except Exception as exc:
         return False, "Conversion failed: %s" % exc
+
+
+def preview_slate(png_path, slate, font, style, exr_path=None, converter=None):
+    """Write a slate preview to ``png_path``: the given snapshot converted for
+    real, or a neutral grey 1920×1080 frame when there is none.
+    Returns ``(ok, error, source)`` with source ``"snapshot"``/``"placeholder"``."""
+    if exr_path and converter is not None:
+        ok, error = convert_snapshot(exr_path, png_path, converter, slate=slate,
+                                     font=font, style=style)
+        return ok, error, "snapshot"
+    try:
+        width, height = 1920, 1080
+        image = bitmaps.BaseBitmap()
+        if image.Init(width, height, 24) != c4d.IMAGERESULT_OK:
+            return False, "Could not allocate the preview", "placeholder"
+        grey = bytearray([92, 92, 92] * width)
+        for y in range(height):
+            image.SetPixelCnt(0, y, width, grey, 3, c4d.COLORMODE_RGB, c4d.PIXELCNT_0)
+        fields = dict(slate or {}, resolution="%dx%d" % (width, height))
+        out = compose_slate(image, fields, font, style)
+        if out.Save(png_path, c4d.FILTER_PNG) != c4d.IMAGERESULT_OK:
+            return False, "Could not write %s" % png_path, "placeholder"
+        return True, None, "placeholder"
+    except Exception as exc:
+        return False, "Preview failed: %s" % exc, "placeholder"

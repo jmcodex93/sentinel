@@ -1101,6 +1101,17 @@ export async function postPanelRenderSaveStill(): Promise<PanelRenderMutationRes
   return postForm<PanelRenderMutationResponse>("/api/panel/render/save_still", {});
 }
 
+/** `POST /api/panel/render/preview_slate` — see `_op_panel_render_preview_slate`. */
+export async function postPanelRenderPreviewSlate(): Promise<PanelRenderMutationResponse> {
+  if (isMock()) {
+    return {
+      ...mockPanelRenderMutation("preview_slate"),
+      preview: { path: "/tmp/sentinel_slate_preview.png", source: "snapshot", font: "Inter-Regular", slate_enabled: true },
+    };
+  }
+  return postForm<PanelRenderMutationResponse>("/api/panel/render/preview_slate", {});
+}
+
 /** `POST /api/panel/render/open_folder` — see `_op_panel_render_open_folder`. */
 export async function postPanelRenderOpenFolder(): Promise<PanelRenderMutationResponse> {
   if (isMock()) {

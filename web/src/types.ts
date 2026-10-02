@@ -1060,6 +1060,17 @@ export interface PanelRenderMutationResponse {
    * with no custom presets in the scene loses nothing and isn't red. */
   confirm_verb?: string;
   destructive?: boolean;
+  /** Only on `panel/render/preview_slate` — see `snapshot_preview_slate_core`. */
+  preview?: PanelSlatePreview;
+}
+
+/** Where a slate preview came from and how it was drawn. `font` is the
+ * PostScript name found (`Inter-Regular`, `ArialMT`) or `"system"`. */
+export interface PanelSlatePreview {
+  path: string;
+  source: "snapshot" | "placeholder";
+  font: string;
+  slate_enabled: boolean;
 }
 
 /** `GET /api/panel/render/aov_list` — see `_op_panel_render_aov_list` in

@@ -979,10 +979,12 @@ def snapshot_save_still_core(doc, artist_name):
 
     # Resolve opt-in review slate (project rules > machine setting > default OFF)
     slate_data = None
+    slate_style = None
     try:
         rules_context = _active_rules_for_doc(doc)
         if bool(rules_context.params.get("slate", False)):
-            slate_data = build_slate_data(doc, artist_name)
+            slate_data = build_slate_data(doc, artist_name, project=_rules_project(rules_context))
+            slate_style = rules_context.params.get("slate_style")
     except Exception as e:
         safe_print(f"Slate resolution skipped: {e}")
 
@@ -992,7 +994,8 @@ def snapshot_save_still_core(doc, artist_name):
     if in_c4d:
         from sentinel.snapshot_c4d import convert_snapshot
         success, error = convert_snapshot(exr_path, png_path, in_c4d["ocio"],
-                                          slate=slate_data, font=in_c4d.get("font"))
+                                          slate=slate_data, font=in_c4d.get("font"),
+                                          style=slate_style)
     else:
         success, error = _convert_exr_to_png(exr_path, png_path, slate_data=slate_data)
     if not success:
@@ -1038,19 +1041,28 @@ def prepare_snapshot_task(doc, artist_name, snap_path):
     if not doc:
         raise ValueError("No active document")
     slate_data = None
+    slate_style = None
     if snap_path.lower().endswith(".exr"):
         context = _active_rules_for_doc(doc)
         if bool(context.params.get("slate", False)):
-            slate_data = build_slate_data(doc, artist_name)
+            slate_data = build_slate_data(doc, artist_name, project=_rules_project(context))
+            slate_style = context.params.get("slate_style")
     task = {
         "source": snap_path,
         "output_dir": _get_stills_dir(doc, artist_name, create=False),
         "scene_name": os.path.splitext(doc.GetDocumentName() or "untitled")[0],
         "slate": slate_data,
+        "slate_style": slate_style,
     }
     if snap_path.lower().endswith(".exr"):
         task.update(_in_c4d_conversion(doc, slate_data))
     return task
+
+
+def _rules_project(context):
+    """``{project}`` slate token: the folder holding the active ruleset."""
+    path = getattr(context, "rules_path", None)
+    return os.path.basename(os.path.dirname(path)) if path else ""
 
 
 def _in_c4d_conversion(doc, slate_data):
@@ -1168,6 +1180,37 @@ def open_version_core(path):
     if ok:
         return {"ok": True, "opened": True}
     return {"ok": False, "error": "load_failed"}
+
+
+def snapshot_preview_slate_core(doc, artist_name):
+    """Dialog-free "Preview slate": the project's slate on the newest snapshot
+    (or a grey frame when there is none), written to the temp folder — never
+    the stills folder, so a preview never lands in a delivery — and opened in
+    the system image viewer. Works whether or not the slate is enabled, so a
+    supervisor can tune ``slate_style`` before switching it on.
+
+    Returns ``{"ok", "path", "source", "slate_enabled", "font"}`` or
+    ``{"ok": False, "error": "needs_2025_2"|...}``.
+    """
+    import tempfile
+    from sentinel import snapshot_c4d
+    if not snapshot_c4d.ocio_available():
+        return {"ok": False, "error": "needs_2025_2"}
+    context = _active_rules_for_doc(doc)
+    slate_data = build_slate_data(doc, artist_name or "", project=_rules_project(context))
+    style = context.params.get("slate_style")
+    font, font_name = snapshot_c4d.resolve_slate_font()
+    snap_dir, _origin = get_effective_snapshot_dir()
+    exr_path, _ = _find_latest_exr(snap_dir) if snap_dir else (None, None)
+    converter = snapshot_c4d.color_converter(doc) if exr_path else None
+    path = os.path.join(tempfile.gettempdir(), "sentinel_slate_preview.png")
+    ok, error, source = snapshot_c4d.preview_slate(path, slate_data, font, style,
+                                                   exr_path=exr_path, converter=converter)
+    if not ok:
+        return {"ok": False, "error": error or "preview_failed"}
+    open_in_explorer(path)
+    return {"ok": True, "path": path, "source": source, "font": font_name,
+            "slate_enabled": bool(context.params.get("slate", False))}
 
 
 def snapshot_open_folder_core(doc, artist_name):
