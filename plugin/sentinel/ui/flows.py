@@ -986,8 +986,15 @@ def snapshot_save_still_core(doc, artist_name):
     except Exception as e:
         safe_print(f"Slate resolution skipped: {e}")
 
-    # Convert
-    success, error = _convert_exr_to_png(exr_path, png_path, slate_data=slate_data)
+    # Convert — in C4D with the document's OCIO view on 2025.2+, otherwise
+    # through the external Python converter.
+    in_c4d = _in_c4d_conversion(doc, slate_data)
+    if in_c4d:
+        from sentinel.snapshot_c4d import convert_snapshot
+        success, error = convert_snapshot(exr_path, png_path, in_c4d["ocio"],
+                                          slate=slate_data, font=in_c4d.get("font"))
+    else:
+        success, error = _convert_exr_to_png(exr_path, png_path, slate_data=slate_data)
     if not success:
         return {"ok": False, "stage": "convert", "error": error}
 
@@ -1035,12 +1042,33 @@ def prepare_snapshot_task(doc, artist_name, snap_path):
         context = _active_rules_for_doc(doc)
         if bool(context.params.get("slate", False)):
             slate_data = build_slate_data(doc, artist_name)
-    return {
+    task = {
         "source": snap_path,
         "output_dir": _get_stills_dir(doc, artist_name, create=False),
         "scene_name": os.path.splitext(doc.GetDocumentName() or "untitled")[0],
         "slate": slate_data,
     }
+    if snap_path.lower().endswith(".exr"):
+        task.update(_in_c4d_conversion(doc, slate_data))
+    return task
+
+
+def _in_c4d_conversion(doc, slate_data):
+    """``{"ocio", "font"}`` for the in-C4D converter, or ``{}`` before 2025.2.
+
+    Captured here, on the main thread, so the conversion can run in a worker.
+    The font is resolved only when there is a slate to draw.
+    """
+    from sentinel import snapshot_c4d
+    if not snapshot_c4d.ocio_available():
+        return {}
+    extras = {"ocio": snapshot_c4d.color_converter(doc)}
+    if slate_data:
+        font, name = snapshot_c4d.resolve_slate_font()
+        if name == "system":
+            safe_print("Slate font: Inter and Arial not found, using the system font")
+        extras["font"] = font
+    return extras
 
 
 def snapshot_auto_convert(doc, artist_name, snap_path):

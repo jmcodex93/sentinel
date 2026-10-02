@@ -196,6 +196,31 @@ def build_python_item(python_path):
         "pip3 install OpenEXR numpy Pillow")
 
 
+def build_exr_conversion_item(in_c4d, python_path):
+    """How snapshot EXRs become PNGs: inside C4D (2025.2+) or external Python."""
+    if in_c4d:
+        return _item("ext_python", "Snapshot EXR conversion", OK,
+                     "Built in: Cinema 4D's OCIO view transform (no external Python needed).",
+                     "")
+    return build_python_item(python_path)
+
+
+SLATE_FONT_LABELS = {"Inter-Regular": "Inter (bundled)", "ArialMT": "Arial"}
+
+
+def build_slate_font_item(font_name):
+    """Font the review slate is drawn with (``None`` = in-C4D slate unavailable)."""
+    if font_name is None:
+        return _item("slate_font", "Slate font", INFO,
+                     "Not used: this Cinema 4D draws the slate with the external converter.", "")
+    if font_name == "Inter-Regular":
+        return _item("slate_font", "Slate font", OK, "Inter (bundled).", "")
+    label = SLATE_FONT_LABELS.get(font_name, "Cinema 4D's interface font")
+    return _item("slate_font", "Slate font", INFO,
+                 "%s — the bundled Inter could not be loaded." % label,
+                 "Check that fonts/Inter-Regular.ttf is in the Sentinel plugin folder.")
+
+
 def build_write_permission_item(item_id, label, path):
     """Generic writability probe for a directory (prefs dir, scene dir)."""
     if not path:
@@ -374,6 +399,20 @@ def detect_renderers():
     return ordered
 
 
+def discover_in_c4d_snapshots():
+    """``(in_c4d, slate font name)`` from the live host; ``(False, None)`` before 2025.2."""
+    try:
+        from sentinel import snapshot_c4d
+        if not snapshot_c4d.ocio_available():
+            return False, None
+        try:
+            return True, snapshot_c4d.resolve_slate_font()[1]
+        except Exception:
+            return True, "system"
+    except Exception:
+        return False, None
+
+
 def discover_external_python():
     """Reuse the snapshot converter's Python discovery. Returns path or None."""
     try:
@@ -420,7 +459,8 @@ def run_all_diagnostics():
     root = get_running_root()
     settings_path, legacy_path = get_settings_paths()
     renderers = detect_renderers()
-    python_path = discover_external_python()
+    in_c4d, font_name = discover_in_c4d_snapshots()
+    python_path = None if in_c4d else discover_external_python()
     scene_dir = get_scene_dir()
     prefs_dir = os.path.dirname(settings_path) if settings_path else ""
 
@@ -430,7 +470,8 @@ def run_all_diagnostics():
         build_payload_item(root),
         build_settings_item(settings_path, legacy_path),
         build_renderers_item(renderers),
-        build_python_item(python_path),
+        build_exr_conversion_item(in_c4d, python_path),
+        build_slate_font_item(font_name),
         build_write_permission_item("perm_prefs", "Prefs folder writable", prefs_dir),
     ]
     if scene_dir:

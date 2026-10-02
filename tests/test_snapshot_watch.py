@@ -540,3 +540,66 @@ def test_failed_conversion_cleans_only_its_temporary_output(monkeypatch, tmp_pat
     assert result == (False, 'decoder failed')
     assert list(output_dir.iterdir()) == [previous]
     assert previous.read_bytes() == b'keep'
+
+
+def test_exr_task_with_ocio_converter_converts_inside_c4d(monkeypatch, tmp_path):
+    """C4D 2025.2+: the captured OCIO converter routes the EXR to the in-C4D
+    converter with the slate and font; the external Python is never called."""
+    from pathlib import Path
+    from sentinel import snapshots, snapshot_c4d
+    calls = []
+    def in_c4d(source, output, converter, slate=None, font=None):
+        calls.append((Path(source).name, converter, slate, font))
+        Path(output).write_bytes(b'png')
+        return True, None
+    def external(*args, **kwargs):
+        raise AssertionError('external converter must not run')
+    monkeypatch.setattr(snapshot_c4d, 'convert_snapshot', in_c4d)
+    monkeypatch.setattr(snapshots, '_convert_exr_to_png', external)
+    out = tmp_path / 'out'
+    ok, message = snapshots.run_snapshot_task({
+        'source': str(tmp_path / 'new.exr'), 'output_dir': str(out), 'scene_name': 'shot',
+        'slate': {'shot': 'shot'}, 'ocio': 'converter', 'font': 'font'})
+    assert (ok, message) == (True, 'converted shot_snap_001.png')
+    assert calls == [('new.exr', 'converter', {'shot': 'shot'}, 'font')]
+    assert (out / 'shot_snap_001.png').read_bytes() == b'png'
+
+
+def _prepare(monkeypatch, tmp_path, *, ocio, slate_on, name='snap.exr'):
+    from sentinel import snapshot_c4d
+    from sentinel.ui import flows
+    class Doc:
+        def GetDocumentPath(self):
+            return str(tmp_path / 'project' / 'scenes')
+        def GetDocumentName(self):
+            return 'shot_v001.c4d'
+    class Rules:
+        params = {'slate': slate_on}
+    monkeypatch.setattr(flows, '_active_rules_for_doc', lambda doc: Rules())
+    monkeypatch.setattr(flows, 'build_slate_data', lambda doc, artist: {'shot': 'shot'})
+    monkeypatch.setattr(snapshot_c4d, 'ocio_available', lambda: ocio)
+    monkeypatch.setattr(snapshot_c4d, 'color_converter', lambda doc: 'converter')
+    monkeypatch.setattr(snapshot_c4d, 'resolve_slate_font', lambda: ('font', 'Inter-Regular'))
+    return flows.prepare_snapshot_task(Doc(), 'Artist', str(tmp_path / name))
+
+
+def test_prepare_captures_converter_and_font_for_a_slated_exr(sentinel_module, monkeypatch, tmp_path):
+    task = _prepare(monkeypatch, tmp_path, ocio=True, slate_on=True)
+    assert task['ocio'] == 'converter'
+    assert task['font'] == 'font'
+
+
+def test_prepare_skips_the_font_without_a_slate(sentinel_module, monkeypatch, tmp_path):
+    task = _prepare(monkeypatch, tmp_path, ocio=True, slate_on=False)
+    assert task['ocio'] == 'converter'
+    assert 'font' not in task
+
+
+def test_prepare_keeps_the_external_converter_before_2025_2(sentinel_module, monkeypatch, tmp_path):
+    task = _prepare(monkeypatch, tmp_path, ocio=False, slate_on=True)
+    assert 'ocio' not in task and 'font' not in task
+
+
+def test_prepare_does_not_convert_display_referred_snapshots(sentinel_module, monkeypatch, tmp_path):
+    task = _prepare(monkeypatch, tmp_path, ocio=True, slate_on=True, name='snap.png')
+    assert 'ocio' not in task

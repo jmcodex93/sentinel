@@ -212,7 +212,13 @@ class SnapshotWatch:
 
 
 def run_snapshot_task(task):
-    """Filesystem/converter worker; task contains only captured scalar data."""
+    """Filesystem/converter worker.
+
+    The task holds captured scalars plus, on C4D 2025.2+, the document's OCIO
+    converter (``ocio``) and the slate font description (``font``) taken on
+    the main thread — neither is a scene node, and both were measured safe to
+    use from this worker. Without ``ocio`` the external converter is used.
+    """
     import shutil
     import tempfile
     source = task["source"]
@@ -226,7 +232,12 @@ def run_snapshot_task(task):
         if is_exr:
             fd, temporary = tempfile.mkstemp(prefix=".sentinel_snapshot_", suffix=".png", dir=output_dir)
             os.close(fd)
-            ok, error = _convert_exr_to_png(source, temporary, slate_data=task.get("slate"))
+            if task.get("ocio") is not None:
+                from sentinel.snapshot_c4d import convert_snapshot
+                ok, error = convert_snapshot(source, temporary, task["ocio"],
+                                             slate=task.get("slate"), font=task.get("font"))
+            else:
+                ok, error = _convert_exr_to_png(source, temporary, slate_data=task.get("slate"))
             if not ok:
                 return False, error or "Conversion failed"
         name = next_snapshot_name(os.listdir(output_dir), task["scene_name"], ext=ext)
@@ -454,6 +465,10 @@ def build_slate_data(doc, artist_name, frame=None):
 
 def _convert_exr_to_png(exr_path, png_path, slate_data=None):
     """Convert EXR to PNG via external Python with OpenEXR + ACES pipeline.
+
+    Only for C4D older than 2025.2: newer hosts convert in-process with the
+    document's OCIO view (``sentinel.snapshot_c4d``), which matches RenderView
+    exactly; this converter approximates the ACES curve.
 
     When ``slate_data`` is provided it is written to a temp JSON and passed to
     the converter via ``--slate`` so a review-slate strip + PNG metadata are

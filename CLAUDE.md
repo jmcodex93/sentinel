@@ -29,7 +29,7 @@ lights organized in a group · viewport/render visibility mismatch · multi-axis
 - `web/` — SPA source (Vite + React + TS + Tailwind v4). Its build is **committed** in `plugin/web/`; CI checks source/build parity, so rebuild and commit the bundle with every SPA change.
 - `plugin/res/` — `.res/.h/.str` for the Frame, Pin and Variants tags; a new description-based plugin needs its own triplet.
 - `plugin/c4d/` — scene assets merged by tools (`nulls`, `VibrateNull`, camera rigs) and the fallback template `new.c4d`. They must live inside `plugin/`: `sync.sh` and the installer copy only `plugin/`. The `backup/` folder C4D writes next to them is gitignored and excluded from the payload.
-- `plugin/exr_converter_external.py` (ACES EXR→PNG, runs in system Python), `plugin/abc_retime/` (bundled third-party, AXISFX), `plugin/legacy/` (reference only).
+- `plugin/fonts/Inter-Regular.ttf` (slate font, registered for the C4D process only), `plugin/exr_converter_external.py` (EXR→PNG in system Python, only for C4D before 2025.2), `plugin/abc_retime/` (bundled third-party, AXISFX), `plugin/legacy/` (reference only).
 - Plugin IDs: 2099069 (base), Frame tag 2099073, Palette 2099075, SPA panel 2099076, MessageData 2099077, Pin tag 2099078, Variants tag 2099079; 2099072 and 2099074 are retired/never shipped. Check `common/constants.py` before picking a new one.
 
 ## Development flow
@@ -125,11 +125,13 @@ QC results cached with a 0.5 s cooldown, invalidated by CoreMessage dirty flags.
 - Tokens: `c4d.modules.tokensystem.StringConvertTokens`; RS AOV output path: `REDSHIFT_AOV_FILE_EFFECTIVE_PATH`. Dome HDR: `obj[ROOT_ID, REDSHIFT_FILE_PATH]`.
 - RenderView's snapshot folder is `snapshotDir` in `prefs/redshift_rv.cfg`, written only when C4D quits. "Save snapshots as EXR" is session-only Qt state and can't be persisted.
 - `GetAllAssetsNew` lists the document itself — exclude it. Unsaved scenes resolve textures from `tex/` and `GetGlobalTexturePaths()`. Relinks must preserve the stored path form (`relative:///`, `tex/`, absolute).
+- Snapshot EXR → PNG runs in C4D (2025.2+): `doc.GetColorConverter().TransformColors(rows, COLORSPACETRANSFORMATION_OCIO_RENDERING_TO_VIEW)` equals PyOpenColorIO with Redshift's config; `BakeOcioViewToBitmap` returns None for disk-loaded bitmaps and `ColorProfileConvert` render→view is wrong. `GetPixelCnt` returns a falsy value even on success — never test it. Measurements: `docs/research/2026-10-02-snapshot-in-c4d.md`.
+- `GeClipMap`: every call (including `SetFont`, `TextWidth`, `GetPixelRGBA`) between `BeginDraw`/`EndDraw`; `GetClone()` the bitmap from `GetBitmap()` before the clip map dies. Fonts resolve only by PostScript name, and an unknown name silently returns another font — compare `GetFontName(desc, GE_FONT_NAME_POSTSCRIPT)`. Copy containers with `c4d.BaseContainer(desc)` (`GetClone` needs flags).
 - macOS notifications via `osascript` can be swallowed silently (exit 0, no banner): deliver in C4D (panel toast + `StatusSetText`).
 
 **Windows**
 - Paths: don't normalize to `/` and then `os.path.join` (mixed separators) — keep native for local paths shown to the artist; `/` only where a format needs it (manifest, cross-OS render paths). The Windows CI job catches the rest.
-- OpenEXR has no wheel for Python 3.14: the EXR converter needs a Python 3.12-ish interpreter with OpenEXR/numpy/Pillow on PATH (or in a location `_find_system_python` searches) at C4D startup. Doctor resolves a bare `python` via PATH.
+- Only C4D older than 2025.2 uses the external EXR converter, which needs a Python 3.12-ish interpreter with OpenEXR/numpy/Pillow (no OpenEXR wheel for 3.14) on PATH or where `_find_system_python` searches. Doctor resolves a bare `python` via PATH. Registering the bundled slate font on Windows (`AddFontResourceExW`, FR_PRIVATE) is unmeasured; Arial is the fallback.
 
 **HTML viewer / SPA**
 - `CUSTOMGUI_HTMLVIEWER` is modern WebKit, and Cmd+Z reaches the document. `Close()` + `Open()` on a live viewer crashes C4D — reuse it and navigate with `SetUrl`. `PostWebMessage` push is a no-op, so the SPA polls.
