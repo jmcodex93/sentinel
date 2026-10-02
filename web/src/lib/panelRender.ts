@@ -109,6 +109,9 @@ export function slatePreviewMessage(preview: PanelSlatePreview): string {
   if (!preview.slate_enabled) {
     parts.push("The slate is off for this scene.");
   }
+  if (preview.notice) {
+    parts.push(preview.notice + ".");
+  }
   return parts.join(" ");
 }
 
@@ -117,4 +120,14 @@ export function slatePreviewError(error: string | undefined): string {
   if (error === "needs_2025_2") return "Slate preview needs Cinema 4D 2025.2 or newer.";
   if (error === "no_document") return "Open a scene first.";
   return error || "Slate preview failed.";
+}
+
+/** Toast after Save Still. A RenderView-post notice turns it into a warning
+ * when something the artist saw in RenderView is not in the PNG. */
+export function stillSavedToast(notice: string | undefined): { message: string; variant: "success" | "warn" } {
+  if (!notice) return { message: "Still saved.", variant: "success" };
+  return {
+    message: `Still saved. ${notice}.`,
+    variant: notice.includes("not reproduced") ? "warn" : "success",
+  };
 }

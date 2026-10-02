@@ -22,6 +22,7 @@ import sys
 import c4d
 from c4d import bitmaps
 
+from sentinel import rvpost
 from sentinel import slate as slate_layout
 from sentinel.common.helpers import safe_print
 
@@ -102,8 +103,9 @@ def _to_byte(value):
     return 0 if value <= 0.0 else 255 if value >= 1.0 else int(value * 255.0 + 0.5)
 
 
-def convert_exr(path, converter):
-    """Load an EXR and return a 24-bit BaseBitmap in the OCIO view space."""
+def convert_exr(path, converter, post=None):
+    """Load an EXR and return a 24-bit BaseBitmap in the OCIO view space,
+    with the RenderView post in ``post`` (an active ``rvpost`` plan) re-applied."""
     src = bitmaps.BaseBitmap()
     result, _ = src.InitWith(path)
     if result != c4d.IMAGERESULT_OK:
@@ -122,13 +124,20 @@ def convert_exr(path, converter):
         channels = iter(floats)
         colors = converter.TransformColors(
             [vector(r, g, b) for r, g, b in zip(channels, channels, channels)], transform)
-        line = bytearray(width * 3)
-        i = 0
-        for color in colors:
-            line[i] = _to_byte(color.x)
-            line[i + 1] = _to_byte(color.y)
-            line[i + 2] = _to_byte(color.z)
-            i += 3
+        if post is not None:
+            values = []
+            extend = values.extend
+            for color in colors:
+                extend((color.x, color.y, color.z))
+            line = rvpost.apply_row(values, post)
+        else:
+            line = bytearray(width * 3)
+            i = 0
+            for color in colors:
+                line[i] = _to_byte(color.x)
+                line[i + 1] = _to_byte(color.y)
+                line[i + 2] = _to_byte(color.z)
+                i += 3
         out.SetPixelCnt(0, y, width, line, 3, c4d.COLORMODE_RGB, c4d.PIXELCNT_0)
     return out
 
@@ -184,13 +193,13 @@ def compose_slate(image, fields, font, style=None):
     return out
 
 
-def slate_fields(exr_path, slate, size):
+def slate_fields(attrs, slate, size):
     """The slate's fields for this snapshot: what Sentinel collected on the
-    main thread, overridden by what RenderView recorded in the EXR (frame,
-    capture date/time, OCIO view), plus the image resolution."""
-    from sentinel.snapshots import read_exr_attributes, snapshot_capture_fields
+    main thread, overridden by what RenderView recorded in the EXR header
+    ``attrs`` (frame, capture date/time, OCIO view), plus the resolution."""
+    from sentinel.snapshots import snapshot_capture_fields
     fields = dict(slate or {})
-    fields.update(snapshot_capture_fields(read_exr_attributes(exr_path)))
+    fields.update(snapshot_capture_fields(attrs))
     fields["resolution"] = "%dx%d" % size
     return fields
 
@@ -198,14 +207,20 @@ def slate_fields(exr_path, slate, size):
 def convert_snapshot(exr_path, png_path, converter, slate=None, font=None, style=None):
     """EXR -> PNG at ``png_path`` (overwritten), with the slate when given.
 
-    Returns ``(ok, error)`` like the external converter. Safe in a worker
-    thread when ``converter`` and ``font`` were captured on the main thread.
+    Re-applies the RenderView post the EXR header records and this module can
+    reproduce (LUT, RGB curve — see ``rvpost``). Returns ``(ok, message)``: on
+    failure the error; on success what was re-applied and what was not, or
+    None. Safe in a worker thread when ``converter`` and ``font`` were
+    captured on the main thread.
     """
+    from sentinel.snapshots import read_exr_attributes
     try:
-        image = convert_exr(exr_path, converter)
+        attrs = read_exr_attributes(exr_path)
+        plan = rvpost.post_plan(attrs)
+        image = convert_exr(exr_path, converter, plan if rvpost.plan_is_active(plan) else None)
         fields = None
         if slate:
-            fields = slate_fields(exr_path, slate, image.GetSize())
+            fields = slate_fields(attrs, slate, image.GetSize())
             image = compose_slate(image, fields, font if font is not None else
                                   bitmaps.GeClipMap.GetDefaultFont(c4d.GE_FONT_DEFAULT_SYSTEM),
                                   style)
@@ -216,7 +231,10 @@ def convert_snapshot(exr_path, png_path, converter, slate=None, font=None, style
                 data = handle.read()
             with open(png_path, "wb") as handle:
                 handle.write(slate_layout.insert_png_text(data, slate_layout.slate_metadata(fields)))
-        return True, None
+        notice = rvpost.describe(plan)
+        if notice:
+            safe_print("Snapshot %s: %s" % (os.path.basename(exr_path), notice))
+        return True, notice or None
     except Exception as exc:
         return False, "Conversion failed: %s" % exc
 

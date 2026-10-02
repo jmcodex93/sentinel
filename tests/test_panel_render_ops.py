@@ -1964,7 +1964,7 @@ class TestPreviewSlate:
         assert response["ok"] is True
         assert response["preview"] == {"path": str(tmp_path / "tmp" / "sentinel_slate_preview.png"),
                                        "source": "snapshot", "font": "Inter-Regular",
-                                       "slate_enabled": False}
+                                       "slate_enabled": False, "notice": ""}
         path, slate, font, style, exr_path, converter = calls["preview"]
         assert style == {"position": "overlay"} and exr_path == str(tmp_path / "a.exr")
         assert converter == "conv" and calls["opened"] == path
@@ -1980,3 +1980,17 @@ class TestPreviewSlate:
         response = ops.PANEL_RENDER_OPS["panel/render/preview_slate"]({})
         assert response == {"ok": False, "error": "needs_2025_2"}
         assert "preview" not in calls
+
+
+def test_save_still_passes_on_the_render_view_post_notice(sentinel_module, monkeypatch):
+    from sentinel.ui import panel_render_ops, flows
+    from sentinel.common.settings import GlobalSettings
+    doc = _FakeDocBase()
+    monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
+    monkeypatch.setattr(GlobalSettings, "load_artist_name", lambda: "A")
+    monkeypatch.setattr(flows, "snapshot_save_still_core", lambda d, a: {
+        "ok": True, "path": "/x.png", "output_dir": "/", "notice": "not reproduced: bloom"})
+    monkeypatch.setattr(panel_render_ops, "build_panel_render", lambda d: {})
+    monkeypatch.setattr(panel_render_ops, "_stamp_for", lambda d: "s")
+    response = panel_render_ops.PANEL_RENDER_OPS["panel/render/save_still"]({})
+    assert response == {"ok": True, "stamp": "s", "render": {}, "notice": "not reproduced: bloom"}

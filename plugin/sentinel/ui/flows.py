@@ -1002,7 +1002,10 @@ def snapshot_save_still_core(doc, artist_name):
         return {"ok": False, "stage": "convert", "error": error}
 
     safe_print(f"Still saved: {png_path}")
-    return {"ok": True, "path": png_path, "output_dir": output_dir}
+    result = {"ok": True, "path": png_path, "output_dir": output_dir}
+    if in_c4d and error:
+        result["notice"] = error   # RenderView post re-applied / not reproduced
+    return result
 
 
 def snapshot_save_still(doc, artist_name):
@@ -1210,7 +1213,8 @@ def snapshot_preview_slate_core(doc, artist_name):
         return {"ok": False, "error": error or "preview_failed"}
     open_in_explorer(path)
     return {"ok": True, "path": path, "source": source, "font": font_name,
-            "slate_enabled": bool(context.params.get("slate", False))}
+            "slate_enabled": bool(context.params.get("slate", False)),
+            "notice": error or ""}
 
 
 def snapshot_open_folder_core(doc, artist_name):
