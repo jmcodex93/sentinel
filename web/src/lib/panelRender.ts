@@ -1,4 +1,5 @@
 import type {
+  PanelSlatePreview,
   PanelRenderPresetOption,
   PanelRenderAovs,
   PanelRenderFrame,
@@ -90,4 +91,30 @@ const DESTRUCTIVE_RENDER_OPS = new Set(["reset_all"]);
 
 export function isDestructiveRenderOp(op: string): boolean {
   return DESTRUCTIVE_RENDER_OPS.has(op);
+}
+
+/** Toast copy for a finished slate preview: what it was drawn on, which font
+ * was found when it is not the bundled Inter, and a reminder when the
+ * project has the slate switched off (the preview still shows its look). */
+export function slatePreviewMessage(preview: PanelSlatePreview): string {
+  const parts = [
+    preview.source === "snapshot"
+      ? "Slate preview opened on the latest snapshot."
+      : "Slate preview opened on a grey frame (no snapshot yet).",
+  ];
+  if (preview.font !== "Inter-Regular") {
+    parts.push(preview.font === "ArialMT" ? "Drawn in Arial: the bundled Inter is not available."
+      : "Drawn in the system font: Inter and Arial are not available.");
+  }
+  if (!preview.slate_enabled) {
+    parts.push("The slate is off for this scene.");
+  }
+  return parts.join(" ");
+}
+
+/** Error copy for `panel/render/preview_slate`. */
+export function slatePreviewError(error: string | undefined): string {
+  if (error === "needs_2025_2") return "Slate preview needs Cinema 4D 2025.2 or newer.";
+  if (error === "no_document") return "Open a scene first.";
+  return error || "Slate preview failed.";
 }

@@ -548,8 +548,8 @@ def test_exr_task_with_ocio_converter_converts_inside_c4d(monkeypatch, tmp_path)
     from pathlib import Path
     from sentinel import snapshots, snapshot_c4d
     calls = []
-    def in_c4d(source, output, converter, slate=None, font=None):
-        calls.append((Path(source).name, converter, slate, font))
+    def in_c4d(source, output, converter, slate=None, font=None, style=None):
+        calls.append((Path(source).name, converter, slate, font, style))
         Path(output).write_bytes(b'png')
         return True, None
     def external(*args, **kwargs):
@@ -559,9 +559,9 @@ def test_exr_task_with_ocio_converter_converts_inside_c4d(monkeypatch, tmp_path)
     out = tmp_path / 'out'
     ok, message = snapshots.run_snapshot_task({
         'source': str(tmp_path / 'new.exr'), 'output_dir': str(out), 'scene_name': 'shot',
-        'slate': {'shot': 'shot'}, 'ocio': 'converter', 'font': 'font'})
+        'slate': {'shot': 'shot'}, 'slate_style': {'size': 2.0}, 'ocio': 'converter', 'font': 'font'})
     assert (ok, message) == (True, 'converted shot_snap_001.png')
-    assert calls == [('new.exr', 'converter', {'shot': 'shot'}, 'font')]
+    assert calls == [('new.exr', 'converter', {'shot': 'shot'}, 'font', {'size': 2.0})]
     assert (out / 'shot_snap_001.png').read_bytes() == b'png'
 
 
@@ -574,9 +574,11 @@ def _prepare(monkeypatch, tmp_path, *, ocio, slate_on, name='snap.exr'):
         def GetDocumentName(self):
             return 'shot_v001.c4d'
     class Rules:
-        params = {'slate': slate_on}
+        params = {'slate': slate_on, 'slate_style': {'position': 'overlay'}}
+        rules_path = str(tmp_path / 'ACME' / 'sentinel_rules.json')
     monkeypatch.setattr(flows, '_active_rules_for_doc', lambda doc: Rules())
-    monkeypatch.setattr(flows, 'build_slate_data', lambda doc, artist: {'shot': 'shot'})
+    monkeypatch.setattr(flows, 'build_slate_data',
+                        lambda doc, artist, project='': {'shot': 'shot', 'project': project})
     monkeypatch.setattr(snapshot_c4d, 'ocio_available', lambda: ocio)
     monkeypatch.setattr(snapshot_c4d, 'color_converter', lambda doc: 'converter')
     monkeypatch.setattr(snapshot_c4d, 'resolve_slate_font', lambda: ('font', 'Inter-Regular'))
@@ -587,6 +589,8 @@ def test_prepare_captures_converter_and_font_for_a_slated_exr(sentinel_module, m
     task = _prepare(monkeypatch, tmp_path, ocio=True, slate_on=True)
     assert task['ocio'] == 'converter'
     assert task['font'] == 'font'
+    assert task['slate_style'] == {'position': 'overlay'}
+    assert task['slate']['project'] == 'ACME'
 
 
 def test_prepare_skips_the_font_without_a_slate(sentinel_module, monkeypatch, tmp_path):
@@ -603,3 +607,38 @@ def test_prepare_keeps_the_external_converter_before_2025_2(sentinel_module, mon
 def test_prepare_does_not_convert_display_referred_snapshots(sentinel_module, monkeypatch, tmp_path):
     task = _prepare(monkeypatch, tmp_path, ocio=True, slate_on=True, name='snap.png')
     assert 'ocio' not in task
+
+
+def _exr_header(attrs):
+    import struct
+    out = b"\x76\x2f\x31\x01" + struct.pack("<i", 2)
+    for name, kind, payload in attrs:
+        out += name.encode() + b"\x00" + kind.encode() + b"\x00" + struct.pack("<i", len(payload)) + payload
+    return out + b"\x00" + b"\x00" * 16   # end of header + some offset-table bytes
+
+
+def test_read_exr_attributes_reads_redshift_snapshot_fields(tmp_path):
+    import struct
+    from sentinel import snapshots
+    path = tmp_path / "snap.exr"
+    path.write_bytes(_exr_header([
+        ("FrameID", "int", struct.pack("<i", 7)),
+        ("capDate", "string", b"2026:10:02 11:02:49"),
+        ("ocioView", "string", b"ACES 1.0 SDR-video"),
+        ("FPS", "float", struct.pack("<f", 25.0)),
+        ("channels", "chlist", b"R\x00" + b"\x00" * 16 + b"\x00"),
+    ]))
+    attrs = snapshots.read_exr_attributes(str(path))
+    assert attrs == {"FrameID": 7, "capDate": "2026:10:02 11:02:49",
+                     "ocioView": "ACES 1.0 SDR-video", "FPS": 25.0}
+    assert snapshots.snapshot_capture_fields(attrs) == {
+        "frame": 7, "date": "2026-10-02", "time": "11:02", "view": "ACES 1.0 SDR-video"}
+
+
+def test_read_exr_attributes_is_empty_for_non_exr_and_missing(tmp_path):
+    from sentinel import snapshots
+    other = tmp_path / "x.png"
+    other.write_bytes(b"\x89PNG....")
+    assert snapshots.read_exr_attributes(str(other)) == {}
+    assert snapshots.read_exr_attributes(str(tmp_path / "gone.exr")) == {}
+    assert snapshots.snapshot_capture_fields({}) == {}

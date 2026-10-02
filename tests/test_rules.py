@@ -706,3 +706,37 @@ class TestPublishedKey:
         rules.invalidate()
         params, warnings = rules.load_rules(p)
         assert "published" not in params
+
+
+def test_slate_style_from_project_fills_unset_options_with_defaults(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(scene_dir, {"slate": True, "slate_style": {"position": "overlay",
+                                                           "slots": {"center": ["ACME"]}}})
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+    style = context.params["slate_style"]
+    assert style["position"] == "overlay"
+    assert style["slots"]["center"] == ["ACME"]
+    assert style["slots"]["left"] == ["{shot}", "{version}"]
+    assert context.field_sources["slate_style"] == "project"
+
+
+def test_slate_style_defaults_reproduce_the_original_slate(tmp_path):
+    rules.invalidate()
+    context = rules.resolve_rules(tmp_path / "shot.c4d", {})
+    assert context.params["slate_style"] == {
+        "position": "below", "badge": True, "size": 1.0,
+        "slots": {"left": ["{shot}", "{version}"], "center": [],
+                  "right": ["{artist}", "{date}", "{frame}"]}}
+
+
+def test_bad_slate_style_is_rejected_by_name_and_rest_applies(tmp_path):
+    scene_dir = tmp_path / "project"
+    scene_dir.mkdir()
+    write_rules(scene_dir, {"slate_style": {"slots": {"left": ["{shoot}"]}}, "start_frame": 1000})
+    rules.invalidate()
+    context = rules.resolve_rules(scene_dir / "shot.c4d", {})
+    assert context.params["slate_style"]["slots"]["left"] == ["{shot}", "{version}"]
+    assert context.params["start_frame"] == 1000
+    assert any("slate_style" in w and "{shoot}" in w for w in context.warnings)

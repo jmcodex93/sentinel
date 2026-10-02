@@ -82,3 +82,30 @@ waiting in `join`).
 `run_snapshot_task` in a worker) on a demo scene with `slate: true`: 0.96 s and
 0.86 s, font `Inter-Regular`, `sentinel:*` metadata correct, image area equal
 to the oracle (max 1 level).
+
+## What the snapshot EXR header records (2026-10-02)
+
+Redshift writes ~400 attributes into each RenderView snapshot's EXR header
+(read with `snapshots.read_exr_attributes`, stdlib only). The ones the slate
+uses: `FrameID` (int, the frame the snapshot was taken on — the document's
+current frame at conversion time can differ), `capDate` (`2026:10:02 11:02:49`)
+and `ocioView` (`ACES 1.0 SDR-video`); also present: `ocioDisplay`,
+`ocioRenderingColorSpace`, `ocioConfig`, `FPS`, `notes` (render time, frame,
+date, resolution), `name` (`Snapshot_3`).
+
+**Open question — RenderView post.** The header also records RV post settings,
+and on the 2026-10-02 snapshots `Lut Enabled 1`, `LUT File "Cinema Look 11"`,
+`Lut Strength 0.492` and `Color Controls Enabled 1` were set. Not measured:
+whether the snapshot pixels already include that post, or RenderView applies
+it only on display. If it is display-only, the converted PNG does not show the
+LUT the artist was looking at.
+
+## Slate style options (live, 2026-10-02)
+
+`slate_style` through `flows.snapshot_save_still_core` on a real snapshot:
+`overlay` keeps the image size (1374×772) with the bar over the bottom edge;
+`below` with `badge: false` and the new tokens drew
+`ACME · robot_010 · v007` / `Camera · 1374x772 · ACES 1.0 SDR-video ·
+2026-10-02 11:04 · f7`, the frame taken from the EXR (7) while the document sat
+on frame 0. The panel's "Preview Slate" button opened the preview in the
+system viewer with the "latest snapshot" toast.

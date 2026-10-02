@@ -14,6 +14,7 @@ from typing import Any
 
 from sentinel.common.constants import DEFAULT_OBJECT_NAMES, PRESETS, STILLS_PRESET_TOKENS
 from sentinel.matwire import validate_extra_suffixes
+from sentinel.slate import default_style as slate_style_defaults, validate_style
 from sentinel.qc.registry import CHECK_REGISTRY
 
 RULES_FILENAME = "sentinel_rules.json"
@@ -28,6 +29,11 @@ DEFAULTS = {
     "start_frame": 1001,
     "gates_enabled": False,
     "slate": False,
+    # Look of the snapshot slate (position, slots of {tokens}, badge, size).
+    # Project-only: two artists' stills from one project must look the same.
+    # Validated whole by sentinel.slate.validate_style, which fills the
+    # options a project leaves out with these defaults.
+    "slate_style": slate_style_defaults(),
     "approved_presets": list(PRESETS),
     # Separate from `approved_presets` on purpose: that one is a whitelist
     # ("permitted"), this one is an obligation ("every scene must have these").
@@ -404,6 +410,9 @@ def _validate_key(key: str, value: Any) -> tuple[bool, Any, str | None]:
 
     if key == "safe_area_insets":
         return _validate_safe_area_insets(value)
+
+    if key == "slate_style":
+        return validate_style(value)
 
     if key == "check_severity":
         return _validate_check_severity(value)
