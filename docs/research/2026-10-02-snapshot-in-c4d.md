@@ -93,7 +93,23 @@ and `ocioView` (`ACES 1.0 SDR-video`); also present: `ocioDisplay`,
 `ocioRenderingColorSpace`, `ocioConfig`, `FPS`, `notes` (render time, frame,
 date, resolution), `name` (`Snapshot_3`).
 
-**Open question — RenderView post.** The header also records RV post settings,
+**RenderView post — answered (2026-10-02).** Two snapshots of the same frame,
+one with LUT + colour controls and one with post off, are **pixel-identical**:
+the EXR holds the clean render and the post only as header attributes. Against
+PNGs exported from RenderView (1100×618, exact size): the plain OCIO conversion
+matches the post-off export at 0.05 levels mean (99.7 % within ±1); with post,
+"LUT `Cinema Look 11.cube` at `Lut Strength` 0.492, blended after the OCIO view,
+trilinear, then the master RGB curve (`curve_RGB0..3` = (0.0609, 0.0348),
+(0.3261, 0.3087), (0.7478, 0.7783), (1, 1)) as a natural cubic spline clamped
+outside its points" matches the LUT export at **0.75 levels mean** (80 % within
+±1, max 11). Ruled out on the way: LUT only (5.6), LUT before the view (6.8),
+curve before the LUT (0.89), linear / Catmull-Rom / monotone curves (2.1 / 1.5 /
+0.92), tetrahedral LUT interpolation (no gain). Residual suspect: `Highlights
+0.2` with colour controls on — needs an export with colour controls on, flat
+curve, LUT off. Pure-Python cost: 1.55 µs/px (+2.8 s at 1080p); live in C4D,
+1100×618 took 1.56 s with post vs 0.65 s without, same numbers as offline.
+
+**Original question — RenderView post.** The header also records RV post settings,
 and on the 2026-10-02 snapshots `Lut Enabled 1`, `LUT File "Cinema Look 11"`,
 `Lut Strength 0.492` and `Color Controls Enabled 1` were set. Not measured:
 whether the snapshot pixels already include that post, or RenderView applies
