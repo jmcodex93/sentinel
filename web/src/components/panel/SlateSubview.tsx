@@ -171,7 +171,9 @@ export function SlateSubview({ onBack }: { onBack: () => void }) {
               src={preview.image}
               alt="Slate preview"
               className="w-full rounded-md object-contain"
-              style={{ maxHeight: 140, border: "1px solid var(--color-hairline)", backgroundColor: "var(--color-surface-1)" }}
+              // Grows with the panel (width and height) but never takes more
+              // than ~45 % of it, so the zones below stay reachable.
+              style={{ maxHeight: "45vh", border: "1px solid var(--color-hairline)", backgroundColor: "var(--color-surface-1)" }}
             />
             <p className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>{previewCaption}</p>
           </>

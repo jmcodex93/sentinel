@@ -133,7 +133,7 @@ def test_preview_renders_the_unsaved_style_as_a_data_uri(ops, monkeypatch, tmp_p
     monkeypatch.setattr(flows, "get_effective_snapshot_dir", lambda: (str(tmp_path), "auto"))
     monkeypatch.setattr(flows, "_find_latest_exr", lambda d: (str(tmp_path / "a.exr"), None))
 
-    def png(slate, font, style, exr_path=None, converter=None, max_width=960, enabled=True):
+    def png(slate, font, style, exr_path=None, converter=None, max_width=None, enabled=True):
         seen.update(style=style, exr=exr_path, converter=converter, max_width=max_width, enabled=enabled)
         return b"\x89PNG", {"source": "snapshot", "notice": "RenderView post applied: RGB curve",
                              "post": "RGB curve", "strip_px": 39, "text_px": 20, "at_min": False}
@@ -144,6 +144,7 @@ def test_preview_renders_the_unsaved_style_as_a_data_uri(ops, monkeypatch, tmp_p
     assert seen["style"]["position"] == "overlay" and seen["style"]["badge"] is True
     assert seen["converter"] == "conv" and response["notice"].endswith("RGB curve")
     assert response["post"] == "RGB curve" and response["strip_px"] == 39 and seen["enabled"] is True
+    assert seen["max_width"] == 1600     # sharp when the panel is made large
     opened = {}
     monkeypatch.setattr("sentinel.common.helpers.open_in_explorer", lambda p: opened.setdefault("p", p))
     import tempfile

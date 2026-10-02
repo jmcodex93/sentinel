@@ -80,7 +80,7 @@ def _op_slate_preview(payload):
     try:
         png, info = snapshot_c4d.preview_png(slate_data, font, style, exr_path=exr_path,
                                              converter=converter, enabled=enabled,
-                                             max_width=None if full_size else 960)
+                                             max_width=None if full_size else 1600)
     except Exception as exc:
         safe_print("Slate preview failed: %s" % exc)
         return {"ok": False, "error": "preview_failed", "detail": str(exc)}
