@@ -207,6 +207,15 @@ def test_size_scales_the_strip():
     assert slate.strip_height(1080, 0.5) == 24
 
 
+def test_size_below_one_still_shrinks_small_images():
+    """A 925×520 RenderView snapshot: 4.5 % is 23 px, under the 24 px base.
+    Sizes below ×1 must still shrink it (they used to stay at 24)."""
+    assert slate.strip_height(520) == 24
+    assert slate.strip_height(520, 0.8) == 19
+    assert slate.strip_height(520, 0.5) == 16          # legibility floor
+    assert slate.strip_height(520, 1.5) == 36
+
+
 def test_overlay_row_blends_the_bar_and_keeps_text_opaque():
     image = bytearray([200, 200, 200] * 2)
     strip = bytes(list(slate.SLATE_STRIP_BG) + [233, 237, 242])

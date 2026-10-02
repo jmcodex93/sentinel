@@ -176,9 +176,16 @@ def render_item(item, fields):
     return _TOKEN.sub(lambda m: values.get(m.group(1), ""), item).strip()
 
 
+MIN_STRIP = 24        # base strip: never under this, so small images stay legible
+MIN_SCALED_STRIP = 16 # after the size multiplier: the legibility floor (8 px text)
+
+
 def strip_height(image_height, size=1.0):
-    """Height of the slate strip: 4.5% of the image × size, never under 24 px."""
-    return max(24, int(round(image_height * 0.045 * size)))
+    """Height of the slate strip: 4.5% of the image (at least 24 px), × size,
+    never under 16 px. The floor is applied BEFORE the multiplier — applied
+    after, it swallowed every size below ×1 on images under ~530 px high."""
+    base = max(float(MIN_STRIP), image_height * 0.045)
+    return max(MIN_SCALED_STRIP, int(round(base * size)))
 
 
 def font_size(strip_h):
