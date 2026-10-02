@@ -1062,6 +1062,8 @@ export interface PanelRenderMutationResponse {
   destructive?: boolean;
   /** Only on `panel/render/preview_slate` — see `snapshot_preview_slate_core`. */
   preview?: PanelSlatePreview;
+  /** `save_still`: the RenderView post re-applied or not reproduced (rvpost). */
+  notice?: string;
 }
 
 /** Where a slate preview came from and how it was drawn. `font` is the
@@ -1071,6 +1073,8 @@ export interface PanelSlatePreview {
   source: "snapshot" | "placeholder";
   font: string;
   slate_enabled: boolean;
+  /** RenderView post re-applied / not reproduced on that snapshot, or "". */
+  notice?: string;
 }
 
 /** `GET /api/panel/render/aov_list` — see `_op_panel_render_aov_list` in

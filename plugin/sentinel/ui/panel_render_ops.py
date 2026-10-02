@@ -708,7 +708,10 @@ def _op_panel_render_save_still(payload):
     if not result.get("ok"):
         return {"ok": False, "error": result.get("error") or result.get("stage") or "unknown"}
 
-    return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
+    response = {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
+    if result.get("notice"):
+        response["notice"] = result["notice"]   # RenderView post applied / not reproduced
+    return response
 
 
 def _op_panel_render_open_folder(payload):
@@ -745,7 +748,8 @@ def _op_panel_render_preview_slate(payload):
     if not result.get("ok"):
         return {"ok": False, "error": result.get("error")}
     return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc),
-            "preview": {key: result.get(key) for key in ("path", "source", "font", "slate_enabled")}}
+            "preview": {key: result.get(key) for key in ("path", "source", "font", "slate_enabled",
+                                                         "notice")}}
 
 
 PANEL_RENDER_OPS = {

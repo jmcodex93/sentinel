@@ -8,6 +8,7 @@ import {
   presetStatusLine,
   slatePreviewError,
   slatePreviewMessage,
+  stillSavedToast,
   snapshotStatusLine,
 } from "./panelRender";
 import type {
@@ -220,5 +221,22 @@ describe("slate preview copy", () => {
     expect(slatePreviewError("needs_2025_2")).toBe("Slate preview needs Cinema 4D 2025.2 or newer.");
     expect(slatePreviewError(undefined)).toBe("Slate preview failed.");
     expect(slatePreviewError("Could not write x")).toBe("Could not write x");
+  });
+});
+
+describe("save still toast", () => {
+  it("is a plain success without a notice", () => {
+    expect(stillSavedToast(undefined)).toEqual({ message: "Still saved.", variant: "success" });
+  });
+  it("reports re-applied post as success and missing post as a warning", () => {
+    expect(stillSavedToast("RenderView post applied: LUT Look 49%").variant).toBe("success");
+    const warn = stillSavedToast("RenderView post applied: LUT Look 49% · not reproduced: bloom");
+    expect(warn.variant).toBe("warn");
+    expect(warn.message).toBe("Still saved. RenderView post applied: LUT Look 49% · not reproduced: bloom.");
+  });
+  it("adds the notice to the slate preview message", () => {
+    const message = slatePreviewMessage({ path: "/p", source: "snapshot", font: "Inter-Regular",
+      slate_enabled: true, notice: "RenderView post applied: RGB curve" });
+    expect(message).toContain("RenderView post applied: RGB curve.");
   });
 });

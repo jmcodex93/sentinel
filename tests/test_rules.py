@@ -725,8 +725,10 @@ def test_slate_style_from_project_fills_unset_options_with_defaults(tmp_path):
 def test_slate_style_defaults_reproduce_the_original_slate(tmp_path):
     rules.invalidate()
     context = rules.resolve_rules(tmp_path / "shot.c4d", {})
+    # show_post adds the re-applied RenderView post to the centre only when a
+    # snapshot carries it, so without post the slate is still the original.
     assert context.params["slate_style"] == {
-        "position": "below", "badge": True, "size": 1.0,
+        "position": "below", "badge": True, "size": 1.0, "show_post": True,
         "slots": {"left": ["{shot}", "{version}"], "center": [],
                   "right": ["{artist}", "{date}", "{frame}"]}}
 

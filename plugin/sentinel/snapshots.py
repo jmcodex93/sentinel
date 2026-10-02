@@ -248,7 +248,11 @@ def run_snapshot_task(task):
             created_output = output
             shutil.copyfileobj(src, dest)
         created_output = None
-        return True, ("converted " if is_exr else "copied ") + name
+        message = ("converted " if is_exr else "copied ") + name
+        # In-C4D conversion reports the RenderView post it re-applied or not.
+        if is_exr and task.get("ocio") is not None and error:
+            message += " · " + error
+        return True, message
     finally:
         for path in (temporary, created_output):
             if path:
@@ -268,7 +272,7 @@ _EXR_HEADER_LIMIT = 4 * 1024 * 1024
 
 
 def read_exr_attributes(path):
-    """``{name: value}`` for the string/int/float/double attributes of an EXR's
+    """``{name: value}`` for the string/int/float/double/v2f attributes of an EXR's
     first header. Pure, stdlib only; ``{}`` when the file is not a readable
     EXR. Redshift snapshots carry hundreds of attributes, including
     ``FrameID``, ``capDate`` and the RenderView OCIO view (``ocioView``)."""
@@ -303,6 +307,8 @@ def read_exr_attributes(path):
             attrs[name] = struct.unpack("<f", value)[0]
         elif kind == b"double" and size == 8:
             attrs[name] = struct.unpack("<d", value)[0]
+        elif kind == b"v2f" and size == 8:
+            attrs[name] = struct.unpack("<2f", value)
         pos = tend + 5 + size
     return attrs
 

@@ -44,7 +44,7 @@ import {
 } from "../lib/api";
 import { SnapshotChannel } from "../lib/snapshot";
 import { railBadges, railMode, type PanelSection } from "../lib/panel";
-import { slatePreviewError, slatePreviewMessage } from "../lib/panelRender";
+import { slatePreviewError, slatePreviewMessage, stillSavedToast } from "../lib/panelRender";
 import { toolToast } from "../lib/panelTools";
 import { useToast } from "../lib/toast";
 import type {
@@ -562,6 +562,12 @@ export function PanelPage() {
     setBusyRenderId("save_still");
     const response = await postPanelRenderSaveStill();
     setBusyRenderId(null);
+    if (response.ok && response.notice) {
+      const still = stillSavedToast(response.notice);
+      loadRender(true);
+      toast(still);
+      return;
+    }
     applyRenderMutation(response, "Still saved.");
   }
 

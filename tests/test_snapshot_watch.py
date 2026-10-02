@@ -642,3 +642,26 @@ def test_read_exr_attributes_is_empty_for_non_exr_and_missing(tmp_path):
     assert snapshots.read_exr_attributes(str(other)) == {}
     assert snapshots.read_exr_attributes(str(tmp_path / "gone.exr")) == {}
     assert snapshots.snapshot_capture_fields({}) == {}
+
+
+def test_read_exr_attributes_reads_curve_points(tmp_path):
+    import struct
+    import pytest
+    from sentinel import snapshots
+    path = tmp_path / "snap.exr"
+    path.write_bytes(_exr_header([("curve_RGB0", "v2f", struct.pack("<2f", 0.0609, 0.0348))]))
+    point = snapshots.read_exr_attributes(str(path))["curve_RGB0"]
+    assert point == pytest.approx((0.0609, 0.0348), abs=1e-6)
+
+
+def test_watch_message_carries_the_render_view_post_notice(monkeypatch, tmp_path):
+    from pathlib import Path
+    from sentinel import snapshots, snapshot_c4d
+    def in_c4d(source, output, converter, slate=None, font=None, style=None):
+        Path(output).write_bytes(b"png")
+        return True, "RenderView post applied: LUT Look 49%"
+    monkeypatch.setattr(snapshot_c4d, "convert_snapshot", in_c4d)
+    ok, message = snapshots.run_snapshot_task({
+        "source": str(tmp_path / "a.exr"), "output_dir": str(tmp_path / "out"),
+        "scene_name": "shot", "slate": None, "ocio": "conv"})
+    assert ok and message == "converted shot_snap_001.png · RenderView post applied: LUT Look 49%"
