@@ -969,13 +969,18 @@ def snapshot_save_still_core(doc, artist_name):
     if not exr_path:
         return {"ok": False, "stage": "exr", "error": error}
 
-    # Build output path
+    # Output: numbered like the watch folder (<scene>_snap_NNN.png), never
+    # overwriting an earlier still. Converted to a temp file first, then the
+    # next number is claimed exclusively (see snapshots.publish_numbered).
+    import tempfile
+    from sentinel.snapshots import publish_numbered
     output_dir = _get_stills_dir(doc, artist_name)
     doc_name = doc.GetDocumentName() or "untitled"
     scene_name = os.path.splitext(doc_name)[0]
-    png_path = os.path.join(output_dir, f"{scene_name}.png")
+    fd, temp_path = tempfile.mkstemp(prefix=".sentinel_still_", suffix=".png", dir=output_dir)
+    os.close(fd)
 
-    safe_print(f"Converting {os.path.basename(exr_path)} -> {png_path}")
+    safe_print(f"Converting {os.path.basename(exr_path)} -> {output_dir}")
 
     # Resolve opt-in review slate (project rules > machine setting > default OFF)
     slate_data = None
@@ -990,16 +995,23 @@ def snapshot_save_still_core(doc, artist_name):
 
     # Convert — in C4D with the document's OCIO view on 2025.2+, otherwise
     # through the external Python converter.
-    in_c4d = _in_c4d_conversion(doc, slate_data)
-    if in_c4d:
-        from sentinel.snapshot_c4d import convert_snapshot
-        success, error = convert_snapshot(exr_path, png_path, in_c4d["ocio"],
-                                          slate=slate_data, font=in_c4d.get("font"),
-                                          style=slate_style)
-    else:
-        success, error = _convert_exr_to_png(exr_path, png_path, slate_data=slate_data)
-    if not success:
-        return {"ok": False, "stage": "convert", "error": error}
+    try:
+        in_c4d = _in_c4d_conversion(doc, slate_data)
+        if in_c4d:
+            from sentinel.snapshot_c4d import convert_snapshot
+            success, error = convert_snapshot(exr_path, temp_path, in_c4d["ocio"],
+                                              slate=slate_data, font=in_c4d.get("font"),
+                                              style=slate_style)
+        else:
+            success, error = _convert_exr_to_png(exr_path, temp_path, slate_data=slate_data)
+        if not success:
+            return {"ok": False, "stage": "convert", "error": error}
+        png_path = os.path.join(output_dir, publish_numbered(temp_path, output_dir, scene_name))
+    finally:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
 
     safe_print(f"Still saved: {png_path}")
     result = {"ok": True, "path": png_path, "output_dir": output_dir}

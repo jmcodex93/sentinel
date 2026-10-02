@@ -219,7 +219,6 @@ def run_snapshot_task(task):
     the main thread — neither is a scene node, and both were measured safe to
     use from this worker. Without ``ocio`` the external converter is used.
     """
-    import shutil
     import tempfile
     source = task["source"]
     output_dir = task["output_dir"]
@@ -227,7 +226,6 @@ def run_snapshot_task(task):
     is_exr = source.lower().endswith(".exr")
     ext = ".png" if is_exr else (os.path.splitext(source)[1] or ".png")
     temporary = None
-    created_output = None
     try:
         if is_exr:
             fd, temporary = tempfile.mkstemp(prefix=".sentinel_snapshot_", suffix=".png", dir=output_dir)
@@ -241,25 +239,19 @@ def run_snapshot_task(task):
                 ok, error = _convert_exr_to_png(source, temporary, slate_data=task.get("slate"))
             if not ok:
                 return False, error or "Conversion failed"
-        name = next_snapshot_name(os.listdir(output_dir), task["scene_name"], ext=ext)
-        output = os.path.join(output_dir, name)
         # Exclusive creation protects snapshots from concurrent writers.
-        with open(temporary or source, "rb") as src, open(output, "xb") as dest:
-            created_output = output
-            shutil.copyfileobj(src, dest)
-        created_output = None
+        name = publish_numbered(temporary or source, output_dir, task["scene_name"], ext=ext)
         message = ("converted " if is_exr else "copied ") + name
         # In-C4D conversion reports the RenderView post it re-applied or not.
         if is_exr and task.get("ocio") is not None and error:
             message += " · " + error
         return True, message
     finally:
-        for path in (temporary, created_output):
-            if path:
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
+        if temporary:
+            try:
+                os.remove(temporary)
+            except OSError:
+                pass
 
 
 snapshot_watch = SnapshotWatch()
@@ -458,6 +450,35 @@ def stills_location(doc, artist_name):
         return absolute, os.path.relpath(absolute, root)
     except ValueError:            # different drives on Windows
         return absolute, None
+
+
+def publish_numbered(source_path, output_dir, scene_name, ext=".png", attempts=50):
+    """Copy ``source_path`` into ``output_dir`` as the next free
+    ``<scene>_snap_NNN<ext>`` and return that name.
+
+    The name is claimed with exclusive creation, so Save Still and the
+    watch-folder worker can never overwrite each other: when another writer
+    takes the number first, the next one is tried.
+    """
+    import shutil
+    for _attempt in range(attempts):
+        name = next_snapshot_name(os.listdir(output_dir), scene_name, ext=ext)
+        output = os.path.join(output_dir, name)
+        try:
+            dest = open(output, "xb")
+        except FileExistsError:
+            continue
+        try:
+            with dest, open(source_path, "rb") as src:
+                shutil.copyfileobj(src, dest)
+        except Exception:
+            try:
+                os.remove(output)
+            except OSError:
+                pass
+            raise
+        return name
+    raise RuntimeError("No free snapshot number in %s" % output_dir)
 
 
 def _get_stills_dir(doc, artist_name, create=True):
