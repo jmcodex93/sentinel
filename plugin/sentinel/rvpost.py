@@ -144,7 +144,10 @@ def post_plan(attrs):
     labels of what will not (said to the artist, never silently dropped).
     """
     plan = {"lut": None, "strength": 1.0, "curve": None, "applied": [], "notes": []}
-    if attrs.get("Lut Enabled") == 1:
+    strength = attrs.get("Lut Strength")
+    strength = float(strength) if isinstance(strength, (int, float)) else 1.0
+    # A LUT at 0 % strength is on in the UI but changes nothing (measured).
+    if attrs.get("Lut Enabled") == 1 and strength > 1e-4:
         label = str(attrs.get("LUT File") or "LUT")
         if attrs.get("Apply color management before LUT") != 1 or \
                 attrs.get("Convert to log space before applying LUT") == 1:
@@ -156,8 +159,7 @@ def post_plan(attrs):
             else:
                 try:
                     plan["lut"] = load_cube(path)
-                    strength = attrs.get("Lut Strength")
-                    plan["strength"] = float(strength) if isinstance(strength, float) else 1.0
+                    plan["strength"] = strength
                     plan["applied"].append("LUT %s %d%%" % (label, round(plan["strength"] * 100)))
                 except (OSError, ValueError) as exc:
                     plan["notes"].append("LUT %s unreadable (%s)" % (label, exc))

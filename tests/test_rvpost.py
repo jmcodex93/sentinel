@@ -163,3 +163,11 @@ def test_applied_label_is_the_post_slate_token(tmp_path):
     attrs.update(curve_attrs("RGB", RV_CURVE))
     assert rvpost.applied_label(rvpost.post_plan(attrs)) == "LUT Look 49% + RGB curve"
     assert rvpost.applied_label(rvpost.post_plan({})) == ""
+
+
+def test_a_lut_at_zero_strength_is_not_applied_nor_announced(tmp_path):
+    """Measured 2026-10-02: LUT on at 0 % + flat curve exports as plain OCIO."""
+    (tmp_path / "Look.cube").write_text(cube_text(2, lambda r, g, b: (r, g, b)))
+    plan = rvpost.post_plan(lut_attrs(tmp_path, **{"Lut Strength": 0.0}))
+    assert plan["lut"] is None and plan["applied"] == [] and plan["notes"] == []
+    assert not rvpost.plan_is_active(plan)
