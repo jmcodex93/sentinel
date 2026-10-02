@@ -53,7 +53,7 @@ function ToastRow({ item, onDismiss }: { item: ToastItem; onDismiss: (id: number
         aria-hidden="true"
         className="mt-0.5 shrink-0"
       />
-      <p className="text-body flex-1" style={{ color: "var(--color-ink)" }}>
+      <p className="text-body min-w-0 flex-1" style={{ color: "var(--color-ink)", overflowWrap: "anywhere" }}>
         {item.message}
       </p>
       <button

@@ -55,7 +55,9 @@ export function ConfirmBar({
         transform: entered ? "translateY(0)" : "translateY(-4px)",
       }}
     >
-      <span className="text-body" style={{ color: "var(--color-ink)" }}>
+      {/* overflowWrap: a label can carry a long file path with no spaces
+          (the slate editor's confirm) — wrap it instead of widening the panel. */}
+      <span className="text-body min-w-0" style={{ color: "var(--color-ink)", overflowWrap: "anywhere" }}>
         {label}
       </span>
       <div className="ml-auto flex gap-2">
