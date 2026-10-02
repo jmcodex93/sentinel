@@ -261,3 +261,21 @@ def test_no_known_issue_elsewhere():
     assert doctor.build_known_issue_items(2026299, "Windows") == []
     assert doctor.build_known_issue_items(2026304, "Darwin") == []
     assert doctor.build_known_issue_items(None, "Windows") == []
+
+
+def test_exr_conversion_in_c4d_needs_no_python():
+    item = doctor.build_exr_conversion_item(True, None)
+    assert item["status"] == doctor.OK
+    assert "no external Python" in item["detail"]
+
+
+def test_exr_conversion_before_2025_2_still_checks_python():
+    assert doctor.build_exr_conversion_item(False, None)["status"] == doctor.WARN
+
+
+def test_slate_font_item_reports_the_font_in_use():
+    assert doctor.build_slate_font_item("Inter-Regular")["status"] == doctor.OK
+    arial = doctor.build_slate_font_item("ArialMT")
+    assert arial["status"] == doctor.INFO and "Arial" in arial["detail"]
+    assert "interface font" in doctor.build_slate_font_item("system")["detail"]
+    assert doctor.build_slate_font_item(None)["status"] == doctor.INFO

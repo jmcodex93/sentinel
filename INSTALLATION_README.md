@@ -12,9 +12,9 @@ back. A full restart is required; **Reload Python Plugins is not sufficient**.
   the Attribute Manager closed C4D; Doctor shows a warning on that version. If
   it happens to you, 2026.4 does not have the problem.
 - A Python 3 to run `install.py` (any recent version).
-- For snapshot EXR → PNG conversion only: an external Python with OpenEXR,
-  numpy and Pillow (see *Snapshot EXR conversion* below). Everything else
-  runs inside Cinema 4D's own Python.
+- Nothing else on Cinema 4D 2025.2 or newer: snapshot EXR → PNG conversion
+  runs inside Cinema 4D. Older versions need an external Python for it (see
+  *Snapshot EXR conversion* below).
 
 ## Install or update
 
@@ -68,10 +68,14 @@ check the running payload and environment.
 
 ## Snapshot EXR conversion (external Python)
 
-Snapshot Watch converts Redshift EXR snapshots to PNG with an ACES transform
-that Cinema 4D's own Python can't do. It runs in a separate Python that must
-have **OpenEXR, numpy and Pillow**. Without it the rest of Sentinel works
-normally; Doctor reports "No system Python 3 with OpenEXR + numpy + Pillow".
+**Cinema 4D 2025.2 or newer needs nothing here.** Snapshot Watch converts
+Redshift EXR snapshots inside Cinema 4D with the document's OCIO view
+transform, the same one RenderView shows, and draws the slate with the bundled
+Inter font. Doctor's "Snapshot EXR conversion" row says *Built in*.
+
+On older versions the conversion runs in a separate Python that must have
+**OpenEXR, numpy and Pillow**. Without it the rest of Sentinel works normally;
+Doctor reports "No system Python 3 with OpenEXR + numpy + Pillow".
 
 Sentinel looks for that Python when Cinema 4D starts, in these places only:
 

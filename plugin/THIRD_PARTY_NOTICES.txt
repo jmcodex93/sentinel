@@ -5,7 +5,10 @@ type-only dependencies) and the Tailwind-generated stylesheet. Preserve each
 component's terms independently of Sentinel's own license. Inventory source:
 web/package-lock.json, captured 2026-09-05. Review when dependencies change.
 
-Inter font notices are distributed separately at web/fonts/LICENSE.txt.
+Inter font notices are distributed separately at web/fonts/LICENSE.txt and
+fonts/LICENSE.txt. fonts/Inter-Regular.ttf (used to draw the snapshot slate) is
+the Regular instance (wght 400) of web/fonts/InterVariable.woff2, made static
+with fontTools; the font itself is unmodified (SIL OFL 1.1, no reserved name).
 abc_retime attribution remains in abc_retime/README.md; this document does
 not grant redistribution rights for that component or bundled scene assets.
 
