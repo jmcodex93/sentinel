@@ -125,3 +125,20 @@ LUT the artist was looking at.
 2026-10-02 11:04 · f7`, the frame taken from the EXR (7) while the document sat
 on frame 0. The panel's "Preview Slate" button opened the preview in the
 system viewer with the "latest snapshot" toast.
+
+## RenderView post — refined (2026-10-02, controlled pairs)
+
+Each pair = snapshot + RenderView *Save image* PNG taken back to back, 925×520:
+
+| Pair | Result |
+|---|---|
+| colour controls on, flat curve, LUT 0 % | 0.21 mean vs plain OCIO — the RV post pipeline's own floor; `Highlights 0.2` is a Tonemapping setting, not active; a 0 % LUT is a no-op |
+| curve only (LUT 0 %) | 0.21 with the natural spline — the curve model is exact |
+| LUT 50 % only | 0.75 with lattice coordinate `v·(N−1)`; **0.30** with `v·N − 0.5` (GPU 3D-texture sampling, clamped) |
+| LUT 50 % + curve | **0.30** (99.1 % within ±1) |
+| the earlier 1100×618 LUT 49 % + curve pair | **0.30** (99.2 %) — it was never out of sync |
+
+Ruled out for the LUT: tetrahedral interpolation, 8-bit quantised input or
+output, blending the strength in linear light or gamma 2.2, other strengths.
+The tell was that the shadow error (+2.7 levels) did not change with the
+strength — the lookup itself, not the blend, was off.

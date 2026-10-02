@@ -113,9 +113,11 @@ def test_neutral_post_is_inactive_and_silent():
 
 # ── applying ─────────────────────────────────────────────────────────────────
 def reference_trilinear(table, size, r, g, b):
+    """Trilinear lookup the way RenderView samples a LUT: a GPU 3D texture,
+    lattice coordinate v × size − 0.5 clamped to the lattice."""
     def at(i, j, k):
         return table[(k * size + j) * size + i]
-    x, y, z = (min(max(v, 0.0), 1.0) * (size - 1) for v in (r, g, b))
+    x, y, z = (min(max(min(max(v, 0.0), 1.0) * size - 0.5, 0.0), size - 1.0) for v in (r, g, b))
     i0, j0, k0 = (min(int(v), size - 2) for v in (x, y, z))
     fx, fy, fz = x - i0, y - j0, z - k0
     out = []
@@ -144,11 +146,19 @@ def test_apply_row_matches_a_reference_trilinear_blend():
         assert list(got[j:j + 3]) == expected
 
 
-def test_identity_lut_at_full_strength_changes_nothing():
-    plan = {"lut": rvpost.parse_cube(cube_text(3, lambda r, g, b: (r, g, b))),
+def test_lut_is_sampled_at_texel_centres_like_renderview():
+    """RenderView reads the .cube as a GPU 3D texture (measured 2026-10-02
+    against RenderView PNG exports: 0.30 levels mean vs 0.75 when sampling at
+    v × (size − 1)). So an identity cube is NOT a no-op: the value at the
+    centre of texel i is lattice entry i, i.e. v = (i + 0.5) / size maps to
+    i / (size − 1), and the ends clamp to the first and last entries."""
+    size = 3
+    plan = {"lut": rvpost.parse_cube(cube_text(size, lambda r, g, b: (r, g, b))),
             "strength": 1.0, "curve": None}
-    values = [i / 299.0 for i in range(300)]
-    assert list(rvpost.apply_row(values, plan)) == [to8(v) for v in values]
+    centres = [(i + 0.5) / size for i in range(size)]
+    values = [c for c in centres for _ in range(3)]
+    assert list(rvpost.apply_row(values, plan)) == [to8(i / (size - 1.0)) for i in range(size) for _ in range(3)]
+    assert list(rvpost.apply_row([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], plan)) == [0, 0, 0, 255, 255, 255]
 
 
 def test_curve_only_maps_through_the_table():

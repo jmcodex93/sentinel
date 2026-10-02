@@ -5,9 +5,10 @@ A RenderView snapshot stores the clean render; the post settings the artist was
 looking at (LUT, colour controls, bloom…) only travel as header attributes, so
 RenderView can re-apply them on display. Measured 2026-10-02: two snapshots of
 the same frame, LUT on and post off, were pixel-identical. This module rebuilds
-what is verified against a RenderView PNG export — the LUT (``.cube``, with its
-strength, after the OCIO view) and then the master RGB curve (natural cubic
-spline) — and names everything else instead of guessing it.
+what is verified against RenderView PNG exports — the LUT (``.cube`` sampled
+like a GPU 3D texture, blended by its strength after the OCIO view) and then
+the master RGB curve (natural cubic spline) — and names everything else
+instead of guessing it.
 
 Pure and stdlib only: the C4D adapter calls ``post_plan`` once per snapshot and
 ``apply_row`` per row of OCIO-view floats (0..1 display values).
@@ -217,7 +218,8 @@ def describe(plan):
 
 def apply_row(values, plan):
     """OCIO-view floats ``[r, g, b, r, g, b, …]`` -> 8-bit ``bytearray``:
-    LUT blended by its strength (trilinear), then the RGB curve."""
+    LUT (trilinear, texel-centre sampling) blended by its strength, then the
+    RGB curve."""
     lut = plan["lut"]
     curve = plan["curve"]
     k1 = CURVE_SAMPLES - 1
@@ -248,9 +250,15 @@ def apply_row(values, plan):
             b = 0.0
         elif b > 1:
             b = 1.0
-        x = r * n1
-        y = g * n1
-        z = b * n1
+        # RenderView samples the LUT like a GPU 3D texture: texel centres at
+        # (i + 0.5) / size, so the lattice coordinate is v × size − 0.5
+        # (measured 2026-10-02: 0.30 levels vs 0.75 with v × (size − 1)).
+        x = r * size - 0.5
+        y = g * size - 0.5
+        z = b * size - 0.5
+        x = 0.0 if x < 0 else n1 if x > n1 else x
+        y = 0.0 if y < 0 else n1 if y > n1 else y
+        z = 0.0 if z < 0 else n1 if z > n1 else z
         i0 = int(x)
         j0 = int(y)
         k0 = int(z)
