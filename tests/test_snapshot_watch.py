@@ -665,3 +665,51 @@ def test_watch_message_carries_the_render_view_post_notice(monkeypatch, tmp_path
         "source": str(tmp_path / "a.exr"), "output_dir": str(tmp_path / "out"),
         "scene_name": "shot", "slate": None, "ocio": "conv"})
     assert ok and message == "converted shot_snap_001.png · RenderView post applied: LUT Look 49%"
+
+
+def _touch(path, mtime):
+    import os
+    path.write_bytes(b"x")
+    os.utime(path, (mtime, mtime))
+
+
+def test_source_state_flags_a_non_exr_newest_snapshot(tmp_path):
+    import os
+    from sentinel import snapshots
+    _touch(tmp_path / "a.exr", 1000)
+    assert snapshots.snapshot_source_state(str(tmp_path)) == {"newest_ext": ".exr", "alert": None}
+    _touch(tmp_path / "b.rssnap2", 2000)
+    os.utime(tmp_path, (3000, 3000))            # a new file moves the folder mtime
+    assert snapshots.snapshot_source_state(str(tmp_path)) == {"newest_ext": ".rssnap2", "alert": "non_exr"}
+
+
+def test_source_state_ignores_stray_files_and_reports_empty_or_missing(tmp_path):
+    from sentinel import snapshots
+    _touch(tmp_path / "notes.txt", 5000)
+    _touch(tmp_path / ".hidden.png", 6000)
+    assert snapshots.snapshot_source_state(str(tmp_path)) == {"newest_ext": None, "alert": "empty"}
+    _touch(tmp_path / "a.exr", 1000)
+    import os
+    os.utime(tmp_path, (7000, 7000))
+    assert snapshots.snapshot_source_state(str(tmp_path))["alert"] is None   # the .txt is newer, ignored
+    assert snapshots.snapshot_source_state(str(tmp_path / "gone"))["alert"] == "missing"
+    assert snapshots.snapshot_source_state(None)["alert"] == "missing"
+
+
+def test_stills_location_is_relative_to_the_project_for_saved_scenes(tmp_path):
+    import os
+    from sentinel import snapshots
+
+    class Doc:
+        def __init__(self, path):
+            self._path = path
+        def GetDocumentPath(self):
+            return self._path
+
+    scenes = tmp_path / "ACME" / "scenes"
+    absolute, rel = snapshots.stills_location(Doc(str(scenes)), "Javier")
+    assert absolute.startswith(str(tmp_path)) and not os.path.exists(absolute)
+    parts = rel.split(os.sep)
+    assert parts[:3] == ["output", "stills", "Javier"] and len(parts) == 4
+    _abs, rel = snapshots.stills_location(Doc(""), "")
+    assert rel is None and "<artist>" in _abs

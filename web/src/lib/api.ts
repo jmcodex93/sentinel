@@ -15,7 +15,12 @@ import mockPaletteActions from "../mock/palette-actions.json";
 import mockQcReport from "../mock/qc-report.json";
 import mockRenderValidationReport from "../mock/render-validation.json";
 import mockSupervisorReport from "../mock/supervisor-report.json";
+import { DEFAULT_SLATE_STYLE, SLATE_FIELDS } from "./panelSlate";
 import type {
+  SlatePreviewResponse,
+  SlateSaveResponse,
+  SlateState,
+  SlateStyle,
   DeliveryReport,
   DeliveryReportResult,
   DoctorReport,
@@ -1101,15 +1106,42 @@ export async function postPanelRenderSaveStill(): Promise<PanelRenderMutationRes
   return postForm<PanelRenderMutationResponse>("/api/panel/render/save_still", {});
 }
 
-/** `POST /api/panel/render/preview_slate` — see `_op_panel_render_preview_slate`. */
-export async function postPanelRenderPreviewSlate(): Promise<PanelRenderMutationResponse> {
+/** `POST /api/panel/slate/state` — see `_op_slate_state` in ui/slate_ops.py. */
+export async function fetchSlateState(): Promise<SlateState> {
   if (isMock()) {
     return {
-      ...mockPanelRenderMutation("preview_slate"),
-      preview: { path: "/tmp/sentinel_slate_preview.png", source: "snapshot", font: "Inter-Regular", slate_enabled: true },
+      ok: true, enabled: true, enabled_source: "project", style: { ...DEFAULT_SLATE_STYLE },
+      style_source: "defaults", rules_path: "/projects/ACME/sentinel_rules.json", scene_saved: true,
+      tokens: SLATE_FIELDS.map((f) => f.token), warnings: [],
     };
   }
-  return postForm<PanelRenderMutationResponse>("/api/panel/render/preview_slate", {});
+  return postForm<SlateState>("/api/panel/slate/state", {});
+}
+
+/** `POST /api/panel/slate/preview` — the slate drawn by C4D with an UNSAVED style. */
+export async function fetchSlatePreview(
+  style: SlateStyle,
+  options: { enabled?: boolean; open?: boolean } = {},
+): Promise<SlatePreviewResponse> {
+  if (isMock()) {
+    return { ok: true, image: undefined, source: "snapshot", font: "Inter-Regular",
+      notice: "RenderView post applied: LUT Cinema Look 11 50%", post: "LUT Cinema Look 11 50%",
+      strip_px: 24, text_px: 12, at_min: false };
+  }
+  return postForm<SlatePreviewResponse>("/api/panel/slate/preview", { style, ...options });
+}
+
+/** `POST /api/panel/slate/save` — writes `slate` + `slate_style` to the
+ * project ruleset; the first call returns `confirm_required` with the file
+ * and every change, the second (`confirm: true`) writes. `folder` is only
+ * honoured when the scene has no ruleset yet. */
+export async function postSlateSave(
+  style: SlateStyle,
+  enabled: boolean,
+  options: { folder?: string; confirm?: boolean } = {},
+): Promise<SlateSaveResponse> {
+  if (isMock()) return { ok: false, error: "unsaved" };
+  return postForm<SlateSaveResponse>("/api/panel/slate/save", { style, enabled, ...options });
 }
 
 /** `POST /api/panel/render/open_folder` — see `_op_panel_render_open_folder`. */

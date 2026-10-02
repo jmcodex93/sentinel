@@ -31,7 +31,6 @@ import {
   postPanelRenderAddFrameTag,
   postPanelRenderAovTier,
   postPanelRenderOpenFolder,
-  postPanelRenderPreviewSlate,
   postPanelRenderResetAll,
   postPanelRenderSaveStill,
   postPanelRenderSelectFrameTag,
@@ -44,7 +43,7 @@ import {
 } from "../lib/api";
 import { SnapshotChannel } from "../lib/snapshot";
 import { railBadges, railMode, type PanelSection } from "../lib/panel";
-import { slatePreviewError, slatePreviewMessage, stillSavedToast } from "../lib/panelRender";
+import { stillSavedToast } from "../lib/panelRender";
 import { toolToast } from "../lib/panelTools";
 import { useToast } from "../lib/toast";
 import type {
@@ -571,22 +570,11 @@ export function PanelPage() {
     applyRenderMutation(response, "Still saved.");
   }
 
-  async function handlePreviewSlate() {
-    setBusyRenderId("preview_slate");
-    const response = await postPanelRenderPreviewSlate();
-    setBusyRenderId(null);
-    if (!response.ok || !response.preview) {
-      toast({ message: slatePreviewError(response.error), variant: "warn" });
-      return;
-    }
-    toast({ message: slatePreviewMessage(response.preview), variant: "info" });
-  }
-
   async function handleOpenFolder() {
     setBusyRenderId("open_folder");
     const response = await postPanelRenderOpenFolder();
     setBusyRenderId(null);
-    applyRenderMutation(response, "Folder opened.");
+    applyRenderMutation(response, "Stills folder opened.");
   }
 
   /** `panel/deliver/open_version` — opening a version is non-destructive
@@ -775,9 +763,9 @@ export function PanelPage() {
                   onSetLightGroups={handleSetLightGroups}
                   onSetMultipart={handleSetMultipart}
                   onToggleWatch={handleToggleWatch}
+                  onOpenSettings={handleOpenSettings}
                   onSaveStill={handleSaveStill}
                   onOpenFolder={handleOpenFolder}
-                  onPreviewSlate={handlePreviewSlate}
                   onValidate={() => handleDeepLink("open_reports_render_validation")}
                   onConfirm={() => renderConfirm && runRenderDestructive(renderConfirm.op, true)}
                   onCancelConfirm={() => setRenderConfirm(null)}

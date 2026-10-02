@@ -131,6 +131,42 @@ def validate_style(value):
     return True, style, None
 
 
+def compact_style(style):
+    """Only what differs from the defaults, for writing to the ruleset —
+    defaults written out would freeze them in the project file (the same rule
+    as Publish standard). ``{}`` means "the default slate"."""
+    out = {}
+    for key, default in DEFAULT_STYLE.items():
+        if key == "slots":
+            slots = {name: list(style["slots"][name]) for name in SLOT_NAMES
+                     if style["slots"].get(name, []) != default[name]}
+            if slots:
+                out["slots"] = slots
+        elif style.get(key, default) != default:
+            out[key] = style[key]
+    return out
+
+
+def _slot_text(entries):
+    return " · ".join(entries) if entries else "(empty)"
+
+
+def style_diff(old, new):
+    """Human lines for what saving ``new`` over ``old`` changes (both complete
+    styles, as ``validate_style`` returns them). Empty when nothing changes."""
+    lines = []
+    for key, label in (("position", "position"), ("size", "size"),
+                       ("badge", "status badge"), ("show_post", "RenderView post")):
+        if old.get(key) != new.get(key):
+            fmt = (lambda v: "on" if v else "off") if isinstance(new.get(key), bool) else str
+            lines.append("%s: %s → %s" % (label, fmt(old.get(key)), fmt(new.get(key))))
+    for name in SLOT_NAMES:
+        if old["slots"].get(name) != new["slots"].get(name):
+            lines.append("%s: %s → %s" % (name, _slot_text(old["slots"].get(name)),
+                                          _slot_text(new["slots"].get(name))))
+    return lines
+
+
 def render_item(item, fields):
     """Fill an item's tokens; '' when it has tokens and all of them are empty."""
     tokens = _TOKEN.findall(item)
@@ -140,9 +176,25 @@ def render_item(item, fields):
     return _TOKEN.sub(lambda m: values.get(m.group(1), ""), item).strip()
 
 
+MIN_STRIP = 24        # base strip: never under this, so small images stay legible
+MIN_SCALED_STRIP = 16 # after the size multiplier: the legibility floor (8 px text)
+
+
 def strip_height(image_height, size=1.0):
-    """Height of the slate strip: 4.5% of the image × size, never under 24 px."""
-    return max(24, int(round(image_height * 0.045 * size)))
+    """Height of the slate strip: 4.5% of the image (at least 24 px), × size,
+    never under 16 px. The floor is applied BEFORE the multiplier — applied
+    after, it swallowed every size below ×1 on images under ~530 px high."""
+    base = max(float(MIN_STRIP), image_height * 0.045)
+    return max(MIN_SCALED_STRIP, int(round(base * size)))
+
+
+def strip_metrics(image_height, size=1.0):
+    """What the size slider really gives: ``{"strip_px", "text_px", "at_min"}``
+    (``at_min`` when the legibility floor, not the multiplier, decided)."""
+    base = max(float(MIN_STRIP), image_height * 0.045)
+    strip = strip_height(image_height, size)
+    return {"strip_px": strip, "text_px": int(round(font_size(strip))),
+            "at_min": base * size < MIN_SCALED_STRIP}
 
 
 def font_size(strip_h):

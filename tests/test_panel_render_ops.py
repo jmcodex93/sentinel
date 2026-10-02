@@ -1914,74 +1914,6 @@ class TestTemplateSceneComesFromTheProjectRuleset:
         assert "Studio template scene not found!" in response["error"]
 
 
-class TestPreviewSlate:
-    """``panel/render/preview_slate``: no dialog on any path, the preview
-    goes to the temp folder (never the stills folder) and opens in the OS."""
-
-    def _setup(self, monkeypatch, tmp_path, *, ocio=True, exr=True):
-        import c4d
-        from sentinel import snapshot_c4d
-        from sentinel.ui import flows, panel_render_ops
-        from sentinel.common.settings import GlobalSettings
-
-        def _forbid(*args, **kwargs):
-            raise AssertionError("MessageDialog must never be reachable from an op path")
-
-        monkeypatch.setattr(c4d.gui, "MessageDialog", _forbid)
-        doc = _FakeDocBase()
-        monkeypatch.setattr(panel_render_ops.documents, "GetActiveDocument", lambda: doc)
-        monkeypatch.setattr(GlobalSettings, "load_artist_name", lambda: "Artist")
-        monkeypatch.setattr(panel_render_ops, "build_panel_render", lambda d: {})
-        monkeypatch.setattr(panel_render_ops, "_stamp_for", lambda d: "s")
-
-        class Rules:
-            params = {"slate": False, "slate_style": {"position": "overlay"}}
-            rules_path = None
-
-        monkeypatch.setattr(flows, "_active_rules_for_doc", lambda d: Rules())
-        monkeypatch.setattr(flows, "build_slate_data", lambda d, a, project="": {"shot": "s"})
-        monkeypatch.setattr(flows, "get_effective_snapshot_dir", lambda: (str(tmp_path), "auto"))
-        monkeypatch.setattr(flows, "_find_latest_exr",
-                            lambda d: (str(tmp_path / "a.exr"), None) if exr else (None, "none"))
-        import tempfile
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "tmp"))
-        monkeypatch.setattr(snapshot_c4d, "ocio_available", lambda: ocio)
-        monkeypatch.setattr(snapshot_c4d, "resolve_slate_font", lambda: ("font", "Inter-Regular"))
-        monkeypatch.setattr(snapshot_c4d, "color_converter", lambda d: "conv")
-        calls = {}
-
-        def preview(path, slate, font, style, exr_path=None, converter=None):
-            calls["preview"] = (path, slate, font, style, exr_path, converter)
-            return True, None, "snapshot" if exr_path else "placeholder"
-
-        monkeypatch.setattr(snapshot_c4d, "preview_slate", preview)
-        monkeypatch.setattr(flows, "open_in_explorer", lambda p: calls.setdefault("opened", p))
-        return panel_render_ops, calls
-
-    def test_preview_uses_the_newest_snapshot_and_opens_it(self, sentinel_module, monkeypatch, tmp_path):
-        ops, calls = self._setup(monkeypatch, tmp_path)
-        response = ops.PANEL_RENDER_OPS["panel/render/preview_slate"]({})
-        assert response["ok"] is True
-        assert response["preview"] == {"path": str(tmp_path / "tmp" / "sentinel_slate_preview.png"),
-                                       "source": "snapshot", "font": "Inter-Regular",
-                                       "slate_enabled": False, "notice": ""}
-        path, slate, font, style, exr_path, converter = calls["preview"]
-        assert style == {"position": "overlay"} and exr_path == str(tmp_path / "a.exr")
-        assert converter == "conv" and calls["opened"] == path
-
-    def test_preview_without_snapshot_uses_a_placeholder(self, sentinel_module, monkeypatch, tmp_path):
-        ops, calls = self._setup(monkeypatch, tmp_path, exr=False)
-        response = ops.PANEL_RENDER_OPS["panel/render/preview_slate"]({})
-        assert response["preview"]["source"] == "placeholder"
-        assert calls["preview"][5] is None
-
-    def test_preview_before_2025_2_says_so(self, sentinel_module, monkeypatch, tmp_path):
-        ops, calls = self._setup(monkeypatch, tmp_path, ocio=False)
-        response = ops.PANEL_RENDER_OPS["panel/render/preview_slate"]({})
-        assert response == {"ok": False, "error": "needs_2025_2"}
-        assert "preview" not in calls
-
-
 def test_save_still_passes_on_the_render_view_post_notice(sentinel_module, monkeypatch):
     from sentinel.ui import panel_render_ops, flows
     from sentinel.common.settings import GlobalSettings
@@ -1994,3 +1926,31 @@ def test_save_still_passes_on_the_render_view_post_notice(sentinel_module, monke
     monkeypatch.setattr(panel_render_ops, "_stamp_for", lambda d: "s")
     response = panel_render_ops.PANEL_RENDER_OPS["panel/render/save_still"]({})
     assert response == {"ok": True, "stamp": "s", "render": {}, "notice": "not reproduced: bloom"}
+
+
+def test_snapshots_block_reports_destination_source_slate_and_isolates_failures(sentinel_module, monkeypatch, tmp_path):
+    from sentinel import snapshots
+    from sentinel.ui import flows, panel_render_ops
+    from sentinel.common.settings import GlobalSettings
+
+    class Rules:
+        params = {"slate": True}
+        field_sources = {"slate": "project"}
+
+    monkeypatch.setattr(flows, "get_effective_snapshot_dir", lambda: (str(tmp_path), "auto"))
+    monkeypatch.setattr(flows, "_active_rules_for_doc", lambda doc: Rules())
+    monkeypatch.setattr(GlobalSettings, "get_snapshot_watch", lambda: False)
+    monkeypatch.setattr(GlobalSettings, "load_artist_name", lambda: "Javier")
+    monkeypatch.setattr(snapshots, "stills_location", lambda doc, artist: ("/p/output/stills/Javier/261002", "output/stills/Javier/261002"))
+    monkeypatch.setattr(snapshots, "snapshot_source_state", lambda d: {"newest_ext": ".rssnap2", "alert": "non_exr"})
+    block = panel_render_ops._panel_snapshots_block(_FakeDocBase())
+    assert block["artist_name"] == "Javier" and block["stills_rel"] == "output/stills/Javier/261002"
+    assert block["source"] == {"newest_ext": ".rssnap2", "alert": "non_exr"}
+    assert block["slate"] == {"enabled": True, "source": "project"}
+
+    def boom(*args):
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(snapshots, "snapshot_source_state", boom)
+    block = panel_render_ops._panel_snapshots_block(_FakeDocBase())
+    assert block["source"] is None and block["stills_rel"] == "output/stills/Javier/261002"

@@ -1013,10 +1013,20 @@ export interface PanelRenderAovsOk {
 export type PanelRenderAovs = PanelRenderAovsOk | { error: "redshift_unavailable" };
 
 export interface PanelRenderSnapshots {
+  /** RenderView snapshot folder (the SOURCE). */
   dir: string | null;
   origin: "auto" | "manual";
   watch_enabled: boolean;
   watch_status?: { state: "off" | "watching" | "running" | "ready" | "error"; message: string; last_error?: string };
+  /** Settings artist name; "" blocks Save Still / Watch (stills are filed per artist). */
+  artist_name?: string;
+  /** Where the PNGs land (the DESTINATION), absolute and relative to the project
+   * (null for an unsaved scene). Both computed server-side. */
+  stills_dir?: string | null;
+  stills_rel?: string | null;
+  /** What the source folder says about RenderView's "Save snapshots as EXR". */
+  source?: { newest_ext: string | null; alert: "non_exr" | "empty" | "missing" | null } | null;
+  slate?: { enabled: boolean; source: string } | null;
 }
 
 export interface PanelRenderPostrenderAvailable {
@@ -1060,20 +1070,7 @@ export interface PanelRenderMutationResponse {
    * with no custom presets in the scene loses nothing and isn't red. */
   confirm_verb?: string;
   destructive?: boolean;
-  /** Only on `panel/render/preview_slate` — see `snapshot_preview_slate_core`. */
-  preview?: PanelSlatePreview;
   /** `save_still`: the RenderView post re-applied or not reproduced (rvpost). */
-  notice?: string;
-}
-
-/** Where a slate preview came from and how it was drawn. `font` is the
- * PostScript name found (`Inter-Regular`, `ArialMT`) or `"system"`. */
-export interface PanelSlatePreview {
-  path: string;
-  source: "snapshot" | "placeholder";
-  font: string;
-  slate_enabled: boolean;
-  /** RenderView post re-applied / not reproduced on that snapshot, or "". */
   notice?: string;
 }
 
@@ -1447,4 +1444,66 @@ export interface NewShotCreateResponse {
   path?: string;
   opened?: boolean;
   error?: string;
+}
+
+/** Snapshot slate look — `slate_style` in sentinel_rules.json, validated by
+ * `slate.validate_style` on the server (the panel never trusts its copy). */
+export type SlateSlotName = "left" | "center" | "right";
+export interface SlateStyle {
+  position: "below" | "overlay";
+  slots: Record<SlateSlotName, string[]>;
+  badge: boolean;
+  size: number;
+  show_post: boolean;
+}
+
+/** `panel/slate/state` — see `_state` in ui/slate_ops.py. */
+export interface SlateState {
+  ok: boolean;
+  error?: string;
+  enabled: boolean;
+  enabled_source: string;
+  style: SlateStyle;
+  style_source: string;
+  /** Active project ruleset, or "" when the scene has none (Save asks for a folder). */
+  rules_path: string;
+  scene_saved: boolean;
+  tokens: string[];
+  warnings: string[];
+}
+
+/** `panel/slate/preview` — the slate drawn by C4D with an unsaved style. */
+export interface SlatePreviewResponse {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  /** `data:image/png;base64,…` */
+  image?: string;
+  source?: "snapshot" | "placeholder";
+  font?: string;
+  notice?: string;
+  /** What the automatic {post} would show for this snapshot ("" = none). */
+  post?: string;
+  /** Real strip height / text size the size slider gives on this image. */
+  strip_px?: number;
+  text_px?: number;
+  /** The 16 px legibility floor, not the multiplier, decided the height. */
+  at_min?: boolean;
+  /** Only for `open: true` (View at 100 %): the temp file opened. */
+  path?: string;
+}
+
+/** `panel/slate/save` — confirm-gated write to the project ruleset. */
+export interface SlateSaveResponse {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  confirm_label?: string;
+  confirm_verb?: string;
+  destructive?: boolean;
+  path?: string;
+  changes?: string[];
+  unchanged?: boolean;
+  searched?: string[];
+  state?: SlateState;
 }

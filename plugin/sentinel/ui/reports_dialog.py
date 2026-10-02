@@ -61,6 +61,7 @@ from sentinel.ui.panel_deliver_ops import PANEL_DELIVER_OPS
 from sentinel.ui.panel_tools_ops import PANEL_TOOLS_OPS
 from sentinel.ui.panel_frame_ops import PANEL_FRAME_OPS
 from sentinel.ui.standard_ops import STANDARD_OPS
+from sentinel.ui.slate_ops import SLATE_OPS
 from sentinel.ui.web_ops import FORM_OPS
 from sentinel import webbridge
 from sentinel.webbridge import (
@@ -332,6 +333,7 @@ _OPS = {
     **PANEL_TOOLS_OPS,
     **PANEL_FRAME_OPS,
     **STANDARD_OPS,
+    **SLATE_OPS,
 }
 
 

@@ -1,5 +1,4 @@
 import type {
-  PanelSlatePreview,
   PanelRenderPresetOption,
   PanelRenderAovs,
   PanelRenderFrame,
@@ -63,11 +62,71 @@ export function aovStatusLine(aovs: PanelRenderAovs | null): string {
  * for the Settings fallback — see `flows.get_effective_snapshot_dir`). */
 export function snapshotStatusLine(snapshots: PanelRenderSnapshots | null): string {
   if (snapshots === null) return "Snapshots status unavailable.";
-  if (!snapshots.dir) return "No snapshot directory set.";
-  const originChip = snapshots.origin === "auto" ? "auto-detected" : "manual";
-  const message = snapshots.watch_enabled ? snapshots.watch_status?.message : "";
-  const error = snapshots.watch_enabled ? snapshots.watch_status?.last_error : "";
-  return `${snapshots.dir} · ${originChip}${message ? ` · ${message}` : ""}${error && error !== message ? ` · Last failure: ${error}` : ""}`;
+  if (!snapshots.stills_dir) return "Stills folder unavailable.";
+  if (snapshots.stills_rel) return `→ ${snapshots.stills_rel}`;
+  return `→ ${snapshots.stills_dir} · unsaved scene`;
+}
+
+/** Last two segments of a path for display (the full path goes in a title). */
+export function tailPath(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : path;
+}
+
+/** The SOURCE caption: RenderView's snapshot folder; "manual" only when it is
+ * the Settings fallback (auto-detected is the normal case and says nothing). */
+export function snapshotSourceLine(snapshots: PanelRenderSnapshots): string {
+  if (!snapshots.dir) return "Source: no RenderView snapshot folder found — set one in Settings.";
+  return `Source: ${tailPath(snapshots.dir)}${snapshots.origin === "manual" ? " · manual" : ""}`;
+}
+
+/** Warning about RenderView's session-only "Save snapshots as EXR" box, or a
+ * quiet note for an empty folder; null when the newest snapshot is an EXR. */
+export function snapshotSourceAlert(
+  snapshots: PanelRenderSnapshots,
+): { text: string; tone: "warn" | "secondary" } | null {
+  const source = snapshots.source;
+  if (!source || !snapshots.dir) return null;
+  if (source.alert === "non_exr") {
+    return {
+      tone: "warn",
+      text: `Newest snapshot is ${source.newest_ext}, not an EXR — tick "Save snapshots as EXR" in RenderView (it resets every Cinema 4D session).`,
+    };
+  }
+  if (source.alert === "empty") return { tone: "secondary", text: "No snapshots yet — take one in RenderView." };
+  return null;
+}
+
+/** Caption under the Watch folder switch. Status colour only for problems:
+ * watching and converted are a mode and a routine result, not a verdict. */
+export function watchCaption(snapshots: PanelRenderSnapshots): { text: string; tone: "secondary" | "warn" | "fail" } {
+  if (!snapshots.watch_enabled) {
+    return { tone: "secondary", text: "Off — Save Still converts the newest snapshot on demand." };
+  }
+  const status = snapshots.watch_status;
+  const message = status?.message ?? "";
+  switch (status?.state) {
+    case "running":
+      return { tone: "secondary", text: message ? `${message}…` : "Converting…" };
+    case "ready":
+      return { tone: message.includes("not reproduced") ? "warn" : "secondary", text: message || "Watching" };
+    case "error":
+      return { tone: "fail", text: `Failed: ${status.last_error || message}` };
+    default:
+      return { tone: "secondary", text: message ? `Watching · ${message}` : "Watching" };
+  }
+}
+
+const SLATE_SOURCE_LABEL: Record<string, string> = {
+  project: "project ruleset",
+  machine: "machine setting",
+  defaults: "default",
+};
+
+/** "on · project ruleset" — the slate state and who decided it. */
+export function slateSummary(slate: PanelRenderSnapshots["slate"]): string {
+  if (!slate) return "unavailable";
+  return `${slate.enabled ? "on" : "off"} · ${SLATE_SOURCE_LABEL[slate.source] ?? slate.source}`;
 }
 
 /** Post-Render card status line: pass/fail + the report's generation
@@ -91,35 +150,6 @@ const DESTRUCTIVE_RENDER_OPS = new Set(["reset_all"]);
 
 export function isDestructiveRenderOp(op: string): boolean {
   return DESTRUCTIVE_RENDER_OPS.has(op);
-}
-
-/** Toast copy for a finished slate preview: what it was drawn on, which font
- * was found when it is not the bundled Inter, and a reminder when the
- * project has the slate switched off (the preview still shows its look). */
-export function slatePreviewMessage(preview: PanelSlatePreview): string {
-  const parts = [
-    preview.source === "snapshot"
-      ? "Slate preview opened on the latest snapshot."
-      : "Slate preview opened on a grey frame (no snapshot yet).",
-  ];
-  if (preview.font !== "Inter-Regular") {
-    parts.push(preview.font === "ArialMT" ? "Drawn in Arial: the bundled Inter is not available."
-      : "Drawn in the system font: Inter and Arial are not available.");
-  }
-  if (!preview.slate_enabled) {
-    parts.push("The slate is off for this scene.");
-  }
-  if (preview.notice) {
-    parts.push(preview.notice + ".");
-  }
-  return parts.join(" ");
-}
-
-/** Error copy for `panel/render/preview_slate`. */
-export function slatePreviewError(error: string | undefined): string {
-  if (error === "needs_2025_2") return "Slate preview needs Cinema 4D 2025.2 or newer.";
-  if (error === "no_document") return "Open a scene first.";
-  return error || "Slate preview failed.";
 }
 
 /** Toast after Save Still. A RenderView-post notice turns it into a warning

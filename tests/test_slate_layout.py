@@ -207,6 +207,15 @@ def test_size_scales_the_strip():
     assert slate.strip_height(1080, 0.5) == 24
 
 
+def test_size_below_one_still_shrinks_small_images():
+    """A 925×520 RenderView snapshot: 4.5 % is 23 px, under the 24 px base.
+    Sizes below ×1 must still shrink it (they used to stay at 24)."""
+    assert slate.strip_height(520) == 24
+    assert slate.strip_height(520, 0.8) == 19
+    assert slate.strip_height(520, 0.5) == 16          # legibility floor
+    assert slate.strip_height(520, 1.5) == 36
+
+
 def test_overlay_row_blends_the_bar_and_keeps_text_opaque():
     image = bytearray([200, 200, 200] * 2)
     strip = bytes(list(slate.SLATE_STRIP_BG) + [233, 237, 242])
@@ -269,3 +278,27 @@ def test_show_post_off_hides_it_and_a_placed_post_is_not_duplicated():
 def test_automatic_post_is_dropped_before_the_left_slot_when_tight():
     texts = [op[2] for op in slate.slate_ops(700, 40, 20, POSTED, mono)]
     assert texts == ["robot_010 · v007   ", "TR · 9/12", "Javièr"]
+
+
+# ── saving from the panel ────────────────────────────────────────────────────
+def test_compact_style_keeps_only_what_differs_from_the_default():
+    assert slate.compact_style(slate.default_style()) == {}
+    ok, style, _ = slate.validate_style({"position": "overlay", "slots": {"center": ["ACME"]}})
+    assert slate.compact_style(style) == {"position": "overlay", "slots": {"center": ["ACME"]}}
+    ok, again, _ = slate.validate_style(slate.compact_style(style))
+    assert again == style      # compact → validate round-trips to the same style
+
+
+def test_style_diff_names_each_change():
+    old = slate.default_style()
+    ok, new, _ = slate.validate_style({"position": "overlay", "badge": False, "size": 1.5,
+                                       "slots": {"center": ["ACME"]}})
+    assert slate.style_diff(old, new) == [
+        "position: below → overlay", "size: 1.0 → 1.5", "status badge: on → off",
+        "center: (empty) → ACME"]
+    assert slate.style_diff(old, old) == []
+
+
+def test_strip_metrics_say_what_the_size_really_gives():
+    assert slate.strip_metrics(1080, 0.8) == {"strip_px": 39, "text_px": 20, "at_min": False}
+    assert slate.strip_metrics(520, 0.5) == {"strip_px": 16, "text_px": 8, "at_min": True}

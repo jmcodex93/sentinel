@@ -228,14 +228,40 @@ def _panel_snapshots_block(doc):
     Phase 3 IA consolidation) + the watch-folder toggle state."""
     from sentinel.ui.flows import get_effective_snapshot_dir
 
-    from sentinel.snapshots import snapshot_watch
+    from sentinel import snapshots
     snap_dir, origin = get_effective_snapshot_dir()
-    return {
+    block = {
         "dir": snap_dir,
         "origin": origin,
         "watch_enabled": GlobalSettings.get_snapshot_watch(),
-        "watch_status": snapshot_watch.status(),
+        "watch_status": snapshots.snapshot_watch.status(),
+        "artist_name": "",
+        "stills_dir": None,
+        "stills_rel": None,
+        "source": None,
+        "slate": None,
     }
+    # Each extra read on its own: one failing must not blank the block.
+    try:
+        block["artist_name"] = GlobalSettings.load_artist_name() or ""
+    except Exception as exc:
+        safe_print("Snapshots block: artist name unavailable (%s)" % exc)
+    try:
+        block["stills_dir"], block["stills_rel"] = snapshots.stills_location(doc, block["artist_name"])
+    except Exception as exc:
+        safe_print("Snapshots block: stills folder unavailable (%s)" % exc)
+    try:
+        block["source"] = snapshots.snapshot_source_state(snap_dir)
+    except Exception as exc:
+        safe_print("Snapshots block: source folder unreadable (%s)" % exc)
+    try:
+        from sentinel.ui.flows import _active_rules_for_doc
+        context = _active_rules_for_doc(doc)
+        block["slate"] = {"enabled": bool(context.params.get("slate", False)),
+                          "source": context.field_sources.get("slate", "defaults")}
+    except Exception as exc:
+        safe_print("Snapshots block: slate state unavailable (%s)" % exc)
+    return block
 
 
 def _panel_postrender_block(doc):
@@ -733,25 +759,6 @@ def _op_panel_render_open_folder(payload):
     return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc)}
 
 
-def _op_panel_render_preview_slate(payload):
-    """``panel/render/preview_slate`` — ``flows.snapshot_preview_slate_core``:
-    renders the project's slate onto the newest snapshot (or a grey frame)
-    in the temp folder and opens it in the system viewer. No C4D dialog and
-    no Picture Viewer; the toast reports where the preview came from."""
-    doc = documents.GetActiveDocument()
-    if not doc:
-        return {"ok": False, "error": "no_document"}
-
-    from sentinel.ui import flows
-
-    result = flows.snapshot_preview_slate_core(doc, GlobalSettings.load_artist_name())
-    if not result.get("ok"):
-        return {"ok": False, "error": result.get("error")}
-    return {"ok": True, "stamp": _stamp_for(doc), "render": build_panel_render(doc),
-            "preview": {key: result.get(key) for key in ("path", "source", "font", "slate_enabled",
-                                                         "notice")}}
-
-
 PANEL_RENDER_OPS = {
     "panel/render": _op_panel_render,
     "panel/render/set_preset": _op_panel_render_set_preset,
@@ -765,5 +772,4 @@ PANEL_RENDER_OPS = {
     "panel/render/toggle_watchfolder": _op_panel_render_toggle_watchfolder,
     "panel/render/save_still": _op_panel_render_save_still,
     "panel/render/open_folder": _op_panel_render_open_folder,
-    "panel/render/preview_slate": _op_panel_render_preview_slate,
 }

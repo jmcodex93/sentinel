@@ -6,10 +6,12 @@ import {
   postrenderStatusLine,
   presetOptionLabel,
   presetStatusLine,
-  slatePreviewError,
-  slatePreviewMessage,
   stillSavedToast,
+  slateSummary,
+  snapshotSourceAlert,
+  snapshotSourceLine,
   snapshotStatusLine,
+  watchCaption,
 } from "./panelRender";
 import type {
   PanelRenderAovs,
@@ -126,31 +128,51 @@ describe("aovStatusLine", () => {
 });
 
 describe("snapshotStatusLine", () => {
-  it("formats the directory and an auto-detected origin chip", () => {
-    const snapshots: PanelRenderSnapshots = {
-      dir: "/Users/artist/renders/snapshots",
-      origin: "auto",
-      watch_enabled: true,
-    };
-    expect(snapshotStatusLine(snapshots)).toBe("/Users/artist/renders/snapshots · auto-detected");
+  const base: PanelRenderSnapshots = {
+    dir: "/Users/artist/Desktop/rv_snaps", origin: "auto", watch_enabled: false,
+    stills_dir: "/projects/ACME/output/stills/Javier/261002", stills_rel: "output/stills/Javier/261002",
+  };
+
+  it("leads with where the PNGs land, relative to the project", () => {
+    expect(snapshotStatusLine(base)).toBe("→ output/stills/Javier/261002");
   });
 
-  it("formats a manual-fallback origin chip", () => {
-    const snapshots: PanelRenderSnapshots = {
-      dir: "/Users/artist/renders/snapshots",
-      origin: "manual",
-      watch_enabled: false,
-    };
-    expect(snapshotStatusLine(snapshots)).toBe("/Users/artist/renders/snapshots · manual");
+  it("names the absolute fallback for an unsaved scene", () => {
+    expect(snapshotStatusLine({ ...base, stills_rel: null })).toBe(
+      "→ /projects/ACME/output/stills/Javier/261002 · unsaved scene");
   });
 
-  it("reports no directory set", () => {
-    const snapshots: PanelRenderSnapshots = { dir: null, origin: "manual", watch_enabled: false };
-    expect(snapshotStatusLine(snapshots)).toBe("No snapshot directory set.");
-  });
-
-  it("renders an unavailable note for a null block", () => {
+  it("renders unavailable notes", () => {
+    expect(snapshotStatusLine({ ...base, stills_dir: null })).toBe("Stills folder unavailable.");
     expect(snapshotStatusLine(null)).toBe("Snapshots status unavailable.");
+  });
+
+  it("shows the source tail and 'manual' only for the fallback", () => {
+    expect(snapshotSourceLine(base)).toBe("Source: …/Desktop/rv_snaps");
+    expect(snapshotSourceLine({ ...base, origin: "manual" })).toBe("Source: …/Desktop/rv_snaps · manual");
+    expect(snapshotSourceLine({ ...base, dir: null })).toContain("no RenderView snapshot folder");
+  });
+
+  it("warns when RenderView stopped writing EXR", () => {
+    const alert = snapshotSourceAlert({ ...base, source: { newest_ext: ".rssnap2", alert: "non_exr" } });
+    expect(alert?.tone).toBe("warn");
+    expect(alert?.text).toContain(".rssnap2");
+    expect(snapshotSourceAlert({ ...base, source: { newest_ext: ".exr", alert: null } })).toBeNull();
+    expect(snapshotSourceAlert({ ...base, source: { newest_ext: null, alert: "empty" } })?.tone).toBe("secondary");
+  });
+
+  it("describes the watch state, colouring only problems", () => {
+    expect(watchCaption(base).text).toContain("Off");
+    const on = { ...base, watch_enabled: true };
+    expect(watchCaption({ ...on, watch_status: { state: "watching", message: "" } })).toEqual({ tone: "secondary", text: "Watching" });
+    expect(watchCaption({ ...on, watch_status: { state: "ready", message: "converted a.png · RenderView post applied: LUT X 49%" } }).tone).toBe("secondary");
+    expect(watchCaption({ ...on, watch_status: { state: "ready", message: "converted a.png · not reproduced: bloom" } }).tone).toBe("warn");
+    expect(watchCaption({ ...on, watch_status: { state: "error", message: "x", last_error: "decoder failed" } })).toEqual({ tone: "fail", text: "Failed: decoder failed" });
+  });
+
+  it("summarises the slate and who decided it", () => {
+    expect(slateSummary({ enabled: true, source: "project" })).toBe("on · project ruleset");
+    expect(slateSummary({ enabled: false, source: "defaults" })).toBe("off · default");
   });
 });
 
@@ -200,30 +222,6 @@ describe("isDestructiveRenderOp", () => {
   });
 });
 
-describe("slate preview copy", () => {
-  const base = { path: "/tmp/p.png", source: "snapshot" as const, font: "Inter-Regular", slate_enabled: true };
-
-  it("says what the preview was drawn on", () => {
-    expect(slatePreviewMessage(base)).toBe("Slate preview opened on the latest snapshot.");
-    expect(slatePreviewMessage({ ...base, source: "placeholder" })).toBe(
-      "Slate preview opened on a grey frame (no snapshot yet).",
-    );
-  });
-
-  it("names a fallback font and a disabled slate", () => {
-    const message = slatePreviewMessage({ ...base, font: "ArialMT", slate_enabled: false });
-    expect(message).toContain("Drawn in Arial");
-    expect(message).toContain("The slate is off for this scene.");
-    expect(slatePreviewMessage({ ...base, font: "system" })).toContain("system font");
-  });
-
-  it("explains the errors", () => {
-    expect(slatePreviewError("needs_2025_2")).toBe("Slate preview needs Cinema 4D 2025.2 or newer.");
-    expect(slatePreviewError(undefined)).toBe("Slate preview failed.");
-    expect(slatePreviewError("Could not write x")).toBe("Could not write x");
-  });
-});
-
 describe("save still toast", () => {
   it("is a plain success without a notice", () => {
     expect(stillSavedToast(undefined)).toEqual({ message: "Still saved.", variant: "success" });
@@ -233,10 +231,5 @@ describe("save still toast", () => {
     const warn = stillSavedToast("RenderView post applied: LUT Look 49% · not reproduced: bloom");
     expect(warn.variant).toBe("warn");
     expect(warn.message).toBe("Still saved. RenderView post applied: LUT Look 49% · not reproduced: bloom.");
-  });
-  it("adds the notice to the slate preview message", () => {
-    const message = slatePreviewMessage({ path: "/p", source: "snapshot", font: "Inter-Regular",
-      slate_enabled: true, notice: "RenderView post applied: RGB curve" });
-    expect(message).toContain("RenderView post applied: RGB curve.");
   });
 });

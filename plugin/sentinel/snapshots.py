@@ -398,6 +398,68 @@ def next_snapshot_name(existing_names, scene_name, ext=".png"):
     return f"{prefix}{highest + 1:03d}{ext}"
 
 
+# RenderView writes .rssnap2 (its own format) when "Save snapshots as EXR" is
+# off — counted here so the panel can say so, never converted.
+SOURCE_EXTS = SNAPSHOT_EXTS + (".rssnap2", ".rssnap")
+_SOURCE_STATE_CACHE = {}
+
+
+def snapshot_source_state(snap_dir):
+    """What the RenderView snapshot folder says about the EXR setting.
+
+    ``{"newest_ext": ".exr"|".rssnap2"|…|None, "alert": None|"non_exr"|"empty"|"missing"}``.
+    Only snapshot-like files count (a stray .txt never raises the alarm).
+    Cached by the folder's mtime, which changes when a file is added, so the
+    panel's 2 s poll scans once per new snapshot, not every poll.
+    """
+    if not snap_dir or not os.path.isdir(snap_dir):
+        return {"newest_ext": None, "alert": "missing"}
+    try:
+        key = (os.path.normcase(os.path.abspath(snap_dir)), os.stat(snap_dir).st_mtime_ns)
+    except OSError:
+        return {"newest_ext": None, "alert": "missing"}
+    cached = _SOURCE_STATE_CACHE.get(key[0])
+    if cached and cached[0] == key[1]:
+        return dict(cached[1])
+    newest = None
+    try:
+        for entry in os.scandir(snap_dir):
+            name = entry.name
+            if name.startswith(".") or not name.lower().endswith(SOURCE_EXTS):
+                continue
+            try:
+                if not entry.is_file():
+                    continue
+                mtime = entry.stat().st_mtime
+            except OSError:
+                continue
+            if newest is None or mtime > newest[0]:
+                newest = (mtime, os.path.splitext(name)[1].lower())
+    except OSError:
+        return {"newest_ext": None, "alert": "missing"}
+    if newest is None:
+        state = {"newest_ext": None, "alert": "empty"}
+    else:
+        state = {"newest_ext": newest[1], "alert": None if newest[1] == ".exr" else "non_exr"}
+    _SOURCE_STATE_CACHE[key[0]] = (key[1], dict(state))
+    return state
+
+
+def stills_location(doc, artist_name):
+    """``(absolute, relative-to-project or None)`` of where stills land —
+    the same folder ``_get_stills_dir`` creates, without creating it. The
+    relative form is None for an unsaved scene (the home-folder fallback)."""
+    absolute = _get_stills_dir(doc, artist_name or "<artist>", create=False)
+    doc_path = doc.GetDocumentPath() or ""
+    if not doc_path:
+        return absolute, None
+    root = os.path.dirname(os.path.dirname(doc_path))
+    try:
+        return absolute, os.path.relpath(absolute, root)
+    except ValueError:            # different drives on Windows
+        return absolute, None
+
+
 def _get_stills_dir(doc, artist_name, create=True):
     """Get output directory: project_root/output/stills/Artist/YYMMDD/"""
     from datetime import datetime
