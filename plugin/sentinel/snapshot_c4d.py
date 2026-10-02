@@ -219,18 +219,23 @@ def convert_snapshot(exr_path, png_path, converter, slate=None, font=None, style
         plan = rvpost.post_plan(attrs)
         image = convert_exr(exr_path, converter, plan if rvpost.plan_is_active(plan) else None)
         fields = None
+        post = rvpost.applied_label(plan)
         if slate:
             fields = slate_fields(attrs, slate, image.GetSize())
+            fields["post"] = post
             image = compose_slate(image, fields, font if font is not None else
                                   bitmaps.GeClipMap.GetDefaultFont(c4d.GE_FONT_DEFAULT_SYSTEM),
                                   style)
         if image.Save(png_path, c4d.FILTER_PNG) != c4d.IMAGERESULT_OK:
             return False, "Could not write %s" % png_path
-        if fields:
+        # The post re-applied travels as metadata even without a slate.
+        metadata = slate_layout.slate_metadata(fields) if fields else \
+            ([("sentinel:post", post)] if post else [])
+        if metadata:
             with open(png_path, "rb") as handle:
                 data = handle.read()
             with open(png_path, "wb") as handle:
-                handle.write(slate_layout.insert_png_text(data, slate_layout.slate_metadata(fields)))
+                handle.write(slate_layout.insert_png_text(data, metadata))
         notice = rvpost.describe(plan)
         if notice:
             safe_print("Snapshot %s: %s" % (os.path.basename(exr_path), notice))

@@ -155,3 +155,11 @@ def test_curve_only_maps_through_the_table():
     plan = {"lut": None, "strength": 1.0, "curve": rvpost.spline_table(RV_CURVE)}
     out = rvpost.apply_row([0.0, 0.3261, 1.0], plan)
     assert out[0] == to8(0.0348) and abs(out[1] - 0.3087 * 255) <= 1 and out[2] == 255
+
+
+def test_applied_label_is_the_post_slate_token(tmp_path):
+    (tmp_path / "Look.cube").write_text(cube_text(2, lambda r, g, b: (r, g, b)))
+    attrs = lut_attrs(tmp_path, **{"Color Controls Enabled": 1})
+    attrs.update(curve_attrs("RGB", RV_CURVE))
+    assert rvpost.applied_label(rvpost.post_plan(attrs)) == "LUT Look 49% + RGB curve"
+    assert rvpost.applied_label(rvpost.post_plan({})) == ""

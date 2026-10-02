@@ -63,7 +63,7 @@ def build_slate_lines(slate):
 # tokens all resolve empty disappears together with its separator.
 
 TOKENS = ("shot", "version", "status", "score", "artist", "date", "time", "frame",
-          "scene", "take", "project", "camera", "resolution", "view")
+          "scene", "take", "project", "camera", "resolution", "view", "post")
 POSITIONS = ("below", "overlay")
 SLOT_NAMES = ("left", "center", "right")
 SLOT_SEPARATORS = {"left": " · ", "center": " · ", "right": "  ·  "}

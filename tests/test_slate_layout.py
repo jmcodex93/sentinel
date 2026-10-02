@@ -228,3 +228,14 @@ def test_item_with_literal_text_but_empty_tokens_disappears_whole():
     assert slate.render_item("f{frame}", {"frame": ""}) == ""
     assert slate.render_item("Take {take}", {}) == ""
     assert slate.render_item("{date} {time}", {"date": "2026-10-02"}) == "2026-10-02"
+
+
+def test_post_token_shows_the_look_and_vanishes_without_one():
+    style = slate.default_style()
+    style["slots"]["right"] = ["{post}", "{artist}"]
+    assert slate.validate_style({"slots": {"right": ["{post}"]}})[0]
+    ops = slate.slate_ops(1920, 49, 29, dict(SLATE, post="LUT Look 49% + RGB curve"), mono, style)
+    assert ops[-1][2] == "LUT Look 49% + RGB curve  ·  Javièr"
+    ops = slate.slate_ops(1920, 49, 29, dict(SLATE, post=""), mono, style)
+    assert ops[-1][2] == "Javièr"
+    assert ("sentinel:post", "LUT Look 49%") in slate.slate_metadata(dict(SLATE, post="LUT Look 49%"))

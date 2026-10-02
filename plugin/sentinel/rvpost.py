@@ -195,6 +195,12 @@ def plan_is_active(plan):
     return bool(plan and (plan["lut"] or plan["curve"]))
 
 
+def applied_label(plan):
+    """The ``{post}`` slate token: what was re-applied, e.g.
+    ``"LUT Cinema Look 11 49% + RGB curve"``; ``""`` when nothing was."""
+    return " + ".join(plan["applied"]) if plan else ""
+
+
 def describe(plan):
     """One line for the artist: what was re-applied and what was not."""
     if not plan:
