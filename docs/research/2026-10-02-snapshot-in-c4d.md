@@ -142,3 +142,31 @@ Ruled out for the LUT: tetrahedral interpolation, 8-bit quantised input or
 output, blending the strength in linear light or gamma 2.2, other strengths.
 The tell was that the shadow error (+2.7 levels) did not change with the
 strength — the lookup itself, not the blend, was off.
+
+## LUT without colour management first (Windows round 4, 2026-10-05)
+
+Windows 11, C4D 2026.3.4, Redshift 2026.7.0. The RenderView header carried
+`Apply color management before LUT = 0` (on the macOS host it was 1), so the
+plan refused the LUT as "unsupported order". Pair: snapshot
+`17912002770_image.exr` (LUT `acceptance_warm.cube`, size 2, 50 %, master RGB
+curve, ACES 1.0 SDR-video) and the RenderView *Save image* PNG, 1026×577,
+compared on the opaque pixels (alpha 255):
+
+| Order | Mean R / G / B (levels) | Max |
+|---|---|---|
+| OCIO view → LUT → curve (the "on" order) | 21.1 / 18.0 / 11.0 | 41 |
+| OCIO view → curve → LUT | 23.4 / 23.6 / 18.7 | 47 |
+| LUT on linear → sRGB encode → curve (no view) | 25.4 / 30.6 / 30.6 | 42 |
+| **LUT on scene-linear (clamped lookup, unclamped blend) → OCIO view → curve** | **0.38 / 0.23 / 0.21** | **3** |
+
+Texel-centre sampling holds here too (corner sampling: 15.7 levels). The
+background (alpha 0) matches as well: the LUT's black entry, 0.04 red at 50 %,
+comes out 12 vs RenderView's 11. `rvpost.apply_lut_linear` + `apply_row` run
+end to end on that EXR reproduce the same 0.38 / 0.23 / 0.21. The snapshot's
+`A` channel equals the export's alpha pixel for pixel (Sentinel's PNG is RGB).
+
+`Saturation` read 1.0 with colour controls on and the export matched with no
+saturation applied: 1.0 is neutral there. The macOS header read 0.0; both are
+treated as neutral until RenderView's default on macOS is confirmed. Per-channel
+curves (a green curve was used) remain named, not reproduced: no export pair
+isolates their order against the master curve yet.

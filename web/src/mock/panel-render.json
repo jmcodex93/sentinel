@@ -53,7 +53,7 @@
     "watch_enabled": true,
     "artist_name": "JM",
     "stills_dir": "/Users/artist/projects/shot_018/output/stills/JM/261002",
-    "stills_rel": "output/stills/JM/261002",
+    "stills_rel": "shot_018/output/stills/JM/261002",
     "source": {
       "newest_ext": ".rssnap2",
       "alert": "non_exr"

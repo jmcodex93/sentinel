@@ -117,10 +117,15 @@ def convert_exr(path, converter, post=None):
     transform = c4d.COLORSPACETRANSFORMATION_OCIO_RENDERING_TO_VIEW
     vector = c4d.Vector
     row = bytearray(width * 12)
+    lut_linear = post is not None and post.get("lut_linear") and post["lut"] is not None
     for y in range(height):
         src.GetPixelCnt(0, y, width, row, 12, c4d.COLORMODE_RGBf, c4d.PIXELCNT_0)
         floats = array.array("f")
         floats.frombytes(row)
+        if lut_linear:
+            # RenderView without colour management before the LUT: the LUT
+            # sees the scene-linear render, the OCIO view comes after.
+            floats = rvpost.apply_lut_linear(floats, post)
         channels = iter(floats)
         colors = converter.TransformColors(
             [vector(r, g, b) for r, g, b in zip(channels, channels, channels)], transform)

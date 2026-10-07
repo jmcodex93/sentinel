@@ -6,12 +6,17 @@ looking at (LUT, colour controls, bloom…) only travel as header attributes, so
 RenderView can re-apply them on display. Measured 2026-10-02: two snapshots of
 the same frame, LUT on and post off, were pixel-identical. This module rebuilds
 what is verified against RenderView PNG exports — the LUT (``.cube`` sampled
-like a GPU 3D texture, blended by its strength after the OCIO view) and then
-the master RGB curve (natural cubic spline) — and names everything else
-instead of guessing it.
+like a GPU 3D texture, blended by its strength) and then the master RGB curve
+(natural cubic spline) — and names everything else instead of guessing it.
 
-Pure and stdlib only: the C4D adapter calls ``post_plan`` once per snapshot and
-``apply_row`` per row of OCIO-view floats (0..1 display values).
+Where the LUT goes depends on RenderView's "Apply color management before
+LUT": on, after the OCIO view (display values); off, before it, on the
+scene-linear render (measured 2026-10-05 on a Windows export: 0.38 / 0.23 /
+0.21 levels mean).
+
+Pure and stdlib only: the C4D adapter calls ``post_plan`` once per snapshot,
+``apply_lut_linear`` per row of scene-linear floats when ``lut_linear`` is set,
+and ``apply_row`` per row of OCIO-view floats (0..1 display values).
 """
 import os
 
@@ -144,13 +149,15 @@ def post_plan(attrs):
     ``applied`` short labels of what will be reproduced and ``notes`` short
     labels of what will not (said to the artist, never silently dropped).
     """
-    plan = {"lut": None, "strength": 1.0, "curve": None, "applied": [], "notes": []}
+    plan = {"lut": None, "strength": 1.0, "lut_linear": False, "curve": None,
+            "applied": [], "notes": []}
     strength = attrs.get("Lut Strength")
     strength = float(strength) if isinstance(strength, (int, float)) else 1.0
     # A LUT at 0 % strength is on in the UI but changes nothing (measured).
     if attrs.get("Lut Enabled") == 1 and strength > 1e-4:
         label = str(attrs.get("LUT File") or "LUT")
-        if attrs.get("Apply color management before LUT") != 1 or \
+        before_lut = attrs.get("Apply color management before LUT")
+        if before_lut not in (0, 1) or \
                 attrs.get("Convert to log space before applying LUT") == 1:
             plan["notes"].append("LUT %s (unsupported order)" % label)
         else:
@@ -161,6 +168,7 @@ def post_plan(attrs):
                 try:
                     plan["lut"] = load_cube(path)
                     plan["strength"] = strength
+                    plan["lut_linear"] = before_lut == 0
                     plan["applied"].append("LUT %s %d%%" % (label, round(plan["strength"] * 100)))
                 except (OSError, ValueError) as exc:
                     plan["notes"].append("LUT %s unreadable (%s)" % (label, exc))
@@ -175,12 +183,16 @@ def post_plan(attrs):
         for channel in ("Red", "Green", "Blue"):
             if not is_identity_curve(curve_points(attrs, channel)):
                 plan["notes"].append("%s curve" % channel.lower())
-        neutral = (("Exposure (EV)", 0.0, "exposure"), ("Contrast", 0.0, "contrast"),
-                   ("Saturation", 0.0, "saturation"), ("Gamma", 1.0, "gamma"),
-                   ("Hue", 0.0, "hue"), ("Highlights", DEFAULT_HIGHLIGHTS, "highlights"))
-        for key, value, label in neutral:
+        # Saturation: 1.0 is neutral on Windows (measured 2026-10-05, the
+        # export matched with none applied); a macOS header read 0.0 and is
+        # kept as neutral until RenderView's default there is confirmed.
+        neutral = (("Exposure (EV)", (0.0,), "exposure"), ("Contrast", (0.0,), "contrast"),
+                   ("Saturation", (0.0, 1.0), "saturation"), ("Gamma", (1.0,), "gamma"),
+                   ("Hue", (0.0,), "hue"), ("Highlights", (DEFAULT_HIGHLIGHTS,), "highlights"))
+        for key, values, label in neutral:
             current = attrs.get(key)
-            if isinstance(current, (int, float)) and abs(current - value) > 1e-4:
+            if isinstance(current, (int, float)) and \
+                    all(abs(current - value) > 1e-4 for value in values):
                 plan["notes"].append(label)
     for key, label in (("Photographic Exposure Enabled", "photographic exposure"),
                        ("Tonemap Parameters Enabled", "tone mapping"),
@@ -216,84 +228,103 @@ def describe(plan):
     return " · ".join(parts)
 
 
+def _sample(size, table, r, g, b):
+    """Trilinear LUT lookup of a 0..1-clamped colour. RenderView samples the
+    LUT like a GPU 3D texture: texel centres at (i + 0.5) / size, so the
+    lattice coordinate is v × size − 0.5 (measured 2026-10-02: 0.30 levels vs
+    0.75 with v × (size − 1))."""
+    n1 = size - 1
+    nn = size * size
+    x = r * size - 0.5
+    y = g * size - 0.5
+    z = b * size - 0.5
+    x = 0.0 if x < 0 else n1 if x > n1 else x
+    y = 0.0 if y < 0 else n1 if y > n1 else y
+    z = 0.0 if z < 0 else n1 if z > n1 else z
+    i0 = int(x)
+    j0 = int(y)
+    k0 = int(z)
+    if i0 == n1:
+        i0 -= 1
+    if j0 == n1:
+        j0 -= 1
+    if k0 == n1:
+        k0 -= 1
+    fx = x - i0
+    fy = y - j0
+    fz = z - k0
+    base = k0 * nn + j0 * size + i0
+    a0 = table[base]
+    a1 = table[base + 1]
+    a2 = table[base + size]
+    a3 = table[base + size + 1]
+    c0 = table[base + nn]
+    c1 = table[base + nn + 1]
+    c2 = table[base + nn + size]
+    c3 = table[base + nn + size + 1]
+    gx = 1 - fx
+    gy = 1 - fy
+    gz = 1 - fz
+    w0 = gx * gy * gz
+    w1 = fx * gy * gz
+    w2 = gx * fy * gz
+    w3 = fx * fy * gz
+    w4 = gx * gy * fz
+    w5 = fx * gy * fz
+    w6 = gx * fy * fz
+    w7 = fx * fy * fz
+    return (w0 * a0[0] + w1 * a1[0] + w2 * a2[0] + w3 * a3[0] + w4 * c0[0] + w5 * c1[0] + w6 * c2[0] + w7 * c3[0],
+            w0 * a0[1] + w1 * a1[1] + w2 * a2[1] + w3 * a3[1] + w4 * c0[1] + w5 * c1[1] + w6 * c2[1] + w7 * c3[1],
+            w0 * a0[2] + w1 * a1[2] + w2 * a2[2] + w3 * a3[2] + w4 * c0[2] + w5 * c1[2] + w6 * c2[2] + w7 * c3[2])
+
+
+def _clamp01(v):
+    return 0.0 if v < 0 else 1.0 if v > 1 else v
+
+
+def apply_lut_linear(values, plan):
+    """Scene-linear floats ``[r, g, b, …]`` -> the same, with the LUT blended
+    by its strength — RenderView's order when colour management is not applied
+    before the LUT. The LUT looks up the clamped colour; the unclamped value
+    is what is blended, so highlights still reach the OCIO view."""
+    size, table = plan["lut"]
+    s = plan["strength"]
+    inv = 1.0 - s
+    out = []
+    extend = out.extend
+    for j in range(0, len(values), 3):
+        r = values[j]
+        g = values[j + 1]
+        b = values[j + 2]
+        lr, lg, lb = _sample(size, table, _clamp01(r), _clamp01(g), _clamp01(b))
+        extend((r * inv + lr * s, g * inv + lg * s, b * inv + lb * s))
+    return out
+
+
 def apply_row(values, plan):
-    """OCIO-view floats ``[r, g, b, r, g, b, …]`` -> 8-bit ``bytearray``:
-    LUT (trilinear, texel-centre sampling) blended by its strength, then the
-    RGB curve."""
-    lut = plan["lut"]
+    """OCIO-view floats ``[r, g, b, r, g, b, …]`` -> 8-bit ``bytearray``: the
+    LUT blended by its strength (unless it went before the view, see
+    ``lut_linear``), then the RGB curve."""
+    lut = None if plan.get("lut_linear") else plan["lut"]
     curve = plan["curve"]
     k1 = CURVE_SAMPLES - 1
     out = bytearray(len(values))
     if lut is None:
         for j in range(len(values)):
             v = values[j]
-            out[j] = curve[int((0.0 if v < 0 else 1.0 if v > 1 else v) * k1 + 0.5)]
+            if curve is None:
+                out[j] = 0 if v <= 0 else 255 if v >= 1 else int(v * 255 + 0.5)
+            else:
+                out[j] = curve[int((0.0 if v < 0 else 1.0 if v > 1 else v) * k1 + 0.5)]
         return out
     size, table = lut
-    n1 = size - 1
-    nn = size * size
     s = plan["strength"]
     inv = 1.0 - s
     for j in range(0, len(values), 3):
-        r = values[j]
-        g = values[j + 1]
-        b = values[j + 2]
-        if r < 0:
-            r = 0.0
-        elif r > 1:
-            r = 1.0
-        if g < 0:
-            g = 0.0
-        elif g > 1:
-            g = 1.0
-        if b < 0:
-            b = 0.0
-        elif b > 1:
-            b = 1.0
-        # RenderView samples the LUT like a GPU 3D texture: texel centres at
-        # (i + 0.5) / size, so the lattice coordinate is v × size − 0.5
-        # (measured 2026-10-02: 0.30 levels vs 0.75 with v × (size − 1)).
-        x = r * size - 0.5
-        y = g * size - 0.5
-        z = b * size - 0.5
-        x = 0.0 if x < 0 else n1 if x > n1 else x
-        y = 0.0 if y < 0 else n1 if y > n1 else y
-        z = 0.0 if z < 0 else n1 if z > n1 else z
-        i0 = int(x)
-        j0 = int(y)
-        k0 = int(z)
-        if i0 == n1:
-            i0 -= 1
-        if j0 == n1:
-            j0 -= 1
-        if k0 == n1:
-            k0 -= 1
-        fx = x - i0
-        fy = y - j0
-        fz = z - k0
-        base = k0 * nn + j0 * size + i0
-        a0 = table[base]
-        a1 = table[base + 1]
-        a2 = table[base + size]
-        a3 = table[base + size + 1]
-        c0 = table[base + nn]
-        c1 = table[base + nn + 1]
-        c2 = table[base + nn + size]
-        c3 = table[base + nn + size + 1]
-        gx = 1 - fx
-        gy = 1 - fy
-        gz = 1 - fz
-        w0 = gx * gy * gz
-        w1 = fx * gy * gz
-        w2 = gx * fy * gz
-        w3 = fx * fy * gz
-        w4 = gx * gy * fz
-        w5 = fx * gy * fz
-        w6 = gx * fy * fz
-        w7 = fx * fy * fz
-        lr = w0 * a0[0] + w1 * a1[0] + w2 * a2[0] + w3 * a3[0] + w4 * c0[0] + w5 * c1[0] + w6 * c2[0] + w7 * c3[0]
-        lg = w0 * a0[1] + w1 * a1[1] + w2 * a2[1] + w3 * a3[1] + w4 * c0[1] + w5 * c1[1] + w6 * c2[1] + w7 * c3[1]
-        lb = w0 * a0[2] + w1 * a1[2] + w2 * a2[2] + w3 * a3[2] + w4 * c0[2] + w5 * c1[2] + w6 * c2[2] + w7 * c3[2]
+        r = _clamp01(values[j])
+        g = _clamp01(values[j + 1])
+        b = _clamp01(values[j + 2])
+        lr, lg, lb = _sample(size, table, r, g, b)
         mr = r * inv + lr * s
         mg = g * inv + lg * s
         mb = b * inv + lb * s

@@ -91,6 +91,28 @@ def test_plan_names_a_missing_lut_and_an_unsupported_order(tmp_path):
     assert plan["lut"] is None and plan["notes"] == ["LUT Look (unsupported order)"]
 
 
+def test_without_color_management_first_the_lut_goes_on_the_linear_render(tmp_path):
+    """RenderView's "Apply color management before LUT" off (the Windows
+    default seen 2026-10-05): the LUT is applied to the scene-linear render,
+    before the OCIO view — 0.38 / 0.23 / 0.21 levels mean vs the export."""
+    (tmp_path / "Look.cube").write_text(cube_text(2, lambda r, g, b: (r, g, b)))
+    plan = rvpost.post_plan(lut_attrs(tmp_path, **{"Apply color management before LUT": 0}))
+    assert plan["lut"] is not None and plan["lut_linear"] is True
+    assert plan["applied"] == ["LUT Look 49%"] and plan["notes"] == []
+    on = rvpost.post_plan(lut_attrs(tmp_path, **{"Apply color management before LUT": 1}))
+    assert on["lut"] is not None and on["lut_linear"] is False
+    unknown = lut_attrs(tmp_path)
+    unknown.pop("Apply color management before LUT", None)
+    assert rvpost.post_plan(unknown)["notes"] == ["LUT Look (unsupported order)"]
+
+
+def test_saturation_at_one_is_neutral():
+    attrs = {"Color Controls Enabled": 1, "Highlights": 0.2}
+    for value in (1.0, 0.0):
+        assert rvpost.post_plan(dict(attrs, Saturation=value))["notes"] == []
+    assert rvpost.post_plan(dict(attrs, Saturation=0.5))["notes"] == ["saturation"]
+
+
 def test_plan_applies_the_master_curve_and_names_the_rest():
     attrs = {"Color Controls Enabled": 1, "Highlights": 0.2, "Exposure (EV)": 0.5,
              "Bloom Enabled": 1, "Vignetting": 0.3}
@@ -181,3 +203,18 @@ def test_a_lut_at_zero_strength_is_not_applied_nor_announced(tmp_path):
     plan = rvpost.post_plan(lut_attrs(tmp_path, **{"Lut Strength": 0.0}))
     assert plan["lut"] is None and plan["applied"] == [] and plan["notes"] == []
     assert not rvpost.plan_is_active(plan)
+
+
+def test_linear_lut_blends_unclamped_values_and_the_view_row_skips_it():
+    rng = random.Random(11)
+    size = 4
+    table = [(rng.random(), rng.random(), rng.random()) for _ in range(size ** 3)]
+    plan = {"lut": (size, table), "strength": 0.5, "lut_linear": True, "curve": None}
+    values = [rng.uniform(0.0, 1.0) for _ in range(30)] + [2.0, -0.5, 0.25]
+    got = rvpost.apply_lut_linear(values, plan)
+    for j in range(0, len(values), 3):
+        lut = reference_trilinear(table, size, *values[j:j + 3])
+        expected = [v * 0.5 + l * 0.5 for v, l in zip(values[j:j + 3], lut)]
+        assert got[j:j + 3] == pytest.approx(expected)
+    # The LUT already happened: the display row only encodes (and curves).
+    assert list(rvpost.apply_row([0.2, 0.5, 1.2], plan)) == [to8(0.2), to8(0.5), 255]
