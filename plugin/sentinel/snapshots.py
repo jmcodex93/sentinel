@@ -438,16 +438,19 @@ def snapshot_source_state(snap_dir):
 
 
 def stills_location(doc, artist_name):
-    """``(absolute, relative-to-project or None)`` of where stills land —
-    the same folder ``_get_stills_dir`` creates, without creating it. The
-    relative form is None for an unsaved scene (the home-folder fallback)."""
+    """``(absolute, short form or None)`` of where stills land — the same
+    folder ``_get_stills_dir`` creates, without creating it. The short form
+    starts at the root's own name (``ACME/output/stills/…``): stills go two
+    levels above the scene's folder, which is not always the folder the
+    artist thinks of as the project, so the root is shown, not implied. It is
+    None for an unsaved scene (the home-folder fallback)."""
     absolute = _get_stills_dir(doc, artist_name or "<artist>", create=False)
     doc_path = doc.GetDocumentPath() or ""
     if not doc_path:
         return absolute, None
     root = os.path.dirname(os.path.dirname(doc_path))
     try:
-        return absolute, os.path.relpath(absolute, root)
+        return absolute, os.path.relpath(absolute, os.path.dirname(root) or root)
     except ValueError:            # different drives on Windows
         return absolute, None
 

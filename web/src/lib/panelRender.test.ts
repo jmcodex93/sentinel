@@ -130,11 +130,11 @@ describe("aovStatusLine", () => {
 describe("snapshotStatusLine", () => {
   const base: PanelRenderSnapshots = {
     dir: "/Users/artist/Desktop/rv_snaps", origin: "auto", watch_enabled: false,
-    stills_dir: "/projects/ACME/output/stills/Javier/261002", stills_rel: "output/stills/Javier/261002",
+    stills_dir: "/projects/ACME/output/stills/Javier/261002", stills_rel: "ACME/output/stills/Javier/261002",
   };
 
-  it("leads with where the PNGs land, relative to the project", () => {
-    expect(snapshotStatusLine(base)).toBe("→ output/stills/Javier/261002");
+  it("leads with where the PNGs land, from the root folder's name", () => {
+    expect(snapshotStatusLine(base)).toBe("→ ACME/output/stills/Javier/261002");
   });
 
   it("names the absolute fallback for an unsaved scene", () => {

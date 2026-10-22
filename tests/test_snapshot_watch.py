@@ -696,7 +696,11 @@ def test_source_state_ignores_stray_files_and_reports_empty_or_missing(tmp_path)
     assert snapshots.snapshot_source_state(None)["alert"] == "missing"
 
 
-def test_stills_location_is_relative_to_the_project_for_saved_scenes(tmp_path):
+def test_stills_location_names_the_root_it_lands_in(tmp_path):
+    """Stills go two levels above the scene's folder. Windows round 4 nested
+    the scene one level deeper than that convention and the stills landed in
+    ACME/scenes/output while the panel said only "output/stills/…" — so the
+    short form starts at the root's own name."""
     import os
     from sentinel import snapshots
 
@@ -706,11 +710,14 @@ def test_stills_location_is_relative_to_the_project_for_saved_scenes(tmp_path):
         def GetDocumentPath(self):
             return self._path
 
-    scenes = tmp_path / "ACME" / "scenes"
-    absolute, rel = snapshots.stills_location(Doc(str(scenes)), "Javier")
-    assert absolute.startswith(str(tmp_path)) and not os.path.exists(absolute)
+    shots = tmp_path / "ACME" / "c4d" / "_Shots"
+    absolute, rel = snapshots.stills_location(Doc(str(shots)), "Javier")
+    assert absolute.startswith(str(tmp_path / "ACME" / "output")) and not os.path.exists(absolute)
     parts = rel.split(os.sep)
-    assert parts[:3] == ["output", "stills", "Javier"] and len(parts) == 4
+    assert parts[:4] == ["ACME", "output", "stills", "Javier"] and len(parts) == 5
+    nested = tmp_path / "ACME" / "scenes" / "shots" / "acceptance"
+    _abs, rel = snapshots.stills_location(Doc(str(nested)), "Javier")
+    assert rel.split(os.sep)[:3] == ["scenes", "output", "stills"]
     _abs, rel = snapshots.stills_location(Doc(""), "")
     assert rel is None and "<artist>" in _abs
 

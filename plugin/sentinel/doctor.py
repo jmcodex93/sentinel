@@ -441,10 +441,22 @@ def get_sentinel_version():
         return "unknown"
 
 
+def format_os_label(system, release, version, machine):
+    """``"Windows 11 (AMD64)"``: Windows 11 still reports release "10"; its
+    builds start at 22000 (``version`` is ``"10.0.<build>"``)."""
+    if system == "Windows" and release == "10":
+        try:
+            if int(str(version).split(".")[2]) >= 22000:
+                release = "11"
+        except (IndexError, ValueError):
+            pass
+    return "%s %s (%s)" % (system, release, machine)
+
+
 def os_label():
     try:
-        return "%s %s (%s)" % (platform.system(), platform.release(),
-                               platform.machine())
+        return format_os_label(platform.system(), platform.release(),
+                               platform.version(), platform.machine())
     except Exception:
         return sys.platform
 

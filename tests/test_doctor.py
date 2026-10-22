@@ -279,3 +279,13 @@ def test_slate_font_item_reports_the_font_in_use():
     assert arial["status"] == doctor.INFO and "Arial" in arial["detail"]
     assert "interface font" in doctor.build_slate_font_item("system")["detail"]
     assert doctor.build_slate_font_item(None)["status"] == doctor.INFO
+
+
+def test_os_label_tells_windows_11_from_10():
+    """Windows 11 reports release "10" (round 4 Doctor said "Windows 10" on a
+    Windows 11 Pro 25H2 host, build 26200)."""
+    from sentinel.doctor import format_os_label
+    assert format_os_label("Windows", "10", "10.0.26200", "AMD64") == "Windows 11 (AMD64)"
+    assert format_os_label("Windows", "10", "10.0.19045", "AMD64") == "Windows 10 (AMD64)"
+    assert format_os_label("Windows", "10", "weird", "AMD64") == "Windows 10 (AMD64)"
+    assert format_os_label("Darwin", "25.6.0", "Darwin Kernel", "arm64") == "Darwin 25.6.0 (arm64)"
