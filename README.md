@@ -1,4 +1,4 @@
-# Sentinel v1.39.0
+# Sentinel v1.40.0
 
 Quality control, render management and delivery tools for Cinema 4D + Redshift production.
 

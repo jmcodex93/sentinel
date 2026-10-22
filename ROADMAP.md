@@ -2,15 +2,15 @@
 
 Solo lo pendiente. Lo entregado, con su porqué, está en [`docs/HISTORY.md`](docs/HISTORY.md).
 
-## Estado (2026-10-01)
-- `main`: **v1.39.0**. Incluye la estabilización para beta (antes rama `codex/product-readiness`) y el endurecimiento de la aceptación en Windows. Objetivo del estudio: **C4D 2026.4.0**.
-- Aceptada en Windows 11 + C4D 2026.4.0 (perfil limpio, Sentinel como único plugin de terceros) tras tres rondas externas, y verificada en vivo en macOS + C4D 2026.304. Evidencia: [`docs/audit/2026-09-24-windows-acceptance.md`](docs/audit/2026-09-24-windows-acceptance.md), [product readiness](docs/audit/2026-09-05-product-readiness.md), [beta](docs/audit/2026-09-05-beta-acceptance.md), [GUI](docs/audit/2026-09-05-gui-acceptance.md).
+## Estado (2026-10-22)
+- `main`: **v1.40.0** (etiqueta `v1.40.0`, candidata `sentinel-beta-785de8db7e7b`). Objetivo del estudio: **C4D 2026.4.0**.
+- Aceptada en Windows 11 + C4D 2026.4.0 (perfil limpio, Sentinel como único plugin de terceros) en la ronda 5, sin fallos, y verificada en vivo en macOS + C4D 2026.304. Evidencia: [`docs/audit/2026-09-24-windows-acceptance.md`](docs/audit/2026-09-24-windows-acceptance.md).
 - CI en cada PR y push a `main`: pytest en Linux, macOS y Windows + web.
 
 ## Para cerrar la beta
-- [ ] Windows: comprobar a ojo la casilla "Save snapshots as EXR" de RenderView en la máquina de pruebas.
-- [ ] Windows: repetir Frame (expandir el tag) y Hub (Switch res) con los plugins habituales del estudio cargados; la ronda 3 los probó con Sentinel solo.
-- [ ] `http.handler_failed` visto una vez en la consola de Windows: capturar el texto completo si reaparece (no reproducido en macOS).
+- [x] Windows: casilla "Save snapshots as EXR" de RenderView comprobada en las rondas 4 y 5 (y el aviso ámbar cuando falta).
+- [ ] Windows: repetir Frame (expandir el tag) y Hub (Switch res) con los plugins habituales del estudio cargados. Dispensado por ahora: esos plugins solo están instalados en C4D 2025.
+- [ ] `http.handler_failed` visto una vez en la consola de Windows: capturar el texto completo si reaparece (no reproducido en macOS ni en las rondas 4 y 5).
 - [ ] Usabilidad: la ventana de Settings ya abierta puede quedar detrás del panel al pedirla otra vez (`open_form` reutiliza sin traer al frente; no romper la protección contra cerrar/abrir un HTML viewer vivo). El nombre de artista del Overview no se refresca hasta reabrir el panel.
 
 **Limitación conocida, no se persigue:** en Windows con C4D 2026.3.4, expandir el tag Sentinel Frame en el Attribute Manager puede cerrar C4D (llamada nativa a dirección nula en `gui.module`, sin Python en la pila, causa sin aislar). No ocurre en 2026.4.0 ni en macOS.
