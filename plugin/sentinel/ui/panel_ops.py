@@ -97,6 +97,17 @@ def _op_panel_state_stamp(payload):
     stamp = _stamp_for(doc)
     if status["state"] != "off":
         stamp += "|snapshot:" + status["state"] + ":" + status["message"] + ":" + status["last_error"]
+    # The snapshot folder's EXR state, so the Render block's non-EXR alert
+    # shows up live (Windows round 5: only after leaving and re-entering
+    # Render). It changes when the newest snapshot's type flips, not on every
+    # snapshot; the scan is cached by the folder's mtime.
+    try:
+        from sentinel.snapshots import snapshot_source_state
+        from sentinel.ui.flows import get_effective_snapshot_dir
+        source = snapshot_source_state(get_effective_snapshot_dir()[0])
+        stamp += "|source:%s:%s" % (source["alert"], source["newest_ext"])
+    except Exception:
+        pass
     return {"stamp": stamp, "notice": notice}
 
 

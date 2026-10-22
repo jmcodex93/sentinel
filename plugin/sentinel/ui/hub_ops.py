@@ -393,9 +393,15 @@ def _op_hub_pick_path(payload):
     ``MainThreadQueue``: the SPA's ``submit()`` blocks on that same lock
     with its own timeout and still gets the real result once the artist
     closes the dialog, instead of racing a stale/cancelled response.
+
+    It opens in the active scene's folder (Windows round 5: it opened in
+    Documents, far from the project the slate or a relink is about).
     """
     flags = c4d.FILESELECT_DIRECTORY if payload.get("directory") else c4d.FILESELECT_LOAD
-    path = c4d.storage.LoadDialog(title=payload.get("title") or "Choose", flags=flags)
+    doc = c4d.documents.GetActiveDocument()
+    start = (doc.GetDocumentPath() or "") if doc is not None else ""
+    path = c4d.storage.LoadDialog(title=payload.get("title") or "Choose", flags=flags,
+                                  def_path=start)
     if not path:
         return {"ok": False, "error": "cancelled"}
     return {"ok": True, "path": path}

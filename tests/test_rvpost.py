@@ -106,23 +106,58 @@ def test_without_color_management_first_the_lut_goes_on_the_linear_render(tmp_pa
     assert rvpost.post_plan(unknown)["notes"] == ["LUT Look (unsupported order)"]
 
 
-def test_saturation_at_one_is_neutral():
+def test_only_contrast_is_a_renderview_color_control():
+    """RenderView's Color Controls are Contrast and the curves (RS 2026.7,
+    Windows round 5). The header's Saturation (1.0 on Windows, 0.0 on macOS),
+    Exposure, Gamma and Hue belong to other Redshift settings: never named."""
     attrs = {"Color Controls Enabled": 1, "Highlights": 0.2}
-    for value in (1.0, 0.0):
-        assert rvpost.post_plan(dict(attrs, Saturation=value))["notes"] == []
-    assert rvpost.post_plan(dict(attrs, Saturation=0.5))["notes"] == ["saturation"]
+    for extra in ({"Saturation": 1.0}, {"Saturation": 0.0}, {"Saturation": 0.5},
+                  {"Exposure (EV)": 0.5, "Gamma": 2.2, "Hue": 30.0}):
+        assert rvpost.post_plan(dict(attrs, **extra))["notes"] == []
+    assert rvpost.post_plan(dict(attrs, Contrast=0.2))["notes"] == ["contrast"]
 
 
 def test_plan_applies_the_master_curve_and_names_the_rest():
-    attrs = {"Color Controls Enabled": 1, "Highlights": 0.2, "Exposure (EV)": 0.5,
+    """With the master curve set, a channel curve's order against it is
+    unmeasured: the master is applied, the channel curve named."""
+    attrs = {"Color Controls Enabled": 1, "Highlights": 0.2, "Contrast": 0.3,
              "Bloom Enabled": 1, "Vignetting": 0.3}
     attrs.update(curve_attrs("RGB", RV_CURVE))
     attrs.update(curve_attrs("Red", [(0.0, 0.1), (1.0, 1.0)]))
     plan = rvpost.post_plan(attrs)
     assert plan["curve"] is not None and plan["applied"] == ["RGB curve"]
-    assert plan["notes"] == ["red curve", "exposure", "bloom", "vignetting"]
+    assert plan["channel_curves"] == [None, None, None]
+    red = "red curve (with the RGB curve: order unmeasured)"
+    assert plan["notes"] == [red, "contrast", "bloom", "vignetting"]
     assert rvpost.describe(plan) == ("RenderView post applied: RGB curve · "
-                                     "not reproduced: red curve, exposure, bloom, vignetting")
+                                     "not reproduced: %s, contrast, bloom, vignetting" % red)
+
+
+GREEN = [(0.0, 0.0), (0.4956521689891815, 0.7260869741439819), (1.0, 1.0)]
+
+
+def test_a_channel_curve_alone_is_applied_to_its_channel():
+    """Windows round 5 (C8): a green-only curve matches RenderView as a
+    natural spline on the display value — 0.27 levels mean, max 3."""
+    attrs = {"Color Controls Enabled": 1}
+    attrs.update(curve_attrs("RGB", [(0.0, 0.0), (1.0, 1.0)]))
+    attrs.update(curve_attrs("Green", GREEN))
+    plan = rvpost.post_plan(attrs)
+    assert plan["applied"] == ["green curve"] and plan["notes"] == []
+    assert plan["curve"] is None and plan["channel_curves"][0] is None
+    assert plan["channel_curves"][2] is None and rvpost.plan_is_active(plan)
+    table = rvpost.spline_table(GREEN)
+    k1 = rvpost.CURVE_SAMPLES - 1
+    values = [0.3, 0.3, 0.3, 0.8, 0.5, 0.1]
+    expected = [to8(0.3), table[int(0.3 * k1 + 0.5)], to8(0.3),
+                to8(0.8), table[int(0.5 * k1 + 0.5)], to8(0.1)]
+    assert list(rvpost.apply_row(values, plan)) == expected
+    # After a LUT too: the blended green goes through the green table only.
+    size = 2
+    plan["lut"] = (size, [(r, g, b) for b in (0, 1) for g in (0, 1) for r in (0, 1)])
+    plan["strength"] = 1.0
+    out = rvpost.apply_row([0.5, 0.5, 0.5], plan)
+    assert out[0] == to8(0.5) and out[2] == to8(0.5) and out[1] == table[int(0.5 * k1 + 0.5)]
 
 
 def test_neutral_post_is_inactive_and_silent():

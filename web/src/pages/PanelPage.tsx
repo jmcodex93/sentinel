@@ -764,6 +764,7 @@ export function PanelPage() {
                   onSetMultipart={handleSetMultipart}
                   onToggleWatch={handleToggleWatch}
                   onOpenSettings={handleOpenSettings}
+                  onReload={() => loadRender(true)}
                   onSaveStill={handleSaveStill}
                   onOpenFolder={handleOpenFolder}
                   onValidate={() => handleDeepLink("open_reports_render_validation")}
