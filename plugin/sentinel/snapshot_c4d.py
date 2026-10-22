@@ -103,9 +103,26 @@ def _to_byte(value):
     return 0 if value <= 0.0 else 255 if value >= 1.0 else int(value * 255.0 + 0.5)
 
 
+def _copy_alpha_row(src_alpha, src_y, dst_alpha, dst_y, row):
+    """One row of 8-bit alpha. Alpha channels read and write as
+    COLORMODE_GRAY rows (measured 2026-10-22: ARGBf reports A = 1 and
+    COLORMODE_ALPHA reads 0 on a disk-loaded EXR)."""
+    src_alpha.GetPixelCnt(0, src_y, len(row), row, 1, c4d.COLORMODE_GRAY, c4d.PIXELCNT_0)
+    dst_alpha.SetPixelCnt(0, dst_y, len(row), row, 1, c4d.COLORMODE_GRAY, c4d.PIXELCNT_0)
+
+
+def save_png(image, path):
+    """Save as PNG, RGBA when the bitmap has an alpha channel (it is only
+    written with SAVEBIT_ALPHA)."""
+    flags = c4d.SAVEBIT_ALPHA if image.GetInternalChannel() is not None else 0
+    return image.Save(path, c4d.FILTER_PNG, None, flags)
+
+
 def convert_exr(path, converter, post=None):
     """Load an EXR and return a 24-bit BaseBitmap in the OCIO view space,
-    with the RenderView post in ``post`` (an active ``rvpost`` plan) re-applied."""
+    with the RenderView post in ``post`` (an active ``rvpost`` plan) re-applied
+    and the EXR's alpha, when it has one, as the bitmap's alpha channel (the
+    same alpha RenderView's PNG export carries)."""
     src = bitmaps.BaseBitmap()
     result, _ = src.InitWith(path)
     if result != c4d.IMAGERESULT_OK:
@@ -114,6 +131,9 @@ def convert_exr(path, converter, post=None):
     out = bitmaps.BaseBitmap()
     if out.Init(width, height, 24) != c4d.IMAGERESULT_OK:
         raise RuntimeError("Could not allocate a %dx%d image" % (width, height))
+    src_alpha = src.GetInternalChannel()
+    out_alpha = out.AddChannel(True, False) if src_alpha is not None else None
+    alpha_row = bytearray(width)
     transform = c4d.COLORSPACETRANSFORMATION_OCIO_RENDERING_TO_VIEW
     vector = c4d.Vector
     row = bytearray(width * 12)
@@ -144,6 +164,8 @@ def convert_exr(path, converter, post=None):
                 line[i + 2] = _to_byte(color.z)
                 i += 3
         out.SetPixelCnt(0, y, width, line, 3, c4d.COLORMODE_RGB, c4d.PIXELCNT_0)
+        if out_alpha is not None:
+            _copy_alpha_row(src_alpha, y, out_alpha, y, alpha_row)
     return out
 
 
@@ -172,7 +194,8 @@ def _draw_strip(width, strip_h, fields, font, style):
 def compose_slate(image, fields, font, style=None):
     """Return a new bitmap with the slate: a strip below the image (default,
     the image pixels untouched) or a bar drawn over its bottom edge
-    (``position: overlay``, same dimensions)."""
+    (``position: overlay``, same dimensions). An image with alpha keeps it;
+    the strip or bar is opaque."""
     style = style or slate_layout.DEFAULT_STYLE
     width, height = image.GetSize()
     strip_h = min(slate_layout.strip_height(height, style.get("size", 1.0)), height)
@@ -181,10 +204,16 @@ def compose_slate(image, fields, font, style=None):
     out = bitmaps.BaseBitmap()
     if out.Init(width, height + (0 if overlay else strip_h), 24) != c4d.IMAGERESULT_OK:
         raise RuntimeError("Could not allocate the slated image")
+    image_alpha = image.GetInternalChannel()
+    out_alpha = out.AddChannel(True, False) if image_alpha is not None else None
+    alpha_row = bytearray(width)
     line = bytearray(width * 3)
     for y in range(height):
         image.GetPixelCnt(0, y, width, line, 3, c4d.COLORMODE_RGB, c4d.PIXELCNT_0)
         out.SetPixelCnt(0, y, width, line, 3, c4d.COLORMODE_RGB, c4d.PIXELCNT_0)
+        if out_alpha is not None:
+            _copy_alpha_row(image_alpha, y, out_alpha, y, alpha_row)
+    opaque = bytearray(b"\xff" * width)
     strip_line = bytearray(width * 3)
     top = height - strip_h if overlay else height
     for y in range(strip_h):
@@ -195,6 +224,8 @@ def compose_slate(image, fields, font, style=None):
         else:
             row = strip_line
         out.SetPixelCnt(0, top + y, width, row, 3, c4d.COLORMODE_RGB, c4d.PIXELCNT_0)
+        if out_alpha is not None:
+            out_alpha.SetPixelCnt(0, top + y, width, opaque, 1, c4d.COLORMODE_GRAY, c4d.PIXELCNT_0)
     return out
 
 
@@ -231,7 +262,7 @@ def convert_snapshot(exr_path, png_path, converter, slate=None, font=None, style
             image = compose_slate(image, fields, font if font is not None else
                                   bitmaps.GeClipMap.GetDefaultFont(c4d.GE_FONT_DEFAULT_SYSTEM),
                                   style)
-        if image.Save(png_path, c4d.FILTER_PNG) != c4d.IMAGERESULT_OK:
+        if save_png(image, png_path) != c4d.IMAGERESULT_OK:
             return False, "Could not write %s" % png_path
         # The post re-applied travels as metadata even without a slate.
         metadata = slate_layout.slate_metadata(fields) if fields else \

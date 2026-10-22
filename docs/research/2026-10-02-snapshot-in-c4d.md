@@ -170,3 +170,29 @@ saturation applied: 1.0 is neutral there. The macOS header read 0.0; both are
 treated as neutral until RenderView's default on macOS is confirmed. Per-channel
 curves (a green curve was used) remain named, not reproduced: no export pair
 isolates their order against the master curve yet.
+
+## Alpha in the converted PNG (live, macOS C4D 2026.304, 2026-10-22)
+
+RenderView's PNG export is RGBA and its alpha equals the snapshot EXR's `A`
+pixel for pixel (Windows round 4). Measured on a synthetic EXR (alpha 1 / ramp
+0.49 / 0):
+
+| Call | Result |
+|---|---|
+| `GetAlphaPixel(GetInternalChannel(), x, y)` | 255 / 125 / 0 — correct, per pixel |
+| channel `GetPixelCnt(…, 1, COLORMODE_GRAY)` | 255 / 125 / 0 — correct, per row |
+| `GetPixelCnt(…, 16, COLORMODE_ARGBf)` on the image | A = 1.0 everywhere |
+| `GetPixelCnt(…, COLORMODE_ALPHA)` | 0 everywhere |
+| `Init(w, h, 32)` | no alpha channel; PNG RGB |
+| `SetPixelCnt(…, COLORMODE_ARGB)` | alpha dropped |
+| `AddChannel(True, False)` + channel `SetPixelCnt(…, COLORMODE_GRAY)` + `Save(…, SAVEBIT_ALPHA)` | RGBA PNG, exact; 5 ms for 1920×1080 (212 ms with `SetAlphaPixel`) |
+| `Save` without `SAVEBIT_ALPHA` | RGB even with the channel |
+
+`convert_snapshot` end to end: no slate → RGBA, alpha within 1 level of the
+EXR; slate below → strip rows opaque; bar over the image → same size, bar
+opaque; an EXR without `A` → RGB. `sentinel:*` text chunks insert into the
+RGBA PNG unchanged. The panel's slate preview stays RGB (a draft on screen).
+
+The linear-stage LUT was also run through `convert_exr` live on that EXR: within
+1 level (mean 0.001) of `apply_lut_linear` → PyOpenColorIO → `apply_row`, and
+21 levels away from the no-LUT conversion (base case).
