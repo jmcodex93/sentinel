@@ -124,3 +124,28 @@ Acceptance on **C4D 2026.4.0 (clean profile, Sentinel only)** is complete except
 1. **C4D 2026.3.4 on Windows — not pursued (decision 2026-10-01):** the studio works on **C4D 2026.4.0**. The Frame-tag crash on Windows 2026.3.4 stays a documented known limitation of that version; it is not investigated further unless someone has to stay on it (then: 2026.3.4 with a clean profile and Sentinel alone, and bisect the Frame description if it still crashes).
 2. **Other plugins restored on 2026.4.0:** the PASS covers Sentinel alone; repeat the Frame and Hub checks with the studio's usual plugins loaded.
 3. **`http.handler_failed`:** capture the full console text if it appears again.
+
+## Round 4 — 2026-10-05 (candidate `e6995a1`, C4D 2026.3.4)
+
+Windows 11 Pro 25H2, C4D **2026.3.4** (authorised instead of 2026.4.0), Redshift 2026.7.0, clean profile. The new snapshot features: in-C4D conversion, slate editor, numbered stills, RenderView post. Doctor showed "Built in" and "Inter (bundled)", which is the first measurement of the font registration on Windows.
+
+- **FAIL — LUT not reproduced.** RenderView had *Apply color management before LUT* off and Sentinel only knew the "on" order ("unsupported order"). Measured on the attached pair: LUT on the scene-linear render, then the OCIO view, then the curve gives 0.38 / 0.23 / 0.21 levels. Fixed in PR #28.
+- **Stills path looked wrong.** A scene nested one level deeper than the convention landed in `ACME\scenes\output` while the panel said `output\stills\…`. The path is by design; the short form now starts at the root's name.
+- **Observations:** the PNG was RGB while RenderView exports RGBA (alpha now kept, PR #28), a false "saturation" note, and Doctor said "Windows 10" on Windows 11 (fixed).
+
+## Round 5 — 2026-10-22 (candidate `785de8d`, C4D 2026.4.0) — PASS
+
+Windows 11 Pro 25H2 (build 26200), **C4D 2026.4.0**, Redshift 2026.7.0, clean profile with Sentinel only. **18 OK, 0 FAIL**; C9 not testable because RenderView's Color Controls has no Saturation control in RS 2026.7.0.
+
+- LUT 50 % with colour management before the LUT off and on, plus the master curve: ≤ 5/255 against the RenderView export, essentially no pixel above 2/255. The option really changes the export (C6 and C7 exports differ by up to 33/255), and Sentinel follows it.
+- A green-only curve is announced as not reproduced; the attached pair shows the natural spline on the display value matches (0.27 levels mean, max 3). It is implemented in the next branch.
+- Alpha is kept: RGBA with 84 % transparent pixels, the same as the export, in all three modes (no slate, strip below, bar over the image).
+- Doctor says "Windows 11 (AMD64)" and shows no known-issue item on 2026.4.0. The stills paths shown match the real ones in both layouts.
+- Regression: numbered stills, watch folder (3 in about 15 s), the non-EXR alert, all sections, Hub and Reports, and the Frame tag MAIN expanded ×5 with no crash. No `http.handler_failed`.
+- UI observations for the next branch:
+  - the slate row and the non-EXR alert refresh late;
+  - the slate version is empty without a Save Version history;
+  - the folder picker opens in Documents;
+  - watch-folder conversions are not logged in the console.
+- RenderView rewrites a snapshot EXR when it is selected in the tray; the watcher never re-converts a processed file.
+

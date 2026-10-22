@@ -2,6 +2,20 @@
 
 Narrativa por release movida desde `CLAUDE.md` el 2026-09-23 (prompt-audit; completada con la v1.39.0 el 2026-10-01) para no cargarla en cada sesión de agente. Se conserva **tal cual** se escribió: los estados («pendiente de merge/live», recuentos de tests) reflejan el momento de cada entrada, no el presente. El estado vigente y las lecciones de API están en `CLAUDE.md`; el roadmap, en `ROADMAP.md`.
 
+## v1.40.0 — snapshots dentro de C4D (2026-10-22)
+
+Etiqueta `v1.40.0` sobre el commit de versión encima de `785de8d`; candidata `sentinel-beta-785de8db7e7b` aceptada en Windows 11 + C4D 2026.4.0 en la ronda 5 (0 fallos).
+
+- **Conversión EXR → PNG dentro de C4D (2025.2+).** `doc.GetColorConverter().TransformColors` sustituye al Python externo con OpenEXR; el conversor externo queda solo para C4D anterior a 2025.2. Medidas: `docs/research/2026-10-02-snapshot-in-c4d.md`.
+- **Slate configurable** (`slate_style` en `sentinel_rules.json`: posición debajo/encima, zonas izquierda/centro/derecha con tokens, badge, tamaño, post automático) con **editor visual** en el panel (vista previa real dibujada por C4D, "View at 100 %", guardar para el proyecto con confirmación). Fuente Inter incluida y registrada solo para el proceso (macOS y Windows).
+- **Post de RenderView re-aplicado:** LUT `.cube` (muestreo de textura 3D, con o sin color management antes del LUT) y curva maestra RGB, a 0,2–0,4 niveles de las exportaciones de RenderView; lo demás se nombra en el aviso, nunca se adivina.
+- **Alfa:** el PNG conserva el alfa del EXR, como la exportación de RenderView; el slate es opaco.
+- **Save Still numera** (`<escena>_snap_NNN.png`, creación exclusiva: nunca sobrescribe, tampoco con el watch folder).
+- **Bloque Render → Snapshots rediseñado:** destino desde la raíz (`ACME\output\stills\…`), origen, aviso ámbar si el snapshot no es EXR, resumen del slate.
+- **Doctor:** conversión EXR integrada, fuente del slate, Windows 11 bien identificado, aviso de host conocido para Windows + C4D 2026.3.
+
+Rondas 4 (C4D 2026.3.4: LUT con el orden de Windows sin reproducir, ruta de stills confusa, sin alfa) y 5 (C4D 2026.4.0: todo OK) en `docs/audit/2026-09-24-windows-acceptance.md`.
+
 ## Preparación del producto y aceptación en Windows (2026-09-05 → 2026-10-01)
 
 Párrafo de seguimiento que vivía en `CLAUDE.md` hasta la v1.39.0, conservado tal cual. El detalle de las tres rondas de Windows está en `docs/audit/2026-09-24-windows-acceptance.md`.
