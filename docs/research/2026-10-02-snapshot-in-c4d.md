@@ -196,3 +196,23 @@ RGBA PNG unchanged. The panel's slate preview stays RGB (a draft on screen).
 The linear-stage LUT was also run through `convert_exr` live on that EXR: within
 1 level (mean 0.001) of `apply_lut_linear` → PyOpenColorIO → `apply_row`, and
 21 levels away from the no-LUT conversion (base case).
+
+## Channel curves and Color Controls (Windows round 5, 2026-10-22)
+
+Windows 11, C4D 2026.4.0, Redshift 2026.7.0. Snapshot + RenderView export pairs, 2108×1186, opaque pixels:
+
+| Pair | Sentinel's reproduction vs export (mean R / G / B, max) |
+|---|---|
+| C6: LUT 17³ 50 %, CM before LUT off, master curve | 0.09 / 0.33 / 1.10, max 4 |
+| C7: same, CM before LUT on | 0.40 / 0.68 / 1.36, max 5 |
+| C8: green curve only, before the change (named, not applied) | G max 60 |
+| C8: green curve as a natural spline on the display G | 0.09 / 0.27 / 0.69, max 4 / 3 / 2 |
+
+Blue, with a LUT, sits about 1.2 levels high in the shadows (max 2). Neither tetrahedral interpolation nor a half-float LUT explains it, and it is not chased.
+
+RenderView's Color Controls panel (RS 2026.7) has only Contrast, the curve
+channel selector with its curves, and "Apply Color Controls to Alpha". The
+header's `Saturation` (1.0 on Windows, 0.0 on macOS), `Exposure (EV)`,
+`Gamma`, `Hue` and `Highlights` are not RenderView post and are no longer named.
+The order of a channel curve against a non-flat master curve is still
+unmeasured; that combination applies the master and names the channel curve.
