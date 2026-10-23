@@ -42,8 +42,9 @@ import os
 import c4d
 
 from sentinel.common.helpers import safe_print
-from sentinel.matwire import (ao_destination, channel_colorspace,
-                              gloss_destination, orm_contributions)
+from sentinel.matwire import (HEIGHT_RANGES, ao_destination,
+                              channel_colorspace, gloss_destination,
+                              height_range, orm_contributions)
 
 try:
     import maxon
@@ -843,10 +844,19 @@ def build_description(folder, tex_set, multiply_ao=False,
         "$type": "#" + _RS_OUTPUT,
         "#<" + _RS_OUTPUT + ".surface": brdf,
     }
-    if "height" in channels:
+    height = height_range(channels, tex_set.get("height_float"))
+    if height is not None:
+        # The remap is ALWAYS written (never depend on node defaults): RS
+        # ships 0..1, which inflates an integer map by half the scale.
+        # WHICH range is decided once, by ``matwire.height_range`` — the
+        # same function the preview's height row reads.
+        low, high = HEIGHT_RANGES[height]
+        disp = _RS_CORE + "displacement"
         desc["#<" + _RS_OUTPUT + ".displacement"] = {
-            "$type": "#" + _RS_CORE + "displacement",
-            "#<" + _RS_CORE + "displacement.texmap": _sampler(path("height"), _rs_colorspace("height")),
+            "$type": "#" + disp,
+            "#<" + disp + ".texmap": _sampler(path("height"), _rs_colorspace("height")),
+            "#<" + disp + ".newrange_min": low,
+            "#<" + disp + ".newrange_max": high,
         }
     # Loose sampler ONLY when the AO isn't wired into the color layer.
     ao_desc = (_sampler(path("ao"), _rs_colorspace("ao"))

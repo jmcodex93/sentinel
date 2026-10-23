@@ -255,6 +255,37 @@ def gloss_destination(channels, material):
             else "roughness_inverted")
 
 
+#: Displacement remap per height convention — ``(newrange_min,
+#: newrange_max)`` written on the RS Displacement node. Integer maps follow
+#: the dominant convention (Blender Midlevel 0.5, ZBrush/3ds Max 50% grey,
+#: Octane mid level 0.5): mid-grey = no displacement. Float maps
+#: (ZBrush/Mudbox exports) are usually zero-centred already, so they keep
+#: Redshift's own 0..1 (measured: a fresh node reads 0..1).
+HEIGHT_RANGES = {"centered": (-0.5, 0.5), "zero_based": (0.0, 1.0)}
+
+_FLOAT_EXTENSIONS = frozenset({".exr", ".hdr"})
+
+
+def height_range(channels, height_float=None):
+    """Which ``HEIGHT_RANGES`` convention a set's height map gets — the
+    single source for both the preview's height row and the writer's
+    Displacement node (same discipline as ``ao_destination``).
+
+    ``None`` when the set has no height. ``"zero_based"`` for a float map:
+    an .exr/.hdr by extension, or any file whose header the caller probed
+    as float (``height_float``, e.g. a 32-bit float .tif via
+    ``imagemeta``). Everything else — 8/16-bit png/jpg/tif/tga, and a file
+    whose header couldn't be read — is ``"centered"``."""
+    channels = channels or {}
+    filename = channels.get("height")
+    if not filename:
+        return None
+    ext = os.path.splitext(str(filename))[1].lower()
+    if ext in _FLOAT_EXTENSIONS or height_float:
+        return "zero_based"
+    return "centered"
+
+
 def scan_texture_sets(filenames, default_root="material", extra_suffixes=None):
     """``default_root`` names the set for ROOTLESS files ("albedo.png") —
     the caller passes the folder's basename so bare-channel packs group
@@ -389,7 +420,12 @@ def preview_payload(scan_result, existing_names, multiply_ao=False):
     ``ao_destination`` — the SAME function the writer's graph decision comes
     from — evaluated against the CURRENT ``multiply_ao`` (the sub-view's
     checkbox), so the row can never advertise a multiply the writer would
-    skip (e.g. an AO-only set, which has no base color to multiply into)."""
+    skip (e.g. an AO-only set, which has no base color to multiply into).
+
+    And for the height row: ``range`` is ``height_range`` — the same
+    function the writer's Displacement remap comes from — so the row says
+    whether mid-grey or black is the zero level. The float probe rides on
+    the set as ``height_float`` (set by the ops layer, which owns I/O)."""
     sets = []
     for tex_set in scan_result.get("sets") or []:
         channels = []
@@ -401,6 +437,9 @@ def preview_payload(scan_result, existing_names, multiply_ao=False):
             if channel == "ao":
                 row["destination"] = ao_destination(tex_set["channels"],
                                                     multiply_ao)
+            if channel == "height":
+                row["range"] = height_range(tex_set["channels"],
+                                            tex_set.get("height_float"))
             channels.append(row)
         sets.append({
             "name": tex_set["name"],

@@ -71,6 +71,35 @@ def materials():
         print("PASS generic normal, RAW fix and one-step undo:", kind)
 
 
+def matwire_height_ranges():
+    """The Displacement remap Matwire writes, read back from the live graph:
+    an integer height is centred at mid-grey, a float one keeps 0..1."""
+    import maxon
+    from sentinel import matwire_c4d
+    disp_id = matwire_c4d._RS_CORE + "displacement"
+    for filename, expected in (("rock_height.png", (-0.5, 0.5)),
+                               ("rock_height.exr", (0.0, 1.0))):
+        with document() as doc:
+            doc.StartUndo()
+            try:
+                created = matwire_c4d.create_material_for_set(doc, tempfile.gettempdir(),
+                    {"channels": {"height": filename}}, "Readiness_height")
+            finally:
+                doc.EndUndo()
+            assert created["ok"], created
+            graph = maxon.GraphDescription.GetGraph(doc.GetFirstMaterial(),
+                nodeSpaceId=maxon.NodeSpaceIdentifiers.RedshiftMaterial)
+            nodes = []
+            graph.GetViewRoot().GetChildren(nodes, maxon.NODE_KIND.NODE)
+            disp = [n for n in nodes if disp_id in str(n.GetValue(matwire_c4d._ASSETID_ATTR) or "")]
+            assert len(disp) == 1, len(disp)
+            inputs = disp[0].GetInputs()
+            got = tuple(float(inputs.FindChild(disp_id + "." + port).GetPortValue())
+                        for port in ("newrange_min", "newrange_max"))
+            assert got == expected, (filename, got)
+    print("PASS Matwire displacement remap: png centred, exr 0..1")
+
+
 def collect_packages(root):
     from sentinel import manifest
     from sentinel.ui.flows import run_collect_pipeline
@@ -172,6 +201,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="sentinel_readiness_") as tmp:
         root = Path(tmp)
         materials()
+        matwire_height_ranges()
         collect_packages(root)
         notes(root)
         watch(root)

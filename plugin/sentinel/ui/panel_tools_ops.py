@@ -383,6 +383,15 @@ def _matwire_request(payload):
                                      extra_suffixes=extra or None)
     if not scan["sets"]:
         return {"ok": False, "error": "no_sets"}
+    # Header probe for the height convention (matwire.height_range): only
+    # the file can say whether a .tif is float. Done here, once, so the
+    # preview and the writer read the same answer.
+    from sentinel import imagemeta
+    for tex_set in scan["sets"]:
+        rel = tex_set["channels"].get("height")
+        if rel:
+            meta = imagemeta.read_image_meta(matwire_c4d._join(folder, rel))
+            tex_set["height_float"] = bool(meta and meta.get("float"))
     return {"doc": doc, "folder": folder, "scan": scan,
             "default_root": default_root, "suffix_warnings": warnings}
 

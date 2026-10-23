@@ -1317,6 +1317,47 @@ class TestMatwireOps:
         assert result["ok"] is True
         assert result["sets"][0]["name"] == "RockCliff"
 
+    def test_height_float_probe_reaches_preview_and_writer(
+            self, sentinel_module, monkeypatch, tmp_path):
+        """A 32-bit float .tif height is only knowable from its header: the
+        shared request probes it once, so the preview row and the writer
+        see the same answer (matwire.height_range)."""
+        import struct
+        from sentinel import matwire_c4d
+
+        def tiff(sample_format):
+            entries = [(256, 4, 1, 8), (257, 4, 1, 8), (258, 3, 1, 32),
+                       (277, 3, 1, 1), (339, 3, 1, sample_format)]
+            ifd = struct.pack("<H", len(entries))
+            for tag, typ, cnt, val in entries:
+                field = (struct.pack("<H", val) + b"\x00\x00" if typ == 3
+                         else struct.pack("<I", val))
+                ifd += struct.pack("<HHI", tag, typ, cnt) + field
+            return b"II*\x00" + struct.pack("<I", 8) + ifd + b"\x00" * 4
+
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        (tmp_path / "zb_col.png").write_bytes(b"x")
+        (tmp_path / "zb_disp.tif").write_bytes(tiff(3))
+        (tmp_path / "pt_col.png").write_bytes(b"x")
+        (tmp_path / "pt_disp.tif").write_bytes(tiff(1))
+        folder = str(tmp_path)
+
+        preview = ops._op_matwire_preview({"folder": folder})
+        rows = {s["name"]: {r["channel"]: r for r in s["channels"]}
+                for s in preview["sets"]}
+        assert rows["zb"]["height"]["range"] == "zero_based"
+        assert rows["pt"]["height"]["range"] == "centered"
+
+        seen = {}
+
+        def _fake_create(d, f, tex_set, name, **_kw):
+            seen[tex_set["name"]] = tex_set.get("height_float")
+            return {"ok": True, "material_name": name, "error": None}
+
+        monkeypatch.setattr(matwire_c4d, "create_material_for_set", _fake_create)
+        ops._op_matwire_create({"folder": folder})
+        assert seen == {"zb": True, "pt": False}
+
     def test_create_redshift_unavailable(self, sentinel_module, monkeypatch, tmp_path):
         ops = self._setup(monkeypatch, _FakeMatwireDoc(), rs_available=False)
         folder = self._folder(tmp_path, "a_col.png")

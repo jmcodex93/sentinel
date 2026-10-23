@@ -1307,6 +1307,11 @@ export interface MatwireChannelRow {
    * label at the last fetch and go stale the moment the AO checkbox is
    * toggled without a refetch. Don't "fix" it by switching to it. */
   destination?: string | null;
+  /** `height` rows only: the displacement convention the writer uses, from
+   * the engine's `matwire.height_range` ("centered": mid-grey = flat,
+   * remap -0.5..0.5; "zero_based": float map, black = flat, 0..1). Depends
+   * only on the file, never on a client toggle, so the UI reads it as is. */
+  range?: string | null;
 }
 
 /** One recognized texture set. `ignored` rows are `[filename, reason]`

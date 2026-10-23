@@ -207,18 +207,24 @@ def _parse_tiff(data):
             break
         tag, typ, cnt = struct.unpack(endian + "HHI", entry[0:8])
         value_field = entry[8:12]
-        if tag in (256, 257, 258, 277):
+        if tag in (256, 257, 258, 277, 339):
             tags[tag] = _tiff_value(data, endian, typ, cnt, value_field)
         entry_off += 12
 
     if 256 not in tags or 257 not in tags or tags[256] is None or tags[257] is None:
         return None
-    return {
+    meta = {
         "width": tags[256], "height": tags[257],
         "channels": tags.get(277) or 1,
         "bit_depth": tags.get(258) or 8,
         "colorspace": "",
     }
+    # SampleFormat 3 = IEEE float (a 32-bit float height from ZBrush/
+    # Mudbox); absent means unsigned integer, the TIFF default. Only a float
+    # file carries the key — Matwire's height_range reads it.
+    if tags.get(339) == 3:
+        meta["float"] = True
+    return meta
 
 
 def _parse_exr(data):

@@ -381,6 +381,50 @@ class TestPreviewPayload:
         assert rows["ao"]["destination"] == "unconnected"
 
 
+class TestHeightRange:
+    """``height_range`` — the single source for the height row and the
+    writer's Displacement remap: integer maps are mid-grey centred, float
+    maps keep Redshift's 0..1."""
+
+    def test_integer_formats_are_centered(self, matwire):
+        for name in ("a_height.png", "a_height.jpg", "a_disp.tif",
+                     "a_height.TGA", "a_height.tiff"):
+            assert matwire.height_range({"height": name}) == "centered", name
+
+    def test_float_extensions_are_zero_based(self, matwire):
+        assert matwire.height_range({"height": "a_height.exr"}) == "zero_based"
+        assert matwire.height_range({"height": "a_disp.HDR"}) == "zero_based"
+
+    def test_float_header_wins_for_tif(self, matwire):
+        assert matwire.height_range({"height": "a_disp.tif"},
+                                    height_float=True) == "zero_based"
+        assert matwire.height_range({"height": "a_disp.tif"},
+                                    height_float=False) == "centered"
+
+    def test_no_height_is_none(self, matwire):
+        assert matwire.height_range({"basecolor": "a_col.png"}) is None
+        assert matwire.height_range(None) is None
+
+    def test_ranges_table(self, matwire):
+        assert matwire.HEIGHT_RANGES == {"centered": (-0.5, 0.5),
+                                         "zero_based": (0.0, 1.0)}
+
+    def test_preview_height_row_carries_range(self, matwire):
+        scan = matwire.scan_texture_sets(["rock_col.png", "rock_height.png",
+                                          "wall_col.png", "wall_disp.exr",
+                                          "tile_col.png", "tile_disp.tif"])
+        for tex_set in scan["sets"]:
+            if tex_set["name"] == "tile":
+                tex_set["height_float"] = True  # ops-layer header probe
+        payload = matwire.preview_payload(scan, [])
+        ranges = {s["name"]: {r["channel"]: r for r in s["channels"]}
+                  for s in payload["sets"]}
+        assert ranges["rock"]["height"]["range"] == "centered"
+        assert ranges["wall"]["height"]["range"] == "zero_based"
+        assert ranges["tile"]["height"]["range"] == "zero_based"
+        assert "range" not in ranges["rock"]["basecolor"]  # height row only
+
+
 class TestBuildDescription:
     """matwire_c4d.build_description (pure dict assembly, no c4d calls) —
     pins the writer's GraphDescription against spike drift. Colorspaces
@@ -473,6 +517,32 @@ class TestBuildDescription:
         material = desc["#<" + matwire_c4d._RS_OUTPUT + ".surface"]
         bump = material["#<" + RS + "standardmaterial.bump_input"]
         assert bump["#<" + RS + "bumpmap.flipy"] is False
+
+    def test_displacement_range_follows_height_range(self, matwire, matwire_c4d):
+        """The remap is ALWAYS written, from the same ``height_range`` the
+        preview row reads: png centred at mid-grey, exr kept 0..1, a .tif
+        probed as float kept 0..1."""
+        RS = matwire_c4d._RS_CORE
+        disp_key = "#<" + matwire_c4d._RS_OUTPUT + ".displacement"
+
+        def remap(files, height_float=None):
+            tex_set = matwire.scan_texture_sets(files)["sets"][0]
+            if height_float is not None:
+                tex_set["height_float"] = height_float
+            desc, _ao = matwire_c4d.build_description("/f", tex_set)
+            disp = desc[disp_key]
+            return (disp["#<" + RS + "displacement.newrange_min"],
+                    disp["#<" + RS + "displacement.newrange_max"])
+
+        assert remap(["a_col.png", "a_height.png"]) == (-0.5, 0.5)
+        assert remap(["a_col.png", "a_height.exr"]) == (0.0, 1.0)
+        assert remap(["a_col.png", "a_disp.tif"], height_float=True) == (0.0, 1.0)
+        assert remap(["a_col.png", "a_disp.tif"], height_float=False) == (-0.5, 0.5)
+
+    def test_no_height_no_displacement(self, matwire, matwire_c4d):
+        tex_set = matwire.scan_texture_sets(["a_col.png"])["sets"][0]
+        desc, _ao = matwire_c4d.build_description("/f", tex_set)
+        assert "#<" + matwire_c4d._RS_OUTPUT + ".displacement" not in desc
 
     def test_gloss_only_set_no_roughness_key_collision(self, matwire, matwire_c4d):
         scan = matwire.scan_texture_sets(
