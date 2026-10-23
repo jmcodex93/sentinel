@@ -775,3 +775,55 @@ def test_save_still_numbers_each_still_instead_of_overwriting(sentinel_module, m
     assert Path(second["path"]).name == "shot_v001_snap_002.png"
     assert sorted(p.name for p in out.iterdir()) == ["shot_v001_snap_001.png", "shot_v001_snap_002.png"]
     assert (out / "shot_v001_snap_001.png").read_bytes() == b"first"
+
+
+def test_slate_version_falls_back_to_the_file_name(tmp_path):
+    """Windows round 5: shot_v001.c4d saved by hand (no Save Version
+    history) gave an empty version on the slate."""
+    from sentinel import snapshots
+
+    class Doc:
+        def __init__(self, folder, name):
+            self._folder, self._name = folder, name
+        def GetDocumentPath(self):
+            return self._folder
+        def GetDocumentName(self):
+            return self._name
+        def GetTakeData(self):
+            return None
+        def GetRenderBaseDraw(self):
+            return None
+        def GetTime(self):
+            raise RuntimeError("no time")
+
+    data = snapshots.build_slate_data(Doc(str(tmp_path), "shot_v001.c4d"), "Ana")
+    assert data["version"] == "v001" and data["scene"] == "shot" and data["score"] == ""
+    assert snapshots.build_slate_data(Doc(str(tmp_path), "shot.c4d"), "Ana")["version"] == ""
+
+
+def test_watch_results_are_logged_to_the_console(monkeypatch, tmp_path):
+    """Windows round 5: watch-folder conversions left no console line while a
+    manual Save Still did."""
+    import time
+    from sentinel import snapshots
+    printed = []
+    monkeypatch.setattr(snapshots, "safe_print", printed.append)
+    watch = snapshots.SnapshotWatch()
+    def execute(path):
+        return (False, "bad.png failed") if path.endswith("bad.png") else (True, "copied good.png")
+    def tick():
+        watch.tick(True, str(tmp_path), "A", str, execute)
+    def finish():
+        deadline = time.monotonic() + 2
+        while watch.busy and time.monotonic() < deadline:
+            time.sleep(.01)
+    tick()
+    (tmp_path / "bad.png").write_bytes(b"a")
+    (tmp_path / "good.png").write_bytes(b"b")
+    for _ in range(3):
+        tick()
+        tick()
+        finish()
+    tick()
+    assert "Snapshot watch: failed: bad.png failed" in printed
+    assert "Snapshot watch: copied good.png" in printed

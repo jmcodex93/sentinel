@@ -519,3 +519,23 @@ class TestTopQcChecks:
 
         checks = [self._check(str(i), str(i), count=i) for i in range(1, 6)]
         assert len(webbridge.top_qc_checks(checks, limit=2)) == 2
+
+
+def test_state_stamp_changes_when_the_newest_snapshot_is_not_an_exr(sentinel_module, monkeypatch, tmp_path):
+    """Windows round 5: the non-EXR alert only appeared after leaving Render
+    and coming back — the stamp did not know about the snapshot folder."""
+    import os
+    from sentinel.ui import panel_ops, flows
+    monkeypatch.setattr(panel_ops.documents, "GetActiveDocument", lambda: object())
+    monkeypatch.setattr(panel_ops, "_stamp_for", lambda doc: "scene")
+    monkeypatch.setattr(flows, "get_effective_snapshot_dir", lambda: (str(tmp_path), "auto"))
+    op = panel_ops.PANEL_OPS["panel/state_stamp"]
+    (tmp_path / "a_image.exr").write_bytes(b"x")
+    os.utime(tmp_path / "a_image.exr", (1000, 1000))
+    os.utime(tmp_path, (1000, 1000))
+    with_exr = op({})["stamp"]
+    assert with_exr == op({})["stamp"]           # nothing new: same stamp
+    (tmp_path / "b_image.rssnap2").write_bytes(b"x")
+    os.utime(tmp_path / "b_image.rssnap2", (2000, 2000))
+    os.utime(tmp_path, (2000, 2000))
+    assert op({})["stamp"] != with_exr

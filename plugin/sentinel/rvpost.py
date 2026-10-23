@@ -7,7 +7,8 @@ RenderView can re-apply them on display. Measured 2026-10-02: two snapshots of
 the same frame, LUT on and post off, were pixel-identical. This module rebuilds
 what is verified against RenderView PNG exports — the LUT (``.cube`` sampled
 like a GPU 3D texture, blended by its strength) and then the master RGB curve
-(natural cubic spline) — and names everything else instead of guessing it.
+or one channel's curves (natural cubic splines) — and names everything else
+instead of guessing it.
 
 Where the LUT goes depends on RenderView's "Apply color management before
 LUT": on, after the OCIO view (display values); off, before it, on the
@@ -21,7 +22,7 @@ and ``apply_row`` per row of OCIO-view floats (0..1 display values).
 import os
 
 CURVE_SAMPLES = 4096
-DEFAULT_HIGHLIGHTS = 0.2          # RenderView's own default; seen with post off too
+CHANNELS = ("Red", "Green", "Blue")
 _LUT_CACHE = {}
 
 
@@ -144,13 +145,15 @@ def _lut_path(attrs):
 def post_plan(attrs):
     """What to re-apply for a snapshot, from its EXR header.
 
-    Returns ``{"lut", "strength", "curve", "applied", "notes"}``: ``lut`` is a
-    parsed ``(size, table)`` or None, ``curve`` an 8-bit table or None,
+    Returns ``{"lut", "strength", "lut_linear", "curve", "channel_curves",
+    "applied", "notes"}``: ``lut`` is a parsed ``(size, table)`` or None,
+    ``curve`` the master curve's 8-bit table or None, ``channel_curves`` one
+    table or None per R, G, B,
     ``applied`` short labels of what will be reproduced and ``notes`` short
     labels of what will not (said to the artist, never silently dropped).
     """
     plan = {"lut": None, "strength": 1.0, "lut_linear": False, "curve": None,
-            "applied": [], "notes": []}
+            "channel_curves": [None, None, None], "applied": [], "notes": []}
     strength = attrs.get("Lut Strength")
     strength = float(strength) if isinstance(strength, (int, float)) else 1.0
     # A LUT at 0 % strength is on in the UI but changes nothing (measured).
@@ -180,20 +183,28 @@ def post_plan(attrs):
                 plan["applied"].append("RGB curve")
             except ValueError:
                 plan["notes"].append("RGB curve")
-        for channel in ("Red", "Green", "Blue"):
-            if not is_identity_curve(curve_points(attrs, channel)):
-                plan["notes"].append("%s curve" % channel.lower())
-        # Saturation: 1.0 is neutral on Windows (measured 2026-10-05, the
-        # export matched with none applied); a macOS header read 0.0 and is
-        # kept as neutral until RenderView's default there is confirmed.
-        neutral = (("Exposure (EV)", (0.0,), "exposure"), ("Contrast", (0.0,), "contrast"),
-                   ("Saturation", (0.0, 1.0), "saturation"), ("Gamma", (1.0,), "gamma"),
-                   ("Hue", (0.0,), "hue"), ("Highlights", (DEFAULT_HIGHLIGHTS,), "highlights"))
-        for key, values, label in neutral:
-            current = attrs.get(key)
-            if isinstance(current, (int, float)) and \
-                    all(abs(current - value) > 1e-4 for value in values):
+        # A channel curve alone matches RenderView as a natural spline on the
+        # display value (Windows round 5: 0.27 levels mean, max 3). With the
+        # master curve also set, their order is unmeasured: named, not guessed.
+        for index, channel in enumerate(CHANNELS):
+            points = curve_points(attrs, channel)
+            if is_identity_curve(points):
+                continue
+            label = "%s curve" % channel.lower()
+            if plan["curve"] is not None:
+                plan["notes"].append("%s (with the RGB curve: order unmeasured)" % label)
+                continue
+            try:
+                plan["channel_curves"][index] = spline_table(points)
+                plan["applied"].append(label)
+            except ValueError:
                 plan["notes"].append(label)
+        # RenderView's Color Controls are Contrast and the curves (RS 2026.7,
+        # Windows round 5); the header's Exposure/Saturation/Gamma/Hue keys
+        # belong to other Redshift settings and are not RenderView post.
+        contrast = attrs.get("Contrast")
+        if isinstance(contrast, (int, float)) and abs(contrast) > 1e-4:
+            plan["notes"].append("contrast")
     for key, label in (("Photographic Exposure Enabled", "photographic exposure"),
                        ("Tonemap Parameters Enabled", "tone mapping"),
                        ("Bloom Enabled", "bloom"), ("Flare Enabled", "flare"),
@@ -207,7 +218,13 @@ def post_plan(attrs):
 
 
 def plan_is_active(plan):
-    return bool(plan and (plan["lut"] or plan["curve"]))
+    return bool(plan and (plan["lut"] or plan["curve"] or any(plan.get("channel_curves") or ())))
+
+
+def _channel_tables(plan):
+    """Per R, G, B: the curve table to map through, or None (plain encode)."""
+    channels = plan.get("channel_curves") or [None, None, None]
+    return [plan["curve"] if plan["curve"] is not None else table for table in channels]
 
 
 def applied_label(plan):
@@ -304,14 +321,15 @@ def apply_lut_linear(values, plan):
 def apply_row(values, plan):
     """OCIO-view floats ``[r, g, b, r, g, b, …]`` -> 8-bit ``bytearray``: the
     LUT blended by its strength (unless it went before the view, see
-    ``lut_linear``), then the RGB curve."""
+    ``lut_linear``), then the master or channel curves."""
     lut = None if plan.get("lut_linear") else plan["lut"]
-    curve = plan["curve"]
+    tables = _channel_tables(plan)
     k1 = CURVE_SAMPLES - 1
     out = bytearray(len(values))
     if lut is None:
         for j in range(len(values)):
             v = values[j]
+            curve = tables[j % 3]
             if curve is None:
                 out[j] = 0 if v <= 0 else 255 if v >= 1 else int(v * 255 + 0.5)
             else:
@@ -320,6 +338,7 @@ def apply_row(values, plan):
     size, table = lut
     s = plan["strength"]
     inv = 1.0 - s
+    tr, tg, tb = tables
     for j in range(0, len(values), 3):
         r = _clamp01(values[j])
         g = _clamp01(values[j + 1])
@@ -328,12 +347,10 @@ def apply_row(values, plan):
         mr = r * inv + lr * s
         mg = g * inv + lg * s
         mb = b * inv + lb * s
-        if curve is None:
-            out[j] = 0 if mr <= 0 else 255 if mr >= 1 else int(mr * 255 + 0.5)
-            out[j + 1] = 0 if mg <= 0 else 255 if mg >= 1 else int(mg * 255 + 0.5)
-            out[j + 2] = 0 if mb <= 0 else 255 if mb >= 1 else int(mb * 255 + 0.5)
-        else:
-            out[j] = curve[int((0.0 if mr < 0 else 1.0 if mr > 1 else mr) * k1 + 0.5)]
-            out[j + 1] = curve[int((0.0 if mg < 0 else 1.0 if mg > 1 else mg) * k1 + 0.5)]
-            out[j + 2] = curve[int((0.0 if mb < 0 else 1.0 if mb > 1 else mb) * k1 + 0.5)]
+        mr = 0.0 if mr < 0 else 1.0 if mr > 1 else mr
+        mg = 0.0 if mg < 0 else 1.0 if mg > 1 else mg
+        mb = 0.0 if mb < 0 else 1.0 if mb > 1 else mb
+        out[j] = int(mr * 255 + 0.5) if tr is None else tr[int(mr * k1 + 0.5)]
+        out[j + 1] = int(mg * 255 + 0.5) if tg is None else tg[int(mg * k1 + 0.5)]
+        out[j + 2] = int(mb * 255 + 0.5) if tb is None else tb[int(mb * k1 + 0.5)]
     return out

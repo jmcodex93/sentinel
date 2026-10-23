@@ -104,6 +104,7 @@ export function RenderSection({
   onSetMultipart,
   onToggleWatch,
   onOpenSettings,
+  onReload,
   onSaveStill,
   onOpenFolder,
   onValidate,
@@ -153,6 +154,10 @@ export function RenderSection({
   onToggleWatch: () => void;
   /** Opens the Settings window — the artist name lives there. */
   onOpenSettings: () => void;
+  /** Re-read `panel/render` — after the slate editor, whose saves change a
+   * ruleset the scene stamp does not see (Windows round 5: the Slate row
+   * still said "off" after "Save for the project"). */
+  onReload: () => void;
   onSaveStill: () => void;
   onOpenFolder: () => void;
   onValidate: () => void;
@@ -171,7 +176,14 @@ export function RenderSection({
   const isBusy = busy !== null;
 
   if (renderView === "slate") {
-    return <SlateSubview onBack={() => setRenderView("main")} />;
+    return (
+      <SlateSubview
+        onBack={() => {
+          setRenderView("main");
+          onReload();
+        }}
+      />
+    );
   }
 
   if (renderView === "frame") {

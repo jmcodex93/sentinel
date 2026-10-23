@@ -648,3 +648,26 @@ class TestStampTakeAwareness:
         stamp_before = hub_ops._stamp_for(self._Doc(main_only))
         stamp_after = hub_ops._stamp_for(self._Doc(with_children))
         assert stamp_before != stamp_after
+
+
+def test_pick_path_opens_in_the_scene_folder(sentinel_module, monkeypatch):
+    """Windows round 5: the slate's folder picker opened in Documents."""
+    import c4d
+    from sentinel.ui import hub_ops
+    calls = []
+
+    def load_dialog(**kwargs):
+        calls.append(kwargs)
+        return "/projects/ACME"
+
+    class Doc:
+        def GetDocumentPath(self):
+            return "/projects/ACME/c4d/_Shots"
+
+    monkeypatch.setattr(c4d.storage, "LoadDialog", load_dialog)
+    monkeypatch.setattr(c4d.documents, "GetActiveDocument", lambda: Doc())
+    assert hub_ops.HUB_OPS["hub/pick_path"]({"directory": True}) == {"ok": True, "path": "/projects/ACME"}
+    assert calls[-1]["def_path"] == "/projects/ACME/c4d/_Shots"
+    monkeypatch.setattr(c4d.documents, "GetActiveDocument", lambda: None)
+    hub_ops.HUB_OPS["hub/pick_path"]({})
+    assert calls[-1]["def_path"] == ""

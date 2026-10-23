@@ -164,6 +164,8 @@ class SnapshotWatch:
                 if not ok:
                     self._last_error = message
                 self._status = {"state": "ready" if ok else "error", "message": message}
+                # Same console trail as a manual Save Still (Windows round 5).
+                safe_print("Snapshot watch: %s%s" % ("" if ok else "failed: ", message))
         except queue.Empty:
             pass
         key = (os.path.normcase(os.path.abspath(snap_dir)), context) if enabled and snap_dir else None
@@ -568,6 +570,8 @@ def build_slate_data(doc, artist_name, frame=None, project=""):
 
     Pure adapter: reads the LATEST entry of the scene's ``<base>_history.json``
     via sentinel.versioning and combines it with shot (active take/doc) + now.
+    Without a Save Version history the version comes from the file name
+    (``shot_v001.c4d`` → ``v001``); the QC score only from that history.
     Also the extra slate tokens: ``scene`` (base name without ``_v###``),
     ``take`` (empty on the Main take), ``camera`` and ``time``. ``project`` is
     passed in (the folder of the active ruleset). Frame, date, time and view
@@ -590,8 +594,10 @@ def build_slate_data(doc, artist_name, frame=None, project=""):
     except Exception:
         shot = ""
     scene = ""
+    file_version = None
     try:
-        scene = parse_version_filename(os.path.splitext(doc.GetDocumentName() or "")[0])[0]
+        scene, file_version, _status = parse_version_filename(
+            os.path.splitext(doc.GetDocumentName() or "")[0])
     except Exception:
         scene = ""
     camera = ""
@@ -620,6 +626,8 @@ def build_slate_data(doc, artist_name, frame=None, project=""):
             score = latest.get("qc_score", "") or ""
     except Exception:
         pass
+    if not version_label and file_version is not None:
+        version_label = "v%03d" % file_version
 
     if frame is None and doc is not None:
         try:
