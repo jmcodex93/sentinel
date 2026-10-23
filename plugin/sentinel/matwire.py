@@ -258,31 +258,90 @@ def gloss_destination(channels, material):
 #: Displacement remap per height convention — ``(newrange_min,
 #: newrange_max)`` written on the RS Displacement node. Integer maps follow
 #: the dominant convention (Blender Midlevel 0.5, ZBrush/3ds Max 50% grey,
-#: Octane mid level 0.5): mid-grey = no displacement. Float maps
-#: (ZBrush/Mudbox exports) are usually zero-centred already, so they keep
-#: Redshift's own 0..1 (measured: a fresh node reads 0..1).
-HEIGHT_RANGES = {"centered": (-0.5, 0.5), "zero_based": (0.0, 1.0)}
+#: Octane mid level 0.5): mid-grey = no displacement. A float map is judged
+#: by its pixels (``float_height_convention``): zero-centred bakes
+#: (ZBrush/Mudbox) keep Redshift's own 0..1 (measured: a fresh node reads
+#: 0..1), a float copy of a mid-grey map is centred like an integer one, and
+#: anything the pixels can't settle keeps 0..1 and is flagged "unverified".
+HEIGHT_RANGES = {"centered": (-0.5, 0.5), "zero_based": (0.0, 1.0),
+                 "unverified": (0.0, 1.0)}
+
+#: A float map wholly inside [0, 1] reads as mid-grey = flat when its mean
+#: is within this of 0.5. Flat area dominates a height map, so a mid-grey
+#: map's mean sits near 0.5 and a black-flat map's mean is coverage ×
+#: average relief, well below: the black-background dome map of
+#: docs/research/2026-10-23-matwire-height-only-displacement.md measures
+#: 0.35, outside the ±0.1 window.
+MIDGREY_MEAN_TOLERANCE = 0.1
 
 _FLOAT_EXTENSIONS = frozenset({".exr", ".hdr"})
 
 
-def height_range(channels, height_float=None):
+def height_is_float(filename, height_float=None):
+    """True for a float height: .exr/.hdr by extension, or a file whose
+    header the caller probed as float (``height_float``, e.g. a 32-bit
+    float .tif via ``imagemeta``)."""
+    ext = os.path.splitext(str(filename or ""))[1].lower()
+    return ext in _FLOAT_EXTENSIONS or bool(height_float)
+
+
+def height_stats(values):
+    """``{"min", "max", "mean", "count"}`` of sampled height values, or
+    ``None`` when there are none — the pure reduction behind the C4D
+    adapter's pixel sampling (``matwire_c4d.height_float_stats``)."""
+    count = 0
+    total = 0.0
+    low = high = None
+    for value in values or ():
+        value = float(value)
+        count += 1
+        total += value
+        if low is None or value < low:
+            low = value
+        if high is None or value > high:
+            high = value
+    if not count:
+        return None
+    return {"min": low, "max": high, "mean": total / count, "count": count}
+
+
+def float_height_convention(stats):
+    """Convention of a FLOAT height map from its pixel stats.
+
+    Any value below zero → ``"zero_based"``: the map is zero-centred, so
+    Redshift's 0..1 already leaves zero flat. Wholly inside [0, 1] with a
+    mean within ``MIDGREY_MEAN_TOLERANCE`` of 0.5 → ``"centered"``: a float
+    copy of a mid-grey map, remapped like an integer one. Anything else,
+    or no readable pixels → ``"unverified"``: keeps 0..1 (the float
+    default) and the preview says the convention wasn't confirmed."""
+    if not stats:
+        return "unverified"
+    low, high, mean = stats.get("min"), stats.get("max"), stats.get("mean")
+    if low is None or high is None or mean is None:
+        return "unverified"
+    if low < 0:
+        return "zero_based"
+    if high <= 1 and abs(mean - 0.5) <= MIDGREY_MEAN_TOLERANCE:
+        return "centered"
+    return "unverified"
+
+
+def height_range(channels, height_float=None, height_stats=None):
     """Which ``HEIGHT_RANGES`` convention a set's height map gets — the
     single source for both the preview's height row and the writer's
     Displacement node (same discipline as ``ao_destination``).
 
-    ``None`` when the set has no height. ``"zero_based"`` for a float map:
-    an .exr/.hdr by extension, or any file whose header the caller probed
-    as float (``height_float``, e.g. a 32-bit float .tif via
-    ``imagemeta``). Everything else — 8/16-bit png/jpg/tif/tga, and a file
-    whose header couldn't be read — is ``"centered"``."""
+    ``None`` when the set has no height. A float map (``height_is_float``)
+    is decided by ``float_height_convention`` on ``height_stats``, the
+    pixel sample the ops layer took. Everything else — 8/16-bit
+    png/jpg/tif/tga, and a file whose header couldn't be read — is
+    ``"centered"``."""
     channels = channels or {}
     filename = channels.get("height")
     if not filename:
         return None
-    ext = os.path.splitext(str(filename))[1].lower()
-    if ext in _FLOAT_EXTENSIONS or height_float:
-        return "zero_based"
+    if height_is_float(filename, height_float):
+        return float_height_convention(height_stats)
     return "centered"
 
 
@@ -424,8 +483,10 @@ def preview_payload(scan_result, existing_names, multiply_ao=False):
 
     And for the height row: ``range`` is ``height_range`` — the same
     function the writer's Displacement remap comes from — so the row says
-    whether mid-grey or black is the zero level. The float probe rides on
-    the set as ``height_float`` (set by the ops layer, which owns I/O)."""
+    whether mid-grey or zero is the flat level, or that a float map's
+    convention is unverified. The header probe (``height_float``) and the
+    pixel sample (``height_stats``) ride on the set, set by the ops layer,
+    which owns I/O."""
     sets = []
     for tex_set in scan_result.get("sets") or []:
         channels = []
@@ -439,7 +500,8 @@ def preview_payload(scan_result, existing_names, multiply_ao=False):
                                                     multiply_ao)
             if channel == "height":
                 row["range"] = height_range(tex_set["channels"],
-                                            tex_set.get("height_float"))
+                                            tex_set.get("height_float"),
+                                            tex_set.get("height_stats"))
             channels.append(row)
         sets.append({
             "name": tex_set["name"],

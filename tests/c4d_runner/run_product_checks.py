@@ -6,7 +6,9 @@ or touch the documents in an independently running Cinema 4D GUI session.
 """
 from contextlib import contextmanager
 from pathlib import Path
+import array
 import json
+import math
 import runpy
 import sys
 import tempfile
@@ -71,33 +73,76 @@ def materials():
         print("PASS generic normal, RAW fix and one-step undo:", kind)
 
 
-def matwire_height_ranges():
-    """The Displacement remap Matwire writes, read back from the live graph:
-    an integer height is centred at mid-grey, a float one keeps 0..1."""
+def _write_height(path, height_at, size=64):
+    """A real height map on disk: float RGB EXR, or 8-bit PNG (0..1 → 0..255)."""
+    exr = path.suffix == ".exr"
+    bmp = c4d.bitmaps.BaseBitmap()
+    bmp.Init(size, size, 96 if exr else 24)
+    for y in range(size):
+        if exr:
+            row = array.array("f")
+            for x in range(size):
+                row.extend((height_at(x, y),) * 3)
+            bmp.SetPixelCnt(0, y, size, memoryview(bytearray(row.tobytes())), 12,
+                            c4d.COLORMODE_RGBf, c4d.PIXELCNT_0)
+        else:
+            for x in range(size):
+                g = int(round(max(0.0, min(1.0, height_at(x, y))) * 255))
+                bmp.SetPixel(x, y, g, g, g)
+    saved = bmp.Save(str(path), c4d.FILTER_EXR if exr else c4d.FILTER_PNG, None,
+                     c4d.SAVEBIT_32BITCHANNELS if exr else c4d.SAVEBIT_0)
+    assert saved == c4d.IMAGERESULT_OK, (path, saved)
+
+
+def matwire_height_ranges(root):
+    """Matwire's Displacement remap end to end through the panel ops: real
+    files, the preview row and the range read back from the live graph.
+    Integer png → centred; float maps by their pixels — zero-centred EXR
+    (negatives) keeps 0..1, mid-grey EXR is centred, black-flat EXR keeps
+    0..1 flagged unverified."""
     import maxon
     from sentinel import matwire_c4d
+    from sentinel.ui import panel_tools_ops
+    wave = lambda x, y: math.sin(x * math.pi / 8) * math.sin(y * math.pi / 8)
+    cases = {
+        "zc": (".exr", lambda x, y: 0.4 * wave(x, y), "zero_based", (0.0, 1.0)),
+        "mg": (".exr", lambda x, y: 0.5 + 0.4 * wave(x, y), "centered", (-0.5, 0.5)),
+        "bf": (".exr", lambda x, y: max(0.0, wave(x, y)), "unverified", (0.0, 1.0)),
+        "pn": (".png", lambda x, y: 0.5 + 0.4 * wave(x, y), "centered", (-0.5, 0.5)),
+    }
+    folder = root / "matwire_heights"
+    folder.mkdir()
+    for name, (ext, height_at, _, _) in cases.items():
+        _write_height(folder / (name + "_disp" + ext), height_at)
+        _write_height(folder / (name + "_col.png"), lambda x, y: 0.7)
     disp_id = matwire_c4d._RS_CORE + "displacement"
-    for filename, expected in (("rock_height.png", (-0.5, 0.5)),
-                               ("rock_height.exr", (0.0, 1.0))):
-        with document() as doc:
-            doc.StartUndo()
-            try:
-                created = matwire_c4d.create_material_for_set(doc, tempfile.gettempdir(),
-                    {"channels": {"height": filename}}, "Readiness_height")
-            finally:
-                doc.EndUndo()
-            assert created["ok"], created
-            graph = maxon.GraphDescription.GetGraph(doc.GetFirstMaterial(),
-                nodeSpaceId=maxon.NodeSpaceIdentifiers.RedshiftMaterial)
+    with document() as doc:
+        preview = panel_tools_ops._op_matwire_preview({"folder": str(folder)})
+        assert preview.get("ok"), preview
+        rows = {s["name"]: {r["channel"]: r for r in s["channels"]} for s in preview["sets"]}
+        got_rows = {name: rows[name]["height"]["range"] for name in cases}
+        assert got_rows == {name: case[2] for name, case in cases.items()}, got_rows
+        created = panel_tools_ops._op_matwire_create({"folder": str(folder)})
+        assert created.get("ok") and created["created"] == len(cases), created
+        remaps = {}
+        mat = doc.GetFirstMaterial()
+        while mat:
+            graph = maxon.GraphDescription.GetGraph(
+                mat, nodeSpaceId=maxon.NodeSpaceIdentifiers.RedshiftMaterial)
             nodes = []
             graph.GetViewRoot().GetChildren(nodes, maxon.NODE_KIND.NODE)
             disp = [n for n in nodes if disp_id in str(n.GetValue(matwire_c4d._ASSETID_ATTR) or "")]
-            assert len(disp) == 1, len(disp)
+            assert len(disp) == 1, (mat.GetName(), len(disp))
             inputs = disp[0].GetInputs()
-            got = tuple(float(inputs.FindChild(disp_id + "." + port).GetPortValue())
-                        for port in ("newrange_min", "newrange_max"))
-            assert got == expected, (filename, got)
-    print("PASS Matwire displacement remap: png centred, exr 0..1")
+            remaps[mat.GetName()] = tuple(
+                float(inputs.FindChild(disp_id + "." + port).GetPortValue())
+                for port in ("newrange_min", "newrange_max"))
+            mat = mat.GetNext()
+        assert remaps == {name: case[3] for name, case in cases.items()}, remaps
+        stats = {name: matwire_c4d.height_float_stats(str(folder / (name + "_disp.exr")))
+                 for name in ("zc", "mg", "bf")}
+    print("PASS Matwire displacement remap via ops:", got_rows, remaps,
+          {k: {m: round(v[m], 3) for m in ("min", "max", "mean")} for k, v in stats.items()})
 
 
 def collect_packages(root):
@@ -201,7 +246,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="sentinel_readiness_") as tmp:
         root = Path(tmp)
         materials()
-        matwire_height_ranges()
+        matwire_height_ranges(root)
         collect_packages(root)
         notes(root)
         watch(root)

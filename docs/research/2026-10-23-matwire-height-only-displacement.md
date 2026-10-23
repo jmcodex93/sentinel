@@ -13,7 +13,8 @@ Measured on C4D 2026.304, macOS (Apple M2 Max), 2026-10-23, in a fresh
 main thread. Nothing touched an artist's scene.
 
 **Verdict: yes. Relief is visible on a 1-segment plane, and the geometry
-really moves. Matwire adds no height → Bump Map.**
+really moves. Matwire adds no height → Bump Map.** A float map's convention
+is now read from its pixels (section below).
 
 ## Setup
 
@@ -69,6 +70,51 @@ Not measured: scenes where the artist has switched Automatic Displacement
 off, or added a Redshift Object tag with displacement disabled. There,
 relief would need the tag, which is the artist's documented setting, not
 Matwire's.
+
+## Float maps: the convention is read from the pixels
+
+The dome map above has a black background, so it validates the wiring, not
+which convention real EXRs use. A float height can be a zero-centred bake
+(ZBrush/Mudbox: zero = flat, negatives below) or a float copy of a 16-bit
+map (mid-grey 0.5 = flat). Keeping 0..1 for every .exr inflated the second
+kind by half a unit, so Matwire now samples the pixels
+(`matwire_c4d.height_float_stats`, `BaseBitmap`, red channel, 256×256
+stride grid) and `matwire.float_height_convention` decides:
+
+- any value < 0 → zero-centred → **0..1**;
+- wholly inside [0, 1] with |mean − 0.5| ≤ **0.1** → mid-grey → **−0.5..0.5**;
+- anything else, or unreadable → **0..1**, and the preview row says the
+  convention is not verified.
+
+Tolerance: flat area dominates a height map, so a mid-grey map's mean sits
+near 0.5, while a black-flat map's mean is coverage × average relief. The
+dome map (64 % of its area flat black) measures **mean 0.346** (min 0,
+max 0.9996) → unverified, outside the window with margin.
+
+Live, through the panel ops on a throwaway document (`run_product_checks.py`,
+64² maps written with `c4d.bitmaps`):
+
+| Map | min / max / mean read back | row | newrange written |
+|---|---|---|---|
+| zero-centred EXR | −0.400 / 0.400 / 0.000 | zero_based | 0 / 1 |
+| mid-grey EXR | 0.100 / 0.900 / 0.500 | centered | −0.5 / 0.5 |
+| black-flat EXR | 0.000 / 1.000 / 0.197 | unverified | 0 / 1 |
+| mid-grey PNG (8-bit) | not sampled | centered | −0.5 / 0.5 |
+
+Negative values survive `BaseBitmap.InitWith` on an EXR.
+
+**Cost** (c4dpy, M2 Max, ZIP EXRs written by C4D): 4096² → **0.40 s** cold
+(0.38 s of it the load), 8192² → **1.68 s** cold (1.51 s load, ~0.17 s
+sampling 65 536 values). Loading dominates; the stride makes sampling
+negligible. Results are cached per (path, mtime, size), so the panel's
+re-fetch on every toggle costs ~0 s after the first, and create re-reads
+the file only if it changed. A noisier real 8K EXR compresses worse and
+loads slower than these synthetic ones.
+
+Limit: a regular stride can alias with a strictly periodic pattern (the
+synthetic 8K map, periodic every 64 rows, sampled only its flat rows and
+read a constant 0.5). Real height maps aren't periodic at the stride, but
+the risk exists and is why an unclear map is flagged, not guessed.
 
 ## Harness trap: two Redshift video posts deadlock the render
 

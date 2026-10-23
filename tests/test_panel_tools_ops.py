@@ -1317,11 +1317,14 @@ class TestMatwireOps:
         assert result["ok"] is True
         assert result["sets"][0]["name"] == "RockCliff"
 
-    def test_height_float_probe_reaches_preview_and_writer(
+    def test_height_probes_reach_preview_and_writer(
             self, sentinel_module, monkeypatch, tmp_path):
-        """A 32-bit float .tif height is only knowable from its header: the
-        shared request probes it once, so the preview row and the writer
-        see the same answer (matwire.height_range)."""
+        """A float height is only knowable from the file: the header says a
+        .tif is float, the pixels say which convention a float map uses.
+        The shared request probes both once, so the preview row and the
+        writer see the same answer (matwire.height_range), re-derived at
+        create time — never taken from the client."""
+        import os
         import struct
         from sentinel import matwire_c4d
 
@@ -1336,27 +1339,47 @@ class TestMatwireOps:
             return b"II*\x00" + struct.pack("<I", 8) + ifd + b"\x00" * 4
 
         ops = self._setup(monkeypatch, _FakeMatwireDoc())
-        (tmp_path / "zb_col.png").write_bytes(b"x")
-        (tmp_path / "zb_disp.tif").write_bytes(tiff(3))
-        (tmp_path / "pt_col.png").write_bytes(b"x")
-        (tmp_path / "pt_disp.tif").write_bytes(tiff(1))
+        for name, data in (("zb_col.png", b"x"), ("zb_disp.tif", tiff(3)),
+                           ("pt_col.png", b"x"), ("pt_disp.tif", tiff(1)),
+                           ("mg_col.png", b"x"), ("mg_disp.exr", b"x"),
+                           ("bad_col.png", b"x"), ("bad_disp.exr", b"x")):
+            (tmp_path / name).write_bytes(data)
         folder = str(tmp_path)
+        stats = {"zb_disp.tif": {"min": -0.4, "max": 0.4, "mean": 0.0, "count": 4},
+                 "mg_disp.exr": {"min": 0.2, "max": 0.8, "mean": 0.5, "count": 4},
+                 "bad_disp.exr": None}
+        probed = []
+
+        def _stats(path):
+            probed.append(os.path.basename(path))
+            return stats[os.path.basename(path)]
+
+        monkeypatch.setattr(matwire_c4d, "height_float_stats", _stats)
 
         preview = ops._op_matwire_preview({"folder": folder})
         rows = {s["name"]: {r["channel"]: r for r in s["channels"]}
                 for s in preview["sets"]}
         assert rows["zb"]["height"]["range"] == "zero_based"
         assert rows["pt"]["height"]["range"] == "centered"
+        assert rows["mg"]["height"]["range"] == "centered"
+        assert rows["bad"]["height"]["range"] == "unverified"
+        assert "pt_disp.tif" not in probed  # integer maps never sample pixels
 
         seen = {}
 
         def _fake_create(d, f, tex_set, name, **_kw):
-            seen[tex_set["name"]] = tex_set.get("height_float")
+            seen[tex_set["name"]] = (tex_set.get("height_float"),
+                                     tex_set.get("height_stats"))
             return {"ok": True, "material_name": name, "error": None}
 
         monkeypatch.setattr(matwire_c4d, "create_material_for_set", _fake_create)
-        ops._op_matwire_create({"folder": folder})
-        assert seen == {"zb": True, "pt": False}
+        probed.clear()
+        ops._op_matwire_create({"folder": folder, "height_stats": {"zb": "poison"}})
+        assert seen == {"zb": (True, stats["zb_disp.tif"]),
+                        "pt": (False, None),
+                        "mg": (False, stats["mg_disp.exr"]),
+                        "bad": (False, None)}
+        assert sorted(probed) == ["bad_disp.exr", "mg_disp.exr", "zb_disp.tif"]
 
     def test_create_redshift_unavailable(self, sentinel_module, monkeypatch, tmp_path):
         ops = self._setup(monkeypatch, _FakeMatwireDoc(), rs_available=False)

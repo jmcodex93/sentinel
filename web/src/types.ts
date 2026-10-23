@@ -1309,7 +1309,8 @@ export interface MatwireChannelRow {
   destination?: string | null;
   /** `height` rows only: the displacement convention the writer uses, from
    * the engine's `matwire.height_range` ("centered": mid-grey = flat,
-   * remap -0.5..0.5; "zero_based": float map, black = flat, 0..1). Depends
+   * remap -0.5..0.5; "zero_based": zero-centred float map, 0..1;
+   * "unverified": float map whose pixels didn't settle it, 0..1). Depends
    * only on the file, never on a client toggle, so the UI reads it as is. */
   range?: string | null;
 }

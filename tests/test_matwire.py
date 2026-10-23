@@ -384,22 +384,42 @@ class TestPreviewPayload:
 class TestHeightRange:
     """``height_range`` — the single source for the height row and the
     writer's Displacement remap: integer maps are mid-grey centred, float
-    maps keep Redshift's 0..1."""
+    maps are judged by their pixel stats (``float_height_convention``)."""
+
+    ZERO_CENTRED = {"min": -0.4, "max": 0.45, "mean": 0.02, "count": 100}
+    MID_GREY = {"min": 0.1, "max": 0.9, "mean": 0.51, "count": 100}
+    BLACK_FLAT = {"min": 0.0, "max": 1.0, "mean": 0.35, "count": 100}
 
     def test_integer_formats_are_centered(self, matwire):
         for name in ("a_height.png", "a_height.jpg", "a_disp.tif",
                      "a_height.TGA", "a_height.tiff"):
             assert matwire.height_range({"height": name}) == "centered", name
 
-    def test_float_extensions_are_zero_based(self, matwire):
-        assert matwire.height_range({"height": "a_height.exr"}) == "zero_based"
-        assert matwire.height_range({"height": "a_disp.HDR"}) == "zero_based"
+    def test_integer_formats_ignore_stats(self, matwire):
+        assert matwire.height_range({"height": "a_height.png"},
+                                    height_stats=self.ZERO_CENTRED) == "centered"
 
-    def test_float_header_wins_for_tif(self, matwire):
-        assert matwire.height_range({"height": "a_disp.tif"},
-                                    height_float=True) == "zero_based"
-        assert matwire.height_range({"height": "a_disp.tif"},
-                                    height_float=False) == "centered"
+    def test_float_maps_follow_their_pixels(self, matwire):
+        for name in ("a_height.exr", "a_disp.HDR"):
+            ch = {"height": name}
+            assert matwire.height_range(ch, height_stats=self.ZERO_CENTRED) == "zero_based"
+            assert matwire.height_range(ch, height_stats=self.MID_GREY) == "centered"
+            assert matwire.height_range(ch, height_stats=self.BLACK_FLAT) == "unverified"
+            assert matwire.height_range(ch) == "unverified", name  # unreadable
+
+    def test_float_header_makes_a_tif_float(self, matwire):
+        ch = {"height": "a_disp.tif"}
+        assert matwire.height_range(ch, height_float=True,
+                                    height_stats=self.MID_GREY) == "centered"
+        assert matwire.height_range(ch, height_float=True,
+                                    height_stats=self.ZERO_CENTRED) == "zero_based"
+        assert matwire.height_range(ch, height_float=False,
+                                    height_stats=self.ZERO_CENTRED) == "centered"
+
+    def test_height_is_float(self, matwire):
+        assert matwire.height_is_float("a.exr") and matwire.height_is_float("a.HDR")
+        assert matwire.height_is_float("a.tif", True)
+        assert not matwire.height_is_float("a.tif") and not matwire.height_is_float("a.png")
 
     def test_no_height_is_none(self, matwire):
         assert matwire.height_range({"basecolor": "a_col.png"}) is None
@@ -407,22 +427,65 @@ class TestHeightRange:
 
     def test_ranges_table(self, matwire):
         assert matwire.HEIGHT_RANGES == {"centered": (-0.5, 0.5),
-                                         "zero_based": (0.0, 1.0)}
+                                         "zero_based": (0.0, 1.0),
+                                         "unverified": (0.0, 1.0)}
 
     def test_preview_height_row_carries_range(self, matwire):
         scan = matwire.scan_texture_sets(["rock_col.png", "rock_height.png",
                                           "wall_col.png", "wall_disp.exr",
-                                          "tile_col.png", "tile_disp.tif"])
+                                          "tile_col.png", "tile_disp.tif",
+                                          "mud_col.png", "mud_disp.exr"])
         for tex_set in scan["sets"]:
-            if tex_set["name"] == "tile":
-                tex_set["height_float"] = True  # ops-layer header probe
+            if tex_set["name"] == "tile":  # ops-layer probes
+                tex_set["height_float"] = True
+                tex_set["height_stats"] = self.MID_GREY
+            if tex_set["name"] == "wall":
+                tex_set["height_stats"] = self.ZERO_CENTRED
         payload = matwire.preview_payload(scan, [])
         ranges = {s["name"]: {r["channel"]: r for r in s["channels"]}
                   for s in payload["sets"]}
         assert ranges["rock"]["height"]["range"] == "centered"
         assert ranges["wall"]["height"]["range"] == "zero_based"
-        assert ranges["tile"]["height"]["range"] == "zero_based"
+        assert ranges["tile"]["height"]["range"] == "centered"
+        assert ranges["mud"]["height"]["range"] == "unverified"  # no stats
         assert "range" not in ranges["rock"]["basecolor"]  # height row only
+
+
+class TestFloatHeightConvention:
+    """The pure classification on pixel stats, one test per branch."""
+
+    def test_any_negative_is_zero_centred(self, matwire):
+        assert matwire.float_height_convention(
+            {"min": -0.001, "max": 3.0, "mean": 0.6}) == "zero_based"
+
+    def test_unit_range_with_mean_near_half_is_mid_grey(self, matwire):
+        for mean in (0.4, 0.5, 0.6):
+            assert matwire.float_height_convention(
+                {"min": 0.0, "max": 1.0, "mean": mean}) == "centered", mean
+
+    def test_mean_outside_tolerance_is_unverified(self, matwire):
+        for mean in (0.39, 0.61, 0.35):
+            assert matwire.float_height_convention(
+                {"min": 0.0, "max": 1.0, "mean": mean}) == "unverified", mean
+
+    def test_above_one_without_negatives_is_unverified(self, matwire):
+        assert matwire.float_height_convention(
+            {"min": 0.0, "max": 1.2, "mean": 0.5}) == "unverified"
+
+    def test_missing_stats_are_unverified(self, matwire):
+        assert matwire.float_height_convention(None) == "unverified"
+        assert matwire.float_height_convention({}) == "unverified"
+        assert matwire.float_height_convention(
+            {"min": float("nan"), "max": float("nan"), "mean": float("nan")}) == "unverified"
+
+    def test_tolerance_value(self, matwire):
+        assert matwire.MIDGREY_MEAN_TOLERANCE == 0.1
+
+    def test_height_stats_reduction(self, matwire):
+        assert matwire.height_stats([0.5, -0.25, 1.0, 0.75]) == {
+            "min": -0.25, "max": 1.0, "mean": 0.5, "count": 4}
+        assert matwire.height_stats([]) is None
+        assert matwire.height_stats(None) is None
 
 
 class TestBuildDescription:
@@ -520,23 +583,31 @@ class TestBuildDescription:
 
     def test_displacement_range_follows_height_range(self, matwire, matwire_c4d):
         """The remap is ALWAYS written, from the same ``height_range`` the
-        preview row reads: png centred at mid-grey, exr kept 0..1, a .tif
-        probed as float kept 0..1."""
+        preview row reads: png centred at mid-grey; a float map (exr, or a
+        .tif probed as float) by its pixel stats, 0..1 when unverified."""
         RS = matwire_c4d._RS_CORE
         disp_key = "#<" + matwire_c4d._RS_OUTPUT + ".displacement"
 
-        def remap(files, height_float=None):
+        def remap(files, height_float=None, stats=None):
             tex_set = matwire.scan_texture_sets(files)["sets"][0]
             if height_float is not None:
                 tex_set["height_float"] = height_float
+            if stats is not None:
+                tex_set["height_stats"] = stats
             desc, _ao = matwire_c4d.build_description("/f", tex_set)
             disp = desc[disp_key]
             return (disp["#<" + RS + "displacement.newrange_min"],
                     disp["#<" + RS + "displacement.newrange_max"])
 
+        mid_grey = {"min": 0.1, "max": 0.9, "mean": 0.5, "count": 9}
+        zero_centred = {"min": -0.3, "max": 0.3, "mean": 0.0, "count": 9}
         assert remap(["a_col.png", "a_height.png"]) == (-0.5, 0.5)
-        assert remap(["a_col.png", "a_height.exr"]) == (0.0, 1.0)
+        assert remap(["a_col.png", "a_height.exr"]) == (0.0, 1.0)  # unverified
+        assert remap(["a_col.png", "a_height.exr"], stats=zero_centred) == (0.0, 1.0)
+        assert remap(["a_col.png", "a_height.exr"], stats=mid_grey) == (-0.5, 0.5)
         assert remap(["a_col.png", "a_disp.tif"], height_float=True) == (0.0, 1.0)
+        assert remap(["a_col.png", "a_disp.tif"], height_float=True,
+                     stats=mid_grey) == (-0.5, 0.5)
         assert remap(["a_col.png", "a_disp.tif"], height_float=False) == (-0.5, 0.5)
 
     def test_no_height_no_displacement(self, matwire, matwire_c4d):
