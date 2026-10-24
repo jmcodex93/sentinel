@@ -63,11 +63,11 @@ def _mismatch_auto_foreign_graph():
     - ``sampler_auto``: roughness filename wired to ``refl_roughness``,
       assigned ``None`` (unset colorspace port) -> ``auto_unverified``
       unconditionally, even though the channel IS known.
-    - ``sampler_foreign``: metalness filename, assigned a string outside
-      the known RS vocabulary -> ``foreign_cs``.
+    - ``sampler_foreign``: emission filename (a colour channel), assigned
+      a string outside the known RS vocabulary -> ``foreign_cs``.
     """
     graph = FakeGraph()
-    brdf = _add_brdf(graph, "brdf1", ["base_color", "refl_roughness", "metalness"])
+    brdf = _add_brdf(graph, "brdf1", ["base_color", "refl_roughness", "emission_color"])
     out = _add_output(graph, "out1")
     _out_port(brdf, "outcolor").connect_to(_in_port(out, "surface"))
 
@@ -78,9 +78,9 @@ def _mismatch_auto_foreign_graph():
     auto = _add_sampler(graph, "sampler_auto", "/tex/wood_roughness.png", None)
     _out_port(auto, "outcolor").connect_to(_in_port(brdf, "refl_roughness"))
 
-    foreign = _add_sampler(graph, "sampler_foreign", "/tex/wood_metalness.png",
+    foreign = _add_sampler(graph, "sampler_foreign", "/tex/wood_emission.png",
                            "OCIO_custom_space")
-    _out_port(foreign, "outcolor").connect_to(_in_port(brdf, "metalness"))
+    _out_port(foreign, "outcolor").connect_to(_in_port(brdf, "emission_color"))
 
     return graph
 
@@ -479,3 +479,23 @@ def test_informational_colorspaces_preserve_clean_score_and_metadata(matgraph_ch
     assert score['score'] == '13/13'
     assert score['pass'] is True
     assert 'unverified_counts' not in score
+
+
+def test_foreign_colorspace_on_ao_is_a_violation_fixed_to_raw(matgraph_check):
+    from sentinel import fixes
+    graph = FakeGraph()
+    brdf = _add_brdf(graph, "brdf1", ["base_color", "refl_roughness"])
+    out = _add_output(graph, "out1")
+    _out_port(brdf, "outcolor").connect_to(_in_port(out, "surface"))
+    ao = _add_sampler(graph, "sampler_ao", "/tex/wood_ao.png", "ACEScg")
+    _out_port(ao, "outcolor").connect_to(_in_port(brdf, "refl_roughness"))
+    color = _add_sampler(graph, "sampler_color", "/tex/wood_basecolor.png", "ACEScg")
+    _out_port(color, "outcolor").connect_to(_in_port(brdf, "base_color"))
+    doc = FakeDoc([FakeMaterial("acescg_mat", graph=graph)])
+    result = matgraph_check.check_rs_colorspace(doc, rules_context=_FakeRulesContext())
+    [violation] = result.to_legacy()
+    assert violation["assigned"] == "ACEScg"
+    assert violation["expected"] == "RS_INPUT_COLORSPACE_RAW"
+    assert {r["reason"] for r in result.metadata["info"]} == {"mismatch", "foreign_cs"}
+    assert fixes.fix_rs_colorspace(doc) == {"written": 1, "materials": 1}
+    assert graph.set_port_calls == [("sampler_ao", "colorspace", "RS_INPUT_COLORSPACE_RAW")]

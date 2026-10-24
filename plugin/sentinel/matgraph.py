@@ -21,8 +21,10 @@ simpler than the spec's first draft:
   ``redshift4c4d.xlib``, measured). Rather than maintain a combo of known
   values, this module treats exactly those two strings as the known
   vocabulary and anything else (a custom OCIO name, whatever) as
-  ``foreign_cs`` — Info, never a Fix target. The Fix writer (Task 3) must
-  mirror this: it may only ever WRITE ``CS_SRGB``/``CS_RAW``.
+  ``foreign_cs`` — Info, never a Fix target — except on a data channel
+  (one that expects Raw), where any colour transform is wrong and the
+  value is a plain ``mismatch`` fixed to Raw. The Fix writer (Task 3)
+  must mirror this: it may only ever WRITE ``CS_SRGB``/``CS_RAW``.
 
 Channel inference is a two-signal system per the design doc's decision 4:
 filename (delegated to ``sentinel.matwire`` — the single source of the
@@ -202,7 +204,12 @@ def audit_colorspaces(entries):
 
     1. ``assigned is None`` (auto) -> ``auto_unverified``, unconditionally
        — even when the channel IS known by name/port. Never a mismatch.
-    2. ``assigned`` not in the known RS vocabulary -> ``foreign_cs``.
+    2. ``assigned`` not in the known RS vocabulary -> ``foreign_cs``,
+       unless it is a non-empty string on a channel that expects Raw:
+       data maps (AO, roughness, normal...) take no colour transform, so
+       e.g. ``ACEScg`` written there by a third-party plugin falls
+       through to step 5 as a ``mismatch``. A colour channel keeps
+       ``foreign_cs`` (an ACEScg EXR texture can be legitimate).
     3. the two inference signals disagree -> ``conflict`` — no
        channel-based judgment is made either way.
     4. no signal fired at all -> ``unknown`` (silent — no false
@@ -223,7 +230,8 @@ def audit_colorspaces(entries):
         out["expected"] = None
         if assigned is None:
             out["verdict"] = "auto_unverified"
-        elif assigned not in (CS_SRGB, CS_RAW):
+        elif assigned not in (CS_SRGB, CS_RAW) and not (
+                assigned and channel and _expected_colorspace(channel) == CS_RAW):
             out["verdict"] = "foreign_cs"
         elif source == "conflict":
             out["verdict"] = "conflict"

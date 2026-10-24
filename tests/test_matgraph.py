@@ -156,10 +156,61 @@ def test_audit_auto_is_unverified_even_when_channel_known():
 
 
 def test_audit_foreign_colorspace_string():
-    entries = [{"material": "m1", "file": "rock_roughness.png",
+    # A colour channel in a foreign space (an ACEScg EXR, a studio OCIO
+    # name) can be legitimate: Info, never a Fix target.
+    entries = [{"material": "m1", "file": "rock_emission.png",
                 "assigned": "some_custom_ocio_space", "dest_port": None}]
     [verdict] = audit_colorspaces(entries)
     assert verdict["verdict"] == "foreign_cs"
+
+
+def test_audit_foreign_colorspace_on_data_channel_is_mismatch():
+    # A data map (AO, roughness, normal...) must reach the shader untouched:
+    # any colour transform is wrong, so a foreign value there is Fix-able
+    # to Raw (the third-party plugin case: ACEScg written on AO samplers).
+    entries = [{"material": "m1", "file": "rock_ao.png",
+                "assigned": "ACEScg", "dest_port": None}]
+    [verdict] = audit_colorspaces(entries)
+    assert verdict["verdict"] == "mismatch"
+    assert verdict["channel"] == "ao"
+    assert verdict["expected"] == CS_RAW
+
+
+def test_audit_foreign_colorspace_on_data_port_is_mismatch():
+    entries = [{"material": "m1", "file": "textura_final_v3.exr",
+                "assigned": "ACEScg",
+                "dest_port": ("com.redshift3d.redshift4c4d.nodes.core."
+                              "standardmaterial.refl_roughness")}]
+    [verdict] = audit_colorspaces(entries)
+    assert verdict["verdict"] == "mismatch"
+    assert verdict["expected"] == CS_RAW
+
+
+def test_audit_foreign_colorspace_on_basecolor_stays_info():
+    entries = [{"material": "m1", "file": "rock_basecolor.png",
+                "assigned": "ACEScg",
+                "dest_port": ("com.redshift3d.redshift4c4d.nodes.core."
+                              "standardmaterial.base_color")}]
+    [verdict] = audit_colorspaces(entries)
+    assert verdict["verdict"] == "foreign_cs"
+    assert verdict["expected"] is None
+
+
+def test_audit_foreign_colorspace_without_trusted_channel_stays_info():
+    # No channel, a genuine conflict, or an empty string: no judgment.
+    conflict_port = ("com.redshift3d.redshift4c4d.nodes.core."
+                     "standardmaterial.refl_roughness")
+    entries = [
+        {"material": "m1", "file": "textura_final_v3.exr",
+         "assigned": "ACEScg", "dest_port": None},
+        {"material": "m1", "file": "rock_basecolor.png",
+         "assigned": "ACEScg", "dest_port": conflict_port},
+        {"material": "m1", "file": "rock_roughness.png",
+         "assigned": "", "dest_port": None},
+    ]
+    verdicts = audit_colorspaces(entries)
+    assert [v["verdict"] for v in verdicts] == ["foreign_cs"] * 3
+    assert [v["expected"] for v in verdicts] == [None] * 3
 
 
 def test_audit_conflict_is_info_not_a_judgment():

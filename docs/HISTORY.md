@@ -2,6 +2,10 @@
 
 Narrativa por release movida desde `CLAUDE.md` el 2026-09-23 (prompt-audit; completada con la v1.39.0 el 2026-10-01) para no cargarla en cada sesión de agente. Se conserva **tal cual** se escribió: los estados («pendiente de merge/live», recuentos de tests) reflejan el momento de cada entrada, no el presente. El estado vigente y las lecciones de API están en `CLAUDE.md`; el roadmap, en `ROADMAP.md`.
 
+## Sin publicar (tras v1.40.0)
+
+- **QC #13: canal de datos con colorspace ajeno → FAIL con Fix a RAW (2026-10-23).** Un sampler cuyo canal espera Raw (AO, roughness, metalness, normal, height, opacity…) con un valor fuera de SRGB/RAW (p. ej. `ACEScg`, como lo escribe el plugin Redshift SMC) pasa de `foreign_cs` (Info) a `mismatch`: un mapa de datos no admite transformación de color (reglas de Maya, guía ACES Utility-Raw). Los canales de color con valor ajeno siguen como Info (un EXR en ACEScg puede ser legítimo); conflicto, auto, desconocido y string vacío no cambian. Medido en C4D 2026: escribir `ACEScg` en `tex0/colorspace` no crashea, el Fix escribe RAW y una sola Cmd+Z lo revierte.
+
 ## v1.40.0 — snapshots dentro de C4D (2026-10-22)
 
 Etiqueta `v1.40.0` sobre el commit de versión encima de `785de8d`; candidata `sentinel-beta-785de8db7e7b` aceptada en Windows 11 + C4D 2026.4.0 en la ronda 5 (0 fallos).
