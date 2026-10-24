@@ -128,6 +128,27 @@ def spline_table(points, samples=CURVE_SAMPLES):
     return table
 
 
+LUT_SEARCH_DEPTH = 2              # subfolder levels below the LUT Location
+
+
+def _find_in_subfolders(folder, name, depth=LUT_SEARCH_DEPTH):
+    """``<name>.cube`` (or ``<name>``) in the subfolders of ``folder``, first in
+    sorted order, or None. RenderView lists those LUTs too and records only the
+    name: Redshift's own sit in ``Data/LUT/FilmicLUTs``, ``LC3DLuts``…
+    (measured 2026-10-24, macOS round 1)."""
+    wanted = (name.lower() + ".cube", name.lower())
+    base_depth = folder.rstrip(os.sep).count(os.sep)
+    for root, dirs, files in os.walk(folder):
+        dirs.sort()
+        if root.rstrip(os.sep).count(os.sep) - base_depth >= depth:
+            dirs[:] = []
+        for wanted_name in wanted:
+            for filename in sorted(files):
+                if filename.lower() == wanted_name:
+                    return os.path.join(root, filename)
+    return None
+
+
 def _lut_path(attrs):
     name = str(attrs.get("LUT File") or "").strip()
     folder = str(attrs.get("LUT Location") or "").strip()
@@ -139,6 +160,10 @@ def _lut_path(attrs):
     for path in candidates:
         if os.path.isfile(path):
             return path, candidates
+    if folder and os.path.isdir(folder):
+        found = _find_in_subfolders(folder, name)
+        if found:
+            return found, candidates + [found]
     return None, candidates
 
 

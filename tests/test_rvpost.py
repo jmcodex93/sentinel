@@ -84,6 +84,23 @@ def test_plan_loads_the_lut_with_its_strength(tmp_path):
     assert rvpost.plan_is_active(plan)
 
 
+def test_a_lut_in_a_subfolder_of_the_lut_location_is_found(tmp_path):
+    """macOS round 1: RenderView's own LUTs live in Data/LUT/FilmicLUTs etc.
+    and the header records only "Filmic High Contrast" — it was "not found"."""
+    (tmp_path / "FilmicLUTs").mkdir()
+    (tmp_path / "FilmicLUTs" / "Look.cube").write_text(cube_text(2, lambda r, g, b: (r, g, b)))
+    plan = rvpost.post_plan(lut_attrs(tmp_path))
+    assert plan["lut"] is not None and plan["applied"] == ["LUT Look 49%"]
+    # The top folder wins over a subfolder; too deep is not searched.
+    (tmp_path / "Look.cube").write_text(cube_text(3, lambda r, g, b: (r, g, b)))
+    assert rvpost.post_plan(lut_attrs(tmp_path))["lut"][0] == 3
+    deep = tmp_path / "deep"
+    (deep / "a" / "b" / "c").mkdir(parents=True)
+    (deep / "a" / "b" / "c" / "Far.cube").write_text(cube_text(2, lambda r, g, b: (r, g, b)))
+    far = lut_attrs(deep, **{"LUT File": "Far"})
+    assert rvpost.post_plan(far)["notes"] == ["LUT Far not found"]
+
+
 def test_plan_names_a_missing_lut_and_an_unsupported_order(tmp_path):
     assert rvpost.post_plan(lut_attrs(tmp_path))["notes"] == ["LUT Look not found"]
     (tmp_path / "Look.cube").write_text(cube_text(2, lambda r, g, b: (r, g, b)))
