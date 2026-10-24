@@ -1,7 +1,7 @@
 # Sentinel — Development Rules
 
 ## Project Overview
-Sentinel (v1.40.0) is a Cinema 4D quality-control and workflow-automation plugin for professional 3D production (Redshift-first, macOS + Windows, C4D 2026). It runs as a real-time watchdog over the scene and adds render management, versioning, delivery and scene tools.
+Sentinel (v1.40.1) is a Cinema 4D quality-control and workflow-automation plugin for professional 3D production (Redshift-first, macOS + Windows, C4D 2026). It runs as a real-time watchdog over the scene and adds render management, versioning, delivery and scene tools.
 
 **Origin.** It began as YS Guardian at Yambo Studio (v1.0, Oct 2025: 5 QC checks, render presets, a few scene tools, the snapshot system). Everything since — the modular engine, 8 of the 13 checks, rulesets/baseline/gates, the SPA panel, Asset Hub, Sentinel Frame/Pin/Variants, Matwire, Material Graph, delivery manifest, installer — was developed by Javier Melgar as Sentinel. Per-release detail: `docs/HISTORY.md`.
 
@@ -11,8 +11,8 @@ lights organized in a group · viewport/render visibility mismatch · multi-axis
 **Other surfaces:** dockable SPA panel (Overview/QC/Render/Deliver/Tools), Command Palette, Reports (QC, Doctor, Supervisor, Render Validation, Delivery Summary), Asset Hub (inventory, repath, shrink, resolution switch, collect with sealed manifest), Smart Save Version + notes/TODOs, RS AOV tiers, Snapshot Watch (EXR→PNG ACES), post-render validation, project standard (publish / new shot), Sentinel Frame (per-camera multi-format takes with crop and slices), Sentinel Pin (per-object states), Sentinel Variants (structural options), Matwire (RS material from folder), Batch Rename, cleanup and keyframe tools.
 
 ## Current state
-- **v1.40.0** on `main` (tag `v1.40.0`): snapshot conversion inside C4D (no external Python on 2025.2+), configurable slate with a visual editor, RenderView post re-applied (LUT in either order, master curve), alpha kept, numbered stills. Studio target: **C4D 2026.4.0**. Accepted on Windows 11 + C4D 2026.4.0 (clean profile, Sentinel only) in round 5 (0 failures), and live-checked on macOS + C4D 2026.304. Candidate ZIPs come from `build_candidate.py` (add the `.sha256` beside them).
-- Still open: a Frame/Hub pass on Windows with the studio's usual plugins (waived for now: they only exist on the C4D 2025 install), and the `http.handler_failed` entry seen once on Windows (not seen in rounds 4–5).
+- **v1.40.1** on `main` (tag `v1.40.1`): snapshot conversion inside C4D (no external Python on 2025.2+), configurable slate with a visual editor, RenderView post re-applied (LUT from any subfolder in either order, channel and master curves), alpha kept, numbered stills. Studio target: **C4D 2026.4.0**; 2026.3 counts the same for acceptance. Accepted on Windows 11 + C4D 2026.4.0 (round 6, clean profile, 12/12) and on macOS + C4D 2026.304 (round 1, with the studio's usual plugins loaded; `docs/audit/2026-10-24-macos-acceptance.md`). Candidate ZIPs come from `build_candidate.py` (add the `.sha256` beside them).
+- Still open: a Frame/Hub pass on Windows with the studio's usual plugins (waived: they only exist on the C4D 2025 install; covered on macOS), and the `http.handler_failed` entry seen once on Windows (not seen since).
 - Windows + C4D 2026.3.4 crashes when expanding the Sentinel Frame tag in the Attribute Manager (native null call in `gui.module`, no Python on the stack, cause not isolated) — documented limitation, not pursued.
 
 ## Where things are

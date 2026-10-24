@@ -2,14 +2,14 @@
 
 Solo lo pendiente. Lo entregado, con su porqué, está en [`docs/HISTORY.md`](docs/HISTORY.md).
 
-## Estado (2026-10-22)
-- `main`: **v1.40.0** (etiqueta `v1.40.0`, candidata `sentinel-beta-785de8db7e7b`). Objetivo del estudio: **C4D 2026.4.0**.
-- Aceptada en Windows 11 + C4D 2026.4.0 (perfil limpio, Sentinel como único plugin de terceros) en la ronda 5, sin fallos, y verificada en vivo en macOS + C4D 2026.304. Evidencia: [`docs/audit/2026-09-24-windows-acceptance.md`](docs/audit/2026-09-24-windows-acceptance.md).
+## Estado (2026-10-24)
+- `main`: **v1.40.1** (etiqueta `v1.40.1`, candidata `sentinel-beta-f0d1fb92ebba` con solo la versión cambiada). Objetivo del estudio: **C4D 2026.4.0**; para aceptación valen igual 2026.3 y 2026.4.
+- Aceptada en Windows 11 + C4D 2026.4.0 (ronda 6, perfil limpio, 12/12) y en macOS + C4D 2026.304 (ronda Mac 1, con los plugins habituales del estudio). Evidencia: [`docs/audit/2026-09-24-windows-acceptance.md`](docs/audit/2026-09-24-windows-acceptance.md) y [`docs/audit/2026-10-24-macos-acceptance.md`](docs/audit/2026-10-24-macos-acceptance.md).
 - CI en cada PR y push a `main`: pytest en Linux, macOS y Windows + web.
 
 ## Para cerrar la beta
 - [x] Windows: casilla "Save snapshots as EXR" de RenderView comprobada en las rondas 4 y 5 (y el aviso ámbar cuando falta).
-- [ ] Windows: repetir Frame (expandir el tag) y Hub (Switch res) con los plugins habituales del estudio cargados. Dispensado por ahora: esos plugins solo están instalados en C4D 2025.
+- [ ] Windows: repetir Frame (expandir el tag) y Hub (Switch res) con los plugins habituales del estudio cargados. Dispensado por ahora: esos plugins solo están instalados en C4D 2025. En macOS se probó con ellos cargados (ronda Mac 1, sin fallos de Frame ni Hub).
 - [ ] `http.handler_failed` visto una vez en la consola de Windows: capturar el texto completo si reaparece (no reproducido en macOS ni en las rondas 4 y 5).
 - [ ] Usabilidad: la ventana de Settings ya abierta puede quedar detrás del panel al pedirla otra vez (`open_form` reutiliza sin traer al frente; no romper la protección contra cerrar/abrir un HTML viewer vivo). El nombre de artista del Overview no se refresca hasta reabrir el panel.
 

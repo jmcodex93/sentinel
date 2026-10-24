@@ -149,3 +149,15 @@ Windows 11 Pro 25H2 (build 26200), **C4D 2026.4.0**, Redshift 2026.7.0, clean pr
   - watch-folder conversions are not logged in the console.
 - RenderView rewrites a snapshot EXR when it is selected in the tray; the watcher never re-converts a processed file.
 
+## Round 6 — 2026-10-24 (candidate `f0d1fb9`, C4D 2026.4.0) — PASS
+
+Windows 11 Pro (build 26200), **C4D 2026.4.0**, clean profile `c4d_prefs_r5` with Sentinel only; 126/126 installed files matched the manifest. **12 OK, 0 FAIL.**
+
+- **Folder picker:** "Save for the project" opened in `ACME\c4d\_Shots`, the scene's folder.
+- **Slate:** the row read "on · project ruleset" about 250 ms after going back, and the slate showed `v001` without a Save Version history.
+- **Redshift library LUT:** `AdanmqLUTS\F125.cube` at 50 %, colour management before the LUT off, plus the master curve. Notice: "LUT F125 50%, RGB curve", with no "not found". Against the RenderView export: 0.35 levels mean, P99 3.
+- **Curves:** master + green gave "RGB curve, green curve", 0.53 levels mean, max 3. Green alone gave "green curve", 0.35 mean, max 2.
+- **Live updates and logs:** the non-EXR alert appeared live at 3.8 s, and the watch folder logged "Snapshot watch: converted …" for each snapshot.
+- **Regression:** stills are numbered and RGBA with and without the slate. All tabs open, and the Frame tag on a camera was expanded ×5 with no crash.
+- **Operator note:** a Frame tag put on a cube by mistake showed "sync failed - see console". The tag needs a camera.
+
