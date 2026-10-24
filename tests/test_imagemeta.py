@@ -41,7 +41,8 @@ def make_jpeg(width, height, bit_depth=8, channels=3, include_sof=True):
     return out
 
 
-def make_tiff(width, height, bit_depth, channels, big_endian=False):
+def make_tiff(width, height, bit_depth, channels, big_endian=False,
+              sample_format=None):
     endian = ">" if big_endian else "<"
     magic = b"MM\x00*" if big_endian else b"II*\x00"
     entries = [
@@ -50,6 +51,8 @@ def make_tiff(width, height, bit_depth, channels, big_endian=False):
         (258, 3, 1, bit_depth),
         (277, 3, 1, channels),
     ]
+    if sample_format is not None:
+        entries.append((339, 3, 1, sample_format))
     ifd = struct.pack(endian + "H", len(entries))
     for tag, typ, cnt, val in entries:
         if typ == 3:
@@ -175,6 +178,16 @@ def test_tiff_big_endian(tmp_path):
     assert imagemeta.read_image_meta(path) == {
         "width": 320, "height": 240, "channels": 3, "bit_depth": 8, "colorspace": "",
     }
+
+
+def test_tiff_float_sample_format(tmp_path):
+    path = _write(tmp_path, "a.tif", make_tiff(64, 64, 32, 1, sample_format=3))
+    assert imagemeta.read_image_meta(path)["float"] is True
+
+
+def test_tiff_integer_sample_format_has_no_float_key(tmp_path):
+    path = _write(tmp_path, "a.tif", make_tiff(64, 64, 16, 1, sample_format=1))
+    assert "float" not in imagemeta.read_image_meta(path)
 
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ import {
   leftoverDestinationLabel,
   matwireToast,
   packedOrmNote,
+  heightRangeNote,
   projectionUnavailableNote,
   effectiveProjection,
   suffixWarningsNote,
@@ -367,5 +368,18 @@ describe("material type", () => {
       "→ roughness (glossiness mode)",
     );
     expect(glossDestinationLabel(["roughness"], "openpbr")).toBeNull();
+  });
+});
+
+describe("heightRangeNote", () => {
+  it("names the zero level per convention", () => {
+    expect(heightRangeNote("centered")).toBe("→ mid-grey = flat (−0.5…0.5)");
+    expect(heightRangeNote("zero_based")).toBe("→ float, 0 = flat (0…1)");
+    expect(heightRangeNote("unverified")).toBe("→ float 0…1, convention not verified");
+  });
+
+  it("is null for rows without a range", () => {
+    expect(heightRangeNote(undefined)).toBeNull();
+    expect(heightRangeNote(null)).toBeNull();
   });
 });

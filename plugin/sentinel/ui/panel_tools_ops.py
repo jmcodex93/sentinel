@@ -383,6 +383,19 @@ def _matwire_request(payload):
                                      extra_suffixes=extra or None)
     if not scan["sets"]:
         return {"ok": False, "error": "no_sets"}
+    # Height convention probes (matwire.height_range): only the file can say
+    # whether a .tif is float, and only a float map's pixels can say whether
+    # zero or mid-grey is flat. Done here, once per request, so the preview
+    # and the writer read the same answer and create never trusts a client row.
+    from sentinel import imagemeta
+    for tex_set in scan["sets"]:
+        rel = tex_set["channels"].get("height")
+        if rel:
+            path = matwire_c4d._join(folder, rel)
+            meta = imagemeta.read_image_meta(path)
+            tex_set["height_float"] = bool(meta and meta.get("float"))
+            if matwire.height_is_float(rel, tex_set["height_float"]):
+                tex_set["height_stats"] = matwire_c4d.height_float_stats(path)
     return {"doc": doc, "folder": folder, "scan": scan,
             "default_root": default_root, "suffix_warnings": warnings}
 

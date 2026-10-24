@@ -22,6 +22,7 @@ import {
   matwireToast,
   openpbrUnavailableNote,
   packedOrmNote,
+  heightRangeNote,
   projectionUnavailableNote,
   effectiveProjection,
   suffixWarningsNote,
@@ -351,6 +352,10 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
                       // maps ends up unconnected, and the preview must not
                       // read like a normal wired channel (review I2).
                       const ormNote = packedOrmNote(row.contributes);
+                      // The height row says which zero level the
+                      // displacement uses (mid-grey for integer maps, black
+                      // for float) — server-derived, file-dependent only.
+                      const heightNote = heightRangeNote(row.range);
                       // The glossiness row says what it actually gets wired
                       // as — mirrored from the engine's gloss_destination so
                       // it relabels the instant the Material selector flips,
@@ -373,9 +378,9 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
                           >
                             {row.file}
                           </span>
-                          {(ormNote || aoNote || glossNote) && (
+                          {(ormNote || aoNote || glossNote || heightNote) && (
                             <span className="shrink-0" style={{ color: "var(--color-muted)" }}>
-                              {ormNote ?? aoNote ?? glossNote}
+                              {ormNote ?? aoNote ?? glossNote ?? heightNote}
                             </span>
                           )}
                           <ColorspaceChip colorspace={row.colorspace} />

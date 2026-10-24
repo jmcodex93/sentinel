@@ -37,13 +37,16 @@ reached the document, so there is nothing to clean up (no ``mat.Remove()``,
 no balancing ``AddUndo(DELETE)``).
 """
 
+import array
 import os
 
 import c4d
 
 from sentinel.common.helpers import safe_print
-from sentinel.matwire import (ao_destination, channel_colorspace,
-                              gloss_destination, orm_contributions)
+from sentinel.matwire import (HEIGHT_RANGES, ao_destination,
+                              channel_colorspace, gloss_destination,
+                              height_range, height_stats,
+                              orm_contributions)
 
 try:
     import maxon
@@ -708,6 +711,50 @@ def _ut_build(graph, plan, samplers, made):
     return group
 
 
+#: Rows and columns sampled per axis when judging a float height map — a
+#: stride, so an 8K EXR costs ~256 row reads, not 8192.
+HEIGHT_SAMPLE_GRID = 256
+
+# (path, mtime_ns, size) -> stats: the panel re-fetches the preview on every
+# toggle, and loading a large EXR dominates the cost. A changed file has a
+# new key, so the server still re-derives from what is on disk.
+_HEIGHT_STATS_CACHE = {}
+
+
+def height_float_stats(path):
+    """``matwire.height_stats`` of a float height map's pixels (red channel
+    — height maps are grey), sampled on a ``HEIGHT_SAMPLE_GRID`` stride, or
+    ``None`` when the file can't be read. Never raises."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    key = (path, st.st_mtime_ns, st.st_size)
+    if key in _HEIGHT_STATS_CACHE:
+        return _HEIGHT_STATS_CACHE[key]
+    stats = None
+    try:
+        bmp = c4d.bitmaps.BaseBitmap()
+        result, _ = bmp.InitWith(path)
+        if result == c4d.IMAGERESULT_OK:
+            width, height = bmp.GetSize()
+            step_x = max(1, width // HEIGHT_SAMPLE_GRID)
+            step_y = max(1, height // HEIGHT_SAMPLE_GRID)
+            row = bytearray(width * 12)
+            values = []
+            for y in range(0, height, step_y):
+                # GetPixelCnt returns a falsy value even on success: never test it.
+                bmp.GetPixelCnt(0, y, width, row, 12, c4d.COLORMODE_RGBf, c4d.PIXELCNT_0)
+                floats = array.array("f")
+                floats.frombytes(row)
+                values.extend(floats[0::3 * step_x])
+            stats = height_stats(values)
+    except Exception:
+        stats = None
+    _HEIGHT_STATS_CACHE[key] = stats
+    return stats
+
+
 def _sampler(path, colorspace):
     return {
         "$type": "#" + _RS_CORE + "texturesampler",
@@ -843,10 +890,20 @@ def build_description(folder, tex_set, multiply_ao=False,
         "$type": "#" + _RS_OUTPUT,
         "#<" + _RS_OUTPUT + ".surface": brdf,
     }
-    if "height" in channels:
+    height = height_range(channels, tex_set.get("height_float"),
+                          tex_set.get("height_stats"))
+    if height is not None:
+        # The remap is ALWAYS written (never depend on node defaults): RS
+        # ships 0..1, which inflates an integer map by half the scale.
+        # WHICH range is decided once, by ``matwire.height_range`` — the
+        # same function the preview's height row reads.
+        low, high = HEIGHT_RANGES[height]
+        disp = _RS_CORE + "displacement"
         desc["#<" + _RS_OUTPUT + ".displacement"] = {
-            "$type": "#" + _RS_CORE + "displacement",
-            "#<" + _RS_CORE + "displacement.texmap": _sampler(path("height"), _rs_colorspace("height")),
+            "$type": "#" + disp,
+            "#<" + disp + ".texmap": _sampler(path("height"), _rs_colorspace("height")),
+            "#<" + disp + ".newrange_min": low,
+            "#<" + disp + ".newrange_max": high,
         }
     # Loose sampler ONLY when the AO isn't wired into the color layer.
     ao_desc = (_sampler(path("ao"), _rs_colorspace("ao"))

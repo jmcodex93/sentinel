@@ -37,6 +37,18 @@ export function packedOrmNote(contributes: string[] | undefined): string | null 
   return `→ ${contributes.join(" + ")}`;
 }
 
+/** Suffix note for the height row — which level the Displacement remap
+ * treats as flat, server-derived from `matwire.height_range` (the same
+ * source as the writer; a float map is judged by its pixels). "unverified"
+ * is a float map whose pixels didn't settle the convention: it keeps 0…1
+ * and the row says so. Null for rows without a `range` (non-height rows). */
+export function heightRangeNote(range: string | null | undefined): string | null {
+  if (range === "centered") return "→ mid-grey = flat (−0.5…0.5)";
+  if (range === "zero_based") return "→ float, 0 = flat (0…1)";
+  if (range === "unverified") return "→ float 0…1, convention not verified";
+  return null;
+}
+
 /** Truthful Create-button count (review M1): the server also creates the
  * catch-all `<root>_leftovers` material when leftover import is ON and at
  * least one unrecognized file matched no set — the button used to promise
