@@ -6,9 +6,9 @@ looking at (LUT, colour controls, bloom…) only travel as header attributes, so
 RenderView can re-apply them on display. Measured 2026-10-02: two snapshots of
 the same frame, LUT on and post off, were pixel-identical. This module rebuilds
 what is verified against RenderView PNG exports — the LUT (``.cube`` sampled
-like a GPU 3D texture, blended by its strength) and then the master RGB curve
-or one channel's curves (natural cubic splines) — and names everything else
-instead of guessing it.
+like a GPU 3D texture, blended by its strength) and then the curves — each
+channel's curve first, then the master RGB curve (natural cubic splines) — and
+names everything else instead of guessing it.
 
 Where the LUT goes depends on RenderView's "Apply color management before
 LUT": on, after the OCIO view (display values); off, before it, on the
@@ -208,22 +208,26 @@ def post_plan(attrs):
                 plan["applied"].append("RGB curve")
             except ValueError:
                 plan["notes"].append("RGB curve")
-        # A channel curve alone matches RenderView as a natural spline on the
-        # display value (Windows round 5: 0.27 levels mean, max 3). With the
-        # master curve also set, their order is unmeasured: named, not guessed.
+        # A channel curve is a natural spline on the display value (Windows
+        # round 5: 0.27 levels mean, max 3) and goes BEFORE the master curve
+        # (macOS round 1: 0.53 levels, max 3; master first failed 82 % of the
+        # pixels). Its table already includes the master, if there is one.
         for index, channel in enumerate(CHANNELS):
             points = curve_points(attrs, channel)
             if is_identity_curve(points):
                 continue
             label = "%s curve" % channel.lower()
-            if plan["curve"] is not None:
-                plan["notes"].append("%s (with the RGB curve: order unmeasured)" % label)
-                continue
             try:
-                plan["channel_curves"][index] = spline_table(points)
-                plan["applied"].append(label)
+                table = spline_table(points)
             except ValueError:
                 plan["notes"].append(label)
+                continue
+            if plan["curve"] is not None:
+                master = plan["curve"]
+                k1 = CURVE_SAMPLES - 1
+                table = [master[int(value / 255.0 * k1 + 0.5)] for value in table]
+            plan["channel_curves"][index] = table
+            plan["applied"].append(label)
         # RenderView's Color Controls are Contrast and the curves (RS 2026.7,
         # Windows round 5); the header's Exposure/Saturation/Gamma/Hue keys
         # belong to other Redshift settings and are not RenderView post.
@@ -247,9 +251,10 @@ def plan_is_active(plan):
 
 
 def _channel_tables(plan):
-    """Per R, G, B: the curve table to map through, or None (plain encode)."""
+    """Per R, G, B: the curve table to map through, or None (plain encode).
+    A channel's table already includes the master curve."""
     channels = plan.get("channel_curves") or [None, None, None]
-    return [plan["curve"] if plan["curve"] is not None else table for table in channels]
+    return [table if table is not None else plan["curve"] for table in channels]
 
 
 def applied_label(plan):
