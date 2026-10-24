@@ -84,6 +84,23 @@ def test_plan_loads_the_lut_with_its_strength(tmp_path):
     assert rvpost.plan_is_active(plan)
 
 
+def test_a_lut_in_a_subfolder_of_the_lut_location_is_found(tmp_path):
+    """macOS round 1: RenderView's own LUTs live in Data/LUT/FilmicLUTs etc.
+    and the header records only "Filmic High Contrast" — it was "not found"."""
+    (tmp_path / "FilmicLUTs").mkdir()
+    (tmp_path / "FilmicLUTs" / "Look.cube").write_text(cube_text(2, lambda r, g, b: (r, g, b)))
+    plan = rvpost.post_plan(lut_attrs(tmp_path))
+    assert plan["lut"] is not None and plan["applied"] == ["LUT Look 49%"]
+    # The top folder wins over a subfolder; too deep is not searched.
+    (tmp_path / "Look.cube").write_text(cube_text(3, lambda r, g, b: (r, g, b)))
+    assert rvpost.post_plan(lut_attrs(tmp_path))["lut"][0] == 3
+    deep = tmp_path / "deep"
+    (deep / "a" / "b" / "c").mkdir(parents=True)
+    (deep / "a" / "b" / "c" / "Far.cube").write_text(cube_text(2, lambda r, g, b: (r, g, b)))
+    far = lut_attrs(deep, **{"LUT File": "Far"})
+    assert rvpost.post_plan(far)["notes"] == ["LUT Far not found"]
+
+
 def test_plan_names_a_missing_lut_and_an_unsupported_order(tmp_path):
     assert rvpost.post_plan(lut_attrs(tmp_path))["notes"] == ["LUT Look not found"]
     (tmp_path / "Look.cube").write_text(cube_text(2, lambda r, g, b: (r, g, b)))
@@ -118,19 +135,30 @@ def test_only_contrast_is_a_renderview_color_control():
 
 
 def test_plan_applies_the_master_curve_and_names_the_rest():
-    """With the master curve set, a channel curve's order against it is
-    unmeasured: the master is applied, the channel curve named."""
     attrs = {"Color Controls Enabled": 1, "Highlights": 0.2, "Contrast": 0.3,
              "Bloom Enabled": 1, "Vignetting": 0.3}
     attrs.update(curve_attrs("RGB", RV_CURVE))
-    attrs.update(curve_attrs("Red", [(0.0, 0.1), (1.0, 1.0)]))
     plan = rvpost.post_plan(attrs)
     assert plan["curve"] is not None and plan["applied"] == ["RGB curve"]
-    assert plan["channel_curves"] == [None, None, None]
-    red = "red curve (with the RGB curve: order unmeasured)"
-    assert plan["notes"] == [red, "contrast", "bloom", "vignetting"]
+    assert plan["notes"] == ["contrast", "bloom", "vignetting"]
     assert rvpost.describe(plan) == ("RenderView post applied: RGB curve · "
-                                     "not reproduced: %s, contrast, bloom, vignetting" % red)
+                                     "not reproduced: contrast, bloom, vignetting")
+
+
+def test_a_channel_curve_goes_before_the_master_curve():
+    """macOS round 1 (M3 pair): channel curve first, then the master —
+    0.53 levels mean on green; master first failed 82 % of the pixels."""
+    attrs = {"Color Controls Enabled": 1}
+    attrs.update(curve_attrs("RGB", RV_CURVE))
+    attrs.update(curve_attrs("Green", GREEN))
+    plan = rvpost.post_plan(attrs)
+    assert plan["applied"] == ["RGB curve", "green curve"] and plan["notes"] == []
+    master = rvpost.spline_table(RV_CURVE)
+    green = rvpost.spline_table(GREEN)
+    k1 = rvpost.CURVE_SAMPLES - 1
+    out = rvpost.apply_row([0.3, 0.3, 0.3], plan)
+    assert out[0] == master[int(0.3 * k1 + 0.5)] == out[2]
+    assert out[1] == master[int(green[int(0.3 * k1 + 0.5)] / 255.0 * k1 + 0.5)]
 
 
 GREEN = [(0.0, 0.0), (0.4956521689891815, 0.7260869741439819), (1.0, 1.0)]
