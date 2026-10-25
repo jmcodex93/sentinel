@@ -9,8 +9,16 @@ Inter font notices are distributed separately at web/fonts/LICENSE.txt and
 fonts/LICENSE.txt. fonts/Inter-Regular.ttf (used to draw the snapshot slate) is
 the Regular instance (wght 400) of web/fonts/InterVariable.woff2, made static
 with fontTools; the font itself is unmodified (SIL OFL 1.1, no reserved name).
-abc_retime attribution remains in abc_retime/README.md; this document does
-not grant redistribution rights for that component or bundled scene assets.
+This document does not grant redistribution rights for bundled scene assets.
+
+========================================================================
+ABC Retime (abc_retime/) 1.1.3
+========================================================================
+
+Copyright AXISFX LTD. Author: Ewan Davidson (ewan@axisfx.design).
+Source: https://github.com/axisfx2/abc_retime — bundled unmodified; its own
+README.md travels with it. The upstream repository publishes no license file,
+so its terms are the author's, not Sentinel's.
 
 ========================================================================
 @floating-ui/core 1.8.0, @floating-ui/dom 1.8.0, @floating-ui/react-dom 2.1.9, @floating-ui/utils 0.2.12
