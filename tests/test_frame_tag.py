@@ -891,3 +891,54 @@ def test_signature_changes_on_host_camera_rename(sentinel_module):
     # Dict-only tags (no GetObject) keep a stable empty prefix — the whole
     # existing signature suite relies on that.
     assert frame_tag._params_payload_for_takes({frame_tag.ID_COMPOSITION: 0})["prefix"] == ""
+
+
+def test_a_frame_tag_off_a_camera_asks_for_one_and_never_syncs(sentinel_module, monkeypatch):
+    """Windows round 6: a Frame tag dropped on a cube read "sync failed -
+    see console" — the auto-sync ran, got invalid_host and counted it as a
+    failure. Off a camera it now says what to do and is never scheduled."""
+    import c4d
+    from sentinel.ui import frame_sync, frame_tag
+    # test_frame_sync imports the module without the fake c4d (c4d = None);
+    # rebind it to the harness so request_sync runs its real path.
+    frame_sync = importlib.reload(frame_sync)
+
+    class Host:
+        def __init__(self, type_id):
+            self._type = type_id
+
+        def GetType(self):
+            return self._type
+
+    class Tag:
+        def __init__(self, type_id, uid):
+            self._host = Host(type_id)
+            self._uid = uid
+
+        def GetObject(self):
+            return self._host
+
+        def FindUniqueID(self, _creator):
+            return self._uid
+
+    monkeypatch.setattr(c4d, "SpecialEventAdd", lambda *a: None, raising=False)
+    monkeypatch.setattr(frame_tag, "_params_signature_for_takes", lambda tag: "sig")
+    monkeypatch.setattr(frame_tag, "_is_stale_from_signature", lambda node: False)
+    scheduler = frame_sync.SyncScheduler(debounce=0.5)
+    monkeypatch.setattr(frame_sync, "scheduler", scheduler)
+
+    cube = Tag(5159, b"cube")
+    frame_sync.last_sync_result[frame_sync._tag_key(cube)] = "failed"
+    assert frame_tag._sync_status_text(cube) == frame_tag.NEEDS_CAMERA_STATUS
+    frame_sync.request_sync(cube)
+    assert not scheduler.has_pending(frame_sync._tag_key(cube))
+    assert frame_sync._tag_key(cube) not in frame_sync.last_sync_result
+
+    camera = Tag(frame_tag.OCAMERA, b"cam")
+    frame_sync.request_sync(camera)
+    assert scheduler.has_pending(frame_sync._tag_key(camera))
+    assert frame_tag._sync_status_text(camera) == "syncing..."
+    scheduler.due(1e9)
+    frame_sync.last_sync_result[frame_sync._tag_key(camera)] = "failed"
+    assert frame_tag._sync_status_text(camera) == "sync failed - see console"
+    frame_sync.last_sync_result.clear()

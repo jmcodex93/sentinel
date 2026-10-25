@@ -277,6 +277,7 @@ def _install_fake_c4d():
     plugins = _PermissiveModule("c4d.plugins")
     plugins.CommandData = object
     plugins.ObjectData = object
+    plugins.MessageData = object  # a real base class (frame_sync subclasses it)
     plugins.RegisterCommandPlugin = lambda *args, **kwargs: True
     plugins.RegisterObjectPlugin = lambda *args, **kwargs: True
 

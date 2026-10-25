@@ -109,6 +109,14 @@ def request_sync(tag):
     key = _tag_key(tag)
     if not key:
         return
+    try:
+        from sentinel.ui.frame_tag import _host_is_valid_camera
+        if not _host_is_valid_camera(tag):
+            # Nothing to sync on a non-camera; the AM status line says so.
+            last_sync_result.pop(key, None)
+            return
+    except Exception:
+        pass
     import time
     try:
         from sentinel.ui.frame_tag import _params_signature_for_takes
@@ -167,6 +175,11 @@ def _drain(now):
         try:
             result = run_full_sync(doc, tag)
             ran_any = True
+            if result.get("error") == "invalid_host":
+                # Moved off its camera inside the debounce window: not a
+                # failure — the AM status line asks for a camera.
+                last_sync_result.pop(key, None)
+                continue
             last_sync_result[key] = "ok" if result.get("ok") else "failed"
             if not result.get("ok"):
                 safe_print("Sentinel Frame auto-sync failed: %s" % result.get("error"))

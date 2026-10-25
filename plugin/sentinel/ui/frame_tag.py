@@ -1252,8 +1252,16 @@ def set_viewing(doc, tag, target):
     return {"ok": False, "viewing": None, "error": "unknown_format"}
 
 
+NEEDS_CAMERA_STATUS = "needs a camera - move this tag onto a camera"
+
+
 def _sync_status_text(node):
-    """Derived AM status line: pending window > failed > drift > synced."""
+    """Derived AM status line: not on a camera > pending window > failed >
+    drift > synced. A tag dropped on a non-camera never syncs (it has no
+    lens to frame), so it says so instead of a generic failure (Windows
+    round 6: a tag on a cube read "sync failed - see console")."""
+    if not _host_is_valid_camera(node):
+        return NEEDS_CAMERA_STATUS
     try:
         from sentinel.ui import frame_sync
         key = frame_sync._tag_key(node)
