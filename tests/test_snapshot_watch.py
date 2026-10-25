@@ -548,8 +548,8 @@ def test_exr_task_with_ocio_converter_converts_inside_c4d(monkeypatch, tmp_path)
     from pathlib import Path
     from sentinel import snapshots, snapshot_c4d
     calls = []
-    def in_c4d(source, output, converter, slate=None, font=None, style=None):
-        calls.append((Path(source).name, converter, slate, font, style))
+    def in_c4d(source, output, converter, slate=None, font=None, style=None, view_note=None):
+        calls.append((Path(source).name, converter, slate, font, style, view_note))
         Path(output).write_bytes(b'png')
         return True, None
     def external(*args, **kwargs):
@@ -559,9 +559,10 @@ def test_exr_task_with_ocio_converter_converts_inside_c4d(monkeypatch, tmp_path)
     out = tmp_path / 'out'
     ok, message = snapshots.run_snapshot_task({
         'source': str(tmp_path / 'new.exr'), 'output_dir': str(out), 'scene_name': 'shot',
-        'slate': {'shot': 'shot'}, 'slate_style': {'size': 2.0}, 'ocio': 'converter', 'font': 'font'})
+        'slate': {'shot': 'shot'}, 'slate_style': {'size': 2.0}, 'ocio': 'converter', 'font': 'font',
+        'view_note': 'note'})
     assert (ok, message) == (True, 'converted shot_snap_001.png')
-    assert calls == [('new.exr', 'converter', {'shot': 'shot'}, 'font', {'size': 2.0})]
+    assert calls == [('new.exr', 'converter', {'shot': 'shot'}, 'font', {'size': 2.0}, 'note')]
     assert (out / 'shot_snap_001.png').read_bytes() == b'png'
 
 
@@ -580,9 +581,18 @@ def _prepare(monkeypatch, tmp_path, *, ocio, slate_on, name='snap.exr'):
     monkeypatch.setattr(flows, 'build_slate_data',
                         lambda doc, artist, project='': {'shot': 'shot', 'project': project})
     monkeypatch.setattr(snapshot_c4d, 'ocio_available', lambda: ocio)
-    monkeypatch.setattr(snapshot_c4d, 'color_converter', lambda doc: 'converter')
+    seen = {}
+
+    def converter(doc, exr_path):
+        seen['exr'] = exr_path
+        return 'converter', 'view note'
+    monkeypatch.setattr(snapshot_c4d, 'snapshot_converter', converter)
     monkeypatch.setattr(snapshot_c4d, 'resolve_slate_font', lambda: ('font', 'Inter-Regular'))
-    return flows.prepare_snapshot_task(Doc(), 'Artist', str(tmp_path / name))
+    task = flows.prepare_snapshot_task(Doc(), 'Artist', str(tmp_path / name))
+    if ocio and name.endswith('.exr'):
+        # The converter is picked for THIS snapshot (its recorded OCIO view).
+        assert seen['exr'] == str(tmp_path / name) and task['view_note'] == 'view note'
+    return task
 
 
 def test_prepare_captures_converter_and_font_for_a_slated_exr(sentinel_module, monkeypatch, tmp_path):
@@ -657,7 +667,7 @@ def test_read_exr_attributes_reads_curve_points(tmp_path):
 def test_watch_message_carries_the_render_view_post_notice(monkeypatch, tmp_path):
     from pathlib import Path
     from sentinel import snapshots, snapshot_c4d
-    def in_c4d(source, output, converter, slate=None, font=None, style=None):
+    def in_c4d(source, output, converter, slate=None, font=None, style=None, view_note=None):
         Path(output).write_bytes(b"png")
         return True, "RenderView post applied: LUT Look 49%"
     monkeypatch.setattr(snapshot_c4d, "convert_snapshot", in_c4d)
@@ -763,7 +773,7 @@ def test_save_still_numbers_each_still_instead_of_overwriting(sentinel_module, m
     monkeypatch.setattr(flows, "_find_latest_exr", lambda d: (str(tmp_path / "a.exr"), None))
     monkeypatch.setattr(flows, "_get_stills_dir", lambda doc, artist: str(out))
     monkeypatch.setattr(flows, "_active_rules_for_doc", lambda doc: Rules())
-    monkeypatch.setattr(flows, "_in_c4d_conversion", lambda doc, slate: {})
+    monkeypatch.setattr(flows, "_in_c4d_conversion", lambda doc, slate, exr=None: {})
     shots = iter([b"first", b"second"])
     def convert(exr, png, slate_data=None):
         Path(png).write_bytes(next(shots))
@@ -827,3 +837,24 @@ def test_watch_results_are_logged_to_the_console(monkeypatch, tmp_path):
     tick()
     assert "Snapshot watch: failed: bad.png failed" in printed
     assert "Snapshot watch: copied good.png" in printed
+
+
+def test_pick_ocio_view_uses_the_view_the_snapshot_recorded():
+    """C4D 2027 scenes default to ACES 2.0 SDR-video; a snapshot taken with
+    ACES 1.0 SDR-video must be converted with ACES 1.0 (measured
+    2026-10-25: 15-37 levels off with the scene's view)."""
+    from sentinel.snapshots import pick_ocio_view
+    current = {"view": "ACES 2.0 SDR-video", "display": "sRGB"}
+    available = {"view": ["ACES 2.0 SDR-video", "ACES 1.0 SDR-video", "Raw"],
+                 "display": ["sRGB", "Display P3"]}
+    attrs = {"ocioView": "ACES 1.0 SDR-video", "ocioDisplay": "sRGB"}
+    assert pick_ocio_view(attrs, current, available) == ({"view": "ACES 1.0 SDR-video"}, "")
+    # Same view as the scene (the usual case): the document converter as is.
+    same = {"ocioView": "ACES 2.0 SDR-video", "ocioDisplay": "sRGB"}
+    assert pick_ocio_view(same, current, available) == ({}, "")
+    assert pick_ocio_view({}, current, available) == ({}, "")
+    # A recorded view this config lacks: converted with the scene's, said so.
+    overrides, note = pick_ocio_view({"ocioView": "Filmic"}, current, available)
+    assert overrides == {} and "Filmic" in note and "ACES 2.0 SDR-video" in note
+    assert pick_ocio_view({"ocioDisplay": "Display P3"}, current, available) == (
+        {"display": "Display P3"}, "")

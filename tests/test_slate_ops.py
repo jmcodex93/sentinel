@@ -128,7 +128,7 @@ def test_preview_renders_the_unsaved_style_as_a_data_uri(ops, monkeypatch, tmp_p
     monkeypatch.setattr(slate_ops.GlobalSettings, "load_artist_name", lambda: "Artist")
     monkeypatch.setattr(snapshot_c4d, "ocio_available", lambda: True)
     monkeypatch.setattr(snapshot_c4d, "resolve_slate_font", lambda: ("font", "Inter-Regular"))
-    monkeypatch.setattr(snapshot_c4d, "color_converter", lambda doc: "conv")
+    monkeypatch.setattr(snapshot_c4d, "snapshot_converter", lambda doc, exr: ("conv", ""))
     monkeypatch.setattr(flows, "build_slate_data", lambda d, a, project="": {"shot": "sh010"})
     monkeypatch.setattr(flows, "get_effective_snapshot_dir", lambda: (str(tmp_path), "auto"))
     monkeypatch.setattr(flows, "_find_latest_exr", lambda d: (str(tmp_path / "a.exr"), None))

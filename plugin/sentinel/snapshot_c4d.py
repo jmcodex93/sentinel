@@ -45,6 +45,77 @@ def color_converter(doc):
     return doc.GetColorConverter()
 
 
+_VIEW_CONVERTERS = {}
+
+
+def _ocio_names(doc):
+    names = {}
+    for key, method in (("view", "GetOcioViewTransformNames"),
+                        ("display", "GetOcioDisplayColorSpaceNames")):
+        try:
+            names[key] = [str(n) for n in getattr(doc, method)()]
+        except Exception:
+            names[key] = []
+    return names
+
+
+def _ocio_current(doc, names):
+    current = {}
+    for key, param in (("view", "DOCUMENT_OCIO_VIEW_TRANSFORM"),
+                       ("display", "DOCUMENT_OCIO_DISPLAY_COLORSPACE")):
+        try:
+            current[key] = names[key][int(doc[getattr(c4d, param)])]
+        except Exception:
+            current[key] = ""
+    return current
+
+
+def _converter_with(doc, view, display):
+    """A converter for ``doc``'s OCIO config and rendering space but the given
+    view/display: a temporary, never-inserted document with those settings
+    (the view is an index into the names its config lists, measured on C4D
+    2027.0). Cached, so the document stays alive with its converter."""
+    key = (str(doc[c4d.DOCUMENT_OCIO_CONFIG]), int(doc[c4d.DOCUMENT_OCIO_RENDER_COLORSPACE]),
+           view, display)
+    if key not in _VIEW_CONVERTERS:
+        tmp = c4d.documents.BaseDocument()
+        for param in (c4d.DOCUMENT_COLOR_MANAGEMENT, c4d.DOCUMENT_OCIO_CONFIG,
+                      c4d.DOCUMENT_OCIO_RENDER_COLORSPACE):
+            tmp[param] = doc[param]
+        tmp.UpdateOcioColorSpaces()
+        tmp[c4d.DOCUMENT_OCIO_DISPLAY_COLORSPACE] = _ocio_names(tmp)["display"].index(display)
+        tmp.UpdateOcioColorSpaces()
+        tmp[c4d.DOCUMENT_OCIO_VIEW_TRANSFORM] = _ocio_names(tmp)["view"].index(view)
+        tmp.UpdateOcioColorSpaces()
+        _VIEW_CONVERTERS[key] = (tmp, tmp.GetColorConverter())
+    return _VIEW_CONVERTERS[key][1]
+
+
+def snapshot_converter(doc, exr_path):
+    """``(converter, note)`` for one snapshot: the OCIO view and display
+    RenderView recorded in its header (see ``snapshots.pick_ocio_view``), or
+    the document's when they match or the recorded ones are not available.
+    ``note`` is what to tell the artist ("" when nothing to say). Main thread
+    only (it may create a document)."""
+    from sentinel.snapshots import pick_ocio_view, read_exr_attributes
+    try:
+        attrs = read_exr_attributes(exr_path) if exr_path else {}
+        names = _ocio_names(doc)
+        current = _ocio_current(doc, names)
+        overrides, note = pick_ocio_view(attrs, current, names)
+    except Exception:
+        return doc.GetColorConverter(), ""
+    if not overrides:
+        return doc.GetColorConverter(), note
+    view = overrides.get("view", current["view"])
+    display = overrides.get("display", current["display"])
+    try:
+        return _converter_with(doc, view, display), note
+    except Exception as exc:
+        return doc.GetColorConverter(), "could not convert with the snapshot view %s (%s); converted with %s" % (
+            view, exc, current["view"] or "the scene's view")
+
+
 def _register_bundled_font(path=BUNDLED_FONT):
     """Make the bundled font usable by this process only (no system install)."""
     import ctypes
@@ -240,7 +311,8 @@ def slate_fields(attrs, slate, size):
     return fields
 
 
-def convert_snapshot(exr_path, png_path, converter, slate=None, font=None, style=None):
+def convert_snapshot(exr_path, png_path, converter, slate=None, font=None, style=None,
+                     view_note=None):
     """EXR -> PNG at ``png_path`` (overwritten), with the slate when given.
 
     Re-applies the RenderView post the EXR header records and this module can
@@ -272,7 +344,7 @@ def convert_snapshot(exr_path, png_path, converter, slate=None, font=None, style
                 data = handle.read()
             with open(png_path, "wb") as handle:
                 handle.write(slate_layout.insert_png_text(data, metadata))
-        notice = rvpost.describe(plan)
+        notice = " · ".join(part for part in (view_note, rvpost.describe(plan)) if part)
         if notice:
             safe_print("Snapshot %s: %s" % (os.path.basename(exr_path), notice))
         return True, notice or None
