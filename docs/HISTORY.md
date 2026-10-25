@@ -6,6 +6,25 @@ Narrativa por release movida desde `CLAUDE.md` el 2026-09-23 (prompt-audit; comp
 
 - **QC #13: canal de datos con colorspace ajeno → FAIL con Fix a RAW (2026-10-23).** Un sampler cuyo canal espera Raw (AO, roughness, metalness, normal, height, opacity…) con un valor fuera de SRGB/RAW (p. ej. `ACEScg`, como lo escribe el plugin Redshift SMC) pasa de `foreign_cs` (Info) a `mismatch`: un mapa de datos no admite transformación de color (reglas de Maya, guía ACES Utility-Raw). Los canales de color con valor ajeno siguen como Info (un EXR en ACEScg puede ser legítimo); conflicto, auto, desconocido y string vacío no cambian. Medido en C4D 2026: escribir `ACEScg` en `tex0/colorspace` no crashea, el Fix escribe RAW y una sola Cmd+Z lo revierte.
 
+## v1.41.0 — IDs registrados, C4D 2027 y matriz 2025–2027 (2026-10-25)
+
+- **Plugin IDs registrados en Plugin Café** (cuenta `jmelpri`): Panel 1072205, Command Palette 1072206, Frame 1072207, Frame Sync 1072208, Pin 1072209 y Variants 1072210, todos en `common/constants.py`.
+  - Se retira el rango 2099xxx, que no estaba registrado.
+  - Cambio incompatible: los tags Frame, Pin y Variants de escenas anteriores no cargan. Solo existían escenas de prueba.
+- **Snapshots en C4D 2027:**
+  - un documento de 2027 usa la vista "ACES 2.0 SDR-video", y Sentinel convertía con la vista del documento;
+  - ahora convierte con la vista que grabó RenderView (`ocioView`), mediante un documento temporal con esa vista;
+  - un snapshot de 2026 convertido en 2027 pasa de 15–37 niveles de error a ser idéntico al de 2026;
+  - si la vista grabada no existe en la configuración de la escena, el aviso lo dice.
+- **Tag Frame fuera de una cámara:** dice «needs a camera - move this tag onto a camera» en vez de «sync failed - see console», y no programa sincronizaciones.
+- **Matriz soportada: Cinema 4D 2025, 2026 y 2027.** Doctor da por buenas esas tres versiones; 2024 pasa a aviso.
+- **Créditos:** Sentinel parte de la idea inicial de YS Guardian (Yambo Studio) y la amplía. ABC Retime se acredita a Ewan Davidson / AXISFX LTD.
+- **C4D 2027.0 en vivo** (macOS):
+  - carga sin tracebacks y registra los seis IDs;
+  - el tag Frame sincroniza takes, y Pin y Variants se crean;
+  - Doctor ve la conversión "Built in" y la fuente Inter;
+  - la conversión de snapshots con LUT y curvas da los mismos números que 2026.
+
 ## v1.40.1 — post de RenderView completo y rondas de Mac y Windows (2026-10-24)
 
 Etiqueta `v1.40.1` sobre el commit de versión encima de `f0d1fb9`; candidata `sentinel-beta-f0d1fb92ebba` aceptada en Windows 11 + C4D 2026.4.0 (ronda 6, 12/12) y en macOS + C4D 2026.304 (ronda Mac 1).

@@ -28,8 +28,10 @@ WARN = "warn"
 FAIL = "fail"
 INFO = "info"
 
-# Cinema 4D major versions Sentinel is actively tested against.
-TESTED_C4D_MAJORS = (2024, 2026)
+# Supported Cinema 4D majors (the support matrix, 2026-10-25): 2025 (Windows
+# Frame check; snapshots through the external Python before 2025.2), 2026
+# (Windows rounds 5-6, macOS round 1) and 2027 (2027.0 live-checked on macOS).
+TESTED_C4D_MAJORS = (2025, 2026, 2027)
 
 GITHUB_OWNER_REPO = "jmcodex93/sentinel"
 _RELEASES_LATEST_URL = "https://api.github.com/repos/%s/releases/latest" % GITHUB_OWNER_REPO

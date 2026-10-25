@@ -1,4 +1,4 @@
-# Sentinel v1.40.1
+# Sentinel v1.41.0
 
 Quality control, render management and delivery tools for Cinema 4D + Redshift production.
 
@@ -6,7 +6,7 @@ Quality control, render management and delivery tools for Cinema 4D + Redshift p
 
 > Sentinel started from the initial idea of [YS Guardian](https://github.com/yamb0x/ys-guardian), built at Yambo Studio (v1.0: 5 QC checks, render presets, scene tools, snapshot conversion), and has been extended far beyond it by Javier Melgar — modular QC engine, project rulesets, delivery pipeline, web-based panel, Sentinel Frame/Pin/Variants, material tools, in-C4D snapshot conversion and review slate.
 
-**Compatibility target:** Cinema 4D 2024+ with Redshift, macOS and Windows. Recorded evidence: C4D 2026.4.0 on Windows 11 (accepted), C4D 2026.3 on macOS (live-checked) and C4D 2025 on Windows (Frame check passed). Known issue: C4D 2026.3.4 on one Windows host with other plugins loaded closed when the Sentinel Frame tag was expanded; 2026.4.0 does not. Release criteria and host results: [Windows acceptance](docs/audit/2026-09-24-windows-acceptance.md), [product readiness](docs/audit/2026-09-05-product-readiness.md), [beta acceptance](docs/audit/2026-09-05-beta-acceptance.md), [GUI acceptance](docs/audit/2026-09-05-gui-acceptance.md).
+**Supported:** Cinema 4D 2025, 2026 and 2027 with Redshift, on macOS and Windows. Recorded evidence: C4D 2026.4.0 on Windows 11 (accepted, rounds 5–6), C4D 2026.3 on macOS (accepted, round 1), C4D 2027.0 on macOS (live-checked) and C4D 2025 on Windows (Frame check passed). Known issue: C4D 2026.3.4 on one Windows host with other plugins loaded closed when the Sentinel Frame tag was expanded; 2026.4.0 does not. Release criteria and host results: [Windows acceptance](docs/audit/2026-09-24-windows-acceptance.md), [product readiness](docs/audit/2026-09-05-product-readiness.md), [beta acceptance](docs/audit/2026-09-05-beta-acceptance.md), [GUI acceptance](docs/audit/2026-09-05-gui-acceptance.md).
 
 ## What it does
 
@@ -61,9 +61,9 @@ A dockable panel with Overview, QC, Render, Deliver and Tools, plus a Command Pa
 ## Installation
 
 ### Requirements
-- Cinema 4D 2024 or later, with Redshift for AOVs, snapshots and material tools
+- Cinema 4D 2025, 2026 or 2027, with Redshift for AOVs, snapshots and material tools
 - macOS or Windows
-- For snapshot conversion: a system Python 3 with `pip3 install Pillow numpy OpenEXR`
+- Snapshot conversion runs inside Cinema 4D from 2025.2. Only 2025.0/2025.1 need a system Python 3 with `pip3 install Pillow numpy OpenEXR`
 
 ### Install with `install.py`
 Close Cinema 4D first.
