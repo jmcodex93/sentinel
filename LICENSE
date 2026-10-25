@@ -1,9 +1,25 @@
-Copyright (c) 2025-2026 Javier Melgar / Yambo Studio (original YS Guardian)
+Sentinel
+Copyright (c) 2025-2026 Javier Melgar
+Portions derived from YS Guardian v1.0, copyright (c) 2025 Yambo Studio.
 
 Sentinel is free for personal and commercial use.
 
 Redistribution, resale, or republishing of Sentinel or substantial portions of
 its source code is not permitted without prior written permission.
 
-YS Guardian was originally developed at Yambo Studio. Sentinel is the continued
-maintenance and extension of that original work by Javier Melgar.
+Origin
+------
+Sentinel started from the initial idea of YS Guardian, built at Yambo Studio
+(v1.0, October 2025: five QC checks, render presets, a few scene tools and the
+snapshot system). Sentinel has since been extended far beyond that starting
+point by Javier Melgar: the modular QC engine and eight of its thirteen checks,
+project rulesets, baseline and gates, the web panel, Asset Hub, Sentinel
+Frame, Pin and Variants, Matwire, Material Graph, the delivery manifest, the
+in-Cinema 4D snapshot conversion and review slate, and the installer.
+
+Third-party components
+----------------------
+Bundled third-party components keep their own terms and are not covered by
+this license; see THIRD_PARTY_NOTICES.txt. ABC Retime (abc_retime/) is
+copyright AXISFX LTD (author: Ewan Davidson) and is bundled unmodified from
+https://github.com/axisfx2/abc_retime.

@@ -4,7 +4,7 @@ Quality control, render management and delivery tools for Cinema 4D + Redshift p
 
 ![Sentinel Interface](https://github.com/user-attachments/assets/847c6930-f54c-4f7f-86e2-5308f9e0e7bd)
 
-> Sentinel began as [YS Guardian](https://github.com/yamb0x/ys-guardian), built at Yambo Studio (v1.0: 5 QC checks, render presets, scene tools, snapshot conversion). It has since grown into a much larger tool — modular QC engine, project rulesets, delivery pipeline, web-based panel, Sentinel Frame/Pin/Variants, material tools — developed and maintained by Javier Melgar.
+> Sentinel started from the initial idea of [YS Guardian](https://github.com/yamb0x/ys-guardian), built at Yambo Studio (v1.0: 5 QC checks, render presets, scene tools, snapshot conversion), and has been extended far beyond it by Javier Melgar — modular QC engine, project rulesets, delivery pipeline, web-based panel, Sentinel Frame/Pin/Variants, material tools, in-C4D snapshot conversion and review slate.
 
 **Compatibility target:** Cinema 4D 2024+ with Redshift, macOS and Windows. Recorded evidence: C4D 2026.4.0 on Windows 11 (accepted), C4D 2026.3 on macOS (live-checked) and C4D 2025 on Windows (Frame check passed). Known issue: C4D 2026.3.4 on one Windows host with other plugins loaded closed when the Sentinel Frame tag was expanded; 2026.4.0 does not. Release criteria and host results: [Windows acceptance](docs/audit/2026-09-24-windows-acceptance.md), [product readiness](docs/audit/2026-09-05-product-readiness.md), [beta acceptance](docs/audit/2026-09-05-beta-acceptance.md), [GUI acceptance](docs/audit/2026-09-05-gui-acceptance.md).
 
@@ -103,16 +103,17 @@ Stills are saved as `<scene>_snap_###.png` under `output/stills/<artist>/<YYMMDD
 - **After updating Sentinel:** fully restart Cinema 4D. *Reload Python Plugins* is not enough.
 
 ## License
-Free for personal and commercial use. Redistribution not permitted without permission.
-Originally developed as YS Guardian at Yambo Studio. Sentinel is the continued maintenance and extension of that work by Javier Melgar.
+Free for personal and commercial use. Redistribution not permitted without permission. See [LICENSE](LICENSE).
+Sentinel started from the initial idea of YS Guardian (Yambo Studio) and has been extended by Javier Melgar; portions derived from YS Guardian v1.0 remain copyright Yambo Studio. Bundled third-party components keep their own terms ([THIRD_PARTY_NOTICES.txt](plugin/THIRD_PARTY_NOTICES.txt)).
 
 ## Support
 Report bugs from the panel's Help menu or on the [Issues page](https://github.com/jmcodex93/sentinel/issues/new). Include your Cinema 4D and Redshift versions, the steps to reproduce, and the diagnostic block from Doctor.
 
 ## Thanks
-- **Yambo Studio**, for YS Guardian, the foundation Sentinel grew from.
+- **Yambo Studio**, for YS Guardian, the initial idea Sentinel started from.
+- **Ewan Davidson / AXISFX LTD**, [ABC Retime](https://github.com/axisfx2/abc_retime), bundled unmodified (v1.1.3).
 - **Riccardo Bottoni** (@riccardobottoni), camera rigs.
-- **Austin Marola** (@zonedog) and **@axisfx**, [ABC Retime](https://github.com/axisfx2/abc_retime).
+- **Austin Marola** (@zonedog).
 - The original **Drop to Floor** creators, and **@thodos** for early tips.
 
 ## Links
