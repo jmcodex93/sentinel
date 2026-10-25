@@ -45,15 +45,16 @@ def test_bootstrap_keeps_all_six_registration_ids(sentinel_module, monkeypatch):
     monkeypatch.setattr(
         module,
         "_frame_sync",
-        SimpleNamespace(PLUGIN_ID=2099077, FrameSyncMessageData=lambda: object()),
+        SimpleNamespace(PLUGIN_ID=1072208, FrameSyncMessageData=lambda: object()),
     )
 
     assert module.Register() is True
+    # The six IDs registered on Plugin Café (sentinel.common.constants).
     assert set(registered) == {
-        2099073,
-        2099075,
-        2099076,
-        2099077,
-        2099078,
-        2099079,
+        1072205,
+        1072206,
+        1072207,
+        1072208,
+        1072209,
+        1072210,
     }

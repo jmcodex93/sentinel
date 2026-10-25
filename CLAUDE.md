@@ -30,7 +30,7 @@ lights organized in a group · viewport/render visibility mismatch · multi-axis
 - `plugin/res/` — `.res/.h/.str` for the Frame, Pin and Variants tags; a new description-based plugin needs its own triplet.
 - `plugin/c4d/` — scene assets merged by tools (`nulls`, `VibrateNull`, camera rigs) and the fallback template `new.c4d`. They must live inside `plugin/`: `sync.sh` and the installer copy only `plugin/`. The `backup/` folder C4D writes next to them is gitignored and excluded from the payload.
 - `plugin/fonts/Inter-Regular.ttf` (slate font, registered for the C4D process only), `plugin/exr_converter_external.py` (EXR→PNG in system Python, only for C4D before 2025.2), `plugin/abc_retime/` (bundled third-party, AXISFX), `plugin/legacy/` (reference only).
-- Plugin IDs: 2099069 (base), Frame tag 2099073, Palette 2099075, SPA panel 2099076, MessageData 2099077, Pin tag 2099078, Variants tag 2099079; 2099072 and 2099074 are retired/never shipped. Check `common/constants.py` before picking a new one.
+- Plugin IDs (registered on Plugin Café, account `jmelpri`, 2026-10-25), all in `common/constants.py`: SPA panel 1072205, Palette 1072206, Frame tag 1072207, Frame Sync MessageData 1072208, Pin tag 1072209, Variants tag 1072210. Never pick one by hand — generate it at https://plugincafe.maxon.net/c4dpluginid_cp. The unregistered 2099xxx range of v1.40.1 and earlier is retired: tags saved with it no longer load.
 
 ## Development flow
 - **Restart C4D** after changing the package or any registered class. Never rely on "Reload Python Plugins": live ObjectData/GeDialog instances keep old module objects (split brain). Reopening the panel only reloads the SPA bundle, not Python.

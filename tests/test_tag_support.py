@@ -37,13 +37,13 @@ def test_description_parent_preserves_the_callers_fallback_creator(sentinel_modu
         def GetType(self):
             raise RuntimeError("dead")
 
-    assert tag_support.node_creator_type(DeadNode(), 2099073) == 2099073
+    assert tag_support.node_creator_type(DeadNode(), 1072207) == 1072207
     desc_id = tag_support.description_parent(
-        DeadNode(), 7001, c4d.DTYPE_BOOL, 2099073
+        DeadNode(), 7001, c4d.DTYPE_BOOL, 1072207
     )
     assert desc_id[0].id == 7001
     assert desc_id[0].dtype == c4d.DTYPE_BOOL
-    assert desc_id[0].creator == 2099073
+    assert desc_id[0].creator == 1072207
 
 
 def test_document_from_node_prefers_owner_then_active_document(
@@ -132,7 +132,7 @@ def test_parameter_builder_writes_the_complete_explicit_contract(sentinel_module
         c4d.DTYPE_BUTTON,
         "Run",
         parent,
-        2099073,
+        1072207,
         animatable=False,
         minimum=0.0,
         maximum=1.0,
@@ -144,7 +144,7 @@ def test_parameter_builder_writes_the_complete_explicit_contract(sentinel_module
 
     assert ok is True
     desc_id, bc, actual_parent = description.calls[0]
-    assert desc_id[0].creator == 2099073
+    assert desc_id[0].creator == 1072207
     assert actual_parent == parent
     assert bc[c4d.DESC_NAME] == "Run"
     assert bc[c4d.DESC_SHORT_NAME] == "Run"
@@ -170,13 +170,13 @@ def test_group_builder_writes_layout_contract(sentinel_module):
         9100,
         "Actions",
         None,
-        2099078,
+        1072209,
         columns=2,
         titlebar=False,
     ) is True
 
     desc_id, bc, parent = description.calls[0]
-    assert desc_id[0].creator == 2099078
+    assert desc_id[0].creator == 1072209
     assert parent is None
     assert bc[c4d.DESC_NAME] == "Actions"
     assert bc[c4d.DESC_SHORT_NAME] == "Actions"

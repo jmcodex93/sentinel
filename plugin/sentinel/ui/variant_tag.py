@@ -60,7 +60,7 @@ from sentinel.ui.tag_support import (
     set_bc_value as _set_bc_value,
 )
 
-SENTINEL_VARIANT_TAG_PLUGIN_ID = 2099079
+from sentinel.common.constants import SENTINEL_VARIANT_TAG_PLUGIN_ID
 SENTINEL_VARIANT_TAG_DESCRIPTION = "Tsentinelvariants"
 
 #: El string exacto pasado a ``RegisterTagPlugin(str=...)`` en

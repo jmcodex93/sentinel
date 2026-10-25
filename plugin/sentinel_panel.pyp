@@ -11,7 +11,6 @@ if _ROOT not in sys.path:
 
 import sentinel
 from sentinel import PLUGIN_NAME
-from sentinel.common.constants import PLUGIN_ID
 from sentinel.common.helpers import safe_print
 from sentinel.common.logging import exception as log_exception
 from sentinel.common.logging import info as log_info
@@ -35,15 +34,15 @@ def _log_registration(plugin, plugin_id, ok, **fields):
         **fields,
     )
 
-# Phase 4 Task 4 — Command Palette. Own CommandData (distinct from
-# PLUGIN_ID/the main panel) so the artist can bind it a shortcut
-# independently via Preferences > Customize Commands. Grepped the 2099xxx
-# range (PLUGIN_ID=2099069, SENTINEL_FRAME_TAG_PLUGIN_ID=2099073, 2099072
-# retired, SENTINEL_PANEL_SPA_PLUGIN_ID=2099076, 2099077 unassigned,
-# SENTINEL_PIN_TAG_PLUGIN_ID=2099078 taken by pin_tag.py,
-# SENTINEL_VARIANT_TAG_PLUGIN_ID=2099079 taken by variant_tag.py) before picking
-# 2099075 — free.
-SENTINEL_PALETTE_PLUGIN_ID = 2099075
+# Phase 4 Task 4 — Command Palette. Own CommandData (distinct from the main
+# panel) so the artist can bind it a shortcut independently via Preferences >
+# Customize Commands. All plugin IDs live in sentinel.common.constants.
+from sentinel.common.constants import (
+    SENTINEL_FRAME_TAG_PLUGIN_ID as _FRAME_TAG_ID,
+    SENTINEL_PALETTE_PLUGIN_ID,
+    SENTINEL_PIN_TAG_PLUGIN_ID as _PIN_TAG_ID,
+    SENTINEL_VARIANT_TAG_PLUGIN_ID as _VARIANT_TAG_ID,
+)
 
 try:
     from sentinel.ui.frame_tag import (
@@ -53,7 +52,7 @@ try:
     )
     _FRAME_TAG_IMPORT_ERROR = None
 except Exception as _exc:
-    SENTINEL_FRAME_TAG_PLUGIN_ID = 2099073
+    SENTINEL_FRAME_TAG_PLUGIN_ID = _FRAME_TAG_ID
     SentinelFrameTag = None
     _SENTINEL_FRAME_TAG_AVAILABLE = False
     _FRAME_TAG_IMPORT_ERROR = _exc
@@ -72,7 +71,7 @@ try:
     )
     _PIN_TAG_IMPORT_ERROR = None
 except Exception as _exc:
-    SENTINEL_PIN_TAG_PLUGIN_ID = 2099078
+    SENTINEL_PIN_TAG_PLUGIN_ID = _PIN_TAG_ID
     SentinelPinTag = None
     _SENTINEL_PIN_TAG_AVAILABLE = False
     PIN_TAG_DEFAULT_NAME = "Sentinel Pin"
@@ -87,7 +86,7 @@ try:
     )
     _VARIANT_TAG_IMPORT_ERROR = None
 except Exception as _exc:
-    SENTINEL_VARIANT_TAG_PLUGIN_ID = 2099079
+    SENTINEL_VARIANT_TAG_PLUGIN_ID = _VARIANT_TAG_ID
     SentinelVariantsTag = None
     _SENTINEL_VARIANT_TAG_AVAILABLE = False
     VARIANT_TAG_DEFAULT_NAME = "Sentinel Variants"

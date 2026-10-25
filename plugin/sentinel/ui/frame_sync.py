@@ -16,8 +16,8 @@ never inside the parameter message, never from Draw/Execute.
 """
 
 DEBOUNCE_SECONDS = 0.5
-PLUGIN_ID = 2099077
-EVENT_ID = 2099077
+from sentinel.common.constants import SENTINEL_FRAME_SYNC_PLUGIN_ID as PLUGIN_ID
+EVENT_ID = PLUGIN_ID
 
 
 class SyncScheduler(object):
