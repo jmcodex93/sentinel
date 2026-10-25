@@ -236,7 +236,8 @@ def run_snapshot_task(task):
                 from sentinel.snapshot_c4d import convert_snapshot
                 ok, error = convert_snapshot(source, temporary, task["ocio"],
                                              slate=task.get("slate"), font=task.get("font"),
-                                             style=task.get("slate_style"))
+                                             style=task.get("slate_style"),
+                                             view_note=task.get("view_note"))
             else:
                 ok, error = _convert_exr_to_png(source, temporary, slate_data=task.get("slate"))
             if not ok:
@@ -305,6 +306,37 @@ def read_exr_attributes(path):
             attrs[name] = struct.unpack("<2f", value)
         pos = tend + 5 + size
     return attrs
+
+
+def pick_ocio_view(attrs, current, available):
+    """Which OCIO view and display to convert a snapshot with.
+
+    RenderView records the view it showed (``ocioView``/``ocioDisplay``); the
+    document converter applies the scene's own, and they differ when, for
+    example, a 2026 snapshot (ACES 1.0 SDR-video) is converted in a C4D 2027
+    scene, whose default is ACES 2.0 SDR-video (measured 2026-10-25).
+    ``current`` and ``available`` are ``{"view": …, "display": …}`` and
+    ``{"view": [...], "display": [...]}`` from the document. Returns
+    ``(overrides, note)``: ``overrides`` maps "view"/"display" to the recorded
+    names that differ from the scene's and exist in its config (empty = use
+    the document converter as is); ``note`` names a recorded one that does not
+    exist there, so the artist knows which view the PNG really used.
+    """
+    overrides = {}
+    missing = []
+    for key, attr in (("view", "ocioView"), ("display", "ocioDisplay")):
+        recorded = str(attrs.get(attr) or "").strip()
+        if not recorded or recorded == current.get(key):
+            continue
+        if recorded in (available.get(key) or ()):
+            overrides[key] = recorded
+        else:
+            missing.append(recorded)
+    note = ""
+    if missing:
+        note = "snapshot view %s is not in this scene's OCIO config; converted with %s" % (
+            " / ".join(missing), current.get("view") or "the scene's view")
+    return overrides, note
 
 
 def snapshot_capture_fields(attrs):

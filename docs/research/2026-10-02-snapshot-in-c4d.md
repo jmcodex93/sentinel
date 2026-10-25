@@ -216,3 +216,18 @@ header's `Saturation` (1.0 on Windows, 0.0 on macOS), `Exposure (EV)`,
 `Gamma`, `Hue` and `Highlights` are not RenderView post and are no longer named.
 The order of a channel curve against a non-flat master curve is still
 unmeasured; that combination applies the master and names the channel curve.
+
+## C4D 2027: the scene's view is not the snapshot's (2026-10-25)
+
+C4D 2027.0 (macOS) ships the maxon-cg v1.1 OCIO config, and a new document defaults to **"ACES 2.0 SDR-video"**. C4D 2026 used ACES 1.0 SDR-video. The view list in 2027 is ACES 2.0 SDR-video, ACES 1.0 SDR-video, Un-tone-mapped, Log and Raw.
+
+Converting a 2026 snapshot (header `ocioView = ACES 1.0 SDR-video`) with the 2027 document's converter came out 15–37 levels mean off its RenderView export:
+- the EXR loads identically in both versions;
+- only the view differs.
+
+The fix sets the view on a temporary, never-inserted document: copy `DOCUMENT_COLOR_MANAGEMENT`, `DOCUMENT_OCIO_CONFIG` and `DOCUMENT_OCIO_RENDER_COLORSPACE`, call `UpdateOcioColorSpaces()`, then set `DOCUMENT_OCIO_DISPLAY_COLORSPACE` and `DOCUMENT_OCIO_VIEW_TRANSFORM` to the indices of the recorded names in `GetOcioDisplayColorSpaceNames()` and `GetOcioViewTransformNames()`. Its `GetColorConverter()` gives the ACES 1.0 values exactly (0.5772 / 0 / 0.0316 for a sample, the same as 2026).
+
+With it, the 2026 snapshots convert in 2027 byte-identical to 2026, and the M1/M3 RenderView pairs give the same 0.4–0.85 levels mean as in 2026.
+
+PyOpenColorIO 2.6 with the v1.1 config does not reproduce C4D 2027's own ACES 2.0 output exactly (up to 0.22 per channel at a few sample points). That has not been chased: Sentinel always uses C4D's converter.
+

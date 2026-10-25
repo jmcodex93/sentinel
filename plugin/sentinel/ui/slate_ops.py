@@ -74,7 +74,8 @@ def _op_slate_preview(payload):
     font, font_name = snapshot_c4d.resolve_slate_font()
     snap_dir, _origin = flows.get_effective_snapshot_dir()
     exr_path, _ = flows._find_latest_exr(snap_dir) if snap_dir else (None, None)
-    converter = snapshot_c4d.color_converter(doc) if exr_path else None
+    converter, view_note = (snapshot_c4d.snapshot_converter(doc, exr_path) if exr_path
+                            else (None, ""))
     enabled = payload.get("enabled", True) is not False
     full_size = bool(payload.get("open"))
     try:
@@ -84,6 +85,8 @@ def _op_slate_preview(payload):
     except Exception as exc:
         safe_print("Slate preview failed: %s" % exc)
         return {"ok": False, "error": "preview_failed", "detail": str(exc)}
+    if view_note:
+        info["notice"] = " · ".join(part for part in (view_note, info.get("notice")) if part)
     if full_size:
         # "View at 100 %": the DRAFT, full size, in the system viewer — the
         # temp folder, never the stills folder.

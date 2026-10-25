@@ -32,8 +32,10 @@ def test_parse_c4d_major(raw, expected):
 
 
 def test_version_item_supported():
-    item = doctor.build_c4d_version_item(2026301)
-    assert item["status"] == doctor.OK
+    """The support matrix is Cinema 4D 2025 to 2027."""
+    for raw in (2025200, 2026301, 2027000):
+        assert doctor.build_c4d_version_item(raw)["status"] == doctor.OK
+    assert doctor.build_c4d_version_item(2024000)["status"] == doctor.WARN
 
 
 def test_version_item_untested_warns():

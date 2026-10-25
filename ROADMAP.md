@@ -2,9 +2,9 @@
 
 Solo lo pendiente. Lo entregado, con su porqué, está en [`docs/HISTORY.md`](docs/HISTORY.md).
 
-## Estado (2026-10-24)
-- `main`: **v1.40.1** (etiqueta `v1.40.1`, candidata `sentinel-beta-f0d1fb92ebba` con solo la versión cambiada). Objetivo del estudio: **C4D 2026.4.0**; para aceptación valen igual 2026.3 y 2026.4.
-- Aceptada en Windows 11 + C4D 2026.4.0 (ronda 6, perfil limpio, 12/12) y en macOS + C4D 2026.304 (ronda Mac 1, con los plugins habituales del estudio). Evidencia: [`docs/audit/2026-09-24-windows-acceptance.md`](docs/audit/2026-09-24-windows-acceptance.md) y [`docs/audit/2026-10-24-macos-acceptance.md`](docs/audit/2026-10-24-macos-acceptance.md).
+## Estado (2026-10-25)
+- `main`: **v1.41.0** (etiqueta `v1.41.0`). Matriz soportada: **Cinema 4D 2025–2027**, macOS y Windows. Objetivo del estudio: **C4D 2026.4.0**.
+- Aceptada en Windows 11 + C4D 2026.4.0 (ronda 6, con el código de v1.40.1) y en macOS + C4D 2026.304 (ronda Mac 1); C4D 2027.0 comprobado en vivo en macOS. Evidencia: [`docs/audit/2026-09-24-windows-acceptance.md`](docs/audit/2026-09-24-windows-acceptance.md) y [`docs/audit/2026-10-24-macos-acceptance.md`](docs/audit/2026-10-24-macos-acceptance.md).
 - CI en cada PR y push a `main`: pytest en Linux, macOS y Windows + web.
 
 ## Para cerrar la beta
@@ -21,7 +21,7 @@ Detalle en la tabla *Before distributing a commercial product* del informe de pr
 - [ ] `abc_retime` (AXISFX): permiso de redistribución o sacarlo del paquete.
 - [ ] Assets `.c4d` empaquetados: origen y permiso de cada uno. (Los iconos son propios desde la v1.39.)
 - [x] Plugin IDs: registrados en Plugin Café (cuenta `jmelpri`, 2026-10-25) y en uso desde la v1.41: Panel 1072205, Command Palette 1072206, Frame tag 1072207, Frame Sync 1072208, Pin tag 1072209, Variants tag 1072210. Se retira el rango 2099xxx sin registrar; no había escenas de producción con esos tags.
-- [ ] Matriz soportada con nombre (C4D / Redshift / SO) y plantilla de soporte.
+- [x] Matriz soportada: Cinema 4D 2025–2027 en macOS y Windows (README y Doctor). Queda la plantilla de soporte.
 
 ## Features siguientes
 - **QC #14 — assets que declara el proyecto.** Necesita su propio spec (identidad, baseline y fontanería de informe). Aporta valor aunque no se use "nuevo shot".

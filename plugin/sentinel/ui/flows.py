@@ -996,12 +996,13 @@ def snapshot_save_still_core(doc, artist_name):
     # Convert — in C4D with the document's OCIO view on 2025.2+, otherwise
     # through the external Python converter.
     try:
-        in_c4d = _in_c4d_conversion(doc, slate_data)
+        in_c4d = _in_c4d_conversion(doc, slate_data, exr_path)
         if in_c4d:
             from sentinel.snapshot_c4d import convert_snapshot
             success, error = convert_snapshot(exr_path, temp_path, in_c4d["ocio"],
                                               slate=slate_data, font=in_c4d.get("font"),
-                                              style=slate_style)
+                                              style=slate_style,
+                                              view_note=in_c4d.get("view_note"))
         else:
             success, error = _convert_exr_to_png(exr_path, temp_path, slate_data=slate_data)
         if not success:
@@ -1070,7 +1071,7 @@ def prepare_snapshot_task(doc, artist_name, snap_path):
         "slate_style": slate_style,
     }
     if snap_path.lower().endswith(".exr"):
-        task.update(_in_c4d_conversion(doc, slate_data))
+        task.update(_in_c4d_conversion(doc, slate_data, snap_path))
     return task
 
 
@@ -1080,16 +1081,20 @@ def _rules_project(context):
     return os.path.basename(os.path.dirname(path)) if path else ""
 
 
-def _in_c4d_conversion(doc, slate_data):
-    """``{"ocio", "font"}`` for the in-C4D converter, or ``{}`` before 2025.2.
+def _in_c4d_conversion(doc, slate_data, exr_path=None):
+    """``{"ocio", "view_note", "font"}`` for the in-C4D converter, or ``{}``
+    before 2025.2.
 
     Captured here, on the main thread, so the conversion can run in a worker.
-    The font is resolved only when there is a slate to draw.
+    The converter uses the OCIO view the snapshot recorded (see
+    ``snapshot_c4d.snapshot_converter``). The font is resolved only when there
+    is a slate to draw.
     """
     from sentinel import snapshot_c4d
     if not snapshot_c4d.ocio_available():
         return {}
-    extras = {"ocio": snapshot_c4d.color_converter(doc)}
+    converter, note = snapshot_c4d.snapshot_converter(doc, exr_path)
+    extras = {"ocio": converter, "view_note": note}
     if slate_data:
         font, name = snapshot_c4d.resolve_slate_font()
         if name == "system":
