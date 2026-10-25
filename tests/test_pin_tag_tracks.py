@@ -946,7 +946,7 @@ def test_restore_pairs_correctly_after_adding_a_new_tag_ahead(sentinel_module):
     # added AHEAD of the constraint tag — same prepend shape MakeTag uses
     # in scene_tools.py.
     constraint_track.GetCurve()._keys[0].value = -2.0
-    frame_tag = FakeTagWithTracks(tracks=[], tag_type=2099073)
+    frame_tag = FakeTagWithTracks(tracks=[], tag_type=1072207)  # Sentinel Frame
     host._tags = [frame_tag, constraint_tag]
 
     pin_tag._restore(fake_tag)

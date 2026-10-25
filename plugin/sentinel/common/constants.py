@@ -1,22 +1,17 @@
 # -*- coding: utf-8 -*-
 """Plugin-wide constants with no UI widget IDs."""
 
-# Plugin ID - change if ID collision
-PLUGIN_ID = 2099069
-
-# (2099072 was the retired v1.5.6 Safe-Area Overlay ObjectData id — freed in
-# v1.8.0 when the Sentinel Frame per-camera tag took over viewport drawing.)
-
-# Fase 6.0 (Panel SPA host) — grepped the 2099xxx range before picking this:
-# PLUGIN_ID=2099069, SENTINEL_FRAME_TAG_PLUGIN_ID=2099073 (frame_tag.py),
-# SENTINEL_PALETTE_PLUGIN_ID=2099075 (sentinel_panel.pyp), 2099072 retired.
-# 2099074 is documented in ROADMAP.md as the never-shipped v1.6.0
-# CameraFrameDrawer prototype (superseded by Sentinel Frame, not registered
-# anywhere in the current codebase) — skipped anyway to avoid confusion with
-# that history rather than reclaim it. 2099076 is the next id with no
-# reference anywhere in the repo — free. (2099077 unassigned;
-# SENTINEL_PIN_TAG_PLUGIN_ID=2099078 taken by pin_tag.py, v1.35.)
-SENTINEL_PANEL_SPA_PLUGIN_ID = 2099076
+# Plugin IDs — registered on Plugin Café (account jmelpri) on 2026-10-25, one
+# per registered plugin. Never pick an ID by hand: generate a new one at
+# https://plugincafe.maxon.net/c4dpluginid_cp and add it here. They replace
+# the unregistered 2099xxx range used up to v1.40.1 (scenes saved with the
+# old tag IDs no longer load those tags; there were no production scenes).
+SENTINEL_PANEL_SPA_PLUGIN_ID = 1072205     # CommandData: the dockable panel
+SENTINEL_PALETTE_PLUGIN_ID = 1072206       # CommandData: Command Palette
+SENTINEL_FRAME_TAG_PLUGIN_ID = 1072207     # TagData: Sentinel Frame
+SENTINEL_FRAME_SYNC_PLUGIN_ID = 1072208    # MessageData: Frame auto-sync pump
+SENTINEL_PIN_TAG_PLUGIN_ID = 1072209       # TagData: Sentinel Pin
+SENTINEL_VARIANT_TAG_PLUGIN_ID = 1072210   # TagData: Sentinel Variants
 
 # Preset names - normalized to lowercase with underscores
 # The system accepts both "pre_render" and "pre-render" (case-insensitive)

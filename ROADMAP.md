@@ -20,7 +20,7 @@ Detalle en la tabla *Before distributing a commercial product* del informe de pr
 - [ ] Titularidad y licencia: el `LICENSE` nombra a Javier Melgar / Yambo Studio. Sentinel parte de YS Guardian v1.0 (5 checks, presets, herramientas de escena, snapshots) y todo lo posterior es desarrollo propio; hay que acordar con los titulares los derechos sobre el código original y la licencia del producto.
 - [ ] `abc_retime` (AXISFX): permiso de redistribución o sacarlo del paquete.
 - [ ] Assets `.c4d` empaquetados: origen y permiso de cada uno. (Los iconos son propios desde la v1.39.)
-- [ ] Plugin IDs: confirmar el registro con Maxon.
+- [x] Plugin IDs: registrados en Plugin Café (cuenta `jmelpri`, 2026-10-25) y en uso desde la v1.41: Panel 1072205, Command Palette 1072206, Frame tag 1072207, Frame Sync 1072208, Pin tag 1072209, Variants tag 1072210. Se retira el rango 2099xxx sin registrar; no había escenas de producción con esos tags.
 - [ ] Matriz soportada con nombre (C4D / Redshift / SO) y plantilla de soporte.
 
 ## Features siguientes

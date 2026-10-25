@@ -35,7 +35,7 @@ from sentinel.safe_areas import (
     resolve_take_projection_params,
     unmark_object_safe_area,
 )
-SENTINEL_FRAME_TAG_PLUGIN_ID = 2099073
+from sentinel.common.constants import SENTINEL_FRAME_TAG_PLUGIN_ID
 SENTINEL_FRAME_TAG_DESCRIPTION = "Tsentinelframe"
 SCHEMA_VERSION = 1
 

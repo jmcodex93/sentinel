@@ -52,7 +52,7 @@ from sentinel.ui.tag_support import (
     set_bc_value as _set_bc_value,
 )
 
-SENTINEL_PIN_TAG_PLUGIN_ID = 2099078
+from sentinel.common.constants import SENTINEL_PIN_TAG_PLUGIN_ID
 SENTINEL_PIN_TAG_DESCRIPTION = "Tsentinelpin"
 
 # --- Description id layout ------------------------------------------------

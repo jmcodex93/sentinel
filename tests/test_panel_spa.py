@@ -37,17 +37,28 @@ class TestPanelSpaImports:
         )
 
 
-class TestPanelSpaPluginId:
-    # Known ids already assigned in the 2099xxx range (see
-    # plugin/sentinel/common/constants.py PLUGIN_ID=2099069,
-    # sentinel_panel.pyp SENTINEL_PALETTE_PLUGIN_ID=2099075,
-    # frame_tag.py SENTINEL_FRAME_TAG_PLUGIN_ID=2099073; 2099072 retired).
-    _KNOWN_IDS = {2099069, 2099072, 2099073, 2099075}
-
-    def test_plugin_id_is_unique_and_above_known_ids(self, sentinel_module):
-        from sentinel.common.constants import SENTINEL_PANEL_SPA_PLUGIN_ID
-        assert SENTINEL_PANEL_SPA_PLUGIN_ID not in self._KNOWN_IDS
-        assert SENTINEL_PANEL_SPA_PLUGIN_ID > 2099073
+class TestPluginIds:
+    def test_ids_are_the_registered_ones_and_shared_by_every_module(self, sentinel_module):
+        """Plugin Café registration of 2026-10-25 (account jmelpri). Every
+        module reads its ID from sentinel.common.constants — none keeps a
+        private copy that could drift."""
+        from sentinel.common import constants
+        from sentinel.ui import frame_sync, frame_tag, pin_tag, variant_tag
+        ids = {
+            "panel": constants.SENTINEL_PANEL_SPA_PLUGIN_ID,
+            "palette": constants.SENTINEL_PALETTE_PLUGIN_ID,
+            "frame": constants.SENTINEL_FRAME_TAG_PLUGIN_ID,
+            "frame_sync": constants.SENTINEL_FRAME_SYNC_PLUGIN_ID,
+            "pin": constants.SENTINEL_PIN_TAG_PLUGIN_ID,
+            "variants": constants.SENTINEL_VARIANT_TAG_PLUGIN_ID,
+        }
+        assert ids == {"panel": 1072205, "palette": 1072206, "frame": 1072207,
+                       "frame_sync": 1072208, "pin": 1072209, "variants": 1072210}
+        assert frame_tag.SENTINEL_FRAME_TAG_PLUGIN_ID == ids["frame"]
+        assert pin_tag.SENTINEL_PIN_TAG_PLUGIN_ID == ids["pin"]
+        assert variant_tag.SENTINEL_VARIANT_TAG_PLUGIN_ID == ids["variants"]
+        assert frame_sync.PLUGIN_ID == frame_sync.EVENT_ID == ids["frame_sync"]
+        assert sentinel_module.SENTINEL_PALETTE_PLUGIN_ID == ids["palette"]
 
 
 class TestPanelOverviewReachableFromReportsDialog:
