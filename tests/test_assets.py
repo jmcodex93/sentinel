@@ -251,6 +251,18 @@ class TestMergeInventories:
         assert ("RS_Mat", "material", "") in row["owners"]
         assert not [r for r in out if r["key"].endswith("basecolor.1001.png")]
 
+    def test_direct_tile_reference_keeps_its_own_owner(self):
+        """A material pointing at ONE tile file owns that file's row; the
+        exact key match wins over the fold into the UDIM pattern row."""
+        out = assets.merge_inventories(
+            [_tex("/t/r_<UDIM>.png", host="A", idx=0),
+             _tex("/t/r_1001.png", host="B", idx=1)],
+            [_gen("/t/r_1001.png", owner_name="B", owner_kind="material")])
+        own = next(r for r in out if r["key"] == "/t/r_1001.png")
+        pattern = next(r for r in out if "<udim>" in r["key"])
+        assert ("B", "material", "") in own["owners"]
+        assert ("B", "material", "") not in pattern["owners"]
+
     def test_rows_without_token_carry_no_udim(self):
         out = assets.merge_inventories([_tex("/p/tex/a.png")], [_gen("/p/tex/b.1001.png")])
         assert all("udim" not in r for r in out)

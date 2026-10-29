@@ -237,12 +237,12 @@ def merge_inventories(texture_records, generic_records, base_dir=""):
         if not key:
             key = f"__empty__gen__{i}"
         owner = (rec.get("owner_name", ""), rec.get("owner_kind", "object"), "")
-        if patterns and _fold_tile(key, patterns, by_key, owner):
-            continue
         if key in by_key:
             r = by_key[key]
             if owner not in r["owners"]:
                 r["owners"].append(owner)
+            continue
+        if patterns and _fold_tile(key, patterns, by_key, owner):
             continue
         by_key[key] = {
             "key": key,
