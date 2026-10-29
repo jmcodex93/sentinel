@@ -508,6 +508,8 @@ export interface HubOwner {
 }
 
 export interface HubAsset {
+  /** v1.42: tiles of a UDIM pattern row; null for ordinary files. */
+  udim_tiles?: number[] | null;
   key: string;
   path: string;
   resolved_path: string | null;
@@ -633,6 +635,8 @@ export interface HubMakeRelativeResponse {
 }
 
 export interface HubCollectStartResponse {
+  /** v1.42: with `error: "udim_unsupported"`, the UDIM maps that were refused. */
+  udim_files?: string[];
   ok: boolean;
   error?: string;
   job_id?: string;
@@ -660,6 +664,8 @@ export interface HubCollectResult {
  * `HubJobStatus.result` below.
  */
 export interface HubShrinkStartResponse {
+  /** v1.42: with `error: "udim_unsupported"`, the UDIM maps that were refused. */
+  udim_files?: string[];
   ok: boolean;
   /** "no_document" | "invalid_target" | "nothing_to_shrink" | "job_running". */
   error?: string;
@@ -693,6 +699,8 @@ export interface HubShrinkResult {
  * hub_ops.py. Synchronous (no job) — a handful of `shutil.copy2` calls plus
  * one relink undo step. Same trailing `stamp` reasoning as `HubApplyResponse`. */
 export interface HubCopyResponse {
+  /** v1.42: with `error: "udim_unsupported"`, the UDIM maps that were refused. */
+  udim_files?: string[];
   ok: boolean;
   /** "no_document" | "unsaved_document". */
   error?: string;
@@ -783,6 +791,8 @@ export interface HubVariant {
  * the requested target) or `"already_there"` (the current file already IS
  * that target — covers "Highest" when nothing is higher). */
 export interface HubSwitchResponse {
+  /** v1.42: with `error: "udim_unsupported"`, the UDIM maps that were refused. */
+  udim_files?: string[];
   ok: boolean;
   /** "no_document" | "invalid_target" | "too_many_keys". */
   error?: string;
@@ -1293,6 +1303,10 @@ export interface RenameApplyResult {
  * the writer's connect pairs come from. `[]` means the ORM lands as a bare
  * unconnected sampler because dedicated maps won both outputs. */
 export interface MatwireChannelRow {
+  /** v1.42, tiled channels only: tile numbers and their compact label
+   * (`udim.format_tiles`), both server-derived. */
+  tiles?: number[];
+  tiles_label?: string;
   channel: string;
   file: string;
   colorspace: string;
@@ -1319,6 +1333,10 @@ export interface MatwireChannelRow {
  * pairs (JSON-flattened tuples); reasons are labeled client-side via
  * `IGNORED_REASON_LABELS` in lib/panelMatwire.ts. */
 export interface MatwireSet {
+  /** v1.42: channel -> tiles other maps of the set have and it lacks. */
+  tile_mismatch?: Record<string, number[]>;
+  /** v1.42: `matwire.coat_weight_source` — "constant" means 1.0 is written. */
+  coat_weight_source?: "map" | "constant" | null;
   name: string;
   channels: MatwireChannelRow[];
   normal_flipy: boolean;

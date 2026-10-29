@@ -1,4 +1,4 @@
-import type { MatwireCreateResult, MatwireLeftoverRow } from "../types";
+import type { MatwireChannelRow, MatwireCreateResult, MatwireLeftoverRow } from "../types";
 
 /** Human labels for the engine's ignored-file reasons — pinned COMPLETE
  * against every reason plugin/sentinel/matwire.py can emit (the
@@ -252,4 +252,28 @@ export function matwireToast(
     return { message, variant: "warn" };
   }
   return { message, variant: "success" };
+}
+
+/** Suffix note for a tiled channel row (v1.42) — the file shown is the
+ * Redshift pattern (`…<UDIM>.png`); this says which tiles back it.
+ * Server-derived (`tiles`/`tiles_label`); null for untiled rows. */
+export function tilesNote(row: Pick<MatwireChannelRow, "tiles" | "tiles_label">): string | null {
+  const count = row.tiles?.length ?? 0;
+  if (count === 0) return null;
+  return `UDIM · ${count} tile${count === 1 ? "" : "s"} (${row.tiles_label ?? ""})`;
+}
+
+/** Set-level warning (v1.42): maps of one set that don't cover the same
+ * tiles — Redshift renders a missing tile black, silently (measured). */
+export function tileMismatchNote(mismatch: Record<string, number[]> | undefined): string | null {
+  const entries = Object.entries(mismatch ?? {});
+  if (entries.length === 0) return null;
+  const parts = entries.map(([channel, tiles]) => `${channelLabel(channel)} lacks ${tiles.join(", ")}`);
+  return `Tiles differ between maps — ${parts.join("; ")}. Those areas render black.`;
+}
+
+/** Note when the coat has maps but no weight map: the writer writes 1.0
+ * (both BRDFs are born at 0 — an invisible coat otherwise). */
+export function coatWeightNote(source: string | null | undefined): string | null {
+  return source === "constant" ? "coat weight → 1.0 (no weight map)" : null;
 }

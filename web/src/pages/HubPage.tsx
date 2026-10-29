@@ -40,6 +40,7 @@ import {
   sanitizeColWidths,
   sanitizeSortSpec,
   sortAssets,
+  udimRefusalMessage,
   type FacetState,
   type ResizableColumn,
   type SortSpec,
@@ -448,7 +449,9 @@ export function HubPage() {
     setShrinkStarting(false);
 
     if (!res.ok || !res.job_id) {
-      toast({ message: SHRINK_ERROR_MESSAGES[res.error ?? ""] ?? res.error ?? "Couldn't start shrink.", variant: "warn" });
+      toast({ message: res.error === "udim_unsupported"
+        ? udimRefusalMessage("Shrink", res.udim_files)
+        : SHRINK_ERROR_MESSAGES[res.error ?? ""] ?? res.error ?? "Couldn't start shrink.", variant: "warn" });
       return;
     }
     setShrinkDialogOpen(false);
@@ -462,7 +465,9 @@ export function HubPage() {
     setCopyBusy(false);
 
     if (!res.ok) {
-      toast({ message: COPY_ERROR_MESSAGES[res.error ?? ""] ?? res.error ?? "Couldn't copy into project.", variant: "warn" });
+      toast({ message: res.error === "udim_unsupported"
+        ? udimRefusalMessage("Copy into project", res.udim_files)
+        : COPY_ERROR_MESSAGES[res.error ?? ""] ?? res.error ?? "Couldn't copy into project.", variant: "warn" });
       return;
     }
     const copied = res.copied ?? 0;
@@ -490,7 +495,9 @@ export function HubPage() {
     setSwitchResBusy(false);
 
     if (!res.ok) {
-      toast({ message: SWITCH_RES_ERROR_MESSAGES[res.error ?? ""] ?? res.error ?? "Couldn't switch resolution.", variant: "warn" });
+      toast({ message: res.error === "udim_unsupported"
+        ? udimRefusalMessage("Switch resolution", res.udim_files)
+        : SWITCH_RES_ERROR_MESSAGES[res.error ?? ""] ?? res.error ?? "Couldn't switch resolution.", variant: "warn" });
       return;
     }
     setSwitchResDialogOpen(false);

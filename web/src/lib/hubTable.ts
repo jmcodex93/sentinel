@@ -443,7 +443,13 @@ export function gridColumnsFor(colWidths: Partial<Record<ResizableColumn, number
  * succeed, so an error screen with Retry would be a dead end.
  */
 export function collectStartRefusal(res: HubCollectStartResponse): { message: string } | null {
-  if (res.ok || res.error !== "target_not_empty") return null;
+  if (res.ok) return null;
+  if (res.error === "udim_unsupported") {
+    // v1.42: a delivery that can't carry its UDIM tiles is refused up front.
+    const list = res.udim_files && res.udim_files.length > 0 ? `: ${res.udim_files.join(", ")}` : "";
+    return { message: `Collect doesn't support UDIM textures yet${list}. Nothing was delivered.` };
+  }
+  if (res.error !== "target_not_empty") return null;
   const where = res.target_dir ? `"${res.target_dir}"` : "That folder";
   return {
     message: `${where} already has files in it. Choose an empty or new folder — Sentinel never delivers on top of an existing delivery.`,
@@ -459,4 +465,16 @@ export function collectStartRefusal(res: HubCollectStartResponse): { message: st
 export function thumbUrl(asset: Pick<HubAsset, "key" | "thumb_version">): string {
   const base = `/thumb?key=${encodeURIComponent(asset.key)}`;
   return asset.thumb_version ? `${base}&v=${encodeURIComponent(asset.thumb_version)}` : base;
+}
+
+/** "UDIM · N" for a UDIM pattern row (v1.42), null for ordinary files. */
+export function udimBadge(asset: Pick<HubAsset, "udim_tiles">): string | null {
+  if (!asset.udim_tiles) return null;
+  return asset.udim_tiles.length > 0 ? `UDIM · ${asset.udim_tiles.length}` : "UDIM";
+}
+
+/** Toast for a per-file Hub action that refused UDIM maps (v1.42). */
+export function udimRefusalMessage(action: string, files: string[] | undefined): string {
+  const list = files && files.length > 0 ? `: ${files.join(", ")}` : "";
+  return `${action} doesn't support UDIM textures yet${list}. Deselect them and try again.`;
 }

@@ -26,6 +26,9 @@ import {
   projectionUnavailableNote,
   effectiveProjection,
   suffixWarningsNote,
+  tilesNote,
+  tileMismatchNote,
+  coatWeightNote,
 } from "../../lib/panelMatwire";
 import { useToast } from "../../lib/toast";
 import type { MatwireLeftoverRow, MatwirePreviewResult } from "../../types";
@@ -383,10 +386,25 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
                               {ormNote ?? aoNote ?? glossNote ?? heightNote}
                             </span>
                           )}
+                          {tilesNote(row) && (
+                            <span className="shrink-0" style={{ color: "var(--color-muted)" }}>
+                              {tilesNote(row)}
+                            </span>
+                          )}
                           <ColorspaceChip colorspace={row.colorspace} />
                         </div>
                       );
                     })}
+                    {tileMismatchNote(texSet.tile_mismatch) && (
+                      <p className="text-caption" style={{ color: "var(--color-status-warn)" }}>
+                        {tileMismatchNote(texSet.tile_mismatch)}
+                      </p>
+                    )}
+                    {coatWeightNote(texSet.coat_weight_source) && (
+                      <p className="text-caption" style={{ color: "var(--color-muted)" }}>
+                        {coatWeightNote(texSet.coat_weight_source)}
+                      </p>
+                    )}
                     <IgnoredFold rows={texSet.ignored} title="file(s) skipped" />
                   </div>
                 </div>

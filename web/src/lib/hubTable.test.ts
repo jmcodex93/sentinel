@@ -12,6 +12,8 @@ import {
   sortAssets,
   switchTargets,
   thumbUrl,
+  udimBadge,
+  udimRefusalMessage,
   type FacetState,
 } from "./hubTable";
 import type { HubAsset, HubMeta, HubVariant } from "../types";
@@ -520,5 +522,26 @@ describe("thumbUrl", () => {
 
   it("still builds a URL for a payload without a version", () => {
     expect(thumbUrl({ key: "k", thumb_version: null })).toBe("/thumb?key=k");
+  });
+});
+
+describe("UDIM in the Hub (v1.42)", () => {
+  it("badges UDIM rows with their tile count", () => {
+    expect(udimBadge({ udim_tiles: [1001, 1002] })).toBe("UDIM · 2");
+    expect(udimBadge({ udim_tiles: [] })).toBe("UDIM");
+    expect(udimBadge({ udim_tiles: null })).toBeNull();
+    expect(udimBadge({})).toBeNull();
+  });
+
+  it("names the refused files", () => {
+    expect(udimRefusalMessage("Shrink", ["rock.<UDIM>.png"]))
+      .toBe("Shrink doesn't support UDIM textures yet: rock.<UDIM>.png. Deselect them and try again.");
+    expect(udimRefusalMessage("Copy into project", undefined))
+      .toBe("Copy into project doesn't support UDIM textures yet. Deselect them and try again.");
+  });
+
+  it("collect refusal for UDIM stays on the form", () => {
+    expect(collectStartRefusal({ ok: false, error: "udim_unsupported", udim_files: ["a.<UDIM>.png", "b.<UDIM>.exr"] }))
+      .toEqual({ message: "Collect doesn't support UDIM textures yet: a.<UDIM>.png, b.<UDIM>.exr. Nothing was delivered." });
   });
 });

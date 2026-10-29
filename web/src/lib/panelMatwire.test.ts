@@ -8,6 +8,9 @@ import {
   aoDestination,
   aoDestinationLabel,
   channelLabel,
+  tilesNote,
+  tileMismatchNote,
+  coatWeightNote,
   createMaterialCount,
   ignoredReasonLabel,
   leftoverDestination,
@@ -381,5 +384,27 @@ describe("heightRangeNote", () => {
   it("is null for rows without a range", () => {
     expect(heightRangeNote(undefined)).toBeNull();
     expect(heightRangeNote(null)).toBeNull();
+  });
+});
+
+describe("UDIM notes (v1.42)", () => {
+  it("labels tiled rows and stays silent for untiled ones", () => {
+    expect(tilesNote({ tiles: [1001, 1002, 1003, 1004, 1006, 1007, 1008, 1009, 1010], tiles_label: "1001–1004, 1006–1010" }))
+      .toBe("UDIM · 9 tiles (1001–1004, 1006–1010)");
+    expect(tilesNote({ tiles: [1005], tiles_label: "1005" })).toBe("UDIM · 1 tile (1005)");
+    expect(tilesNote({})).toBeNull();
+  });
+
+  it("warns when maps of one set cover different tiles", () => {
+    expect(tileMismatchNote({ roughness: [1002, 1003] }))
+      .toBe("Tiles differ between maps — roughness lacks 1002, 1003. Those areas render black.");
+    expect(tileMismatchNote({})).toBeNull();
+    expect(tileMismatchNote(undefined)).toBeNull();
+  });
+
+  it("says when the coat weight is a constant", () => {
+    expect(coatWeightNote("constant")).toBe("coat weight → 1.0 (no weight map)");
+    expect(coatWeightNote("map")).toBeNull();
+    expect(coatWeightNote(null)).toBeNull();
   });
 });
