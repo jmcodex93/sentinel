@@ -16,6 +16,7 @@ as their UDIM equivalent (``u1_v1`` = 1001) so labels read the same.
 
 import os
 import re
+import unicodedata
 
 UDIM = "udim"
 UVTILE = "uvtile"
@@ -71,12 +72,18 @@ def strip_token(stem):
     return _STRIP_TOKEN.sub("", str(stem or ""))
 
 
+def _nfc(text):
+    """NFC form: APFS/SMB can return decomposed names (``n`` + U+0303) for
+    what the pattern spells composed, which would read as a missing tile."""
+    return unicodedata.normalize("NFC", str(text or ""))
+
+
 def tile_regex(pattern):
     """Case-insensitive regex that FULL-matches the tile files of
     ``pattern`` (a name or a whole path holding one token); ``None`` when
     there is no token. Groups: ``tile`` for UDIM, ``u``/``v`` for UVTILE —
     read them with ``tile_number``."""
-    text = str(pattern or "")
+    text = _nfc(pattern)
     m = _TOKEN.search(text)
     if not m:
         return None
@@ -129,7 +136,7 @@ def list_tiles(pattern_path, listdir=os.listdir):
         return []
     tiles = set()
     for entry in entries:
-        tile = tile_number(rx.fullmatch(str(entry)))
+        tile = tile_number(rx.fullmatch(_nfc(entry)))
         if tile is not None:
             tiles.add(tile)
     return sorted(tiles)

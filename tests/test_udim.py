@@ -86,3 +86,17 @@ def test_format_tiles_compacts_runs():
     assert udim.format_tiles([1005]) == "1005"
     assert udim.format_tiles([1002, 1001, 1001, 1011]) == "1001–1002, 1011"
     assert udim.format_tiles([]) == ""
+
+
+def test_list_tiles_matches_nfd_entries_against_nfc_pattern():
+    """macOS/SMB can hand back decomposed names; the accented basename must
+    still find its tiles instead of reading as missing."""
+    import unicodedata
+    nfc = unicodedata.normalize("NFC", "cañón_<UDIM>.png")
+    nfd = unicodedata.normalize("NFD", "cañón_1001.png")
+    assert nfc != unicodedata.normalize("NFD", nfc)
+
+    def listdir(folder):
+        return [nfd, unicodedata.normalize("NFD", "cañón_1002.png")]
+
+    assert udim.list_tiles("/f/" + nfc, listdir=listdir) == [1001, 1002]
