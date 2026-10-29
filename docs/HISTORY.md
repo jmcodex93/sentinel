@@ -25,6 +25,9 @@ Narrativa por release movida desde `CLAUDE.md` el 2026-09-23 (prompt-audit; comp
 - **Hub:**
   - Las teselas se pliegan en una sola fila por mapa, con distintivo de teselas.
   - Shrink, copia al proyecto, cambio de resolución y Collect se niegan con `udim_unsupported`, nombrando los ficheros, en vez de tratar solo una tesela.
+  - El tamaño en disco de un mapa UDIM es la suma de sus teselas, y la VRAM del Overview lleva `~` cuando la caché no cubre todas las imágenes, como la cabecera del Hub.
+  - Search Folder encuentra un patrón UDIM que falta buscando sus teselas, y propone el patrón en esa carpeta.
+- **Matwire:** una familia de teselas que se omite muestra «UDIM · N tiles» en las listas plegadas.
 - **Queda fuera:**
   - Collect, Shrink y cambio de resolución por tesela.
   - El check de QC de teselas usadas por la malla sin textura.
