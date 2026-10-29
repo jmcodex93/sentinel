@@ -364,6 +364,25 @@ class TestPanelAssetsBlockVram:
         assert result["vram_label"] == assets_engine.format_size(3_300_000_000)
 
 
+    def test_partial_totals_cache_marks_vram_label_with_tilde(self, sentinel_module, monkeypatch):
+        """Same rule as the Hub header: while the cache covers only part of
+        the images (a UDIM map is never covered — v1.42), the figure reads
+        ``~`` so it doesn't look complete."""
+        from sentinel.ui import panel_ops
+        from sentinel import assets as assets_engine
+
+        self._patch_scan(monkeypatch, self._records())
+        monkeypatch.setattr(
+            panel_ops, "_totals_from_cache",
+            lambda paths: {"vram_bytes": 3_300_000_000, "vram_label": "3.3 GB",
+                            "disk_bytes": 300, "disk_label": "300 B",
+                            "covered": 1, "total": 2})
+
+        result = panel_ops._panel_assets_block(object())
+
+        assert result["vram_label"] == "~" + assets_engine.format_size(3_300_000_000)
+
+
 class TestPanelAssetsBlockCache:
     """``_panel_assets_block`` must NOT re-scan/re-stat on every call — an
     always-docked panel re-fetches ``panel/overview`` whenever

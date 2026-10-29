@@ -309,11 +309,17 @@ def _panel_assets_block(doc):
     resolved_paths = [r.get("resolved_path") for r in records]
     vram_totals = _totals_from_cache(resolved_paths)
 
+    vram_label = _vram_label_or_none(vram_totals["covered"], vram_totals["vram_bytes"])
+    if vram_label is not None and vram_totals["covered"] < vram_totals["total"]:
+        # Partial cover (cache still warming, or a UDIM map, never covered):
+        # "~" like the Hub header, so the figure doesn't look complete.
+        vram_label = "~" + vram_label
+
     payload = {
         "count": totals["count"],
         "missing": totals["missing"],
         "disk_label": assets_engine.format_size(totals["total_bytes"]),
-        "vram_label": _vram_label_or_none(vram_totals["covered"], vram_totals["vram_bytes"]),
+        "vram_label": vram_label,
     }
 
     if signature is not None:
