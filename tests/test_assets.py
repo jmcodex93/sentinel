@@ -685,6 +685,17 @@ class TestShrinkPlan:
         assert skipped["d"] == "no_meta"
         assert skipped["e"] == "not_image"
 
+    def test_file_already_named_for_the_target_is_same_name(self):
+        # wood_2K.png at 4096 px: the shrunk copy would overwrite the original
+        records = [{"key": "a", "path": "/a/wood_2K.png", "resolved_path": "/a/wood_2K.png",
+                    "status": "ok", "asset_type": "texture"}]
+        plan = assets.shrink_plan(records, {"a": self._meta(4096, 4096)}, 2048)
+        assert plan["shrink"] == []
+        assert plan["skipped"] == [{"key": "a", "reason": "same_name"}]
+        # another target still shrinks it to a new sibling
+        assert [i["key"] for i in assets.shrink_plan(
+            records, {"a": self._meta(4096, 4096)}, 1024)["shrink"]] == ["a"]
+
     def test_vram_before_after_exact(self):
         records = [{"key": "a", "path": "/a.png", "resolved_path": "/a.png",
                     "status": "ok", "asset_type": "texture"}]
@@ -1065,6 +1076,15 @@ class TestShrinkPlanUdim:
                            tile_metas={"k": {1001: self._meta(2048), 1002: self._meta(512)}})
         assert plan["shrink"] == [] and plan["skipped"] == [{"key": "k", "reason": "already_small"}]
 
+    def test_pattern_already_named_for_the_target_is_same_name(self):
+        # rock_2K.<UDIM> with a 4K tile would shrink onto its own originals
+        from sentinel.assets import shrink_plan
+        rec = dict(self._REC, resolved_path="/p/tex/rock_2K.<UDIM>.png")
+        plan = shrink_plan([rec], {}, 2048,
+                           tile_metas={"k": {1001: self._meta(4096), 1002: self._meta(2048)}})
+        assert plan["shrink"] == []
+        assert plan["skipped"] == [{"key": "k", "reason": "same_name"}]
+
     def test_a_tile_without_meta_skips_the_whole_map(self):
         from sentinel.assets import shrink_plan
         plan = shrink_plan([self._REC], {"k": self._meta(4096)}, 2048,
@@ -1122,6 +1142,19 @@ class TestFindResVariantsUdim:
             ("rock_4k.<UDIM>.png", 4096), ("rock_2k.<UDIM>.png", 2048),
             ("rock_1k.<UDIM>.png", 1024), ("rock.<udim>.png", None)]
         assert group[-1]["tiles"] == [1001, 1002]
+
+    def test_uvtile_family_pairs_with_the_one_shrink_writes(self):
+        # <UVTILE> absorbs the underscore: Shrink writes rock_2K<UVTILE>.png,
+        # whose 2K is followed by the token, not by a delimiter
+        from sentinel.assets import find_res_variants, shrink_target_pattern, split_res_token
+        assert shrink_target_pattern("rock<UVTILE>.png", 2048) == "rock_2K<UVTILE>.png"
+        assert split_res_token("rock_2K<UVTILE>.png") == ("rock_", 2048, "<UVTILE>.png")
+        listing = ["rock_u1_v1.png", "rock_u2_v1.png", "rock_2K_u1_v1.png", "rock_2K_u2_v1.png"]
+        for resolved in ("/p/tex/rock<UVTILE>.png", "/p/tex/rock_2K<UVTILE>.png"):
+            group = find_res_variants([{"key": "k", "resolved_path": resolved}],
+                                      list_dir=lambda d: list(listing)).get("k")
+            assert [(os.path.basename(g["path"]), g["px"], len(g["tiles"])) for g in group] == [
+                ("rock_2K<UVTILE>.png", 2048, 2), ("rock<UVTILE>.png", None, 2)], resolved
 
     def test_plain_file_row_is_unchanged_by_tiles_in_the_folder(self):
         group = self._variants("/p/tex/rock_4k.png")

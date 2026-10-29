@@ -23,9 +23,13 @@ Narrativa por release movida desde `CLAUDE.md` el 2026-09-23 (prompt-audit; comp
 - **Tests cambiados con aprobación del usuario:**
   - Las dos negativas de `TestHubUdimRefusals` y dos casos de `hubTable.test.ts` se sustituyen.
   - Los literales del tamaño del registro (13 → 14 checks) se actualizan, como en la v1.38.
+- **Revisión independiente antes del PR, tres fallos corregidos:**
+  - Shrink pisaba los originales cuando el nombre ya acababa en el sufijo de destino (`rock_2K.<UDIM>.png` con una tesela de 4K, o `wood_2K.png` a 4096 px): el destino era el mismo fichero. El fallo venía de antes en ficheros sueltos. Ahora el plan lo salta como `same_name`, el escritor se niega a guardar sobre su origen, y el toast lo dice.
+  - La caché de QC #14 no tenía en cuenta qué materiales eran UDIM: relinkar un material a o desde un patrón no ensucia la malla, así que se perdían avisos o el check abortaba en silencio (`materials[None]`). La clave incluye ahora las tags UDIM de la pila.
+  - Switch resolution no emparejaba familias UVTILE: el `2K` de `rock_2K<UVTILE>.png` (el nombre que escribe Shrink) va seguido del token, no de un separador.
 - **Verificación:**
-  - pytest 2007 (2 skipped), vitest 275, lint y build en verde.
-  - 18 mutaciones, todas detectadas.
+  - pytest 2027, vitest 276, lint y build en verde (tras las tres correcciones).
+  - 23 mutaciones, todas detectadas.
   - `tests/c4d_runner/run_udim_checks.py` en c4dpy: 19 PASS con render real (reglas de tags, QC #14 con el layout LOK, Shrink, Copy y Switch con Cmd+Z, Collect con verify).
   - No probado todavía en el panel de la GUI.
 

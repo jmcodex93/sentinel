@@ -537,7 +537,8 @@ def shrink_plan(records, metas, target_px, tile_metas=None):
     Eligible: status "ok" AND a meta entry present AND
     max(width, height) > target_px AND asset_type in ("texture", "hdri").
     Skip reasons (checked in this order): "not_ok", "not_image", "no_meta",
-    "already_small".
+    "already_small", "same_name" (the name already ends in the target suffix,
+    so the shrunk copy would land on the original and destroy it).
 
     New dimensions scale by `target_px / max(w, h)`, rounded, floored at 1,
     aspect preserved. `vram_before`/`vram_after` sum
@@ -585,6 +586,10 @@ def shrink_plan(records, metas, target_px, tile_metas=None):
             continue
         if max(width, height) <= target_px:
             skipped.append({"key": key, "reason": "already_small"})
+            continue
+        resolved = rec.get("resolved_path")
+        if resolved and shrink_target_name(resolved, target_px) == resolved:
+            skipped.append({"key": key, "reason": "same_name"})
             continue
 
         scale = target_px / max(width, height)
@@ -651,6 +656,8 @@ def _shrink_udim_item(rec, metas_by_tile, target_px):
     if all(t["copy_only"] for t in items):
         return None, "already_small"
     target_pattern = shrink_target_pattern(pattern, target_px)
+    if target_pattern == pattern:
+        return None, "same_name"
     for t in items:
         t["target_path"] = udim.tile_path(target_pattern, t["tile"])
     return {
@@ -764,9 +771,10 @@ _RES_TOKEN_MAP = {"1k": 1024, "2k": 2048, "4k": 4096, "8k": 8192, "16k": 16384}
 # behavior today, but it's the defensive convention if the map ever grows).
 # Boundaries are zero-width lookaround assertions (never consumed) so the
 # delimiter itself lands in whichever side it borders when the basename is
-# sliced around the match.
+# sliced around the match. A tile token may follow directly: `<UVTILE>`
+# carries its own underscore, so Shrink writes `rock_2K<UVTILE>.png`.
 _RES_TOKEN_RE = re.compile(
-    r"(?:(?<=[_\-.])|^)(16k|8k|4k|2k|1k)(?:(?=[_\-.])|$)",
+    r"(?:(?<=[_\-.])|^)(16k|8k|4k|2k|1k)(?:(?=[_\-.<])|$)",
     re.IGNORECASE,
 )
 

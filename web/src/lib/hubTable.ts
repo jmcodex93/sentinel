@@ -494,8 +494,13 @@ function errorsNote(errors: { error: string }[] | undefined): string {
 export function shrinkDoneMessage(result: HubShrinkResult): { message: string; variant: "success" | "warn" } {
   const count = result.shrunk.length;
   const tiles = result.shrunk.reduce((sum, item) => sum + (item.tiles ?? 0), 0);
-  if (result.errors.length > 0) {
-    return { message: `Shrunk ${count}${tilesNote(tiles)}.${errorsNote(result.errors)}`, variant: "warn" };
+  // A name already ending in the target size is never shrunk onto itself.
+  const sameName = (result.skipped ?? []).filter((s) => s.reason === "same_name").length;
+  const sameNameNote = sameName > 0
+    ? ` ${sameName} skipped: the name already ends in that size (the copy would overwrite it).`
+    : "";
+  if (result.errors.length > 0 || sameName > 0) {
+    return { message: `Shrunk ${count}${tilesNote(tiles)}.${errorsNote(result.errors)}${sameNameNote}`, variant: "warn" };
   }
   return {
     message: `Shrunk ${count} texture${count === 1 ? "" : "s"}${tilesNote(tiles)} — saved ${formatBytes(result.bytes_saved)}.`,

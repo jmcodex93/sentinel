@@ -71,6 +71,7 @@ const SHRINK_ERROR_MESSAGES: Record<string, string> = {
   no_document: "No active Cinema 4D document.",
   invalid_target: "Invalid shrink target.",
   nothing_to_shrink: "None of the selected rows are eligible to shrink.",
+  same_name: "The selected maps' names already end in that size — the shrunk copy would overwrite them. Rename them or pick another size.",
   job_running: "Another job is already running — wait for it to finish.",
   mock: "Shrink isn't available in mock/demo mode.",
 };

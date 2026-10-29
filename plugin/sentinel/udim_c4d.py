@@ -119,7 +119,10 @@ def _polygon_tiles(poly, stack, wanted):
     return result
 
 
-def _cache_key(poly, stack):
+def _cache_key(poly, stack, wanted):
+    """The tiles depend on the mesh, its UVs and selections, the tag stack
+    and which of its tags hold a UDIM material (``wanted``): relinking a
+    material to or from a pattern dirties neither the mesh nor its tags."""
     uvw = poly.GetTag(c4d.Tuvw)
     selections = tuple(tag.GetDirty(c4d.DIRTYFLAGS_DATA) for tag in poly.GetTags()
                        if tag.GetType() == c4d.Tpolygonselection)
@@ -127,7 +130,8 @@ def _cache_key(poly, stack):
             poly.GetDirty(c4d.DIRTYFLAGS_DATA | c4d.DIRTYFLAGS_SELECT),
             uvw.GetDirty(c4d.DIRTYFLAGS_DATA),
             tuple(tag.GetDirty(c4d.DIRTYFLAGS_DATA) for tag in stack),
-            selections)
+            selections,
+            tuple(wanted))
 
 
 def used_tiles(doc, materials):
@@ -161,14 +165,15 @@ def used_tiles(doc, materials):
                 for poly in polys:
                     if poly.GetTag(c4d.Tuvw) is None or not poly.GetPolygonCount():
                         continue
-                    key = _cache_key(poly, stack)
+                    key = _cache_key(poly, stack, wanted)
                     tiles = _TILE_CACHE.get(key)
                     if tiles is None:
                         tiles = _polygon_tiles(poly, stack, wanted)
                     fresh[key] = tiles
                     for index, found in tiles.items():
                         mat = _material_index(materials, stack[index][c4d.TEXTURETAG_MATERIAL])
-                        per_material.setdefault(mat, set()).update(found)
+                        if mat is not None:
+                            per_material.setdefault(mat, set()).update(found)
                 if per_material:
                     out.append((obj, per_material))
             if obj.GetDown() is not None:

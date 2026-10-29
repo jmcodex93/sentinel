@@ -854,6 +854,33 @@ class TestHubUdimTileActions:
         assert status["result"]["shrunk"][0]["tiles"] == 2
         assert status["result"]["errors"] == []
 
+    def test_shrink_refuses_a_family_already_named_for_the_target(self, sentinel_module,
+                                                                  monkeypatch, tmp_path):
+        # rock_2K.<UDIM> with a 4K tile: the shrunk family would be the
+        # original family, so nothing is written and the op says why
+        tex = tmp_path / "tex"
+        self._tiles(str(tex), "rock_2K.<UDIM>.png", {1001: 4096, 1002: 2048})
+        before = {p.name: p.read_bytes() for p in tex.iterdir()}
+        rec = self._rec(str(tex / "rock_2K.<UDIM>.png"), "tex/rock_2K.<UDIM>.png", [1001, 1002])
+        hub_ops, doc, writes = self._setup(monkeypatch, tmp_path, rec)
+        start = hub_ops.HUB_OPS["hub/shrink_start"]({"keys": [rec["key"]], "target_px": 2048})
+        assert start == {"ok": False, "error": "same_name"}
+        assert {p.name: p.read_bytes() for p in tex.iterdir()} == before
+        assert writes == [] and doc.undo == []
+
+    def test_save_shrunk_copy_refuses_to_write_over_its_source(self, sentinel_module, tmp_path):
+        from sentinel.ui import hub_ops
+        src = tmp_path / "wood_2K.png"
+        src.write_bytes(b"original")
+        item = {"resolved_path": str(src), "new_width": 8, "new_height": 8}
+        # derived target (single file) and explicit target (a UDIM tile)
+        assert hub_ops._save_shrunk_copy(item, 2048) == (False, "same_name")
+        tile = tmp_path / "rock_2K.1001.png"
+        tile.write_bytes(b"original")
+        tile_item = dict(item, resolved_path=str(tile))
+        assert hub_ops._save_shrunk_copy(tile_item, 2048, str(tile)) == (False, "same_name")
+        assert src.read_bytes() == b"original" and tile.read_bytes() == b"original"
+
     def test_shrink_relinks_nothing_when_a_tile_fails(self, sentinel_module, monkeypatch, tmp_path):
         tex = tmp_path / "tex"
         self._tiles(str(tex), "rock.<UDIM>.png", {1001: 4096, 1002: 4096})

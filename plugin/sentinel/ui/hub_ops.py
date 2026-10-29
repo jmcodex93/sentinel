@@ -454,6 +454,8 @@ def _save_shrunk_copy(item, target_px, target=None):
     if saver is None:
         return False, "unsupported format"
     target = target or assets_engine.shrink_target_name(resolved, target_px)
+    if os.path.normcase(os.path.abspath(target)) == os.path.normcase(os.path.abspath(resolved)):
+        return False, "same_name"
     try:
         bmp = c4d.bitmaps.BaseBitmap()
         if bmp.InitWith(resolved)[0] != c4d.IMAGERESULT_OK:
@@ -572,6 +574,10 @@ def _op_hub_shrink_start(payload):
 
     plan = assets_engine.shrink_plan(selected_records, metas, target_px, tile_metas)
     if not plan["shrink"]:
+        # A name that already ends in the target suffix would be shrunk onto
+        # itself: say that, not just "nothing eligible".
+        if any(s.get("reason") == "same_name" for s in plan["skipped"]):
+            return {"ok": False, "error": "same_name"}
         return {"ok": False, "error": "nothing_to_shrink"}
 
     try:

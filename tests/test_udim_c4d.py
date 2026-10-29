@@ -215,6 +215,33 @@ def test_unchanged_mesh_is_not_read_again_until_it_is_dirty(env):
     assert mesh.uvw.reads == 2
 
 
+def test_a_material_relinked_to_udim_is_read_without_the_mesh_changing(env):
+    """Relinking grip to <UDIM> dirties only the material: the cached
+    tiles of the mesh must not hide grip's polygons."""
+    _c4d, udim_c4d, Poly, texture = env
+    mesh = Poly("Mesh", QUADS, tags=[texture("body"), texture("grip", "g")],
+                selections={"g": [2]})
+    doc = _Doc(mesh)
+    body_only = [("body", [])]
+    udim_c4d.used_tiles(doc, body_only)
+    both = [("body", []), ("grip", [])]
+    assert _by_name(udim_c4d.used_tiles(doc, both), both) == \
+        {"Mesh": {"body": {1001, 1002}, "grip": {1005}}}
+
+
+def test_a_material_that_stops_being_udim_drops_out_of_the_cached_result(env):
+    """body relinked to a single file: its cached tiles must not come back
+    under a material index that no longer exists (the check indexes by it)."""
+    _c4d, udim_c4d, Poly, texture = env
+    mesh = Poly("Mesh", QUADS, tags=[texture("body"), texture("grip", "g")],
+                selections={"g": [2]})
+    doc = _Doc(mesh)
+    udim_c4d.used_tiles(doc, [("body", []), ("grip", [])])
+    grip_only = [("grip", [])]
+    result = udim_c4d.used_tiles(doc, grip_only)
+    assert [per for _obj, per in result] == [{0: {1005}}]
+
+
 def test_udim_materials_groups_maps_and_skips_patterns_without_tiles(env, tmp_path):
     _c4d, udim_c4d, _Poly, _texture = env
     for name in ("rock_Base.1001.png", "rock_Base.1002.png", "rock_Rough.1001.png"):

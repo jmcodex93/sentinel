@@ -559,6 +559,17 @@ describe("per-tile Hub results (v1.43)", () => {
     })).toEqual({ message: "Shrunk 0. 1 error: tile 1002: save_failed.", variant: "warn" });
   });
 
+  it("shrink says when a map was skipped because its name already ends in the size", () => {
+    expect(shrinkDoneMessage({
+      shrunk: [{ key: "a", target_path: "", resolved_path: "" }],
+      skipped: [{ key: "b", reason: "same_name" }, { key: "c", reason: "already_small" }],
+      errors: [], bytes_saved: 0,
+    })).toEqual({
+      message: "Shrunk 1. 1 skipped: the name already ends in that size (the copy would overwrite it).",
+      variant: "warn",
+    });
+  });
+
   it("copy counts maps and tiles", () => {
     expect(copyDoneMessage({ ok: true, copied: 2, reused: 1, tiles_copied: 9, errors: [] }))
       .toEqual({ message: "Copied 2, reused 1 (9 UDIM tiles).", variant: "success" });
