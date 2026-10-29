@@ -580,7 +580,7 @@ def scan_texture_sets(filenames, default_root="material", extra_suffixes=None):
         })
 
     return {"sets": out_sets, "ignored": ignored,
-            "leftover_hints": leftover_hints}
+            "leftover_hints": leftover_hints, "pattern_tiles": tiles_of}
 
 
 def assign_leftovers(hints, set_names):
@@ -657,10 +657,21 @@ def preview_payload(scan_result, existing_names, multiply_ao=False):
             "coat_weight_source": coat_weight_source(tex_set["channels"]),
         })
     names = dedupe_names([s["name"] for s in sets], existing_names)
+    # A skipped tile family is ONE pattern name (v1.42): carry its tiles so
+    # the fold says "UDIM · N tiles" — keyed by the skipped file name, which
+    # also keys the leftover rows built from the same ``no_channel`` files.
+    pattern_tiles = scan_result.get("pattern_tiles") or {}
+    skipped = [row[0] for row in scan_result.get("ignored") or []]
+    for tex_set in scan_result.get("sets") or []:
+        skipped.extend(row[0] for row in tex_set["ignored"])
+    ignored_tiles = {name: {"tiles": list(pattern_tiles[name]),
+                            "tiles_label": udim.format_tiles(pattern_tiles[name])}
+                     for name in skipped if name in pattern_tiles}
     return {
         "sets": sets,
         "ignored": [list(row) for row in scan_result.get("ignored") or []],
         "names": names,
+        "ignored_tiles": ignored_tiles,
     }
 
 

@@ -1375,6 +1375,10 @@ export interface MatwirePreviewResult {
    * Material selector is disabled with an inline reason and the writer
    * builds a Standard Surface material (honest degradation). */
   openpbr_available?: boolean;
+  /** v1.42: skipped file name (a tile-family PATTERN) -> its tiles, for
+   * the global, per-set and leftover folds. Empty when nothing tiled was
+   * skipped. */
+  ignored_tiles?: Record<string, Pick<MatwireChannelRow, "tiles" | "tiles_label">>;
   error?: string;
 }
 

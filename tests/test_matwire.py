@@ -2567,3 +2567,23 @@ def test_real_family_with_1024_among_tiles_stays_tiled(matwire):
     tex_set = out["sets"][0]
     assert tex_set["channels"]["basecolor"] == "rock_BaseColor.<UDIM>.png"
     assert tex_set["tiles"]["basecolor"] == [1001, 1024]
+
+
+class TestIgnoredTilePatterns:
+    """v1.42: an unrecognised tile family is skipped as ONE pattern name;
+    the preview carries its tiles so the fold can say "UDIM · N tiles"
+    (an image sequence swallowed as a pattern must stay visible)."""
+
+    def test_skipped_pattern_carries_its_tiles(self, matwire):
+        scan = matwire.scan_texture_sets(
+            ["r_BaseColor.1001.png", "r_Foo.1001.png", "r_Foo.1002.png",
+             "plain_Foo.png"])
+        payload = matwire.preview_payload(scan, [])
+        assert ["r_Foo.<UDIM>.png", "no_channel"] in payload["ignored"]
+        assert payload["ignored_tiles"] == {
+            "r_Foo.<UDIM>.png": {"tiles": [1001, 1002],
+                                 "tiles_label": "1001–1002"}}
+
+    def test_no_skipped_pattern_gives_empty_map(self, matwire):
+        scan = matwire.scan_texture_sets(["r_BaseColor.png", "r_Foo.png"])
+        assert matwire.preview_payload(scan, [])["ignored_tiles"] == {}
