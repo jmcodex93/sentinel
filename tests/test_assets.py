@@ -263,6 +263,17 @@ class TestMergeInventories:
         assert ("B", "material", "") in own["owners"]
         assert ("B", "material", "") not in pattern["owners"]
 
+    def test_nfd_tile_keys_still_fold(self):
+        """``udim.tile_regex`` matches in NFC; a path that arrives in NFD
+        (macOS/SMB listings) must still fold into its pattern row."""
+        import unicodedata
+        nfd = lambda s: unicodedata.normalize("NFD", s)
+        out = assets.merge_inventories(
+            [_tex(nfd("/p/tex/cañón_<UDIM>.png"))],
+            [_gen(nfd("/p/tex/cañón_1001.png")), _gen(nfd("/p/tex/cañón_1002.png"))])
+        assert len(out) == 1
+        assert out[0]["udim"] == {"tiles": [1001, 1002]}
+
     def test_rows_without_token_carry_no_udim(self):
         out = assets.merge_inventories([_tex("/p/tex/a.png")], [_gen("/p/tex/b.1001.png")])
         assert all("udim" not in r for r in out)

@@ -6,6 +6,7 @@ ui/flows.py (same pattern as manifest.py / postrender.py).
 import os
 import posixpath
 import re
+import unicodedata
 import zipfile
 
 from . import imagemeta
@@ -151,9 +152,10 @@ def _fold_tile(key, patterns, by_key, owner):
     """Fold a generic record that is ONE TILE of a UDIM texture row into
     that row (v1.42): GetAllAssetsNew lists every tile on its own (measured
     2026-10-29), which turned one map into a pattern row plus N tile rows.
-    True when folded."""
+    True when folded. ``udim.tile_regex`` is NFC, so the key is too."""
+    nfc_key = unicodedata.normalize("NFC", key)
     for rx, pattern_key in patterns:
-        match = rx.fullmatch(key)
+        match = rx.fullmatch(nfc_key)
         if not match:
             continue
         row = by_key[pattern_key]
