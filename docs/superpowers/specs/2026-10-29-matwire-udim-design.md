@@ -9,7 +9,7 @@
 1. La carpeta real de LOK (`…/LOK-003 MAX HYPE (Attack)/cages/produccion/v4/texturizado/EXPORT_PAINTER`) da **dos sets**: `LOK_cuerpo` (9 teselas: 1001–1004, 1006–1010) y `LOK_grip` (1 tesela: 1005). Cada uno tiene basecolor, metalness, roughness, normal (GL), height, coat_color, coat_weight, coat_roughness y coat_normal. El `Normal` genérico queda en ignorados porque GL gana.
 2. "Create" construye los dos materiales RS en un Cmd+Z. Los samplers apuntan a `…_<UDIM>.png`, el Coat está cableado, y un render muestra cada tesela en su sitio (repetir la prueba de colores del doc de research con el writer real).
 3. Con las rutas pasadas a relativas, QC Assets **no** da `missing` para esos mapas. Una ruta UDIM sin ninguna tesela en disco **sí** da `missing`.
-4. El Asset Hub muestra una fila por mapa UDIM (no una por tesela). Shrink, el cambio de resolución, copiar al proyecto, match folder y Collect se niegan con un texto visible ante un mapa UDIM.
+4. El Asset Hub muestra una fila por mapa UDIM (no una por tesela). Shrink, el cambio de resolución, copiar al proyecto y Collect se niegan con un texto visible ante un mapa UDIM.
 5. Una carpeta sin UDIM ni nombres de Painter da exactamente el mismo resultado que en v1.41: pytest actual verde y oracle congelado sin cambios.
 
 ## Decisiones cerradas (usuario, 2026-10-29)
@@ -84,7 +84,8 @@ Reglas puras nuevas, con la misma disciplina de "fuente única" que `ao_destinat
 - La normal del coat va por su propio `bumpmap` (`inputtype = 1`, `flipy` = el `normal_flipy` del set) hacia `coat_bump`.
 - Con `coat_weight_source == "constant"` se escribe `coat_weight = 1.0`.
 - Las rutas de los samplers son el patrón. `_join` no cambia, porque el token es un carácter más de un nombre.
-- Títulos: `Coat Weight`, `Coat Color`, `Coat Roughness` y `Coat Normal`. El segundo bumpmap se titula `Coat Bump`; el layout por columna ya apila los dos bumps sin chocar.
+- Títulos: `Coat Weight`, `Coat Color`, `Coat Roughness` y `Coat Normal`. Los dos bumpmap se titulan `Bump` (el título va por tipo de nodo; el sampler `Coat Normal` ya dice cuál es cuál); el layout por columna los apila sin chocar.
+- El puerto de normal del coat va en una tabla aparte (`BRDF_COAT_BUMP`), no en `BRDF_PORTS`: igual que `bump`, es la entrada propia del BRDF que ningún sampler alimenta directamente, y así la tabla inversa de `matgraph` sigue exacta.
 - La altura en UDIM: las ops prueban la cabecera (`imagemeta`) y las estadísticas (`height_float_stats`) sobre la **primera tesela**, no sobre el patrón.
 
 ### Ops `panel_tools_ops.py`
@@ -103,7 +104,7 @@ Reglas puras nuevas, con la misma disciplina de "fuente única" que `ao_destinat
 
 - `merge_inventories`: un registro genérico (de `GetAllAssetsNew`) que encaja con el `tile_regex` de un registro de textura con token **se pliega** en esa fila: añade su owner y cuenta como tesela, en lugar de crear una fila propia. La fila lleva `udim: {"tiles": [...]}`.
 - La fila del Hub muestra `UDIM · N` junto al nombre.
-- Shrink, cambio de resolución, copiar al proyecto y match folder **se saltan** las filas UDIM con el motivo `udim_unsupported`, y lo dicen en el texto de resultado de esa acción. El repath manual (editar la cadena) y Make relative sí funcionan, porque solo tratan con texto.
+- Shrink, cambio de resolución y copiar al proyecto **se niegan** si la selección incluye filas UDIM (`udim_unsupported` + `udim_files`), y el toast las nombra para que el artista las deseleccione. (Esas acciones no devuelven hoy la lista de filas saltadas, así que "saltar en silencio" no se vería.) Match folder no necesita nada: un patrón con token nunca coincide con un nombre de fichero del índice. El repath manual (editar la cadena) y Make relative sí funcionan, porque solo tratan con texto.
 - **Collect** se niega antes de copiar nada si hay algún mapa UDIM, nombrándolos ("Collect doesn't support UDIM textures yet: …"). Nunca entrega una escena sellada con texturas rotas.
 
 ### SPA (`MatwireSubview.tsx`, `panelMatwire.ts`, Hub)
