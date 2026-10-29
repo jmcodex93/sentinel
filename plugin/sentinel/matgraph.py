@@ -100,6 +100,11 @@ PORT_TO_CHANNEL = {
     "opacity_color": "opacity",
     # emission — identical port name on both BRDFs.
     "emission_color": "emission",
+    # coat (v1.42) — identical port names on both BRDFs. The coat NORMAL
+    # reaches the BRDF through a bumpmap, so it lands on bumpmap.input.
+    "coat_color": "coat_color",
+    "coat_weight": "coat_weight",
+    "coat_roughness": "coat_roughness",
     # single-owner utility ports (no BRDF ambiguity).
     "bumpmap.input": "normal",
     "displacement.texmap": "height",

@@ -509,6 +509,49 @@ class TestBuildDescription:
         s.update(extra)
         return s
 
+    @pytest.mark.parametrize("material,bump_port", [
+        ("openpbr", "geometry_coat_normal"), ("standard", "coat_bump_input")])
+    def test_coat_maps_are_wired_on_both_brdfs(self, matwire, matwire_c4d,
+                                               material, bump_port):
+        tex_set = {"name": "car", "normal_flipy": True, "channels": {
+            "coat_weight": "car_Coat_weight.<UDIM>.png",
+            "coat_color": "car_Coat_color.png",
+            "coat_roughness": "car_Coat_roughness.png",
+            "coat_normal": "car_Coat_normal.png"}}
+        desc, _ao = matwire_c4d.build_description("/tex", tex_set, material=material)
+        RS = matwire_c4d._RS_CORE
+        node_id = matwire_c4d.BRDF_NODES[material]
+        brdf = desc["#<" + matwire_c4d._RS_OUTPUT + ".surface"]
+        sm = "#<" + node_id + "."
+        weight = brdf[sm + "coat_weight"]
+        assert weight["#<" + RS + "texturesampler.tex0/path"] == os.path.join(
+            "/tex", "car_Coat_weight.<UDIM>.png")
+        assert brdf[sm + "coat_color"]["#<" + RS + "texturesampler.tex0/colorspace"] \
+            == matwire_c4d._RS_COLORSPACE["srgb"]
+        assert brdf[sm + "coat_roughness"]["#<" + RS + "texturesampler.tex0/colorspace"] \
+            == matwire_c4d._RS_COLORSPACE["raw"]
+        bump = brdf[sm + bump_port]
+        assert bump["$type"] == "#" + RS + "bumpmap"
+        assert bump["#<" + RS + "bumpmap.inputtype"] == 1
+        assert bump["#<" + RS + "bumpmap.flipy"] is True
+        assert bump["#<" + RS + "bumpmap.input"]["#<" + RS + "texturesampler.tex0/path"] \
+            == os.path.join("/tex", "car_Coat_normal.png")
+
+    def test_coat_without_weight_map_writes_constant(self, matwire, matwire_c4d):
+        tex_set = {"name": "car", "normal_flipy": False,
+                   "channels": {"coat_color": "car_Coat_color.png"}}
+        desc, _ao = matwire_c4d.build_description("/tex", tex_set, material="openpbr")
+        brdf = desc["#<" + matwire_c4d._RS_OUTPUT + ".surface"]
+        key = "#<" + matwire_c4d.BRDF_NODES["openpbr"] + ".coat_weight"
+        assert brdf[key] == matwire.COAT_WEIGHT_CONSTANT == 1.0
+
+    def test_no_coat_writes_no_coat_port(self, matwire, matwire_c4d):
+        tex_set = {"name": "p", "normal_flipy": False,
+                   "channels": {"basecolor": "p_col.png"}}
+        desc, _ao = matwire_c4d.build_description("/tex", tex_set)
+        brdf = desc["#<" + matwire_c4d._RS_OUTPUT + ".surface"]
+        assert not [k for k in brdf if "coat" in k]
+
     def test_full_set_desc_shape(self, matwire, matwire_c4d):
         tex_set = self._tex_set(matwire)
         desc, ao_desc = matwire_c4d.build_description("/tex", tex_set,

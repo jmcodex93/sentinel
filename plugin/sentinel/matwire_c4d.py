@@ -43,8 +43,9 @@ import os
 import c4d
 
 from sentinel.common.helpers import safe_print
-from sentinel.matwire import (HEIGHT_RANGES, ao_destination,
-                              channel_colorspace, gloss_destination,
+from sentinel.matwire import (COAT_WEIGHT_CONSTANT, HEIGHT_RANGES,
+                              ao_destination, channel_colorspace,
+                              coat_weight_source, gloss_destination,
                               height_range, height_stats,
                               orm_contributions)
 
@@ -93,6 +94,9 @@ BRDF_PORTS = {
         "bump": "geometry_normal",
         "emission_color": "emission_color",
         "emission_amount": "emission_luminance",
+        "coat_weight": "coat_weight",
+        "coat_color": "coat_color",
+        "coat_roughness": "coat_roughness",
     },
     "standard": {
         "basecolor": "base_color",
@@ -103,6 +107,9 @@ BRDF_PORTS = {
         "bump": "bump_input",
         "emission_color": "emission_color",
         "emission_amount": "emission_weight",
+        "coat_weight": "coat_weight",
+        "coat_color": "coat_color",
+        "coat_roughness": "coat_roughness",
     },
 }
 
@@ -115,6 +122,16 @@ BRDF_PORTS = {
 #: inherited from v1.32 (emission must never ship invisible). Measured in
 #: the Task 1 spike (docs/research/2026-07-30-openpbr-spike.md).
 BRDF_EMISSION_AMOUNT = {"standard": 1.0, "openpbr": 1000.0}
+
+#: The BRDF's OWN coat bump input per type (measured 2026-10-29). Kept out
+#: of BRDF_PORTS on purpose: like the "bump" slot it is never fed by a
+#: sampler directly (a bumpmap node sits between), and matgraph's inverse
+#: table (PORT_TO_CHANNEL, cross-checked against BRDF_PORTS) lists only
+#: sampler destinations.
+BRDF_COAT_BUMP = {
+    "openpbr": "geometry_coat_normal",
+    "standard": "coat_bump_input",
+}
 
 
 def _brdf(material):
@@ -193,6 +210,10 @@ _CHANNEL_TITLES = {
     "emission": "Emission",
     "specular": "Specular",
     "glossiness": "Glossiness",
+    "coat_weight": "Coat Weight",
+    "coat_color": "Coat Color",
+    "coat_roughness": "Coat Roughness",
+    "coat_normal": "Coat Normal",
 }
 
 
@@ -858,6 +879,23 @@ def build_description(folder, tex_set, multiply_ao=False,
             "#<" + _RS_CORE + "bumpmap.flipy": bool(tex_set.get("normal_flipy")),
         }
         brdf[sm + ports["bump"]] = bump
+    for coat in ("coat_weight", "coat_color", "coat_roughness"):
+        if coat in channels:
+            brdf[sm + ports[coat]] = _sampler(path(coat), _rs_colorspace(coat))
+    if coat_weight_source(channels) == "constant":
+        # Born 0 on both BRDFs (measured): coat maps with no weight map
+        # would ship an invisible coat — same rule as emission.
+        brdf[sm + ports["coat_weight"]] = COAT_WEIGHT_CONSTANT
+    if "coat_normal" in channels:
+        brdf[sm + BRDF_COAT_BUMP[material]] = {
+            "$type": "#" + _RS_CORE + "bumpmap",
+            "#<" + _RS_CORE + "bumpmap.inputtype": 1,  # Tangent-Space Normal
+            "#<" + _RS_CORE + "bumpmap.input": _sampler(
+                path("coat_normal"), _rs_colorspace("coat_normal")),
+            # Same convention as the set's main normal (Painter exports both
+            # from one preset); explicit, never the node default.
+            "#<" + _RS_CORE + "bumpmap.flipy": bool(tex_set.get("normal_flipy")),
+        }
     if "opacity" in channels:
         brdf[sm + ports["opacity"]] = _sampler(path("opacity"), _rs_colorspace("opacity"))
     if "emission" in channels:
