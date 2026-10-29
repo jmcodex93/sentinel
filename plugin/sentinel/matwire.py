@@ -26,13 +26,24 @@ IMAGE_EXTENSIONS = frozenset(
 # packed ORM detected before anything else could half-match).
 _CHANNEL_VARIANTS = (
     ("packed_orm", ("orm", "arm")),
-    ("normal_gl", ("normalgl", "normal_gl", "nor_gl", "normalopengl")),
-    ("normal_dx", ("normaldx", "normal_dx", "nrm_dx", "dx_normal", "nor_dx")),
+    # Coat BEFORE roughness/normal/basecolor (v1.42): "Coat_roughness"
+    # must not be claimed by roughness with a "…_Coat" root.
+    ("coat_weight", ("coat_weight", "clearcoat_weight")),
+    ("coat_color", ("coat_color", "clearcoat_color")),
+    ("coat_roughness", ("coat_roughness", "clearcoat_roughness")),
+    ("coat_normal", ("coat_normal", "clearcoat_normal")),
+    ("normal_gl", ("normalgl", "normal_gl", "nor_gl", "normalopengl",
+                   "normal_opengl")),
+    ("normal_dx", ("normaldx", "normal_dx", "nrm_dx", "dx_normal", "nor_dx",
+                   "normal_directx")),
     ("normal", ("normal", "nrm", "nor", "norm", "nml", "nrml", "nmap")),
     ("basecolor", ("basecolor", "base_color", "albedo", "diffuse", "col",
                    "diff", "base", "dif")),
-    ("roughness", ("roughness", "rough", "rgh")),
-    ("metalness", ("metalness", "metallic", "metal", "met", "mtl")),
+    # OpenPBR names (Painter's OpenPBR export): "Specular_roughness" and
+    # "Base_metalness" would otherwise split the set at "…_Specular"/"…_Base".
+    ("roughness", ("roughness", "rough", "rgh", "specular_roughness")),
+    ("metalness", ("metalness", "metallic", "metal", "met", "mtl",
+                   "base_metalness")),
     ("height", ("height", "displacement", "disp", "dsp", "depth")),
     ("ao", ("ambientocclusion", "ambient_occlusion", "occlusion", "ao", "occ")),
     ("opacity", ("opacity", "alpha", "cutout", "transparency")),
@@ -45,7 +56,7 @@ _CHANNEL_VARIANTS = (
 #: project-ruleset ``matwire_suffixes`` extensions (v1.32.1).
 CANONICAL_CHANNELS = frozenset(channel for channel, _ in _CHANNEL_VARIANTS)
 
-_SRGB_CHANNELS = frozenset({"basecolor", "emission"})
+_SRGB_CHANNELS = frozenset({"basecolor", "emission", "coat_color"})
 
 
 # Separator REQUIRED before the variant (self-caught plan bug: an optional
@@ -115,6 +126,41 @@ def _normalize(stem):
     but the captured ``root`` must keep the artist's original casing for
     the set name, e.g. ``plaster_A`` must not become ``plaster_a``)."""
     return re.sub(r"[\s\-.]+", "_", stem.strip())
+
+
+#: OCIO colourspace names Painter's ``$colorSpace`` export token appends
+#: (``LOK_body_Base_color_sRGB Encoded Rec.709 (sRGB)_1001.png``, v1.42).
+#: Stripped for CHANNEL MATCHING only: the sampler's colourspace stays
+#: ``channel_colorspace`` (studio convention, and only SRGB/RAW are ever
+#: written). Stripped BEFORE ``_normalize`` — these names carry spaces, dots
+#: and parentheses that normalizing would scramble. Longest first.
+OCIO_SUFFIXES = (
+    "Utility - sRGB - Texture", "sRGB Encoded Rec.709 (sRGB)",
+    "Utility - Linear - sRGB", "Linear Rec.709 (sRGB)", "Utility - Raw",
+    "sRGB - Texture", "ACES - ACEScg", "ACES2065-1", "ACEScg", "Raw",
+)
+_OCIO_SUFFIX_RE = re.compile(
+    r"_(?:" + "|".join(re.escape(s) for s in OCIO_SUFFIXES) + r")$",
+    re.IGNORECASE)
+
+
+def strip_colorspace_suffix(stem):
+    return _OCIO_SUFFIX_RE.sub("", str(stem))
+
+
+def match_stem(stem, table=None):
+    """``(channel, root, trailing_px)`` for a filename stem with no
+    extension and no tile — THE stem pipeline, shared by
+    ``scan_texture_sets`` and ``matgraph._name_channel`` (v1.42): OCIO
+    suffix off, separators normalized, a trailing resolution token off, then
+    the channel table (``_CHANNEL_RES`` unless a merged ``table`` is given).
+    ``(None, None, None)`` when no channel matches."""
+    norm_stem, trailing_px = _strip_trailing_res(
+        _normalize(strip_colorspace_suffix(stem)))
+    channel, root = _match_channel(norm_stem, table or _CHANNEL_RES)
+    if channel is None:
+        return None, None, None
+    return channel, root, trailing_px
 
 
 def _match_channel(norm_stem, table):
@@ -374,11 +420,11 @@ def scan_texture_sets(filenames, default_root="material", extra_suffixes=None):
         if ext.lower() not in IMAGE_EXTENSIONS:
             ignored.append((filename, "bad_extension"))
             continue
-        norm_stem, trailing_px = _strip_trailing_res(_normalize(stem))
-        channel, root = _match_channel(norm_stem, table)
+        channel, root, trailing_px = match_stem(stem, table)
         if channel is None:
             ignored.append((filename, "no_channel"))
-            leftover_hints[filename] = _normalize(stem).lower()
+            leftover_hints[filename] = _normalize(
+                strip_colorspace_suffix(stem)).lower()
             continue
         root_key, root_px = _root_and_px(root)
         if not root_key:

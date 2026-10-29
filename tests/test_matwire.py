@@ -197,7 +197,8 @@ class TestCanonicalChannels:
     def test_contains_every_table_channel(self, matwire):
         assert {"packed_orm", "normal_gl", "normal_dx", "normal", "basecolor",
                 "roughness", "metalness", "height", "ao", "opacity",
-                "emission", "specular", "glossiness"} == set(
+                "emission", "specular", "glossiness", "coat_weight", "coat_color",
+                "coat_roughness", "coat_normal"} == set(
             matwire.CANONICAL_CHANNELS)
 
     def test_packed_orm_colorspace_is_raw(self, matwire):
@@ -2346,3 +2347,49 @@ class TestApplyOrmPlanMissingPortRaises:
         brdf_node._allowed = {core + "openpbrmaterial.base_metalness"}
         with pytest.raises(RuntimeError, match="has no port"):
             matwire_c4d._apply_orm_plan(graph, plan)
+
+
+def test_painter_ocio_suffix_is_stripped_for_matching_only(matwire):
+    out = _scan(matwire,
+                "LOK_body_Base_color_sRGB Encoded Rec.709 (sRGB).png",
+                "LOK_body_Height_Raw.png",
+                "LOK_body_Roughness_ACEScg.png")
+    assert out["ignored"] == []
+    s = out["sets"][0]
+    assert s["name"] == "LOK_body"
+    assert s["channels"]["basecolor"] == "LOK_body_Base_color_sRGB Encoded Rec.709 (sRGB).png"
+    # the colourspace stays the studio convention, whatever the suffix says
+    assert matwire.channel_colorspace("roughness") == "raw"
+
+
+def test_openpbr_channel_names_keep_one_root(matwire):
+    out = _scan(matwire, "LOK_body_Base_color.png", "LOK_body_Base_metalness.png",
+                "LOK_body_Specular_roughness.png", "LOK_body_Normal_OpenGL.png",
+                "LOK_body_Normal_DirectX.png")
+    assert [s["name"] for s in out["sets"]] == ["LOK_body"]
+    s = out["sets"][0]
+    assert set(s["channels"]) == {"basecolor", "metalness", "roughness", "normal"}
+    assert s["channels"]["normal"] == "LOK_body_Normal_OpenGL.png"
+    assert ["LOK_body_Normal_DirectX.png", "dx_superseded"] in [list(r) for r in s["ignored"]]
+
+
+def test_coat_channels_are_recognized_before_their_base_channels(matwire):
+    out = _scan(matwire, "car_Base_color.png", "car_Coat_color.png",
+                "car_Coat_weight.png", "car_Coat_roughness.png",
+                "car_Coat_normal.png", "car_Roughness.png", "car_Normal.png",
+                "van_clearcoat_roughness.png")
+    by_name = {s["name"]: s for s in out["sets"]}
+    assert set(by_name["car"]["channels"]) == {
+        "basecolor", "coat_color", "coat_weight", "coat_roughness",
+        "coat_normal", "roughness", "normal"}
+    assert set(by_name["van"]["channels"]) == {"coat_roughness"}
+    assert matwire.channel_colorspace("coat_color") == "srgb"
+    for channel in ("coat_weight", "coat_roughness", "coat_normal"):
+        assert matwire.channel_colorspace(channel) == "raw"
+    assert {"coat_weight", "coat_color", "coat_roughness",
+            "coat_normal"} <= matwire.CANONICAL_CHANNELS
+
+
+def test_match_stem_is_the_shared_pipeline(matwire):
+    assert matwire.match_stem("rock_BaseColor_8k_Raw") == ("basecolor", "rock", 8192)
+    assert matwire.match_stem("protocol") == (None, None, None)
