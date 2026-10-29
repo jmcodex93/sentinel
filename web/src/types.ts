@@ -635,8 +635,6 @@ export interface HubMakeRelativeResponse {
 }
 
 export interface HubCollectStartResponse {
-  /** v1.42: with `error: "udim_unsupported"`, the UDIM maps that were refused. */
-  udim_files?: string[];
   ok: boolean;
   error?: string;
   job_id?: string;
@@ -664,8 +662,6 @@ export interface HubCollectResult {
  * `HubJobStatus.result` below.
  */
 export interface HubShrinkStartResponse {
-  /** v1.42: with `error: "udim_unsupported"`, the UDIM maps that were refused. */
-  udim_files?: string[];
   ok: boolean;
   /** "no_document" | "invalid_target" | "nothing_to_shrink" | "job_running". */
   error?: string;
@@ -676,6 +672,8 @@ export interface HubShrinkResultItem {
   key: string;
   target_path: string;
   resolved_path: string;
+  /** v1.43: number of tile files written for a UDIM map. */
+  tiles?: number;
 }
 
 export interface HubShrinkSkip {
@@ -699,13 +697,13 @@ export interface HubShrinkResult {
  * hub_ops.py. Synchronous (no job) — a handful of `shutil.copy2` calls plus
  * one relink undo step. Same trailing `stamp` reasoning as `HubApplyResponse`. */
 export interface HubCopyResponse {
-  /** v1.42: with `error: "udim_unsupported"`, the UDIM maps that were refused. */
-  udim_files?: string[];
   ok: boolean;
   /** "no_document" | "unsaved_document". */
   error?: string;
   copied?: number;
   reused?: number;
+  /** v1.43: UDIM tile files copied (a UDIM map counts once in `copied`). */
+  tiles_copied?: number;
   errors?: { key: string; error: string }[];
   stamp?: string;
 }
@@ -791,13 +789,13 @@ export interface HubVariant {
  * the requested target) or `"already_there"` (the current file already IS
  * that target — covers "Highest" when nothing is higher). */
 export interface HubSwitchResponse {
-  /** v1.42: with `error: "udim_unsupported"`, the UDIM maps that were refused. */
-  udim_files?: string[];
   ok: boolean;
   /** "no_document" | "invalid_target" | "too_many_keys". */
   error?: string;
   switched?: string[];
-  skipped?: { key: string; reason: string }[];
+  /** `reason` "no_variant" | "already_there" | "incomplete_tiles" (v1.43: the
+   * target UDIM family lacks `missing` tiles the map uses today). */
+  skipped?: { key: string; reason: string; missing?: number[] }[];
   errors?: { key: string; error: string }[];
   stamp?: string;
 }

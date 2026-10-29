@@ -292,3 +292,55 @@ class TestFilterNativePlugins:
         assert manifest.filter_native_plugins([]) == []
         unknown = [{"plugin_id": 1029508, "name": "Octane ImageTexture"}]
         assert manifest.filter_native_plugins(unknown) == unknown
+
+
+class TestUdimEntries:
+    """v1.43: a collected UDIM pattern records its tiles; a tile lost on the
+    way turns the entry missing; verify_package checks tile by tile."""
+
+    @staticmethod
+    def _tiles(folder, name, tiles):
+        folder.mkdir(parents=True, exist_ok=True)
+        for t in tiles:
+            (folder / name.replace("<UDIM>", str(t))).write_bytes(b"x")
+        return str(folder / name)
+
+    def test_source_tiles_of_keys_patterns_by_lowercase_basename(self, tmp_path):
+        src = self._tiles(tmp_path / "lib", "Rock.<UDIM>.png", [1001, 1011])
+        recs = [_record(src, src, "absolute"), _record("/x/a.png", "/x/a.png", "ok")]
+        assert manifest.source_tiles_of(recs) == {"rock.<udim>.png": [1001, 1011]}
+
+    def test_collected_pattern_records_its_tiles(self, tmp_path):
+        pkg = self._tiles(tmp_path / "tex", "rock.<UDIM>.png", [1001, 1002])
+        entries = manifest.mark_lost_tiles(manifest.build_asset_entries(
+            [_record("relative:///rock.<UDIM>.png", pkg, "ok")], str(tmp_path)),
+            {"rock.<udim>.png": [1001, 1002]})
+        assert entries[0]["path"] == "tex/rock.<UDIM>.png"
+        assert entries[0]["state"] == manifest.ASSET_COLLECTED
+        assert entries[0]["udim"] == {"tiles": [1001, 1002]}
+        assert "missing_tiles" not in entries[0]
+
+    def test_a_tile_lost_while_collecting_makes_the_entry_missing(self, tmp_path):
+        pkg = self._tiles(tmp_path / "tex", "rock.<UDIM>.png", [1001])
+        entries = manifest.mark_lost_tiles(manifest.build_asset_entries(
+            [_record("relative:///rock.<UDIM>.png", pkg, "ok")], str(tmp_path)),
+            {"rock.<udim>.png": [1001, 1002]})
+        assert entries[0]["state"] == manifest.ASSET_MISSING
+        assert entries[0]["missing_tiles"] == [1002]
+        assert entries[0]["udim"] == {"tiles": [1001]}
+
+    def test_pattern_without_any_tile_is_missing(self, tmp_path):
+        entries = manifest.build_asset_entries(
+            [_record("relative:///rock.<UDIM>.png", str(tmp_path / "tex" / "rock.<UDIM>.png"), "ok")],
+            str(tmp_path))
+        assert entries[0]["state"] == manifest.ASSET_MISSING
+
+    def test_verify_package_checks_every_tile(self, tmp_path):
+        pkg = self._tiles(tmp_path / "tex", "rock.<UDIM>.png", [1001, 1002])
+        entries = manifest.build_asset_entries(
+            [_record("relative:///rock.<UDIM>.png", pkg, "ok")], str(tmp_path))
+        doc = manifest.merge_into_manifest({}, entries, "ok", [])
+        assert manifest.verify_package(doc, str(tmp_path))["ok"] == 1
+        (tmp_path / "tex" / "rock.1002.png").unlink()
+        result = manifest.verify_package(doc, str(tmp_path))
+        assert (result["ok"], result["lost"]) == (0, ["tex/rock.1002.png"])

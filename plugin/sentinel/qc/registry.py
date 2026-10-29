@@ -231,6 +231,20 @@ CHECK_REGISTRY = [
         fix_fn="fixes.fix_rs_colorspace",
         fix_scope="document",
     ),
+    CheckEntry(
+        check_id="udim_tiles",
+        row_label="UDIM Tiles",
+        label_ok="UDIM tiles all have textures",
+        label_fail_template="{n} object(s) on UDIM tiles without texture",
+        names_key=None,
+        severity="WARN",
+        has_fix=False,
+        structured_fn="udim.check_udim_tiles",
+        legacy_fn="udim.check_udim_tiles",
+        preflight_template="  {n} objects on UDIM tiles without texture",
+        report_key="udim_tiles",
+        actions=("select", "info"),
+    ),
 ]
 
 
@@ -331,6 +345,8 @@ def resolve_function(fn_ref, panel_module=None):
         module = import_module("sentinel.checks.safe_areas")
     elif source == "matgraph":
         module = import_module("sentinel.checks.matgraph")
+    elif source == "udim":
+        module = import_module("sentinel.checks.udim")
     elif source == "panel":
         if panel_module is None:
             raise ValueError(f"Panel module is required to resolve {fn_ref}")

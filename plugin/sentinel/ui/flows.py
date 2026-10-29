@@ -555,6 +555,17 @@ def run_collect_pipeline(doc, artist_name, target_dir, make_zip=False,
     effective_delivery_path = os.path.join(target_dir, effective_delivery_filename)
     effective_delivery_base = os.path.splitext(effective_delivery_filename)[0]
 
+    # UDIM tiles on disk BEFORE collecting (v1.43): SaveProject copies
+    # every tile it finds (measured 2026-10-29); the manifest compares the
+    # package against this so a tile lost on the way is never sealed as ok.
+    from sentinel import manifest as manifest_engine
+    from sentinel.textures import scan_all_texture_paths
+    try:
+        source_tiles = manifest_engine.source_tiles_of(scan_all_texture_paths(doc) or [])
+    except Exception as e:
+        safe_print(f"Scene Collector: UDIM source scan failed: {e}")
+        source_tiles = {}
+
     # ── Phase 2: Collect via C4D native ──
     _status("Saving project with assets…")
 
@@ -620,6 +631,7 @@ def run_collect_pipeline(doc, artist_name, target_dir, make_zip=False,
     _status("Re-scanning package…")
     asset_entries, scan_status, required_plugins = \
         _rescan_collected_package(effective_delivery_path, target_dir)
+    asset_entries = manifest_engine.mark_lost_tiles(asset_entries, source_tiles)
 
     # ── Phase 3: Generate manifest ──
     _status("Writing manifest…")

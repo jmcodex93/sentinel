@@ -58,6 +58,9 @@ STRUCTURED_CHECKS = (
     # silently absent. Fixtures carry no RS materials, so both rows are the
     # trivial ok the plan predicted.
     ("rs_colorspace", "matgraph_checks", "check_rs_colorspace", {}),
+    # v1.43: QC #14 (UDIM Tiles). Fixtures carry no UDIM paths: both rows
+    # are the trivial ok, reached without reading any UV.
+    ("udim_tiles", "udim_checks", "check_udim_tiles", {}),
 )
 CHECKS = tuple((check_id, func_name) for check_id, _owner, func_name, _kwargs in STRUCTURED_CHECKS)
 
@@ -101,6 +104,7 @@ def _load_sentinel():
     module.render_checks = importlib.import_module("sentinel.checks.render")
     module.assets_checks = importlib.import_module("sentinel.checks.assets")
     module.matgraph_checks = importlib.import_module("sentinel.checks.matgraph")
+    module.udim_checks = importlib.import_module("sentinel.checks.udim")
     module.safe_area_checks = importlib.import_module("sentinel.checks.safe_areas")
     module.get_active_rules = importlib.import_module("sentinel.rules").get_active_rules
     module.active_rules_for_doc = importlib.import_module(

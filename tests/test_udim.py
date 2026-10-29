@@ -100,3 +100,64 @@ def test_list_tiles_matches_nfd_entries_against_nfc_pattern():
         return [nfd, unicodedata.normalize("NFD", "cañón_1002.png")]
 
     assert udim.list_tiles("/f/" + nfc, listdir=listdir) == [1001, 1002]
+
+
+# --- v1.43: tiles from UVs (QC #14) --------------------------------------
+# Measured (docs/research/2026-10-29-redshift-udim.md): 1011 is C4D UV
+# v in [-1, 0]; v in [1, 2] and u past the 10th column render black.
+
+def test_tile_of_uv_follows_the_measured_c4d_rows():
+    assert udim.tile_of_uv(0.5, 0.5) == 1001
+    assert udim.tile_of_uv(1.5, 0.5) == 1002
+    assert udim.tile_of_uv(9.5, 0.5) == 1010
+    assert udim.tile_of_uv(0.5, -0.5) == 1011
+    assert udim.tile_of_uv(2.5, -1.5) == 1023
+
+
+def test_tile_of_uv_outside_the_addressable_range_is_none():
+    assert udim.tile_of_uv(0.5, 1.5) is None    # row above 1001: black
+    assert udim.tile_of_uv(-0.5, 0.5) is None
+    assert udim.tile_of_uv(10.5, 0.5) is None
+
+
+def _quad(u0, v0, u1, v1):
+    """8 floats in the UVW tag's low-level order: a, b, c, d as (u, v)."""
+    return [u0, v1, u0, v0, u1, v0, u1, v1]
+
+
+def test_tiles_of_polygons_uses_each_polygon_centroid():
+    floats = _quad(0, 0, 1, 1) + _quad(1, 0, 2, 1) + _quad(0, -1, 1, 0)
+    assert udim.tiles_of_polygons(floats) == {1001, 1002, 1011}
+
+
+def test_tiles_of_polygons_triangle_repeats_c_in_d():
+    tri = [1.1, 0.1, 1.9, 0.1, 1.5, 0.9, 1.5, 0.9]
+    assert udim.tiles_of_polygons(tri) == {1002}
+
+
+def test_tiles_of_polygons_restricted_to_indices():
+    floats = _quad(0, 0, 1, 1) + _quad(1, 0, 2, 1) + _quad(2, 0, 3, 1)
+    assert udim.tiles_of_polygons(floats, [0, 2]) == {1001, 1003}
+    assert udim.tiles_of_polygons(floats, []) == set()
+
+
+def test_tiles_of_polygons_reports_out_of_range_as_none():
+    floats = _quad(0, 0, 1, 1) + _quad(0, 1, 1, 2)
+    assert udim.tiles_of_polygons(floats) == {1001, None}
+
+
+def test_tile_gaps_names_the_tiles_and_maps_that_lack_them():
+    maps = [("rock_Base.<UDIM>.png", [1001, 1002]), ("rock_Rough.<UDIM>.png", [1001])]
+    assert udim.tile_gaps({1001, 1002, 1003}, maps) == {
+        "missing": [1002, 1003], "maps": ["rock_Base.<UDIM>.png", "rock_Rough.<UDIM>.png"],
+        "out_of_range": False}
+
+
+def test_tile_gaps_none_when_every_used_tile_has_a_texture():
+    assert udim.tile_gaps({1001}, [("a.<UDIM>.png", [1001, 1002])]) is None
+    assert udim.tile_gaps(set(), [("a.<UDIM>.png", [1001])]) is None
+
+
+def test_tile_gaps_flags_uvs_no_tile_can_address():
+    assert udim.tile_gaps({1001, None}, [("a.<UDIM>.png", [1001])]) == {
+        "missing": [], "maps": [], "out_of_range": True}

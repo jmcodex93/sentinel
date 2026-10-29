@@ -13,7 +13,9 @@ import {
   switchTargets,
   thumbUrl,
   udimBadge,
-  udimRefusalMessage,
+  copyDoneMessage,
+  shrinkDoneMessage,
+  switchDoneMessage,
   type FacetState,
 } from "./hubTable";
 import type { HubAsset, HubMeta, HubVariant } from "../types";
@@ -533,15 +535,47 @@ describe("UDIM in the Hub (v1.42)", () => {
     expect(udimBadge({})).toBeNull();
   });
 
-  it("names the refused files", () => {
-    expect(udimRefusalMessage("Shrink", ["rock.<UDIM>.png"]))
-      .toBe("Shrink doesn't support UDIM textures yet: rock.<UDIM>.png. Deselect them and try again.");
-    expect(udimRefusalMessage("Copy into project", undefined))
-      .toBe("Copy into project doesn't support UDIM textures yet. Deselect them and try again.");
+  // v1.43: the v1.42 refusal tests ("names the refused files", "collect
+  // refusal for UDIM stays on the form") were replaced with the user's
+  // approval (2026-10-29) — the actions now work per tile.
+  it("collect no longer refuses UDIM: only an occupied folder stays on the form", () => {
+    expect(collectStartRefusal({ ok: false, error: "udim_unsupported" })).toBeNull();
+  });
+});
+
+describe("per-tile Hub results (v1.43)", () => {
+  it("shrink names the UDIM tiles written", () => {
+    expect(shrinkDoneMessage({
+      shrunk: [{ key: "a", target_path: "", resolved_path: "", tiles: 9 },
+        { key: "b", target_path: "", resolved_path: "" }],
+      skipped: [], errors: [], bytes_saved: 0,
+    })).toEqual({ message: "Shrunk 2 textures (9 UDIM tiles) — saved 0 B.", variant: "success" });
   });
 
-  it("collect refusal for UDIM stays on the form", () => {
-    expect(collectStartRefusal({ ok: false, error: "udim_unsupported", udim_files: ["a.<UDIM>.png", "b.<UDIM>.exr"] }))
-      .toEqual({ message: "Collect doesn't support UDIM textures yet: a.<UDIM>.png, b.<UDIM>.exr. Nothing was delivered." });
+  it("shrink names the first error, e.g. a failed tile", () => {
+    expect(shrinkDoneMessage({
+      shrunk: [], skipped: [], bytes_saved: 0,
+      errors: [{ key: "a", error: "tile 1002: save_failed" }],
+    })).toEqual({ message: "Shrunk 0. 1 error: tile 1002: save_failed.", variant: "warn" });
+  });
+
+  it("copy counts maps and tiles", () => {
+    expect(copyDoneMessage({ ok: true, copied: 2, reused: 1, tiles_copied: 9, errors: [] }))
+      .toEqual({ message: "Copied 2, reused 1 (9 UDIM tiles).", variant: "success" });
+    expect(copyDoneMessage({ ok: true, copied: 1, reused: 0, errors: [{ key: "a", error: "collision (tile 1002)" }] }))
+      .toEqual({ message: "Copied 1. 1 error: collision (tile 1002).", variant: "warn" });
+  });
+
+  it("switch says which tiles the other resolution lacks", () => {
+    expect(switchDoneMessage({
+      ok: true, switched: ["a"], errors: [],
+      skipped: [{ key: "b", reason: "incomplete_tiles", missing: [1011, 1002] },
+        { key: "c", reason: "no_variant" }],
+    })).toEqual({
+      message: "Switched 1. 2 skipped (that resolution is missing UDIM tiles 1002, 1011).",
+      variant: "success",
+    });
+    expect(switchDoneMessage({ ok: true, switched: [], skipped: [{ key: "c", reason: "already_there" }] }))
+      .toEqual({ message: "Switched 0. 1 skipped.", variant: "success" });
   });
 });

@@ -2,6 +2,33 @@
 
 Narrativa por release movida desde `CLAUDE.md` el 2026-09-23 (prompt-audit; completada con la v1.39.0 el 2026-10-01) para no cargarla en cada sesión de agente. Se conserva **tal cual** se escribió: los estados («pendiente de merge/live», recuentos de tests) reflejan el momento de cada entrada, no el presente. El estado vigente y las lecciones de API están en `CLAUDE.md`; el roadmap, en `ROADMAP.md`.
 
+## v1.43.0 — UDIM, segunda entrega: Hub por tesela y QC #14 (2026-10-29, rama `feat/matwire-udim`)
+
+- **Spec:** `docs/superpowers/specs/2026-10-29-udim-hub-actions-qc-design.md`. Cierra el «Fuera de alcance» de la v1.42.
+- **Hechos medidos** (C4D 2026.304, `docs/research/2026-10-29-redshift-udim.md`, sección v1.43):
+  - `SaveProject` ya copia cada tesela a `tex/` y reescribe el sampler a `relative:///<patrón>`. Collect solo tenía que dejar de negarse y sellar las teselas.
+  - El buffer de bajo nivel de la UVW tag son 8 float32 por polígono: 500 000 polígonos se leen en 3 ms.
+  - Reglas de Texture Tag medidas con render: gana la última, una restricción a una selección que no existe no cubre nada, y la tag propia del hijo gana a la heredada.
+- **Hub, las cuatro acciones por tesela.** El servidor vuelve a listar las teselas del disco antes de cada mutación, y un mapa solo se repunta si su familia nueva quedó completa (un Cmd+Z por gesto):
+  - Shrink escribe `<base>_2K<sep><UDIM>`, con el sufijo delante del token para que siga siendo una familia, y copia tal cual las teselas que ya son pequeñas.
+  - Copy into project copia todas las teselas a `tex/`. Una colisión en cualquier tesela deja el mapa entero sin tocar.
+  - Switch resolution compara familias de teselas y se salta un destino al que le falta alguna tesela actual (`incomplete_tiles`).
+  - Collect: el manifiesto guarda `udim.tiles`, y una tesela de origen que no llegó al paquete deja la entrada en `missing` con `missing_tiles` (`mark_lost_tiles`). `verify_package` comprueba tesela a tesela.
+  - Desaparece `udim_unsupported`. Los toasts cuentan teselas y nombran el primer error.
+- **QC #14 UDIM Tiles (WARN):**
+  - Resuelve el material de cada polígono (orden de tags, restricciones, herencia, solo proyección UVW) y compara las teselas usadas con las de cada mapa.
+  - Una violación por objeto. Una escena sin rutas con teselas sale antes de leer ninguna UV.
+  - Resultados cacheados por contadores dirty.
+  - Añadido al oracle y recongelado (solo cambian las 4 filas nuevas).
+- **Tests cambiados con aprobación del usuario:**
+  - Las dos negativas de `TestHubUdimRefusals` y dos casos de `hubTable.test.ts` se sustituyen.
+  - Los literales del tamaño del registro (13 → 14 checks) se actualizan, como en la v1.38.
+- **Verificación:**
+  - pytest 2007 (2 skipped), vitest 275, lint y build en verde.
+  - 18 mutaciones, todas detectadas.
+  - `tests/c4d_runner/run_udim_checks.py` en c4dpy: 19 PASS con render real (reglas de tags, QC #14 con el layout LOK, Shrink, Copy y Switch con Cmd+Z, Collect con verify).
+  - No probado todavía en el panel de la GUI.
+
 ## v1.42.0 — Matwire UDIM y export de Painter (2026-10-29, rama `feat/matwire-udim`)
 
 - **Disparador: el proyecto LOK.**

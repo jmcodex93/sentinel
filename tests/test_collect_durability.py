@@ -300,3 +300,40 @@ def test_rescan_reads_scan_metadata_and_preserves_partial_status(sentinel_module
     monkeypatch.setattr(textures, 'get_last_scan_meta', lambda: {'truncated': True})
     assert flows._rescan_collected_package(str(tmp_path / 'scene.c4d'), str(tmp_path)) == ([], 'partial', [])
     assert closed == [doc, doc]
+
+
+def test_collect_marks_a_udim_tile_lost_while_collecting(sentinel_module, monkeypatch, tmp_path):
+    """v1.43: the scene's tiles are listed before SaveProject; a package
+    missing one of them is sealed with the entry missing, not collected."""
+    from sentinel import manifest, textures
+    from sentinel.ui import flows
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    for tile in (1001, 1002):
+        (lib / ("rock.%d.png" % tile)).write_bytes(b"x")
+    source = tmp_path / "source"
+    source.mkdir()
+    target = tmp_path / "Package"
+    target.mkdir()
+    doc = _Doc(source, "shot_v003.c4d")
+    written = []
+
+    def save_project(_doc, _flags, target_dir, assets, missing):
+        (target / "Package.c4d").write_bytes(b"scene")
+        return True
+
+    monkeypatch.setattr(textures, "scan_all_texture_paths",
+                        lambda d: [{"resolved": str(lib / "rock.<UDIM>.png")}])
+    monkeypatch.setattr(flows.c4d.documents, "SaveProject", save_project)
+    package_entry = {"path": "tex/rock.<UDIM>.png", "state": manifest.ASSET_COLLECTED,
+                     "udim": {"tiles": [1001]}}
+    monkeypatch.setattr(flows, "_rescan_collected_package",
+                        lambda path, root: ([dict(package_entry)], "ok", []))
+    monkeypatch.setattr(manifest, "write_manifest_json",
+                        lambda payload, path: written.append(payload) or True)
+
+    flows.run_collect_pipeline(doc, "Artist", str(target))
+
+    (entry,) = written[0]["assets"]
+    assert (entry["state"], entry["missing_tiles"]) == (manifest.ASSET_MISSING, [1002])

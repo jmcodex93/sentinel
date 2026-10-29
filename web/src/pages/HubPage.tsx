@@ -10,7 +10,6 @@ import { HubToolbar, type HubFilter } from "../components/hub/HubToolbar";
 import { EmptyState, ErrorState, LoadingState } from "../components/PageStates";
 import { Section } from "../components/Section";
 import { restoreFocus as restoreWebviewFocus } from "../lib/focus";
-import { formatBytes } from "../lib/format";
 import {
   fetchHubInventorySnapshot,
   fetchHubJobStatus,
@@ -35,12 +34,14 @@ import {
 import {
   applyFacets,
   applySelection,
+  copyDoneMessage,
   emptyFacetState,
   facetCounts,
   sanitizeColWidths,
   sanitizeSortSpec,
+  shrinkDoneMessage,
   sortAssets,
-  udimRefusalMessage,
+  switchDoneMessage,
   type FacetState,
   type ResizableColumn,
   type SortSpec,
@@ -307,16 +308,8 @@ export function HubPage() {
       }
       if (status.state === "done") {
         const result = (status.result as HubShrinkResult | null) ?? null;
-        const shrunkCount = result?.shrunk.length ?? 0;
-        const errorCount = result?.errors.length ?? 0;
         if (result) {
-          toast({
-            message:
-              errorCount > 0
-                ? `Shrunk ${shrunkCount} (${errorCount} error${errorCount === 1 ? "" : "s"}).`
-                : `Shrunk ${shrunkCount} texture${shrunkCount === 1 ? "" : "s"} — saved ${formatBytes(result.bytes_saved)}.`,
-            variant: errorCount > 0 ? "warn" : "success",
-          });
+          toast(shrinkDoneMessage(result));
         } else {
           toast({ message: "Shrink complete (mock — no report data).", variant: "info" });
         }
@@ -449,9 +442,7 @@ export function HubPage() {
     setShrinkStarting(false);
 
     if (!res.ok || !res.job_id) {
-      toast({ message: res.error === "udim_unsupported"
-        ? udimRefusalMessage("Shrink", res.udim_files)
-        : SHRINK_ERROR_MESSAGES[res.error ?? ""] ?? res.error ?? "Couldn't start shrink.", variant: "warn" });
+      toast({ message: SHRINK_ERROR_MESSAGES[res.error ?? ""] ?? res.error ?? "Couldn't start shrink.", variant: "warn" });
       return;
     }
     setShrinkDialogOpen(false);
@@ -465,17 +456,10 @@ export function HubPage() {
     setCopyBusy(false);
 
     if (!res.ok) {
-      toast({ message: res.error === "udim_unsupported"
-        ? udimRefusalMessage("Copy into project", res.udim_files)
-        : COPY_ERROR_MESSAGES[res.error ?? ""] ?? res.error ?? "Couldn't copy into project.", variant: "warn" });
+      toast({ message: COPY_ERROR_MESSAGES[res.error ?? ""] ?? res.error ?? "Couldn't copy into project.", variant: "warn" });
       return;
     }
-    const copied = res.copied ?? 0;
-    const reused = res.reused ?? 0;
-    const errorCount = res.errors?.length ?? 0;
-    let message = `Copied ${copied}${reused > 0 ? `, reused ${reused}` : ""}.`;
-    if (errorCount > 0) message += ` ${errorCount} error${errorCount === 1 ? "" : "s"}.`;
-    toast({ message, variant: errorCount > 0 ? "warn" : "success" });
+    toast(copyDoneMessage(res));
     // Copied assets now live under a new resolved_path and the refresh
     // below rebuilds the inventory, so the old selection's keys are
     // orphaned anyway — clear explicitly instead of relying on that.
@@ -495,20 +479,12 @@ export function HubPage() {
     setSwitchResBusy(false);
 
     if (!res.ok) {
-      toast({ message: res.error === "udim_unsupported"
-        ? udimRefusalMessage("Switch resolution", res.udim_files)
-        : SWITCH_RES_ERROR_MESSAGES[res.error ?? ""] ?? res.error ?? "Couldn't switch resolution.", variant: "warn" });
+      toast({ message: SWITCH_RES_ERROR_MESSAGES[res.error ?? ""] ?? res.error ?? "Couldn't switch resolution.", variant: "warn" });
       return;
     }
     setSwitchResDialogOpen(false);
     restoreFocus();
-    const switchedCount = res.switched?.length ?? 0;
-    const skippedCount = res.skipped?.length ?? 0;
-    const errorCount = res.errors?.length ?? 0;
-    let message = `Switched ${switchedCount}.`;
-    if (skippedCount > 0) message += ` ${skippedCount} skipped.`;
-    if (errorCount > 0) message += ` ${errorCount} error${errorCount === 1 ? "" : "s"}.`;
-    toast({ message, variant: errorCount > 0 ? "warn" : "success" });
+    toast(switchDoneMessage(res));
     // Refresh also rebuilds metadata and siblings when keys stay unchanged.
     setSelectedKeys(new Set());
     anchorRef.current = null;

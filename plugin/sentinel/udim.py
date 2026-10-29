@@ -14,6 +14,7 @@ Tiles are recognized only at the END of a filename stem (Painter
 as their UDIM equivalent (``u1_v1`` = 1001) so labels read the same.
 """
 
+import math
 import os
 import re
 import unicodedata
@@ -23,7 +24,7 @@ UVTILE = "uvtile"
 
 _UDIM_TAIL = re.compile(r"^(?P<base>.+?)(?P<sep>[._])(?P<tile>1\d{3})$")
 _UVTILE_TAIL = re.compile(r"^(?P<base>.+?)_u(?P<u>\d+)_v(?P<v>\d+)$", re.IGNORECASE)
-_TOKEN = re.compile(r"<(?:udim|uvtile)>", re.IGNORECASE)
+TOKEN_RE = _TOKEN = re.compile(r"<(?:udim|uvtile)>", re.IGNORECASE)
 _STRIP_TOKEN = re.compile(r"[._]?<udim>|<uvtile>", re.IGNORECASE)
 #: UDIM has ten columns (u 0..9); UVTILE columns past that have no UDIM number.
 _MAX_U = 10
@@ -157,3 +158,60 @@ def format_tiles(tiles):
     if start is not None:
         parts.append(str(start) if start == prev else "%d–%d" % (start, prev))
     return ", ".join(parts)
+
+
+def tile_of_uv(u, v):
+    """UDIM tile Redshift reads at C4D UV ``(u, v)``, or ``None`` when no
+    tile can be addressed there (renders black). Measured: 1011 is C4D
+    v in [−1, 0] — C4D's v runs opposite to the UDIM rows — and v in
+    [1, 2] reads no tile."""
+    col = math.floor(u)
+    row = math.floor(1.0 - v)
+    if 0 <= col < _MAX_U and row >= 0:
+        return 1001 + col + 10 * row
+    return None
+
+
+def tiles_of_polygons(uv_floats, poly_indices=None):
+    """Tiles under the polygons of a UVW tag. ``uv_floats`` is the tag's
+    low-level layout (measured, 2026.304): 8 floats per polygon, corners
+    a, b, c, d as (u, v); a triangle repeats c in d. Each polygon counts
+    at its UV centroid. ``poly_indices`` limits the read to those polygons.
+    The set holds ``None`` when some polygon sits where no tile can be
+    addressed."""
+    us = uv_floats[0::2]
+    vs = uv_floats[1::2]
+    count = len(us) // 4
+    floor = math.floor
+    if poly_indices is None:
+        centroids = zip(
+            (a + b + c + d for a, b, c, d in zip(us[0::4], us[1::4], us[2::4], us[3::4])),
+            (a + b + c + d for a, b, c, d in zip(vs[0::4], vs[1::4], vs[2::4], vs[3::4])))
+    else:
+        centroids = ((us[4 * i] + us[4 * i + 1] + us[4 * i + 2] + us[4 * i + 3],
+                      vs[4 * i] + vs[4 * i + 1] + vs[4 * i + 2] + vs[4 * i + 3])
+                     for i in poly_indices if 0 <= i < count)
+    cells = {(floor(su * 0.25), floor(1.0 - sv * 0.25)) for su, sv in centroids}
+    return {1001 + col + 10 * row if 0 <= col < _MAX_U and row >= 0 else None
+            for col, row in cells}
+
+
+def tile_gaps(used, maps):
+    """QC #14 verdict for one object and one material. ``used``: the tiles
+    under its polygons (``tiles_of_polygons``, may hold ``None``); ``maps``:
+    ``[(name, tiles on disk)]`` for the material's tiled samplers. ``None``
+    when every used tile has a texture in every map; otherwise the missing
+    tiles, the maps that lack one, and whether some UVs sit where no tile
+    can be addressed — all of it renders black (measured)."""
+    tiles = {t for t in used if t is not None}
+    missing = set()
+    lacking = []
+    for name, on_disk in maps:
+        gap = tiles - set(on_disk)
+        if gap:
+            missing |= gap
+            lacking.append(name)
+    out_of_range = None in used
+    if not missing and not out_of_range:
+        return None
+    return {"missing": sorted(missing), "maps": lacking, "out_of_range": out_of_range}

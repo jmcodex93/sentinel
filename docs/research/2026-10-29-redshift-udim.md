@@ -1,6 +1,6 @@
 ---
 module: matwire
-tags: [matwire, redshift, udim, uvtile, texturesampler, getallassetsnew, renderdocument]
+tags: [matwire, redshift, udim, uvtile, texturesampler, getallassetsnew, renderdocument, saveproject, uvwtag]
 problem_type: spike
 ---
 
@@ -135,6 +135,39 @@ The v1.41 engine recognises **0 sets** in that folder (all 100 files
 splits the sets (`LOK_cuerpo_Base` for metalness, `LOK_cuerpo_Specular` for
 roughness, `LOK_cuerpo_Coat` for coat roughness/normal) and leaves
 `Normal_OpenGL`, `Coat_color` and `Coat_weight` unrecognised.
+
+## v1.43 measurements (same day, 2026.304)
+
+**Collect.** A sampler on `…/ext_textures/rock_Emit.<UDIM>.png` (tiles 1001,
+1002, 1011) through `SaveProject(ASSETS | SCENEFILE | DONTFAILONMISSINGASSETS)`:
+`assets` lists the three tiles, `missing` is empty, the delivery holds
+`tex/rock_Emit.1001.png`, `.1002` and `.1011`, and the sampler reads
+`relative:///rock_Emit.<UDIM>.png`. The delivered scene, reloaded, resolves
+`ok`. Base case: a single file behaves the same. Whether the document is
+inserted makes no difference.
+
+**UVs.** `UVWTag.GetLowlevelDataAddressR()` returns a byte `memoryview` of
+32 bytes per polygon: corners a, b, c, d as (u, v) float32, with no w. On a
+500 000-polygon sphere, `array('f').frombytes` takes 3 ms, folding the
+polygons into tiles by centroid takes ~0.4 s in an indexed loop, and
+`GetSlow` over all polygons takes 0.17 s. The shipped fold (sliced `zip`)
+makes the whole QC #14 pass on that sphere 0.14 s, texture scan included.
+
+**Texture Tag precedence** (render-measured: one quad, emission materials,
+red = 1001 and green = 1002 as plain paths):
+- a later tag restricted to a selection that exists → green on it (last tag wins);
+- a later tag restricted to a name with no selection → red (covers nothing);
+- a parent with green and a child with red → red (the child's own tag wins).
+
+**Render calibration** for the acceptance runner (64×64, centre pixel):
+- no tile → 128,128,128;
+- tile 1001 red → 255,146,133;
+- tile 1002 green → 215,255,156;
+- tile 1011 blue → 140,132,255;
+- tile 1003 missing → 128,128,128 (the same as no tile).
+
+A tile's own channel saturates at 255, and a missing tile is
+indistinguishable from no texture.
 
 ## Sources
 
