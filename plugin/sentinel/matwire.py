@@ -468,7 +468,7 @@ def scan_texture_sets(filenames, default_root="material", extra_suffixes=None):
 
     # Pass 1: extension filter + tile families. Each scan entry is
     # (filename-or-pattern, stem-to-match, is_tiled), first-seen order.
-    scan_entries = []
+    items = []
     tiled = {}
     for filename in filenames or []:
         rel = str(filename)
@@ -479,7 +479,7 @@ def scan_texture_sets(filenames, default_root="material", extra_suffixes=None):
             continue
         tile = udim.split_tile(stem)
         if tile is None:
-            scan_entries.append((filename, stem, False))
+            items.append((filename, stem, None))
             continue
         folder = rel[:len(rel) - len(base)]
         key = (folder.lower(), tile["base"].lower(), tile["scheme"],
@@ -488,9 +488,25 @@ def scan_texture_sets(filenames, default_root="material", extra_suffixes=None):
         if group is None:
             pattern = folder + udim.pattern_name(
                 tile["base"], tile["scheme"], tile["sep"], ext)
-            group = tiled[key] = {"pattern": pattern, "tiles": set()}
-            scan_entries.append((pattern, tile["base"], True))
+            group = tiled[key] = {"pattern": pattern, "tiles": set(),
+                                  "base": tile["base"], "scheme": tile["scheme"]}
         group["tiles"].add(tile["tile"])
+        items.append((filename, stem, key))
+    # A UDIM family whose only tile is 1024 is a pixel-size suffix
+    # (``brick_albedo_1024.jpg``), not tile 1024: read it as untiled, as
+    # v1.41 did. Real ``<UDIM>`` paths elsewhere still accept 1024.
+    for key in [k for k, g in tiled.items()
+                if g["scheme"] == udim.UDIM and g["tiles"] == {1024}]:
+        del tiled[key]
+    scan_entries = []
+    seen = set()
+    for filename, stem, key in items:
+        group = tiled.get(key) if key is not None else None
+        if group is None:
+            scan_entries.append((filename, stem, False))
+        elif key not in seen:
+            seen.add(key)
+            scan_entries.append((group["pattern"], group["base"], True))
     tiles_of = {g["pattern"]: sorted(g["tiles"]) for g in tiled.values()}
 
     for filename, stem, is_tiled in scan_entries:

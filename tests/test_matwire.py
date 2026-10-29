@@ -2536,3 +2536,34 @@ def test_preview_payload_carries_tiles_mismatch_and_coat_source(matwire):
     assert "tiles" not in rows["coat_color"]
     assert s["tile_mismatch"] == {"roughness": [1002]}
     assert s["coat_weight_source"] == "constant"
+
+
+# --- Final-fix wave: a lone `_1024` is a resolution, not UDIM tile 1024 ----
+
+def test_resolution_suffix_1024_matches_v141_untiled(matwire):
+    """v1.41 parity (measured on f9fd5b2): no sets, every file no_channel."""
+    names = ["brick_albedo_1024.jpg", "brick_normal_1024.jpg"]
+    out = matwire.scan_texture_sets(names)
+    assert out["sets"] == []
+    assert out["ignored"] == [("brick_albedo_1024.jpg", "no_channel"),
+                              ("brick_normal_1024.jpg", "no_channel")]
+    assert out["leftover_hints"] == {
+        "brick_albedo_1024.jpg": "brick_albedo_1024",
+        "brick_normal_1024.jpg": "brick_normal_1024"}
+
+
+def test_resolution_suffix_1024_with_channel_names_stays_untiled(matwire):
+    out = matwire.scan_texture_sets(
+        ["rock_BaseColor_1024.png", "rock_Normal_1024.png"])
+    assert out["sets"] == []
+    assert all(reason == "no_channel" for _f, reason in out["ignored"])
+    assert not any("<UDIM>" in f for f, _r in out["ignored"])
+
+
+def test_real_family_with_1024_among_tiles_stays_tiled(matwire):
+    out = matwire.scan_texture_sets(
+        ["rock_BaseColor.1001.png", "rock_BaseColor.1024.png"])
+    assert len(out["sets"]) == 1
+    tex_set = out["sets"][0]
+    assert tex_set["channels"]["basecolor"] == "rock_BaseColor.<UDIM>.png"
+    assert tex_set["tiles"]["basecolor"] == [1001, 1024]
