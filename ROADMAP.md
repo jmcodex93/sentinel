@@ -2,10 +2,10 @@
 
 Solo lo pendiente. Lo entregado, con su porqué, está en [`docs/HISTORY.md`](docs/HISTORY.md).
 
-## Estado (2026-10-25)
-- `main`: **v1.41.0** (etiqueta `v1.41.0`). Matriz soportada: **Cinema 4D 2025–2027**, macOS y Windows. Objetivo del estudio: **C4D 2026.4.0**.
+## Estado (2026-10-29)
+- `main`: **v1.43.0** (etiqueta `v1.43.0`; v1.42.0 y v1.43.0 entraron juntas en el PR #39). La última aceptada en los dos sistemas es **v1.41.0** (etiqueta `v1.41.0`). Matriz soportada: **Cinema 4D 2025–2027**, macOS y Windows. Objetivo del estudio: **C4D 2026.4.0**.
 - Aceptada en Windows 11 + C4D 2026.4.0 (ronda 6, con el código de v1.40.1) y en macOS + C4D 2026.304 (ronda Mac 1); C4D 2027.0 comprobado en vivo en macOS. Evidencia: [`docs/audit/2026-09-24-windows-acceptance.md`](docs/audit/2026-09-24-windows-acceptance.md) y [`docs/audit/2026-10-24-macos-acceptance.md`](docs/audit/2026-10-24-macos-acceptance.md).
-- `feat/matwire-udim`: **v1.43.0** (v1.42.0 Matwire UDIM + export de Painter, y la segunda entrega UDIM: acciones del Hub por tesela y QC #14), comprobada en vivo en macOS + C4D 2026.304; sin merge, sin ronda Windows y sin pasar por el panel en la GUI.
+- v1.42.0 (Matwire UDIM + export de Painter) y v1.43.0 (acciones del Hub por tesela y QC #14): comprobadas en vivo en macOS + C4D 2026.304; sin ronda Windows y sin pasar por el panel en la GUI.
 - CI en cada PR y push a `main`: pytest en Linux, macOS y Windows + web.
 
 ## Para cerrar la beta
