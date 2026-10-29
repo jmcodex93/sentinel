@@ -43,12 +43,10 @@ a later task), not this module's.
 
 from collections import deque
 
+from sentinel import udim
 from sentinel.matwire import (
-    _CHANNEL_RES,
-    _match_channel,
-    _normalize,
-    _strip_trailing_res,
     channel_colorspace,
+    match_stem,
 )
 
 #: The only two colorspace strings this codebase ever writes to the RS
@@ -102,6 +100,11 @@ PORT_TO_CHANNEL = {
     "opacity_color": "opacity",
     # emission — identical port name on both BRDFs.
     "emission_color": "emission",
+    # coat (v1.42) — identical port names on both BRDFs. The coat NORMAL
+    # reaches the BRDF through a bumpmap, so it lands on bumpmap.input.
+    "coat_color": "coat_color",
+    "coat_weight": "coat_weight",
+    "coat_roughness": "coat_roughness",
     # single-owner utility ports (no BRDF ambiguity).
     "bumpmap.input": "normal",
     "displacement.texmap": "height",
@@ -123,15 +126,13 @@ PASS_THROUGH_ASSETS = (
 
 def _name_channel(filename):
     """Channel inferred from a filename alone, via matwire's own stem
-    pipeline — extension stripped, separators normalized, a trailing
-    resolution token stripped, then matched against matwire's channel
-    table. Never duplicates that table; reuses it verbatim."""
+    pipeline (`match_stem`) after removing a UDIM/UVTILE token. Never
+    duplicates matwire's channel table; reuses it verbatim."""
     if not filename:
         return None
     base = str(filename).replace("\\", "/").rsplit("/", 1)[-1]
     stem = base.rsplit(".", 1)[0] if "." in base else base
-    norm_stem, _trailing_px = _strip_trailing_res(_normalize(stem))
-    channel, _root = _match_channel(norm_stem, _CHANNEL_RES)
+    channel, _root, _px = match_stem(udim.strip_token(stem))
     return channel
 
 

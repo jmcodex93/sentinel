@@ -184,6 +184,17 @@ def build_qc_report(doc, results, artist_name, qc_summary=None):
         ],
     }
 
+    # UDIM Tiles (v1.43, QC #14) — same situation as rs_colorspace above:
+    # the section exists so the key set matches the registry; no live
+    # caller feeds ``udim_tiles_bad`` (a list of flagged objects) today.
+    udim_tiles_bad = results.get("udim_tiles_bad", [])
+    report["checks"]["udim_tiles"] = {
+        "status": "PASS" if not udim_tiles_bad else "FAIL",
+        "count": len(udim_tiles_bad),
+        "label": "Objects on UDIM tiles without texture",
+        "items": [obj.GetName() for obj in udim_tiles_bad[:30]],
+    }
+
     report_key_by_id = _report_key_by_check_id()
 
     disabled_checks = []

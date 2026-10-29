@@ -508,6 +508,8 @@ export interface HubOwner {
 }
 
 export interface HubAsset {
+  /** v1.42: tiles of a UDIM pattern row; null for ordinary files. */
+  udim_tiles?: number[] | null;
   key: string;
   path: string;
   resolved_path: string | null;
@@ -670,6 +672,8 @@ export interface HubShrinkResultItem {
   key: string;
   target_path: string;
   resolved_path: string;
+  /** v1.43: number of tile files written for a UDIM map. */
+  tiles?: number;
 }
 
 export interface HubShrinkSkip {
@@ -698,6 +702,8 @@ export interface HubCopyResponse {
   error?: string;
   copied?: number;
   reused?: number;
+  /** v1.43: UDIM tile files copied (a UDIM map counts once in `copied`). */
+  tiles_copied?: number;
   errors?: { key: string; error: string }[];
   stamp?: string;
 }
@@ -787,7 +793,9 @@ export interface HubSwitchResponse {
   /** "no_document" | "invalid_target" | "too_many_keys". */
   error?: string;
   switched?: string[];
-  skipped?: { key: string; reason: string }[];
+  /** `reason` "no_variant" | "already_there" | "incomplete_tiles" (v1.43: the
+   * target UDIM family lacks `missing` tiles the map uses today). */
+  skipped?: { key: string; reason: string; missing?: number[] }[];
   errors?: { key: string; error: string }[];
   stamp?: string;
 }
@@ -1293,6 +1301,10 @@ export interface RenameApplyResult {
  * the writer's connect pairs come from. `[]` means the ORM lands as a bare
  * unconnected sampler because dedicated maps won both outputs. */
 export interface MatwireChannelRow {
+  /** v1.42, tiled channels only: tile numbers and their compact label
+   * (`udim.format_tiles`), both server-derived. */
+  tiles?: number[];
+  tiles_label?: string;
   channel: string;
   file: string;
   colorspace: string;
@@ -1319,6 +1331,10 @@ export interface MatwireChannelRow {
  * pairs (JSON-flattened tuples); reasons are labeled client-side via
  * `IGNORED_REASON_LABELS` in lib/panelMatwire.ts. */
 export interface MatwireSet {
+  /** v1.42: channel -> tiles other maps of the set have and it lacks. */
+  tile_mismatch?: Record<string, number[]>;
+  /** v1.42: `matwire.coat_weight_source` — "constant" means 1.0 is written. */
+  coat_weight_source?: "map" | "constant" | null;
   name: string;
   channels: MatwireChannelRow[];
   normal_flipy: boolean;
@@ -1357,6 +1373,10 @@ export interface MatwirePreviewResult {
    * Material selector is disabled with an inline reason and the writer
    * builds a Standard Surface material (honest degradation). */
   openpbr_available?: boolean;
+  /** v1.42: skipped file name (a tile-family PATTERN) -> its tiles, for
+   * the global, per-set and leftover folds. Empty when nothing tiled was
+   * skipped. */
+  ignored_tiles?: Record<string, Pick<MatwireChannelRow, "tiles" | "tiles_label">>;
   error?: string;
 }
 

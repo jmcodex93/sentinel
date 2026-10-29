@@ -693,7 +693,8 @@ def _legacy_score_fixture(counts=None, disabled=None):
     counts = counts or {}
     disabled = disabled or []
     # v1.38: check #13 (RS Colorspace) joins the registry — 13, not 12.
-    total = 13 - len(disabled)
+    # v1.43: check #14 (UDIM Tiles) — 14.
+    total = 14 - len(disabled)
     passed = total - sum(1 for v in counts.values() if v)
     return {
         "score": f"{passed}/{total}",
@@ -716,9 +717,11 @@ class TestQcReportPayload:
             "names", "output", "takes", "fps_range", "cross_aspect",
             # v1.38: check #13 (RS Colorspace) joins the registry, last.
             "rs_colorspace",
+            # v1.43: check #14 (UDIM Tiles), last.
+            "udim_tiles",
         ]
         assert payload["score"] == {
-            "score": "13/13", "passed": 13, "total": 13,
+            "score": "14/14", "passed": 14, "total": 14,
             "disabled_count": 0, "baseline_status": None,
         }
         assert payload["disabled"] == []
@@ -915,7 +918,8 @@ class TestQcReportPayload:
         payload = webbridge.qc_report_payload("", None, {}, None)
         assert payload["scene"] == ""
         # v1.38: check #13 (RS Colorspace) joins the registry — 13, not 12.
-        assert len(payload["checks"]) == 13
+        # v1.43: check #14 (UDIM Tiles) — 14.
+        assert len(payload["checks"]) == 14
         assert payload["disabled"] == []
 
 
@@ -939,7 +943,8 @@ class TestGroupQcBySeverity:
         assert warn_ids == {"vis"}
         # v1.38: check #13 (RS Colorspace) joins the registry, so with 1
         # disabled + 2 fail + 1 warn, OK is 13 - 1 - 2 - 1 = 9 (was 8/12).
-        assert grouped["ok_count"] == 9
+        # v1.43: #14 (UDIM Tiles) — 14 - 1 - 2 - 1 = 10.
+        assert grouped["ok_count"] == 10
         assert grouped["disabled_count"] == 1
 
     def test_card_action_flags_from_registry_not_invented(self):
@@ -1049,8 +1054,8 @@ class TestGroupQcBySeverity:
         assert grouped["fail"] == []
         assert grouped["warn"] == []
         # v1.38: check #13 (RS Colorspace) joins the registry — 13 - 1
-        # disabled = 12 OK (was 11/12).
-        assert grouped["ok_count"] == 12
+        # disabled = 12 OK (was 11/12). v1.43: #14 (UDIM Tiles) — 13 OK.
+        assert grouped["ok_count"] == 13
         assert grouped["disabled_count"] == 1
 
     def test_empty_checks_never_raises(self):

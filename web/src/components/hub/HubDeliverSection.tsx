@@ -96,7 +96,7 @@ export function HubDeliverSection({
       }
       const refusal = collectStartRefusal(res);
       if (refusal) {
-        // Back to the form (also from the gate step): the fix is the folder field.
+        // Back to the form (also from the gate step): the refusal is fixed in the folder field.
         setPhase("idle");
         toast({ message: refusal.message, variant: "warn" });
         return;

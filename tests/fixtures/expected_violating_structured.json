@@ -804,6 +804,13 @@
       }
     ]
   },
+  "udim_tiles": {
+    "check_id": "udim_tiles",
+    "metadata": {
+      "legacy_count": 0
+    },
+    "violations": []
+  },
   "unused_materials": {
     "check_id": "unused_materials",
     "metadata": {

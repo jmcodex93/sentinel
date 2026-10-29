@@ -16,6 +16,7 @@ the SINGLE source both the preview and the writer consume.
 import os
 import re
 
+from sentinel import udim
 from sentinel.assets import split_res_token
 
 IMAGE_EXTENSIONS = frozenset(
@@ -26,13 +27,24 @@ IMAGE_EXTENSIONS = frozenset(
 # packed ORM detected before anything else could half-match).
 _CHANNEL_VARIANTS = (
     ("packed_orm", ("orm", "arm")),
-    ("normal_gl", ("normalgl", "normal_gl", "nor_gl", "normalopengl")),
-    ("normal_dx", ("normaldx", "normal_dx", "nrm_dx", "dx_normal", "nor_dx")),
+    # Coat BEFORE roughness/normal/basecolor (v1.42): "Coat_roughness"
+    # must not be claimed by roughness with a "…_Coat" root.
+    ("coat_weight", ("coat_weight", "clearcoat_weight")),
+    ("coat_color", ("coat_color", "clearcoat_color")),
+    ("coat_roughness", ("coat_roughness", "clearcoat_roughness")),
+    ("coat_normal", ("coat_normal", "clearcoat_normal")),
+    ("normal_gl", ("normalgl", "normal_gl", "nor_gl", "normalopengl",
+                   "normal_opengl")),
+    ("normal_dx", ("normaldx", "normal_dx", "nrm_dx", "dx_normal", "nor_dx",
+                   "normal_directx")),
     ("normal", ("normal", "nrm", "nor", "norm", "nml", "nrml", "nmap")),
     ("basecolor", ("basecolor", "base_color", "albedo", "diffuse", "col",
                    "diff", "base", "dif")),
-    ("roughness", ("roughness", "rough", "rgh")),
-    ("metalness", ("metalness", "metallic", "metal", "met", "mtl")),
+    # OpenPBR names (Painter's OpenPBR export): "Specular_roughness" and
+    # "Base_metalness" would otherwise split the set at "…_Specular"/"…_Base".
+    ("roughness", ("roughness", "rough", "rgh", "specular_roughness")),
+    ("metalness", ("metalness", "metallic", "metal", "met", "mtl",
+                   "base_metalness")),
     ("height", ("height", "displacement", "disp", "dsp", "depth")),
     ("ao", ("ambientocclusion", "ambient_occlusion", "occlusion", "ao", "occ")),
     ("opacity", ("opacity", "alpha", "cutout", "transparency")),
@@ -45,7 +57,7 @@ _CHANNEL_VARIANTS = (
 #: project-ruleset ``matwire_suffixes`` extensions (v1.32.1).
 CANONICAL_CHANNELS = frozenset(channel for channel, _ in _CHANNEL_VARIANTS)
 
-_SRGB_CHANNELS = frozenset({"basecolor", "emission"})
+_SRGB_CHANNELS = frozenset({"basecolor", "emission", "coat_color"})
 
 
 # Separator REQUIRED before the variant (self-caught plan bug: an optional
@@ -115,6 +127,41 @@ def _normalize(stem):
     but the captured ``root`` must keep the artist's original casing for
     the set name, e.g. ``plaster_A`` must not become ``plaster_a``)."""
     return re.sub(r"[\s\-.]+", "_", stem.strip())
+
+
+#: OCIO colourspace names Painter's ``$colorSpace`` export token appends
+#: (``LOK_body_Base_color_sRGB Encoded Rec.709 (sRGB)_1001.png``, v1.42).
+#: Stripped for CHANNEL MATCHING only: the sampler's colourspace stays
+#: ``channel_colorspace`` (studio convention, and only SRGB/RAW are ever
+#: written). Stripped BEFORE ``_normalize`` — these names carry spaces, dots
+#: and parentheses that normalizing would scramble. Longest first.
+OCIO_SUFFIXES = (
+    "Utility - sRGB - Texture", "sRGB Encoded Rec.709 (sRGB)",
+    "Utility - Linear - sRGB", "Linear Rec.709 (sRGB)", "Utility - Raw",
+    "sRGB - Texture", "ACES - ACEScg", "ACES2065-1", "ACEScg", "Raw",
+)
+_OCIO_SUFFIX_RE = re.compile(
+    r"_(?:" + "|".join(re.escape(s) for s in OCIO_SUFFIXES) + r")$",
+    re.IGNORECASE)
+
+
+def strip_colorspace_suffix(stem):
+    return _OCIO_SUFFIX_RE.sub("", str(stem))
+
+
+def match_stem(stem, table=None):
+    """``(channel, root, trailing_px)`` for a filename stem with no
+    extension and no tile — THE stem pipeline, shared by
+    ``scan_texture_sets`` and ``matgraph._name_channel`` (v1.42): OCIO
+    suffix off, separators normalized, a trailing resolution token off, then
+    the channel table (``_CHANNEL_RES`` unless a merged ``table`` is given).
+    ``(None, None, None)`` when no channel matches."""
+    norm_stem, trailing_px = _strip_trailing_res(
+        _normalize(strip_colorspace_suffix(stem)))
+    channel, root = _match_channel(norm_stem, table or _CHANNEL_RES)
+    if channel is None:
+        return None, None, None
+    return channel, root, trailing_px
 
 
 def _match_channel(norm_stem, table):
@@ -345,6 +392,47 @@ def height_range(channels, height_float=None, height_stats=None):
     return "centered"
 
 
+_COAT_CHANNELS = ("coat_weight", "coat_color", "coat_roughness", "coat_normal")
+
+#: Written on the BRDF when a set has coat maps but no weight map (v1.42):
+#: both BRDFs are born with coat_weight = 0 (measured), so the coat would
+#: ship invisible — the same trap as emission (BRDF_EMISSION_AMOUNT).
+COAT_WEIGHT_CONSTANT = 1.0
+
+
+def coat_weight_source(channels):
+    """Where a set's coat weight comes from — the single source for both the
+    writer and the preview note: ``"map"`` (a coat_weight texture),
+    ``"constant"`` (coat maps without one → ``COAT_WEIGHT_CONSTANT``), or
+    ``None`` (no coat)."""
+    channels = channels or {}
+    if "coat_weight" in channels:
+        return "map"
+    if any(channel in channels for channel in _COAT_CHANNELS):
+        return "constant"
+    return None
+
+
+def tile_mismatch(tex_set):
+    """``{channel: [tiles]}`` — tiles that OTHER tiled channels of the set
+    have and this one lacks (Redshift renders them black, silently —
+    measured). ``{}`` when the tiled channels agree or fewer than two are
+    tiled. A gap shared by every channel is not reported: it is a tile the
+    set doesn't use (LOK's ``cuerpo`` skips 1005, where ``grip`` lives)."""
+    tiles = (tex_set or {}).get("tiles") or {}
+    if len(tiles) < 2:
+        return {}
+    union = set()
+    for row in tiles.values():
+        union.update(row)
+    out = {}
+    for channel, row in tiles.items():
+        missing = sorted(union - set(row))
+        if missing:
+            out[channel] = missing
+    return out
+
+
 def scan_texture_sets(filenames, default_root="material", extra_suffixes=None):
     """``default_root`` names the set for ROOTLESS files ("albedo.png") —
     the caller passes the folder's basename so bare-channel packs group
@@ -359,7 +447,17 @@ def scan_texture_sets(filenames, default_root="material", extra_suffixes=None):
 
     ``leftover_hints`` maps each ``no_channel`` file to its normalized
     stem (lowercase, separators collapsed to ``_``) — the ops layer
-    prefix-matches those against set names (``assign_leftovers``)."""
+    prefix-matches those against set names (``assign_leftovers``).
+
+    Tiled files (v1.42, ``udim.split_tile``: Mari ``rock_diffuse.1001.exr``,
+    Painter ``…_1001.png``, Mudbox ``…_u1_v1.png``) collapse into ONE entry
+    per (folder, base, scheme, separator, extension) whose filename is the
+    Redshift PATTERN (``rock_diffuse.<UDIM>.exr``), so ``channels`` keeps its
+    ``{channel: relpath}`` shape and the writer needs no tile logic. Each set
+    gains ``tiles`` = ``{channel: [tile, ...]}`` for its tiled channels. At
+    an equal resolution rank a tiled entry beats an untiled one for the same
+    channel. Known risk (spec): an image sequence numbered from 1001 reads as
+    UDIM — the preview shows the tile count, so it is visible."""
     table = (_compile_channel_res(extra_suffixes) if extra_suffixes
              else _CHANNEL_RES)
     sets = {}
@@ -368,17 +466,55 @@ def scan_texture_sets(filenames, default_root="material", extra_suffixes=None):
     ignored = []
     leftover_hints = {}
 
+    # Pass 1: extension filter + tile families. Each scan entry is
+    # (filename-or-pattern, stem-to-match, is_tiled), first-seen order.
+    items = []
+    tiled = {}
     for filename in filenames or []:
-        base = os.path.basename(str(filename))
+        rel = str(filename)
+        base = os.path.basename(rel)
         stem, ext = os.path.splitext(base)
         if ext.lower() not in IMAGE_EXTENSIONS:
             ignored.append((filename, "bad_extension"))
             continue
-        norm_stem, trailing_px = _strip_trailing_res(_normalize(stem))
-        channel, root = _match_channel(norm_stem, table)
+        tile = udim.split_tile(stem)
+        if tile is None:
+            items.append((filename, stem, None))
+            continue
+        folder = rel[:len(rel) - len(base)]
+        key = (folder.lower(), tile["base"].lower(), tile["scheme"],
+               tile["sep"], ext.lower())
+        group = tiled.get(key)
+        if group is None:
+            pattern = folder + udim.pattern_name(
+                tile["base"], tile["scheme"], tile["sep"], ext)
+            group = tiled[key] = {"pattern": pattern, "tiles": set(),
+                                  "base": tile["base"], "scheme": tile["scheme"]}
+        group["tiles"].add(tile["tile"])
+        items.append((filename, stem, key))
+    # A UDIM family whose only tile is 1024 is a pixel-size suffix
+    # (``brick_albedo_1024.jpg``), not tile 1024: read it as untiled, as
+    # v1.41 did. Real ``<UDIM>`` paths elsewhere still accept 1024.
+    for key in [k for k, g in tiled.items()
+                if g["scheme"] == udim.UDIM and g["tiles"] == {1024}]:
+        del tiled[key]
+    scan_entries = []
+    seen = set()
+    for filename, stem, key in items:
+        group = tiled.get(key) if key is not None else None
+        if group is None:
+            scan_entries.append((filename, stem, False))
+        elif key not in seen:
+            seen.add(key)
+            scan_entries.append((group["pattern"], group["base"], True))
+    tiles_of = {g["pattern"]: sorted(g["tiles"]) for g in tiled.values()}
+
+    for filename, stem, is_tiled in scan_entries:
+        channel, root, trailing_px = match_stem(stem, table)
         if channel is None:
             ignored.append((filename, "no_channel"))
-            leftover_hints[filename] = _normalize(stem).lower()
+            leftover_hints[filename] = _normalize(
+                strip_colorspace_suffix(stem)).lower()
             continue
         root_key, root_px = _root_and_px(root)
         if not root_key:
@@ -393,7 +529,8 @@ def scan_texture_sets(filenames, default_root="material", extra_suffixes=None):
             sets[group_key] = {"candidates": {}, "ignored": []}
             order.append(group_key)
             display_names[group_key] = root_key
-        sets[group_key]["candidates"].setdefault(channel, []).append((filename, px))
+        sets[group_key]["candidates"].setdefault(channel, []).append(
+            (filename, px, is_tiled))
 
     out_sets = []
     for group_key in order:
@@ -402,10 +539,12 @@ def scan_texture_sets(filenames, default_root="material", extra_suffixes=None):
         channels = {}
         set_ignored = list(data["ignored"])
         for channel, entries in data["candidates"].items():
-            ranked = sorted(entries, key=lambda e: -_rank(e[1]))
+            # Highest resolution first; at an equal rank a tiled entry wins
+            # (sorted is stable, so untiled ties keep first-seen order).
+            ranked = sorted(entries, key=lambda e: (-_rank(e[1]), not e[2]))
             best_rank = _rank(ranked[0][1])
             channels[channel] = ranked[0][0]
-            for filename, px in ranked[1:]:
+            for filename, px, _tiled in ranked[1:]:
                 reason = ("duplicate_channel"
                           if _rank(px) == best_rank else "lower_resolution")
                 set_ignored.append((filename, reason))
@@ -436,10 +575,12 @@ def scan_texture_sets(filenames, default_root="material", extra_suffixes=None):
             "channels": channels,
             "normal_flipy": normal_flipy,
             "ignored": set_ignored,
+            "tiles": {ch: tiles_of[f] for ch, f in channels.items()
+                      if f in tiles_of},
         })
 
     return {"sets": out_sets, "ignored": ignored,
-            "leftover_hints": leftover_hints}
+            "leftover_hints": leftover_hints, "pattern_tiles": tiles_of}
 
 
 def assign_leftovers(hints, set_names):
@@ -502,18 +643,35 @@ def preview_payload(scan_result, existing_names, multiply_ao=False):
                 row["range"] = height_range(tex_set["channels"],
                                             tex_set.get("height_float"),
                                             tex_set.get("height_stats"))
+            tiles = (tex_set.get("tiles") or {}).get(channel)
+            if tiles:
+                row["tiles"] = list(tiles)
+                row["tiles_label"] = udim.format_tiles(tiles)
             channels.append(row)
         sets.append({
             "name": tex_set["name"],
             "channels": channels,
             "normal_flipy": tex_set["normal_flipy"],
             "ignored": [list(row) for row in tex_set["ignored"]],
+            "tile_mismatch": tile_mismatch(tex_set),
+            "coat_weight_source": coat_weight_source(tex_set["channels"]),
         })
     names = dedupe_names([s["name"] for s in sets], existing_names)
+    # A skipped tile family is ONE pattern name (v1.42): carry its tiles so
+    # the fold says "UDIM · N tiles" — keyed by the skipped file name, which
+    # also keys the leftover rows built from the same ``no_channel`` files.
+    pattern_tiles = scan_result.get("pattern_tiles") or {}
+    skipped = [row[0] for row in scan_result.get("ignored") or []]
+    for tex_set in scan_result.get("sets") or []:
+        skipped.extend(row[0] for row in tex_set["ignored"])
+    ignored_tiles = {name: {"tiles": list(pattern_tiles[name]),
+                            "tiles_label": udim.format_tiles(pattern_tiles[name])}
+                     for name in skipped if name in pattern_tiles}
     return {
         "sets": sets,
         "ignored": [list(row) for row in scan_result.get("ignored") or []],
         "names": names,
+        "ignored_tiles": ignored_tiles,
     }
 
 

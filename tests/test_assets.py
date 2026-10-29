@@ -236,6 +236,53 @@ class TestMergeInventories:
         assert len(out) == 1
         assert out[0]["key"] == "/users/x/scene/tex/wood.png"
 
+    def test_udim_tiles_fold_into_the_pattern_row(self):
+        """GetAllAssetsNew lists every tile on its own (measured); the Hub
+        shows ONE row per UDIM map, counting its tiles."""
+        out = assets.merge_inventories(
+            [_tex("/p/tex/rock_BaseColor.<UDIM>.png")],
+            [_gen("/p/tex/rock_BaseColor.1001.png", owner_name="RS_Mat", owner_kind="material"),
+             _gen("/p/tex/rock_BaseColor.1002.png", owner_name="RS_Mat", owner_kind="material"),
+             _gen("/p/tex/rock_Roughness.1001.png")])
+        assert len(out) == 2
+        row = next(r for r in out if "<udim>" in r["key"])
+        assert row["udim"] == {"tiles": [1001, 1002]}
+        assert row["repathable"] is True
+        assert ("RS_Mat", "material", "") in row["owners"]
+        assert not [r for r in out if r["key"].endswith("basecolor.1001.png")]
+
+    def test_direct_tile_reference_keeps_its_own_owner(self):
+        """A material pointing at ONE tile file owns that file's row; the
+        exact key match wins over the fold into the UDIM pattern row."""
+        out = assets.merge_inventories(
+            [_tex("/t/r_<UDIM>.png", host="A", idx=0),
+             _tex("/t/r_1001.png", host="B", idx=1)],
+            [_gen("/t/r_1001.png", owner_name="B", owner_kind="material")])
+        own = next(r for r in out if r["key"] == "/t/r_1001.png")
+        pattern = next(r for r in out if "<udim>" in r["key"])
+        assert ("B", "material", "") in own["owners"]
+        assert ("B", "material", "") not in pattern["owners"]
+
+    def test_nfd_tile_keys_still_fold(self):
+        """``udim.tile_regex`` matches in NFC; a path that arrives in NFD
+        (macOS/SMB listings) must still fold into its pattern row."""
+        import unicodedata
+        nfd = lambda s: unicodedata.normalize("NFD", s)
+        out = assets.merge_inventories(
+            [_tex(nfd("/p/tex/cañón_<UDIM>.png"))],
+            [_gen(nfd("/p/tex/cañón_1001.png")), _gen(nfd("/p/tex/cañón_1002.png"))])
+        assert len(out) == 1
+        assert out[0]["udim"] == {"tiles": [1001, 1002]}
+
+    def test_rows_without_token_carry_no_udim(self):
+        out = assets.merge_inventories([_tex("/p/tex/a.png")], [_gen("/p/tex/b.1001.png")])
+        assert all("udim" not in r for r in out)
+
+    def test_udim_records(self):
+        recs = [{"key": "a", "udim": {"tiles": [1001]}}, {"key": "b"}]
+        assert assets.udim_records(recs) == [recs[0]]
+        assert assets.udim_records(None) == []
+
 
 class TestCanonicalAssetKey:
     """canonical_asset_key — the dedupe key merge_inventories uses instead
@@ -380,6 +427,25 @@ class TestTotalsAndSizes:
         assert recs[1].get("mtime") is None
 
 
+    def test_stat_sizes_batch_sums_udim_tiles(self, tmp_path):
+        """A UDIM row has no single file: its size is the sum of its tiles
+        on disk (v1.42), so the disk totals include it instead of treating
+        it as unsized; mtime is the newest tile's."""
+        (tmp_path / "r.1001.png").write_bytes(b"x" * 10)
+        (tmp_path / "r.1002.png").write_bytes(b"x" * 5)
+        os.utime(tmp_path / "r.1001.png", (1000, 1000))
+        os.utime(tmp_path / "r.1002.png", (1000, 2000))
+        pattern = str(tmp_path / "r.<UDIM>.png")
+        recs = [{"resolved_path": pattern, "size_bytes": None,
+                 "udim": {"tiles": [1001, 1002]}},
+                {"resolved_path": pattern, "size_bytes": None,
+                 "udim": {"tiles": []}}]
+        assets.stat_sizes_batch(recs, 0, 2)
+        assert recs[0]["size_bytes"] == 15
+        assert recs[0]["mtime"] == 2000
+        assert recs[1]["size_bytes"] == -1                       # no tile: unsized
+
+
 class TestSearchFolderForMissing:
     def test_build_index_and_cap(self, tmp_path):
         (tmp_path / "sub").mkdir()
@@ -424,6 +490,27 @@ class TestSearchFolderForMissing:
         idx = {"wood.png": ["/new/tex/wood.png"]}
         m = assets.match_missing_in_folder(recs, idx)
         assert m["k1"] == {"match": "/new/tex/wood.png"}
+
+
+    def test_match_missing_udim_pattern_by_its_tiles(self):
+        """A UDIM pattern never exists as a file: Search Folder matches it
+        through its tiles and proposes the pattern in that folder (v1.42).
+        Tiles in two folders are ambiguous, as for plain files."""
+        recs = [
+            {"key": "k1", "status": "missing", "path": "old/Rock_BaseColor.<UDIM>.png"},
+            {"key": "k2", "status": "missing", "path": "old/leaf<UVTILE>.png"},
+            {"key": "k3", "status": "missing", "path": "old/gone.<UDIM>.png"},
+        ]
+        idx = {"rock_basecolor.1001.png": [os.path.join("/new", "tex", "rock_BaseColor.1001.png")],
+               "rock_basecolor.1002.png": [os.path.join("/new", "tex", "rock_BaseColor.1002.png")],
+               "leaf_u1_v1.png": [os.path.join("/a", "leaf_u1_v1.png")],
+               "leaf_u2_v1.png": [os.path.join("/b", "leaf_u2_v1.png")],
+               "gone.png": ["/x/gone.png"]}
+        m = assets.match_missing_in_folder(recs, idx)
+        assert m["k1"] == {"match": os.path.join("/new", "tex", "Rock_BaseColor.<UDIM>.png")}
+        assert m["k2"] == {"ambiguous": [os.path.join("/a", "leaf<UVTILE>.png"),
+                                         os.path.join("/b", "leaf<UVTILE>.png")]}
+        assert "k3" not in m
 
 
 class TestCreateZip:
@@ -597,6 +684,17 @@ class TestShrinkPlan:
         assert skipped["c"] == "not_ok"
         assert skipped["d"] == "no_meta"
         assert skipped["e"] == "not_image"
+
+    def test_file_already_named_for_the_target_is_same_name(self):
+        # wood_2K.png at 4096 px: the shrunk copy would overwrite the original
+        records = [{"key": "a", "path": "/a/wood_2K.png", "resolved_path": "/a/wood_2K.png",
+                    "status": "ok", "asset_type": "texture"}]
+        plan = assets.shrink_plan(records, {"a": self._meta(4096, 4096)}, 2048)
+        assert plan["shrink"] == []
+        assert plan["skipped"] == [{"key": "a", "reason": "same_name"}]
+        # another target still shrinks it to a new sibling
+        assert [i["key"] for i in assets.shrink_plan(
+            records, {"a": self._meta(4096, 4096)}, 1024)["shrink"]] == ["a"]
 
     def test_vram_before_after_exact(self):
         records = [{"key": "a", "path": "/a.png", "resolved_path": "/a.png",
@@ -917,3 +1015,147 @@ class TestFindResVariants:
             {"path": "D:/proj/tex/plaster_8k_1.jpg", "px": 8192},
             {"path": "D:/proj/tex/plaster_4k_1.jpg", "px": 4096},
         ]
+
+
+class TestShrinkTargetPattern:
+    """v1.43: the shrunk copy of a UDIM map is a tile family too — the size
+    suffix goes before the token (``…1001_2K.png`` would be no tile)."""
+
+    def test_udim_suffix_before_token_keeps_separator(self):
+        from sentinel.assets import shrink_target_pattern
+        assert shrink_target_pattern("/p/tex/rock_Emit.<UDIM>.png", 2048) == \
+            "/p/tex/rock_Emit_2K.<UDIM>.png"
+        assert shrink_target_pattern(
+            "tex/LOK_cuerpo_Base_color_sRGB Encoded Rec.709 (sRGB)_<UDIM>.png", 1024) == \
+            "tex/LOK_cuerpo_Base_color_sRGB Encoded Rec.709 (sRGB)_1K_<UDIM>.png"
+
+    def test_uvtile_and_custom_size_and_case(self):
+        from sentinel.assets import shrink_target_pattern
+        assert shrink_target_pattern("rock<uvtile>.png", 4096) == "rock_4K<uvtile>.png"
+        assert shrink_target_pattern("rock.<udim>.exr", 512) == "rock_512px.<udim>.exr"
+
+    def test_idempotent_and_finds_the_family(self):
+        from sentinel.assets import shrink_target_pattern, split_res_token
+        once = shrink_target_pattern("rock.<UDIM>.png", 2048)
+        assert shrink_target_pattern(once, 2048) == once
+        prefix, px, suffix = split_res_token(once)
+        assert px == 2048 and prefix.rstrip("_-.") + suffix == "rock.<UDIM>.png"
+
+
+class TestShrinkPlanUdim:
+    """v1.43: a UDIM row is planned tile by tile."""
+
+    _REC = {"key": "k", "path": "relative:///tex/rock.<UDIM>.png",
+            "resolved_path": "/p/tex/rock.<UDIM>.png", "status": "ok",
+            "asset_type": "texture", "udim": {"tiles": [1001, 1002]}}
+
+    @staticmethod
+    def _meta(px):
+        return {"width": px, "height": px, "channels": 4, "bit_depth": 8}
+
+    def test_large_tiles_shrink_and_small_ones_are_copied(self):
+        from sentinel.assets import shrink_plan
+        plan = shrink_plan([self._REC], {}, 2048,
+                           tile_metas={"k": {1001: self._meta(4096), 1002: self._meta(1024)}})
+        assert plan["skipped"] == []
+        (item,) = plan["shrink"]
+        assert item["resolved_path"] == "/p/tex/rock.<UDIM>.png"
+        assert item["target_path"] == "/p/tex/rock_2K.<UDIM>.png"
+        assert item["path"] == "relative:///tex/rock.<UDIM>.png"
+        assert [(t["tile"], t["resolved_path"], t["target_path"], t["new_width"], t["copy_only"])
+                for t in item["tiles"]] == [
+            (1001, "/p/tex/rock.1001.png", "/p/tex/rock_2K.1001.png", 2048, False),
+            (1002, "/p/tex/rock.1002.png", "/p/tex/rock_2K.1002.png", 1024, True)]
+        # only the shrunk tile changes VRAM
+        assert plan["vram_before"] - plan["vram_after"] > 0
+        assert "vram_before" not in item
+
+    def test_all_tiles_small_is_already_small(self):
+        from sentinel.assets import shrink_plan
+        plan = shrink_plan([self._REC], {}, 2048,
+                           tile_metas={"k": {1001: self._meta(2048), 1002: self._meta(512)}})
+        assert plan["shrink"] == [] and plan["skipped"] == [{"key": "k", "reason": "already_small"}]
+
+    def test_pattern_already_named_for_the_target_is_same_name(self):
+        # rock_2K.<UDIM> with a 4K tile would shrink onto its own originals
+        from sentinel.assets import shrink_plan
+        rec = dict(self._REC, resolved_path="/p/tex/rock_2K.<UDIM>.png")
+        plan = shrink_plan([rec], {}, 2048,
+                           tile_metas={"k": {1001: self._meta(4096), 1002: self._meta(2048)}})
+        assert plan["shrink"] == []
+        assert plan["skipped"] == [{"key": "k", "reason": "same_name"}]
+
+    def test_a_tile_without_meta_skips_the_whole_map(self):
+        from sentinel.assets import shrink_plan
+        plan = shrink_plan([self._REC], {"k": self._meta(4096)}, 2048,
+                           tile_metas={"k": {1001: self._meta(4096)}})
+        assert plan["skipped"] == [{"key": "k", "reason": "no_meta"}]
+        no_tiles = dict(self._REC, udim={"tiles": []})
+        assert shrink_plan([no_tiles], {}, 2048, tile_metas={"k": {}})["skipped"] == \
+            [{"key": "k", "reason": "no_meta"}]
+
+
+class TestCopyPlanUdim:
+    def test_udim_row_expands_to_its_tiles_under_tex(self):
+        from sentinel.assets import copy_plan
+        rec = {"key": "k", "resolved_path": "/lib/rock.<UDIM>.png",
+               "udim": {"tiles": [1001, 1011]}}
+        plan = copy_plan([rec], "/proj")
+        (item,) = plan["copy"]
+        assert item["target_path"] == os.path.join("/proj", "tex", "rock.<UDIM>.png")
+        assert item["tiles"] == [
+            {"tile": 1001, "resolved_path": "/lib/rock.1001.png",
+             "target_path": os.path.join("/proj", "tex", "rock.1001.png")},
+            {"tile": 1011, "resolved_path": "/lib/rock.1011.png",
+             "target_path": os.path.join("/proj", "tex", "rock.1011.png")}]
+
+    def test_udim_row_without_tiles_is_unresolved(self):
+        from sentinel.assets import copy_plan
+        rec = {"key": "k", "resolved_path": "/lib/rock.<UDIM>.png", "udim": {"tiles": []}}
+        assert copy_plan([rec], "/proj") == {"copy": [], "skip": [{"key": "k", "reason": "unresolved"}]}
+
+
+class TestFindResVariantsUdim:
+    """v1.43: a UDIM row's siblings are tile families, folded from the
+    folder listing; each variant carries its tiles."""
+
+    _LISTING = ["rock_4k.1001.png", "rock_4k.1002.png", "rock_2k.1001.png",
+                "rock_2k.1002.png", "rock_1k.1001.png", "rock.1001.png", "rock.1002.png",
+                "notes.txt", "rock_4k.png"]
+
+    def _variants(self, resolved):
+        from sentinel.assets import find_res_variants
+        rec = {"key": "k", "resolved_path": resolved}
+        return find_res_variants([rec], list_dir=lambda d: list(self._LISTING)).get("k")
+
+    def test_tokened_udim_row_finds_pattern_siblings_with_tiles(self):
+        group = self._variants("/p/tex/rock_4k.<UDIM>.png")
+        assert [(os.path.basename(g["path"]), g["px"], g["tiles"]) for g in group] == [
+            ("rock_4k.<UDIM>.png", 4096, [1001, 1002]),
+            ("rock_2k.<UDIM>.png", 2048, [1001, 1002]),
+            ("rock_1k.<UDIM>.png", 1024, [1001]),
+            ("rock.<UDIM>.png", None, [1001, 1002])]
+
+    def test_bare_udim_base_finds_its_shrunk_family(self):
+        group = self._variants("/p/tex/rock.<udim>.png")
+        assert [(os.path.basename(g["path"]), g["px"]) for g in group] == [
+            ("rock_4k.<UDIM>.png", 4096), ("rock_2k.<UDIM>.png", 2048),
+            ("rock_1k.<UDIM>.png", 1024), ("rock.<udim>.png", None)]
+        assert group[-1]["tiles"] == [1001, 1002]
+
+    def test_uvtile_family_pairs_with_the_one_shrink_writes(self):
+        # <UVTILE> absorbs the underscore: Shrink writes rock_2K<UVTILE>.png,
+        # whose 2K is followed by the token, not by a delimiter
+        from sentinel.assets import find_res_variants, shrink_target_pattern, split_res_token
+        assert shrink_target_pattern("rock<UVTILE>.png", 2048) == "rock_2K<UVTILE>.png"
+        assert split_res_token("rock_2K<UVTILE>.png") == ("rock_", 2048, "<UVTILE>.png")
+        listing = ["rock_u1_v1.png", "rock_u2_v1.png", "rock_2K_u1_v1.png", "rock_2K_u2_v1.png"]
+        for resolved in ("/p/tex/rock<UVTILE>.png", "/p/tex/rock_2K<UVTILE>.png"):
+            group = find_res_variants([{"key": "k", "resolved_path": resolved}],
+                                      list_dir=lambda d: list(listing)).get("k")
+            assert [(os.path.basename(g["path"]), g["px"], len(g["tiles"])) for g in group] == [
+                ("rock_2K<UVTILE>.png", 2048, 2), ("rock<UVTILE>.png", None, 2)], resolved
+
+    def test_plain_file_row_is_unchanged_by_tiles_in_the_folder(self):
+        group = self._variants("/p/tex/rock_4k.png")
+        assert group is None or all("tiles" not in g for g in group)

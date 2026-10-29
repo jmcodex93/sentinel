@@ -293,6 +293,28 @@ class TestHubMetaTotalsFromCache:
         assert result["vram_bytes"] == 100
         assert result["disk_bytes"] == 10
 
+    def test_udim_pattern_counts_in_total_without_coverage(
+            self, sentinel_module, tmp_path):
+        """A UDIM pattern has no file to stat or parse: it must still raise
+        ``total`` so the SPA's partial ``~`` marker shows."""
+        from sentinel.ui import hub_ops
+
+        png_file = tmp_path / "tex.png"
+        png_file.write_bytes(make_png(4, 4, 8, 2))
+        png_path = str(png_file)
+        png_key, _ = hub_ops._stat_cache_key(png_path)
+        hub_ops._META_CACHE[png_key] = {"vram_bytes": 100, "disk_bytes": 10}
+        try:
+            result = hub_ops._totals_from_cache(
+                [png_path, str(tmp_path / "rock_<UDIM>.png")])
+        finally:
+            hub_ops._META_CACHE.pop(png_key, None)
+
+        assert result["total"] == 2
+        assert result["covered"] == 1
+        assert result["vram_bytes"] == 100
+        assert result["disk_bytes"] == 10
+
     def test_none_and_missing_paths_ignored(self, sentinel_module, tmp_path):
         from sentinel.ui import hub_ops
 
@@ -671,3 +693,273 @@ def test_pick_path_opens_in_the_scene_folder(sentinel_module, monkeypatch):
     monkeypatch.setattr(c4d.documents, "GetActiveDocument", lambda: None)
     hub_ops.HUB_OPS["hub/pick_path"]({})
     assert calls[-1]["def_path"] == ""
+
+
+class TestHubUdimRefusals:
+    """v1.42 refused UDIM rows in the per-file Hub actions (``udim_unsupported``);
+    v1.43 handles them per tile (``TestHubUdimTileActions``), so the refusal
+    is gone. Replaced with the user's approval, 2026-10-29."""
+
+    _UDIM = {"key": "/p/tex/rock.<udim>.png", "path": "tex/rock.<UDIM>.png",
+             "resolved_path": "/p/tex/rock.<UDIM>.png", "status": "ok",
+             "asset_type": "texture", "repathable": True, "tex_idxs": [0],
+             "udim": {"tiles": [1001, 1002]}}
+
+    class _Doc:
+        def __init__(self, path):
+            self._path = path
+
+        def GetDocumentPath(self):
+            return self._path
+
+        def GetDocumentName(self):
+            return "a_v001.c4d"
+
+    def _patch(self, monkeypatch, tmp_path):
+        from sentinel.ui import flows, hub_ops
+        doc = self._Doc(str(tmp_path))
+        monkeypatch.setattr(hub_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(flows, "scan_scene_assets",
+                            lambda d: ([dict(self._UDIM)], [], []))
+        return hub_ops
+
+    def test_shrink_copy_and_switch_no_longer_refuse_udim_rows(
+            self, sentinel_module, monkeypatch, tmp_path):
+        hub_ops = self._patch(monkeypatch, tmp_path)
+        doc = _UndoDoc(str(tmp_path))
+        monkeypatch.setattr(hub_ops.documents, "GetActiveDocument", lambda: doc)
+        key = self._UDIM["key"]
+        # this row's tiles aren't on disk: each op plans over the disk and
+        # finds nothing to do — never the v1.42 refusal
+        assert hub_ops.HUB_OPS["hub/shrink_start"]({"keys": [key], "target_px": 2048}) == \
+            {"ok": False, "error": "nothing_to_shrink"}
+        copy = hub_ops.HUB_OPS["hub/copy_into_project"]({"keys": [key]})
+        assert (copy["ok"], copy["copied"]) == (True, 0)
+        switch = hub_ops.HUB_OPS["hub/switch_res"]({"keys": [key], "target": "highest"})
+        assert switch["skipped"] == [{"key": key, "reason": "no_variant"}]
+
+    def test_collect_no_longer_refuses_udim(self, sentinel_module, monkeypatch, tmp_path):
+        hub_ops = self._patch(monkeypatch, tmp_path)
+        monkeypatch.setattr(hub_ops, "run_all_checks",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("QC ran")))
+        try:
+            response = hub_ops.HUB_OPS["hub/collect_start"]({"target_dir": str(tmp_path / "out")})
+        except AssertionError as exc:
+            response = str(exc)
+        assert response == "QC ran"
+
+    def test_hub_row_has_udim_tiles_and_no_thumb(self, sentinel_module):
+        from sentinel.bridge import hub
+        rec = dict(self._UDIM, owners=[], size_bytes=None)
+        row = hub.hub_inventory_payload([rec], {"count": 1, "total_bytes": 0})["assets"][0]
+        assert row["udim_tiles"] == [1001, 1002]
+        assert row["has_thumb"] is False
+
+
+class _UndoDoc:
+    """Fake document for the per-tile mutation ops: counts undo brackets."""
+
+    def __init__(self, path):
+        self._path = path
+        self.undo = []
+
+    def GetDocumentPath(self):
+        return self._path
+
+    def GetDocumentName(self):
+        return "a_v001.c4d"
+
+    def StartUndo(self):
+        self.undo.append("start")
+
+    def EndUndo(self):
+        self.undo.append("end")
+
+    def GetDirty(self, *_a):
+        return 0
+
+    def GetMaterials(self):
+        return []
+
+    def GetTakeData(self):
+        return None
+
+
+class TestHubUdimTileActions:
+    """v1.43: Shrink / Copy into project / Switch resolution work per tile.
+    The server re-derives the tiles from disk, writes a whole family or
+    relinks nothing, and relinks in one undo bracket."""
+
+    @staticmethod
+    def _tiles(folder, name, sizes):
+        os.makedirs(folder, exist_ok=True)
+        for tile, px in sizes.items():
+            with open(os.path.join(folder, name.replace("<UDIM>", str(tile))), "wb") as fh:
+                fh.write(make_png(px, px, 8, 6))
+
+    def _setup(self, monkeypatch, tmp_path, rec):
+        from sentinel import webbridge
+        from sentinel.bridge.runtime import JobRegistry
+        from sentinel import textures
+        from sentinel.ui import flows, hub_ops
+        doc = _UndoDoc(str(tmp_path / "proj"))
+        writes = []
+        monkeypatch.setattr(hub_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(flows, "scan_scene_assets", lambda d: ([dict(rec)], ["live0"], []))
+        monkeypatch.setattr(textures, "apply_texture_path_change",
+                            lambda live, new_path, doc=None: writes.append((live, new_path)) or True)
+        monkeypatch.setattr(webbridge, "JOBS", JobRegistry())
+        return hub_ops, doc, writes
+
+    @staticmethod
+    def _rec(pattern, stored, tiles):
+        return {"key": pattern.lower(), "path": stored, "resolved_path": pattern,
+                "status": "ok", "asset_type": "texture", "repathable": True,
+                "tex_idx": 0, "tex_idxs": [0], "udim": {"tiles": tiles}}
+
+    @staticmethod
+    def _run_job(hub_ops, job_id):
+        from sentinel import webbridge
+        _job_id, spec = webbridge.JOBS.take_pending()
+        hub_ops._run_shrink_for_job(job_id, spec)
+        return webbridge.JOBS.status(job_id)
+
+    def test_shrink_writes_every_tile_and_relinks_the_pattern_once(self, sentinel_module,
+                                                                   monkeypatch, tmp_path):
+        tex = tmp_path / "tex"
+        self._tiles(str(tex), "rock.<UDIM>.png", {1001: 4096, 1002: 1024})
+        pattern = str(tex / "rock.<UDIM>.png")
+        # the client's row is stale (one tile): the server lists the disk again
+        rec = self._rec(pattern, "relative:///tex/rock.<UDIM>.png", [1001])
+        hub_ops, doc, writes = self._setup(monkeypatch, tmp_path, rec)
+        saved = []
+
+        def fake_save(item, target_px, target=None):
+            saved.append((item["resolved_path"], target, item["new_width"]))
+            with open(target, "wb") as fh:
+                fh.write(make_png(item["new_width"], item["new_height"], 8, 6))
+            return True, target
+
+        monkeypatch.setattr(hub_ops, "_save_shrunk_copy", fake_save)
+        start = hub_ops.HUB_OPS["hub/shrink_start"]({"keys": [rec["key"]], "target_px": 2048})
+        assert start["ok"] is True
+        status = self._run_job(hub_ops, start["job_id"])
+
+        assert status["state"] == "done", status
+        assert saved == [(str(tex / "rock.1001.png"), str(tex / "rock_2K.1001.png"), 2048)]
+        # the small tile is copied as-is so the shrunk family has no hole
+        assert (tex / "rock_2K.1002.png").read_bytes() == (tex / "rock.1002.png").read_bytes()
+        assert writes == [("live0", "relative:///tex/rock_2K.<UDIM>.png")]
+        assert doc.undo == ["start", "end"]
+        assert status["result"]["shrunk"][0]["tiles"] == 2
+        assert status["result"]["errors"] == []
+
+    def test_shrink_refuses_a_family_already_named_for_the_target(self, sentinel_module,
+                                                                  monkeypatch, tmp_path):
+        # rock_2K.<UDIM> with a 4K tile: the shrunk family would be the
+        # original family, so nothing is written and the op says why
+        tex = tmp_path / "tex"
+        self._tiles(str(tex), "rock_2K.<UDIM>.png", {1001: 4096, 1002: 2048})
+        before = {p.name: p.read_bytes() for p in tex.iterdir()}
+        rec = self._rec(str(tex / "rock_2K.<UDIM>.png"), "tex/rock_2K.<UDIM>.png", [1001, 1002])
+        hub_ops, doc, writes = self._setup(monkeypatch, tmp_path, rec)
+        start = hub_ops.HUB_OPS["hub/shrink_start"]({"keys": [rec["key"]], "target_px": 2048})
+        assert start == {"ok": False, "error": "same_name"}
+        assert {p.name: p.read_bytes() for p in tex.iterdir()} == before
+        assert writes == [] and doc.undo == []
+
+    def test_save_shrunk_copy_refuses_to_write_over_its_source(self, sentinel_module, tmp_path):
+        from sentinel.ui import hub_ops
+        src = tmp_path / "wood_2K.png"
+        src.write_bytes(b"original")
+        item = {"resolved_path": str(src), "new_width": 8, "new_height": 8}
+        # derived target (single file) and explicit target (a UDIM tile)
+        assert hub_ops._save_shrunk_copy(item, 2048) == (False, "same_name")
+        tile = tmp_path / "rock_2K.1001.png"
+        tile.write_bytes(b"original")
+        tile_item = dict(item, resolved_path=str(tile))
+        assert hub_ops._save_shrunk_copy(tile_item, 2048, str(tile)) == (False, "same_name")
+        assert src.read_bytes() == b"original" and tile.read_bytes() == b"original"
+
+    def test_shrink_relinks_nothing_when_a_tile_fails(self, sentinel_module, monkeypatch, tmp_path):
+        tex = tmp_path / "tex"
+        self._tiles(str(tex), "rock.<UDIM>.png", {1001: 4096, 1002: 4096})
+        pattern = str(tex / "rock.<UDIM>.png")
+        rec = self._rec(pattern, "tex/rock.<UDIM>.png", [1001, 1002])
+        hub_ops, doc, writes = self._setup(monkeypatch, tmp_path, rec)
+
+        def fake_save(item, target_px, target=None):
+            if item["resolved_path"].endswith("1002.png"):
+                return False, "save_failed"
+            return True, target
+
+        monkeypatch.setattr(hub_ops, "_save_shrunk_copy", fake_save)
+        start = hub_ops.HUB_OPS["hub/shrink_start"]({"keys": [rec["key"]], "target_px": 2048})
+        status = self._run_job(hub_ops, start["job_id"])
+
+        assert writes == []
+        assert status["result"]["shrunk"] == []
+        assert status["result"]["errors"] == [{"key": rec["key"], "error": "tile 1002: save_failed"}]
+
+    def test_copy_into_project_copies_every_tile_and_relinks_the_pattern(
+            self, sentinel_module, monkeypatch, tmp_path):
+        lib = tmp_path / "lib"
+        self._tiles(str(lib), "rock.<UDIM>.png", {1001: 64, 1002: 64, 1011: 64})
+        rec = self._rec(str(lib / "rock.<UDIM>.png"), str(lib / "rock.<UDIM>.png"), [1001])
+        hub_ops, doc, writes = self._setup(monkeypatch, tmp_path, rec)
+        res = hub_ops.HUB_OPS["hub/copy_into_project"]({"keys": [rec["key"]]})
+        tex = tmp_path / "proj" / "tex"
+        assert sorted(os.listdir(tex)) == ["rock.1001.png", "rock.1002.png", "rock.1011.png"]
+        assert writes == [("live0", "tex/rock.<UDIM>.png")]
+        assert doc.undo == ["start", "end"]
+        assert (res["ok"], res["copied"], res["reused"], res["tiles_copied"], res["errors"]) == \
+            (True, 1, 0, 3, [])
+
+    def test_copy_tile_collision_keeps_the_whole_map(self, sentinel_module, monkeypatch, tmp_path):
+        lib = tmp_path / "lib"
+        self._tiles(str(lib), "rock.<UDIM>.png", {1001: 64, 1002: 64})
+        tex = tmp_path / "proj" / "tex"
+        tex.mkdir(parents=True)
+        (tex / "rock.1002.png").write_bytes(b"another file")  # different size
+        rec = self._rec(str(lib / "rock.<UDIM>.png"), str(lib / "rock.<UDIM>.png"), [1001, 1002])
+        hub_ops, doc, writes = self._setup(monkeypatch, tmp_path, rec)
+        res = hub_ops.HUB_OPS["hub/copy_into_project"]({"keys": [rec["key"]]})
+        assert writes == []
+        assert res["errors"] == [{"key": rec["key"], "error": "collision (tile 1002)"}]
+        assert (res["copied"], res["tiles_copied"]) == (0, 0)
+
+    def test_switch_res_to_a_complete_family_relinks_the_pattern(
+            self, sentinel_module, monkeypatch, tmp_path):
+        tex = tmp_path / "tex"
+        self._tiles(str(tex), "rock_2K.<UDIM>.png", {1001: 2048, 1002: 2048})
+        self._tiles(str(tex), "rock.<UDIM>.png", {1001: 4096, 1002: 4096})
+        rec = self._rec(str(tex / "rock_2K.<UDIM>.png"), "tex/rock_2K.<UDIM>.png", [1001, 1002])
+        hub_ops, doc, writes = self._setup(monkeypatch, tmp_path, rec)
+        res = hub_ops.HUB_OPS["hub/switch_res"]({"keys": [rec["key"]], "target": "highest"})
+        # the bare base has no token: its px comes from its first tile (4096)
+        assert writes == [("live0", "tex/rock.<UDIM>.png")]
+        assert (res["switched"], res["skipped"], doc.undo) == ([rec["key"]], [], ["start", "end"])
+
+    def test_switch_res_skips_a_family_missing_a_current_tile(
+            self, sentinel_module, monkeypatch, tmp_path):
+        tex = tmp_path / "tex"
+        self._tiles(str(tex), "rock_4k.<UDIM>.png", {1001: 4096, 1002: 4096, 1011: 4096})
+        self._tiles(str(tex), "rock_2k.<UDIM>.png", {1001: 2048})
+        rec = self._rec(str(tex / "rock_4k.<UDIM>.png"), "tex/rock_4k.<UDIM>.png", [1001])
+        hub_ops, doc, writes = self._setup(monkeypatch, tmp_path, rec)
+        res = hub_ops.HUB_OPS["hub/switch_res"]({"keys": [rec["key"]], "target": 2048})
+        assert writes == []
+        assert res["skipped"] == [{"key": rec["key"], "reason": "incomplete_tiles",
+                                   "missing": [1002, 1011]}]
+
+    def test_variants_reports_udim_families_with_px(self, sentinel_module, monkeypatch, tmp_path):
+        tex = tmp_path / "tex"
+        self._tiles(str(tex), "rock_2K.<UDIM>.png", {1001: 2048})
+        self._tiles(str(tex), "rock.<UDIM>.png", {1001: 4096})
+        rec = self._rec(str(tex / "rock_2K.<UDIM>.png"), "tex/rock_2K.<UDIM>.png", [1001])
+        hub_ops, _doc, _writes = self._setup(monkeypatch, tmp_path, rec)
+        hub_ops._THUMB_PATHS.clear()
+        res = hub_ops.HUB_OPS["hub/variants"]({"keys": [rec["key"]]})
+        assert res["variants"][rec["key"]] == [
+            {"basename": "rock_2K.<UDIM>.png", "px": 2048},
+            {"basename": "rock.<UDIM>.png", "px": 4096}]

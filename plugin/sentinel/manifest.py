@@ -12,6 +12,8 @@ must stay importable (and testable) without Cinema 4D. Same contract as
 import json
 import os
 
+from sentinel import udim
+
 ASSET_COLLECTED = "collected"
 ASSET_MISSING = "missing"
 ASSET_EXTERNAL = "external"
@@ -54,6 +56,31 @@ def _inside(path, root):
         return False
 
 
+def _exists(path):
+    """A UDIM/UVTILE pattern (v1.43) exists when at least one tile does —
+    the same rule as the texture resolver."""
+    if udim.has_token(path):
+        return bool(udim.list_tiles(path))
+    return os.path.exists(path)
+
+
+def _pattern_key(path):
+    return os.path.basename(str(path or "").replace("\\", "/")).lower()
+
+
+def source_tiles_of(scan_records):
+    """``{pattern basename (lowercase): [tiles]}`` for the UDIM paths of the
+    scene BEFORE it is collected — what ``build_asset_entries`` compares the
+    package against. Keyed by basename: Collect rewrites the folders
+    (``relative:///…``), never the file names (measured 2026-10-29)."""
+    tiles = {}
+    for rec in scan_records or []:
+        resolved = rec.get("resolved")
+        if resolved and udim.has_token(resolved):
+            tiles[_pattern_key(resolved)] = udim.list_tiles(resolved)
+    return tiles
+
+
 def classify_asset(status, resolved, package_root):
     """Map a scanner (status, resolved) pair to an asset state.
 
@@ -66,7 +93,7 @@ def classify_asset(status, resolved, package_root):
     if not resolved:
         # "ok"/"absolute" without a resolved path cannot be trusted.
         return ASSET_MISSING
-    if not os.path.exists(resolved):
+    if not _exists(resolved):
         return ASSET_MISSING
     if _inside(resolved, package_root):
         return ASSET_COLLECTED
@@ -79,6 +106,10 @@ def build_asset_entries(scan_records, package_root):
     ``scan_records`` are plain dicts (no live C4D refs):
     ``{"current_path", "resolved", "status", "source_type", "channel",
     "host_name"}``. Dedupes by classified path.
+
+    A UDIM pattern (v1.43) records the tiles found in the package as
+    ``udim: {"tiles": [...]}`` (``mark_lost_tiles`` then compares them with
+    the scene before collecting).
     """
     entries = []
     seen = set()
@@ -93,11 +124,14 @@ def build_asset_entries(scan_records, package_root):
                 os.path.realpath(package_root)).replace(os.sep, "/")
         else:
             path = rec.get("current_path", "")
+        tiles = None
+        if state != ASSET_MISSING and udim.has_token(rec.get("resolved")):
+            tiles = udim.list_tiles(rec["resolved"])
         key = (path, state)
         if key in seen:
             continue
         seen.add(key)
-        entries.append({
+        entry = {
             "path": path,
             "original_path": rec.get("current_path", ""),
             "source_type": rec.get("source_type", ""),
@@ -105,7 +139,27 @@ def build_asset_entries(scan_records, package_root):
             "host": rec.get("host_name", ""),
             "state": state,
             "hash": None,  # reservado (schema v1: siempre None)
-        })
+        }
+        if tiles is not None:
+            entry["udim"] = {"tiles": tiles}
+        entries.append(entry)
+    return entries
+
+
+def mark_lost_tiles(entries, source_tiles):
+    """A UDIM entry missing a tile the scene had before collecting
+    (``source_tiles``, from ``source_tiles_of``) turns ``missing`` with
+    ``missing_tiles`` (v1.43): that area would render black on the
+    receiving side, so the package must not be sealed as complete."""
+    for entry in entries or []:
+        tiles = (entry.get("udim") or {}).get("tiles")
+        if tiles is None or entry.get("state") != ASSET_COLLECTED:
+            continue
+        expected = (source_tiles or {}).get(_pattern_key(entry.get("path"))) or []
+        lost = sorted(set(expected) - set(tiles))
+        if lost:
+            entry["state"] = ASSET_MISSING
+            entry["missing_tiles"] = lost
     return entries
 
 
@@ -148,7 +202,17 @@ def verify_package(manifest_dict, package_root):
             result["checked"] += 1
             candidate = os.path.join(
                 package_root, *path.replace("\\", "/").split("/"))
-            if os.path.exists(candidate):
+            tiles = (entry.get("udim") or {}).get("tiles")
+            if tiles is not None:
+                # v1.43: every recorded tile must still be there; a lost
+                # tile is reported as its own file.
+                lost = [udim.tile_path(path, t) for t in tiles
+                        if not os.path.exists(udim.tile_path(candidate, t))]
+                if lost:
+                    result["lost"].extend(lost)
+                else:
+                    result["ok"] += 1
+            elif os.path.exists(candidate):
                 result["ok"] += 1
             else:
                 result["lost"].append(path)

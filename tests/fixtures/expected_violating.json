@@ -181,6 +181,7 @@
       "source": "Shader in 'missing_absolute_texture_mat'"
     }
   ],
+  "udim_tiles": [],
   "unused_materials": [
     "missing_absolute_texture_mat"
   ],

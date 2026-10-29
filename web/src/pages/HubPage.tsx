@@ -10,7 +10,6 @@ import { HubToolbar, type HubFilter } from "../components/hub/HubToolbar";
 import { EmptyState, ErrorState, LoadingState } from "../components/PageStates";
 import { Section } from "../components/Section";
 import { restoreFocus as restoreWebviewFocus } from "../lib/focus";
-import { formatBytes } from "../lib/format";
 import {
   fetchHubInventorySnapshot,
   fetchHubJobStatus,
@@ -35,11 +34,14 @@ import {
 import {
   applyFacets,
   applySelection,
+  copyDoneMessage,
   emptyFacetState,
   facetCounts,
   sanitizeColWidths,
   sanitizeSortSpec,
+  shrinkDoneMessage,
   sortAssets,
+  switchDoneMessage,
   type FacetState,
   type ResizableColumn,
   type SortSpec,
@@ -69,6 +71,7 @@ const SHRINK_ERROR_MESSAGES: Record<string, string> = {
   no_document: "No active Cinema 4D document.",
   invalid_target: "Invalid shrink target.",
   nothing_to_shrink: "None of the selected rows are eligible to shrink.",
+  same_name: "The selected maps' names already end in that size — the shrunk copy would overwrite them. Rename them or pick another size.",
   job_running: "Another job is already running — wait for it to finish.",
   mock: "Shrink isn't available in mock/demo mode.",
 };
@@ -306,16 +309,8 @@ export function HubPage() {
       }
       if (status.state === "done") {
         const result = (status.result as HubShrinkResult | null) ?? null;
-        const shrunkCount = result?.shrunk.length ?? 0;
-        const errorCount = result?.errors.length ?? 0;
         if (result) {
-          toast({
-            message:
-              errorCount > 0
-                ? `Shrunk ${shrunkCount} (${errorCount} error${errorCount === 1 ? "" : "s"}).`
-                : `Shrunk ${shrunkCount} texture${shrunkCount === 1 ? "" : "s"} — saved ${formatBytes(result.bytes_saved)}.`,
-            variant: errorCount > 0 ? "warn" : "success",
-          });
+          toast(shrinkDoneMessage(result));
         } else {
           toast({ message: "Shrink complete (mock — no report data).", variant: "info" });
         }
@@ -465,12 +460,7 @@ export function HubPage() {
       toast({ message: COPY_ERROR_MESSAGES[res.error ?? ""] ?? res.error ?? "Couldn't copy into project.", variant: "warn" });
       return;
     }
-    const copied = res.copied ?? 0;
-    const reused = res.reused ?? 0;
-    const errorCount = res.errors?.length ?? 0;
-    let message = `Copied ${copied}${reused > 0 ? `, reused ${reused}` : ""}.`;
-    if (errorCount > 0) message += ` ${errorCount} error${errorCount === 1 ? "" : "s"}.`;
-    toast({ message, variant: errorCount > 0 ? "warn" : "success" });
+    toast(copyDoneMessage(res));
     // Copied assets now live under a new resolved_path and the refresh
     // below rebuilds the inventory, so the old selection's keys are
     // orphaned anyway — clear explicitly instead of relying on that.
@@ -495,13 +485,7 @@ export function HubPage() {
     }
     setSwitchResDialogOpen(false);
     restoreFocus();
-    const switchedCount = res.switched?.length ?? 0;
-    const skippedCount = res.skipped?.length ?? 0;
-    const errorCount = res.errors?.length ?? 0;
-    let message = `Switched ${switchedCount}.`;
-    if (skippedCount > 0) message += ` ${skippedCount} skipped.`;
-    if (errorCount > 0) message += ` ${errorCount} error${errorCount === 1 ? "" : "s"}.`;
-    toast({ message, variant: errorCount > 0 ? "warn" : "success" });
+    toast(switchDoneMessage(res));
     // Refresh also rebuilds metadata and siblings when keys stay unchanged.
     setSelectedKeys(new Set());
     anchorRef.current = null;

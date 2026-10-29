@@ -387,11 +387,15 @@ def _matwire_request(payload):
     # whether a .tif is float, and only a float map's pixels can say whether
     # zero or mid-grey is flat. Done here, once per request, so the preview
     # and the writer read the same answer and create never trusts a client row.
-    from sentinel import imagemeta
+    from sentinel import imagemeta, udim
     for tex_set in scan["sets"]:
         rel = tex_set["channels"].get("height")
         if rel:
-            path = matwire_c4d._join(folder, rel)
+            # A UDIM height is a pattern no file answers to (v1.42): probe
+            # its lowest tile — the same header + pixels question.
+            tiles = (tex_set.get("tiles") or {}).get("height")
+            path = matwire_c4d._join(
+                folder, udim.tile_path(rel, tiles[0]) if tiles else rel)
             meta = imagemeta.read_image_meta(path)
             tex_set["height_float"] = bool(meta and meta.get("float"))
             if matwire.height_is_float(rel, tex_set["height_float"]):

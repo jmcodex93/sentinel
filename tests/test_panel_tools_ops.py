@@ -1276,6 +1276,24 @@ class TestMatwireOps:
         assert ops._op_matwire_preview({"folder": folder}) == {
             "ok": False, "error": "redshift_unavailable"}
 
+    def test_udim_height_probes_its_first_tile(self, sentinel_module, monkeypatch, tmp_path):
+        """A pattern path opens no file (measured: height_float_stats on
+        <UDIM> returned None), so the float probes read the lowest tile."""
+        import os
+        from sentinel import matwire_c4d
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        folder = self._folder(tmp_path, "rock_BaseColor.1001.png",
+                              "rock_Height.1002.exr", "rock_Height.1001.exr")
+        probed = []
+        monkeypatch.setattr(matwire_c4d, "height_float_stats",
+                            lambda path: probed.append(os.path.basename(path)))
+        preview = ops._op_matwire_preview({"folder": folder})
+        assert preview["ok"] is True
+        assert probed == ["rock_Height.1001.exr"]
+        rows = {r["channel"]: r for r in preview["sets"][0]["channels"]}
+        assert rows["height"]["file"] == "rock_Height.<UDIM>.exr"
+        assert rows["height"]["tiles"] == [1001, 1002]
+
     def test_preview_bad_folder(self, sentinel_module, monkeypatch, tmp_path):
         ops = self._setup(monkeypatch, _FakeMatwireDoc())
         missing = str(tmp_path / "nope")

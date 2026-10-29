@@ -383,7 +383,8 @@ def test_unreadable_coverage_never_passes_qc_or_gate(matgraph_check, monkeypatch
     for kwargs in ({}, {'baseline_entries': []}, {'baseline_path': str(invalid)},
                    {'baseline_path': str(tmp_path / 'missing.json')}):
         score = compute_score(results, **kwargs)
-        assert score['score'] == '12/13'
+        # v1.43: QC #14 (UDIM Tiles) joins the registry — 13/14 (was 12/13).
+        assert score['score'] == '13/14'
         assert score['pass'] is False
         assert score['counts']['rs_colorspace'] == 0
         assert score['unverified_counts'] == {'rs_colorspace': 1}
@@ -415,7 +416,8 @@ def test_unreadable_coverage_never_passes_qc_or_gate(matgraph_check, monkeypatch
     disabled = SimpleNamespace(params={'checks_enabled': {'rs_colorspace': False}})
     # Explicit disabled pair is also the contract produced by run_all_checks.
     disabled_score = compute_score({'rs_colorspace': dict(pair, disabled=True)}, disabled, baseline_entries=[])
-    assert disabled_score['score'] == '12/12'
+    # v1.43: QC #14 (UDIM Tiles) joins the registry — 13/13 (was 12/12).
+    assert disabled_score['score'] == '13/13'
     assert disabled_score['pass'] is True
     assert disabled_score.get('unverified_counts', {}) == {}
     assert gate.count_new_fails(disabled_score) == 0
@@ -459,7 +461,8 @@ def test_accepting_known_mismatch_does_not_accept_unreadable_material(matgraph_c
     assert score['counts']['rs_colorspace'] == 0
     assert score['accepted_counts']['rs_colorspace'] == 1
     assert score['unverified_counts']['rs_colorspace'] == 1
-    assert score['score'] == '12/13'
+    # v1.43: QC #14 (UDIM Tiles) joins the registry — 13/14 (was 12/13).
+    assert score['score'] == '13/14'
     assert score['pass'] is False
     assert gate.evaluate_gate(score)['blocking'][0]['unverified_count'] == 1
 
@@ -476,7 +479,8 @@ def test_informational_colorspaces_preserve_clean_score_and_metadata(matgraph_ch
     assert 'unverified' not in result.metadata
     assert {r['reason'] for r in result.metadata['info']} == {'auto_unverified', 'foreign_cs'}
     score = compute_score({'rs_colorspace': {'legacy_result': [], 'structured_result': result}}, baseline_entries=[])
-    assert score['score'] == '13/13'
+    # v1.43: QC #14 (UDIM Tiles) joins the registry — 14/14 (was 13/13).
+    assert score['score'] == '14/14'
     assert score['pass'] is True
     assert 'unverified_counts' not in score
 

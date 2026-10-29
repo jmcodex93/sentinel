@@ -1,4 +1,13 @@
-import type { HubAsset, HubCollectStartResponse, HubMeta, HubVariant } from "../types";
+import type {
+  HubAsset,
+  HubCollectStartResponse,
+  HubCopyResponse,
+  HubMeta,
+  HubShrinkResult,
+  HubSwitchResponse,
+  HubVariant,
+} from "../types";
+import { formatBytes } from "./format";
 
 /**
  * Pure sort/facet/resize helpers for the Asset Hub table (Task 5,
@@ -443,7 +452,8 @@ export function gridColumnsFor(colWidths: Partial<Record<ResizableColumn, number
  * succeed, so an error screen with Retry would be a dead end.
  */
 export function collectStartRefusal(res: HubCollectStartResponse): { message: string } | null {
-  if (res.ok || res.error !== "target_not_empty") return null;
+  if (res.ok) return null;
+  if (res.error !== "target_not_empty") return null;
   const where = res.target_dir ? `"${res.target_dir}"` : "That folder";
   return {
     message: `${where} already has files in it. Choose an empty or new folder — Sentinel never delivers on top of an existing delivery.`,
@@ -459,4 +469,64 @@ export function collectStartRefusal(res: HubCollectStartResponse): { message: st
 export function thumbUrl(asset: Pick<HubAsset, "key" | "thumb_version">): string {
   const base = `/thumb?key=${encodeURIComponent(asset.key)}`;
   return asset.thumb_version ? `${base}&v=${encodeURIComponent(asset.thumb_version)}` : base;
+}
+
+/** "UDIM · N" for a UDIM pattern row (v1.42), null for ordinary files. */
+export function udimBadge(asset: Pick<HubAsset, "udim_tiles">): string | null {
+  if (!asset.udim_tiles) return null;
+  return asset.udim_tiles.length > 0 ? `UDIM · ${asset.udim_tiles.length}` : "UDIM";
+}
+
+/** " (N UDIM tiles)" when a Hub action wrote tile files (v1.43), else "". */
+function tilesNote(tiles: number): string {
+  return tiles > 0 ? ` (${tiles} UDIM tile${tiles === 1 ? "" : "s"})` : "";
+}
+
+/** " N errors: <first error>." — the first error is named, so a failure the
+ * artist can't see in the table still reads in the toast. */
+function errorsNote(errors: { error: string }[] | undefined): string {
+  const count = errors?.length ?? 0;
+  if (count === 0) return "";
+  return ` ${count} error${count === 1 ? "" : "s"}: ${errors![0].error}.`;
+}
+
+/** Toast for a finished `hub/shrink_start` job. */
+export function shrinkDoneMessage(result: HubShrinkResult): { message: string; variant: "success" | "warn" } {
+  const count = result.shrunk.length;
+  const tiles = result.shrunk.reduce((sum, item) => sum + (item.tiles ?? 0), 0);
+  // A name already ending in the target size is never shrunk onto itself.
+  const sameName = (result.skipped ?? []).filter((s) => s.reason === "same_name").length;
+  const sameNameNote = sameName > 0
+    ? ` ${sameName} skipped: the name already ends in that size (the copy would overwrite it).`
+    : "";
+  if (result.errors.length > 0 || sameName > 0) {
+    return { message: `Shrunk ${count}${tilesNote(tiles)}.${errorsNote(result.errors)}${sameNameNote}`, variant: "warn" };
+  }
+  return {
+    message: `Shrunk ${count} texture${count === 1 ? "" : "s"}${tilesNote(tiles)} — saved ${formatBytes(result.bytes_saved)}.`,
+    variant: "success",
+  };
+}
+
+/** Toast for a `hub/copy_into_project` response that succeeded. */
+export function copyDoneMessage(res: HubCopyResponse): { message: string; variant: "success" | "warn" } {
+  const reused = res.reused ?? 0;
+  const message = `Copied ${res.copied ?? 0}${reused > 0 ? `, reused ${reused}` : ""}${tilesNote(res.tiles_copied ?? 0)}.`
+    + errorsNote(res.errors);
+  return { message, variant: (res.errors?.length ?? 0) > 0 ? "warn" : "success" };
+}
+
+/** Toast for a `hub/switch_res` response that succeeded. A UDIM map whose
+ * target family lacks some of its tiles is skipped and says which (v1.43). */
+export function switchDoneMessage(res: HubSwitchResponse): { message: string; variant: "success" | "warn" } {
+  const skipped = res.skipped ?? [];
+  let message = `Switched ${res.switched?.length ?? 0}.`;
+  if (skipped.length > 0) {
+    const missing = [...new Set(skipped.flatMap((s) => s.missing ?? []))].sort((a, b) => a - b);
+    message += ` ${skipped.length} skipped${missing.length > 0
+      ? ` (that resolution is missing UDIM tile${missing.length === 1 ? "" : "s"} ${missing.join(", ")})`
+      : ""}.`;
+  }
+  message += errorsNote(res.errors);
+  return { message, variant: (res.errors?.length ?? 0) > 0 ? "warn" : "success" };
 }

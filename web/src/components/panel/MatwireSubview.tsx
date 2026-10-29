@@ -26,9 +26,12 @@ import {
   projectionUnavailableNote,
   effectiveProjection,
   suffixWarningsNote,
+  tilesNote,
+  tileMismatchNote,
+  coatWeightNote,
 } from "../../lib/panelMatwire";
 import { useToast } from "../../lib/toast";
-import type { MatwireLeftoverRow, MatwirePreviewResult } from "../../types";
+import type { MatwireChannelRow, MatwireLeftoverRow, MatwirePreviewResult } from "../../types";
 
 /** Inline (muted, non-toast) copy for a preview that can't be computed —
  * normal states of pointing at the wrong folder, not failures, so they
@@ -55,9 +58,29 @@ function ColorspaceChip({ colorspace }: { colorspace: string }) {
   );
 }
 
+/** "UDIM · N tiles (…)" beside a skipped tile-family pattern (v1.42), so an
+ * image sequence read as one pattern stays visible in the folds. */
+function SkippedTilesNote({ entry }: { entry?: Pick<MatwireChannelRow, "tiles" | "tiles_label"> }) {
+  const note = entry ? tilesNote(entry) : null;
+  if (!note) return null;
+  return (
+    <span className="shrink-0" style={{ color: "var(--color-muted)" }}>
+      {note}
+    </span>
+  );
+}
+
 /** Folded `▸ N file(s) ignored` list with reason labels — shared by the
  * per-set fold and the global (unrecognized/non-image) fold. */
-function IgnoredFold({ rows, title }: { rows: [string, string][]; title: string }) {
+function IgnoredFold({
+  rows,
+  title,
+  tiles,
+}: {
+  rows: [string, string][];
+  title: string;
+  tiles?: MatwirePreviewResult["ignored_tiles"];
+}) {
   const [open, setOpen] = useState(false);
   if (rows.length === 0) return null;
   return (
@@ -80,6 +103,7 @@ function IgnoredFold({ rows, title }: { rows: [string, string][]; title: string 
               <span className="shrink-0" style={{ color: "var(--color-muted)" }}>
                 {ignoredReasonLabel(reason)}
               </span>
+              <SkippedTilesNote entry={tiles?.[file]} />
             </div>
           ))}
         </div>
@@ -98,9 +122,11 @@ function IgnoredFold({ rows, title }: { rows: [string, string][]; title: string 
 function LeftoversFold({
   rows,
   excluded,
+  tiles,
 }: {
   rows: MatwireLeftoverRow[];
   excluded: Set<string>;
+  tiles?: MatwirePreviewResult["ignored_tiles"];
 }) {
   const [open, setOpen] = useState(false);
   if (rows.length === 0) return null;
@@ -124,6 +150,7 @@ function LeftoversFold({
               <span className="shrink-0" style={{ color: "var(--color-muted)" }}>
                 {leftoverDestinationLabel(row, excluded)}
               </span>
+              <SkippedTilesNote entry={tiles?.[row.file]} />
             </div>
           ))}
         </div>
@@ -383,16 +410,31 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
                               {ormNote ?? aoNote ?? glossNote ?? heightNote}
                             </span>
                           )}
+                          {tilesNote(row) && (
+                            <span className="shrink-0" style={{ color: "var(--color-muted)" }}>
+                              {tilesNote(row)}
+                            </span>
+                          )}
                           <ColorspaceChip colorspace={row.colorspace} />
                         </div>
                       );
                     })}
-                    <IgnoredFold rows={texSet.ignored} title="file(s) skipped" />
+                    {tileMismatchNote(texSet.tile_mismatch) && (
+                      <p className="text-caption" style={{ color: "var(--color-status-warn)" }}>
+                        {tileMismatchNote(texSet.tile_mismatch)}
+                      </p>
+                    )}
+                    {coatWeightNote(texSet.coat_weight_source) && (
+                      <p className="text-caption" style={{ color: "var(--color-muted)" }}>
+                        {coatWeightNote(texSet.coat_weight_source)}
+                      </p>
+                    )}
+                    <IgnoredFold rows={texSet.ignored} title="file(s) skipped" tiles={preview?.ignored_tiles} />
                   </div>
                 </div>
               );
             })}
-            <IgnoredFold rows={preview?.ignored ?? []} title="file(s) not recognized" />
+            <IgnoredFold rows={preview?.ignored ?? []} title="file(s) not recognized" tiles={preview?.ignored_tiles} />
             <div className="mt-1 flex flex-col gap-1">
               <div className="flex items-center gap-2">
                 <span className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
@@ -443,7 +485,7 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
                   onChange={setImportLeftovers}
                   label={MATWIRE_IMPORT_LEFTOVERS_LABEL}
                 />
-                <LeftoversFold rows={leftovers} excluded={excluded} />
+                <LeftoversFold rows={leftovers} excluded={excluded} tiles={preview?.ignored_tiles} />
               </div>
             )}
           </div>

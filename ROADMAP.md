@@ -5,6 +5,7 @@ Solo lo pendiente. Lo entregado, con su porqué, está en [`docs/HISTORY.md`](do
 ## Estado (2026-10-25)
 - `main`: **v1.41.0** (etiqueta `v1.41.0`). Matriz soportada: **Cinema 4D 2025–2027**, macOS y Windows. Objetivo del estudio: **C4D 2026.4.0**.
 - Aceptada en Windows 11 + C4D 2026.4.0 (ronda 6, con el código de v1.40.1) y en macOS + C4D 2026.304 (ronda Mac 1); C4D 2027.0 comprobado en vivo en macOS. Evidencia: [`docs/audit/2026-09-24-windows-acceptance.md`](docs/audit/2026-09-24-windows-acceptance.md) y [`docs/audit/2026-10-24-macos-acceptance.md`](docs/audit/2026-10-24-macos-acceptance.md).
+- `feat/matwire-udim`: **v1.43.0** (v1.42.0 Matwire UDIM + export de Painter, y la segunda entrega UDIM: acciones del Hub por tesela y QC #14), comprobada en vivo en macOS + C4D 2026.304; sin merge, sin ronda Windows y sin pasar por el panel en la GUI.
 - CI en cada PR y push a `main`: pytest en Linux, macOS y Windows + web.
 
 ## Para cerrar la beta
@@ -24,7 +25,7 @@ Detalle en la tabla *Before distributing a commercial product* del informe de pr
 - [x] Matriz soportada: Cinema 4D 2025–2027 en macOS y Windows (README y Doctor). Queda la plantilla de soporte.
 
 ## Features siguientes
-- **QC #14 — assets que declara el proyecto.** Necesita su propio spec (identidad, baseline y fontanería de informe). Aporta valor aunque no se use "nuevo shot".
+- **QC #15 — assets que declara el proyecto** (el #14 es UDIM Tiles desde la v1.43). Necesita su propio spec (identidad, baseline y fontanería de informe). Aporta valor aunque no se use "nuevo shot".
 - **Scene Complexity Budget.** Polígonos, VRAM estimada de texturas, objetos y luces frente a umbrales por estudio, con semáforo por métrica. Motivo: el artista no sabe que la escena pesa demasiado hasta que el render falla por memoria.
 
 ## Deuda técnica

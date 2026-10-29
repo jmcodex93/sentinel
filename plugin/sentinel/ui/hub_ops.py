@@ -20,9 +20,11 @@ import c4d
 from c4d import documents
 
 from sentinel import webbridge
+from sentinel.common.helpers import safe_print
 from sentinel import assets as assets_engine
 from sentinel import gate as quality_gate
 from sentinel import imagemeta
+from sentinel import udim
 from sentinel.common.settings import GlobalSettings
 from sentinel.qc.score import compute_score, run_all_checks
 from sentinel.rules_context import active_rules_for_doc
@@ -437,7 +439,7 @@ def _validate_shrink_payload(payload):
     return None
 
 
-def _save_shrunk_copy(item, target_px):
+def _save_shrunk_copy(item, target_px, target=None):
     """Save a shrunk sibling copy of ``item`` (a ``shrink_plan`` entry) at
     ``target_px``. Returns ``(True, target_path)`` on success, ``(False,
     error_string)`` otherwise. Never raises — every failure mode (missing
@@ -451,7 +453,9 @@ def _save_shrunk_copy(item, target_px):
     saver = _SAVER_BY_EXT.get(ext)
     if saver is None:
         return False, "unsupported format"
-    target = assets_engine.shrink_target_name(resolved, target_px)
+    target = target or assets_engine.shrink_target_name(resolved, target_px)
+    if os.path.normcase(os.path.abspath(target)) == os.path.normcase(os.path.abspath(resolved)):
+        return False, "same_name"
     try:
         bmp = c4d.bitmaps.BaseBitmap()
         if bmp.InitWith(resolved)[0] != c4d.IMAGERESULT_OK:
@@ -489,6 +493,41 @@ def _settle_relink_results(planned, write_results):
     return succeeded, errors
 
 
+def _rederive_udim_tiles(records):
+    """The server re-derives (never trusts): a UDIM row's tiles are listed
+    again from disk right before a mutation plans over them (v1.43)."""
+    for rec in records:
+        if rec.get("udim"):
+            rec["udim"] = dict(rec["udim"],
+                               tiles=udim.list_tiles(rec.get("resolved_path") or ""))
+    return records
+
+
+def _shrink_one(item, target_px, on_tile=None):
+    """Write the shrunk copy of a plan item → ``(True, target)`` or
+    ``(False, error)``. A UDIM item (v1.43) writes every tile — scaled, or
+    copied as-is when already small — and succeeds only when all of them
+    did: a family with a hole would render that area black, so the caller
+    relinks nothing for it. Tiles already written stay on disk (nothing in
+    the scene points at them)."""
+    tiles = item.get("tiles")
+    if not tiles:
+        return _save_shrunk_copy(item, target_px)
+    for tile in tiles:
+        if on_tile:
+            on_tile(tile)
+        if tile["copy_only"]:
+            try:
+                shutil.copy2(tile["resolved_path"], tile["target_path"])
+            except OSError as exc:
+                return False, "tile %d: copy failed: %s" % (tile["tile"], exc)
+            continue
+        ok, result = _save_shrunk_copy(tile, target_px, tile["target_path"])
+        if not ok:
+            return False, "tile %d: %s" % (tile["tile"], result)
+    return True, item["target_path"]
+
+
 def _op_hub_shrink_start(payload):
     """``hub/shrink_start`` — plan + queue a batch texture shrink as a
     background job (``webbridge.JOBS``, same single-slot registry as
@@ -514,19 +553,31 @@ def _op_hub_shrink_start(payload):
 
     records, _tex_records, _skipped = scan_scene_assets(doc)
     _remember_thumb_paths(records)
-    selected_records = [r for r in records if r.get("key") in keys_set]
+    selected_records = _rederive_udim_tiles(
+        [r for r in records if r.get("key") in keys_set])
 
     metas = {}
-    for key in keys:
-        resolved = _THUMB_PATHS.get(key)
+    tile_metas = {}
+    for rec in selected_records:
+        key = rec.get("key")
+        resolved = rec.get("resolved_path")
         if not resolved:
+            continue
+        if rec.get("udim"):
+            tile_metas[key] = {
+                tile: meta for tile in rec["udim"]["tiles"]
+                for meta in [_meta_for(udim.tile_path(resolved, tile))] if meta is not None}
             continue
         meta = _meta_for(resolved)
         if meta is not None:
             metas[key] = meta
 
-    plan = assets_engine.shrink_plan(selected_records, metas, target_px)
+    plan = assets_engine.shrink_plan(selected_records, metas, target_px, tile_metas)
     if not plan["shrink"]:
+        # A name that already ends in the target suffix would be shrunk onto
+        # itself: say that, not just "nothing eligible".
+        if any(s.get("reason") == "same_name" for s in plan["skipped"]):
+            return {"ok": False, "error": "same_name"}
         return {"ok": False, "error": "nothing_to_shrink"}
 
     try:
@@ -549,18 +600,28 @@ def _run_shrink_for_job(job_id, spec):
         plan = spec.get("plan") or {}
         target_px = spec.get("target_px")
         shrink_items = plan.get("shrink") or []
-        total = len(shrink_items)
         errors = []
         shrunk = []
 
-        for i, item in enumerate(shrink_items, start=1):
-            basename = os.path.basename(item.get("resolved_path") or item.get("path") or "")
-            pct = int(round((i - 1) * 80.0 / total)) if total else 0
-            webbridge.JOBS.update(job_id, "shrink", "%s %d/%d" % (basename, i, total), pct)
-            ok, result = _save_shrunk_copy(item, target_px)
+        # Progress counts files: a UDIM map advances once per tile (v1.43).
+        total = sum(len(item.get("tiles") or ()) or 1 for item in shrink_items)
+        done = [0]
+
+        def _progress(path):
+            done[0] += 1
+            pct = int(round((done[0] - 1) * 80.0 / total)) if total else 0
+            webbridge.JOBS.update(job_id, "shrink", "%s %d/%d" % (
+                os.path.basename(path or ""), done[0], total), pct)
+
+        for item in shrink_items:
+            if not item.get("tiles"):
+                _progress(item.get("resolved_path") or item.get("path"))
+            ok, result = _shrink_one(
+                item, target_px, lambda tile: _progress(tile["resolved_path"]))
             if ok:
                 shrunk.append({"key": item.get("key"), "target_path": result,
-                               "resolved_path": item.get("resolved_path")})
+                               "resolved_path": item.get("resolved_path"),
+                               "tiles": item.get("tiles")})
             else:
                 errors.append({"key": item.get("key"), "error": result})
 
@@ -609,9 +670,14 @@ def _run_shrink_for_job(job_id, spec):
                 errors.extend(writer_errors)
 
                 for s in shrunk:
+                    tiles = s.pop("tiles", None)
+                    pairs = ([(t["resolved_path"], t["target_path"]) for t in tiles]
+                             if tiles else [(s["resolved_path"], s["target_path"])])
+                    if tiles:
+                        s["tiles"] = len(tiles)
                     try:
-                        bytes_saved += max(0, os.path.getsize(s["resolved_path"])
-                                          - os.path.getsize(s["target_path"]))
+                        bytes_saved += max(0, sum(os.path.getsize(a) - os.path.getsize(b)
+                                                  for a, b in pairs))
                     except OSError:
                         pass
 
@@ -650,35 +716,49 @@ def _op_hub_copy_into_project(payload):
 
     records, tex_records, _skipped = scan_scene_assets(doc)
     _remember_thumb_paths(records)
+    _rederive_udim_tiles([r for r in records if r.get("key") in keys_set])
     plan = assets_engine.copy_plan(records, doc_dir)
     copy_items = [item for item in plan["copy"] if item["key"] in keys_set]
 
     copied = 0
     reused = 0
+    tiles_copied = 0
     errors = []
     pending = []  # staged items (file already on disk at target), awaiting relink
     tex_dir = os.path.join(doc_dir, "tex")
     for item in copy_items:
-        target = item["target_path"]
-        resolved = item["resolved_path"]
-        if os.path.exists(target):
-            try:
-                same_size = os.path.getsize(target) == os.path.getsize(resolved)
-            except OSError:
-                same_size = False
-            if not same_size:
-                errors.append({"key": item["key"], "error": "collision"})
+        # A UDIM map (v1.43) copies every tile; any collision or failure
+        # keeps the whole map on its old path (its family stays complete).
+        files = item.get("tiles") or [item]
+        kinds = []
+        error = None
+        for entry in files:
+            target = entry["target_path"]
+            resolved = entry["resolved_path"]
+            where = " (tile %d)" % entry["tile"] if "tile" in entry else ""
+            if os.path.exists(target):
+                try:
+                    same_size = os.path.getsize(target) == os.path.getsize(resolved)
+                except OSError:
+                    same_size = False
+                if not same_size:
+                    error = "collision" + where
+                    break
+                kinds.append("reused")
                 continue
-            kind = "reused"
-        else:
             try:
                 os.makedirs(tex_dir, exist_ok=True)
                 shutil.copy2(resolved, target)
             except OSError as exc:
-                errors.append({"key": item["key"], "error": "copy failed: %s" % exc})
-                continue
-            kind = "copied"
-        pending.append({"key": item["key"], "target_path": target, "kind": kind})
+                error = "copy failed%s: %s" % (where, exc)
+                break
+            kinds.append("copied")
+        if error:
+            errors.append({"key": item["key"], "error": error})
+            continue
+        pending.append({"key": item["key"], "target_path": item["target_path"],
+                        "kind": "copied" if "copied" in kinds else "reused",
+                        "tiles_copied": kinds.count("copied") if item.get("tiles") else 0})
 
     if pending:
         changes = [{"key": p["key"],
@@ -716,9 +796,10 @@ def _op_hub_copy_into_project(payload):
                 reused += 1
             else:
                 copied += 1
+            tiles_copied += s["tiles_copied"]
 
-    return {"ok": True, "copied": copied, "reused": reused, "errors": errors,
-            "stamp": _stamp_for(doc)}
+    return {"ok": True, "copied": copied, "reused": reused, "tiles_copied": tiles_copied,
+            "errors": errors, "stamp": _stamp_for(doc)}
 
 
 _THUMB_SIZE = 64
@@ -959,7 +1040,6 @@ def _op_hub_collect_start(payload):
     # refused anyway.
     if _delivery_target_occupied(target_dir):
         return {"ok": False, "error": "target_not_empty", "target_dir": target_dir}
-
     from sentinel.ui.flows import _baseline_path_for_doc, _current_module
 
     rules_context = active_rules_for_doc(doc)
@@ -1128,6 +1208,12 @@ def _totals_from_cache(paths):
         ext = os.path.splitext(resolved)[1].lower()
         if ext not in webbridge._THUMB_EXTS:
             continue
+        if udim.has_token(resolved):
+            # A UDIM map has no single file to stat or parse: count it in
+            # ``total`` without covering it, so the partial "~" marker
+            # shows instead of a figure that looks complete (v1.42).
+            total += 1
+            continue
         key_size = _stat_cache_key(resolved)
         if key_size is None:
             continue
@@ -1214,12 +1300,20 @@ def _op_hub_variants(payload):
         for v in group:
             px = v["px"]
             if px is None:
-                meta = _meta_for(v["path"])
+                meta = _variant_meta(v)
                 if meta:
                     px = max(meta.get("width") or 0, meta.get("height") or 0) or None
             entries.append({"basename": os.path.basename(v["path"]), "px": px})
         variants[key] = entries
     return {"variants": variants}
+
+
+def _variant_meta(variant):
+    """Header meta of a ``find_res_variants`` entry: a UDIM family (v1.43)
+    has no file of its own, so its first tile stands for it."""
+    tiles = variant.get("tiles")
+    path = udim.tile_path(variant["path"], tiles[0]) if tiles else variant["path"]
+    return _meta_for(path)
 
 
 def _validate_switch_target(target):
@@ -1283,7 +1377,8 @@ def _op_hub_switch_res(payload):
 
     keys_set = set(keys)
     by_key = {r.get("key"): r for r in records}
-    requested_records = [r for r in records if r.get("key") in keys_set]
+    requested_records = _rederive_udim_tiles(
+        [r for r in records if r.get("key") in keys_set])
     variants = assets_engine.find_res_variants(requested_records)
 
     skipped = []
@@ -1304,7 +1399,7 @@ def _op_hub_switch_res(payload):
             def _px_for(v):
                 if v["px"] is not None:
                     return v["px"]
-                meta = _meta_for(v["path"])
+                meta = _variant_meta(v)
                 if meta:
                     return max(meta.get("width") or 0, meta.get("height") or 0)
                 return -1
@@ -1315,6 +1410,13 @@ def _op_hub_switch_res(payload):
         if pick is None:
             skipped.append({"key": key, "reason": "no_variant"})
             continue
+        if rec.get("udim"):
+            # v1.43: a family missing a tile the map uses today would
+            # render that area black — never switch to it.
+            missing = sorted(set(rec["udim"]["tiles"]) - set(pick.get("tiles") or ()))
+            if missing:
+                skipped.append({"key": key, "reason": "incomplete_tiles", "missing": missing})
+                continue
         pick_basename = os.path.basename(pick["path"])
         current_basename = os.path.basename(rec.get("resolved_path") or "")
         if pick_basename.lower() == current_basename.lower():

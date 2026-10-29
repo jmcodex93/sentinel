@@ -197,7 +197,8 @@ class TestCanonicalChannels:
     def test_contains_every_table_channel(self, matwire):
         assert {"packed_orm", "normal_gl", "normal_dx", "normal", "basecolor",
                 "roughness", "metalness", "height", "ao", "opacity",
-                "emission", "specular", "glossiness"} == set(
+                "emission", "specular", "glossiness", "coat_weight", "coat_color",
+                "coat_roughness", "coat_normal"} == set(
             matwire.CANONICAL_CHANNELS)
 
     def test_packed_orm_colorspace_is_raw(self, matwire):
@@ -507,6 +508,49 @@ class TestBuildDescription:
         s = scan["sets"][0]
         s.update(extra)
         return s
+
+    @pytest.mark.parametrize("material,bump_port", [
+        ("openpbr", "geometry_coat_normal"), ("standard", "coat_bump_input")])
+    def test_coat_maps_are_wired_on_both_brdfs(self, matwire, matwire_c4d,
+                                               material, bump_port):
+        tex_set = {"name": "car", "normal_flipy": True, "channels": {
+            "coat_weight": "car_Coat_weight.<UDIM>.png",
+            "coat_color": "car_Coat_color.png",
+            "coat_roughness": "car_Coat_roughness.png",
+            "coat_normal": "car_Coat_normal.png"}}
+        desc, _ao = matwire_c4d.build_description("/tex", tex_set, material=material)
+        RS = matwire_c4d._RS_CORE
+        node_id = matwire_c4d.BRDF_NODES[material]
+        brdf = desc["#<" + matwire_c4d._RS_OUTPUT + ".surface"]
+        sm = "#<" + node_id + "."
+        weight = brdf[sm + "coat_weight"]
+        assert weight["#<" + RS + "texturesampler.tex0/path"] == os.path.join(
+            "/tex", "car_Coat_weight.<UDIM>.png")
+        assert brdf[sm + "coat_color"]["#<" + RS + "texturesampler.tex0/colorspace"] \
+            == matwire_c4d._RS_COLORSPACE["srgb"]
+        assert brdf[sm + "coat_roughness"]["#<" + RS + "texturesampler.tex0/colorspace"] \
+            == matwire_c4d._RS_COLORSPACE["raw"]
+        bump = brdf[sm + bump_port]
+        assert bump["$type"] == "#" + RS + "bumpmap"
+        assert bump["#<" + RS + "bumpmap.inputtype"] == 1
+        assert bump["#<" + RS + "bumpmap.flipy"] is True
+        assert bump["#<" + RS + "bumpmap.input"]["#<" + RS + "texturesampler.tex0/path"] \
+            == os.path.join("/tex", "car_Coat_normal.png")
+
+    def test_coat_without_weight_map_writes_constant(self, matwire, matwire_c4d):
+        tex_set = {"name": "car", "normal_flipy": False,
+                   "channels": {"coat_color": "car_Coat_color.png"}}
+        desc, _ao = matwire_c4d.build_description("/tex", tex_set, material="openpbr")
+        brdf = desc["#<" + matwire_c4d._RS_OUTPUT + ".surface"]
+        key = "#<" + matwire_c4d.BRDF_NODES["openpbr"] + ".coat_weight"
+        assert brdf[key] == matwire.COAT_WEIGHT_CONSTANT == 1.0
+
+    def test_no_coat_writes_no_coat_port(self, matwire, matwire_c4d):
+        tex_set = {"name": "p", "normal_flipy": False,
+                   "channels": {"basecolor": "p_col.png"}}
+        desc, _ao = matwire_c4d.build_description("/tex", tex_set)
+        brdf = desc["#<" + matwire_c4d._RS_OUTPUT + ".surface"]
+        assert not [k for k in brdf if "coat" in k]
 
     def test_full_set_desc_shape(self, matwire, matwire_c4d):
         tex_set = self._tex_set(matwire)
@@ -2346,3 +2390,200 @@ class TestApplyOrmPlanMissingPortRaises:
         brdf_node._allowed = {core + "openpbrmaterial.base_metalness"}
         with pytest.raises(RuntimeError, match="has no port"):
             matwire_c4d._apply_orm_plan(graph, plan)
+
+
+def test_painter_ocio_suffix_is_stripped_for_matching_only(matwire):
+    out = _scan(matwire,
+                "LOK_body_Base_color_sRGB Encoded Rec.709 (sRGB).png",
+                "LOK_body_Height_Raw.png",
+                "LOK_body_Roughness_ACEScg.png")
+    assert out["ignored"] == []
+    s = out["sets"][0]
+    assert s["name"] == "LOK_body"
+    assert s["channels"]["basecolor"] == "LOK_body_Base_color_sRGB Encoded Rec.709 (sRGB).png"
+    # the colourspace stays the studio convention, whatever the suffix says
+    assert matwire.channel_colorspace("roughness") == "raw"
+
+
+def test_openpbr_channel_names_keep_one_root(matwire):
+    out = _scan(matwire, "LOK_body_Base_color.png", "LOK_body_Base_metalness.png",
+                "LOK_body_Specular_roughness.png", "LOK_body_Normal_OpenGL.png",
+                "LOK_body_Normal_DirectX.png")
+    assert [s["name"] for s in out["sets"]] == ["LOK_body"]
+    s = out["sets"][0]
+    assert set(s["channels"]) == {"basecolor", "metalness", "roughness", "normal"}
+    assert s["channels"]["normal"] == "LOK_body_Normal_OpenGL.png"
+    assert ["LOK_body_Normal_DirectX.png", "dx_superseded"] in [list(r) for r in s["ignored"]]
+
+
+def test_coat_channels_are_recognized_before_their_base_channels(matwire):
+    out = _scan(matwire, "car_Base_color.png", "car_Coat_color.png",
+                "car_Coat_weight.png", "car_Coat_roughness.png",
+                "car_Coat_normal.png", "car_Roughness.png", "car_Normal.png",
+                "van_clearcoat_roughness.png")
+    by_name = {s["name"]: s for s in out["sets"]}
+    assert set(by_name["car"]["channels"]) == {
+        "basecolor", "coat_color", "coat_weight", "coat_roughness",
+        "coat_normal", "roughness", "normal"}
+    assert set(by_name["van"]["channels"]) == {"coat_roughness"}
+    assert matwire.channel_colorspace("coat_color") == "srgb"
+    for channel in ("coat_weight", "coat_roughness", "coat_normal"):
+        assert matwire.channel_colorspace(channel) == "raw"
+    assert {"coat_weight", "coat_color", "coat_roughness",
+            "coat_normal"} <= matwire.CANONICAL_CHANNELS
+
+
+def test_match_stem_is_the_shared_pipeline(matwire):
+    assert matwire.match_stem("rock_BaseColor_8k_Raw") == ("basecolor", "rock", 8192)
+    assert matwire.match_stem("protocol") == (None, None, None)
+
+
+_LOK_CHANNELS = (
+    "Base_color_sRGB Encoded Rec.709 (sRGB)", "Base_metalness_Raw",
+    "Coat_color_sRGB Encoded Rec.709 (sRGB)", "Coat_normal_Raw",
+    "Coat_roughness_Raw", "Coat_weight_Raw", "Height_Raw",
+    "Normal_OpenGL_Raw", "Normal_Raw", "Specular_roughness_Raw")
+_LOK_TILES = {"LOK_cuerpo": (1001, 1002, 1003, 1004, 1006, 1007, 1008, 1009, 1010),
+              "LOK_grip": (1005,)}
+
+
+def _lok_files():
+    """The real LOK-003 Painter export (EXPORT_PAINTER, 100 PNGs, listed
+    2026-10-29): <mesh>_<set>_<channel>_<OCIO colourspace>_<tile>.png."""
+    return sorted("%s_%s_%d.png" % (name, channel, tile)
+                  for name, tiles in _LOK_TILES.items()
+                  for channel in _LOK_CHANNELS for tile in tiles)
+
+
+def test_lok_painter_export_scans_into_two_udim_sets(matwire):
+    files = _lok_files()
+    assert len(files) == 100
+    out = matwire.scan_texture_sets(files, default_root="EXPORT_PAINTER")
+    assert out["ignored"] == []
+    by_name = {s["name"]: s for s in out["sets"]}
+    assert sorted(by_name) == ["LOK_cuerpo", "LOK_grip"]
+    for name, tiles in _LOK_TILES.items():
+        s = by_name[name]
+        assert set(s["channels"]) == {
+            "basecolor", "metalness", "roughness", "normal", "height",
+            "coat_color", "coat_weight", "coat_roughness", "coat_normal"}
+        assert s["channels"]["normal"] == name + "_Normal_OpenGL_Raw_<UDIM>.png"
+        assert s["channels"]["basecolor"] == (
+            name + "_Base_color_sRGB Encoded Rec.709 (sRGB)_<UDIM>.png")
+        assert s["tiles"]["basecolor"] == list(tiles)
+        assert set(s["tiles"]) == set(s["channels"])
+        assert [name + "_Normal_Raw_<UDIM>.png", "dx_superseded"] in [
+            list(r) for r in s["ignored"]]
+        assert matwire.tile_mismatch(s) == {}
+        assert matwire.coat_weight_source(s["channels"]) == "map"
+
+
+def test_mari_and_uvtile_and_subfolder_patterns(matwire):
+    out = _scan(matwire, "tex/rock_diffuse.1001.exr", "tex/rock_diffuse.1002.exr",
+                "tex/rock_rough.1001.exr", "head_Albedo_u1_v1.png",
+                "head_Albedo_u2_v1.png")
+    by_name = {s["name"]: s for s in out["sets"]}
+    assert by_name["rock"]["channels"] == {
+        "basecolor": "tex/rock_diffuse.<UDIM>.exr",
+        "roughness": "tex/rock_rough.<UDIM>.exr"}
+    assert by_name["rock"]["tiles"] == {"basecolor": [1001, 1002], "roughness": [1001]}
+    assert matwire.tile_mismatch(by_name["rock"]) == {"roughness": [1002]}
+    assert by_name["head"]["channels"] == {"basecolor": "head_Albedo<UVTILE>.png"}
+    assert by_name["head"]["tiles"] == {"basecolor": [1001, 1002]}
+
+
+def test_untiled_folder_is_unchanged_and_has_empty_tiles(matwire):
+    out = _scan(matwire, "plaster_BaseColor_4k.jpg", "plaster_BaseColor_8k.jpg",
+                "plaster_Roughness.jpg")
+    s = out["sets"][0]
+    assert s["channels"] == {"basecolor": "plaster_BaseColor_8k.jpg",
+                             "roughness": "plaster_Roughness.jpg"}
+    assert s["tiles"] == {}
+    assert ["plaster_BaseColor_4k.jpg", "lower_resolution"] in [list(r) for r in s["ignored"]]
+
+
+def test_tiled_beats_untiled_at_equal_rank_and_res_tokens_still_rank(matwire):
+    out = _scan(matwire, "rock_BaseColor.png", "rock_BaseColor.1001.png",
+                "rock_Roughness_2k.1001.png", "rock_Roughness_4k.1001.png")
+    s = out["sets"][0]
+    assert s["channels"]["basecolor"] == "rock_BaseColor.<UDIM>.png"
+    assert ["rock_BaseColor.png", "duplicate_channel"] in [list(r) for r in s["ignored"]]
+    assert s["channels"]["roughness"] == "rock_Roughness_4k.<UDIM>.png"
+    assert ["rock_Roughness_2k.<UDIM>.png", "lower_resolution"] in [list(r) for r in s["ignored"]]
+
+
+def test_unrecognized_tiles_are_one_ignored_row(matwire):
+    out = _scan(matwire, "rock_BaseColor.1001.png", "rock_Mask.1001.png",
+                "rock_Mask.1002.png")
+    assert out["ignored"] == [("rock_Mask.<UDIM>.png", "no_channel")]
+
+
+def test_coat_weight_source(matwire):
+    assert matwire.coat_weight_source({"coat_weight": "w.png"}) == "map"
+    assert matwire.coat_weight_source({"coat_color": "c.png"}) == "constant"
+    assert matwire.coat_weight_source({"basecolor": "b.png"}) is None
+    assert matwire.coat_weight_source(None) is None
+
+
+def test_preview_payload_carries_tiles_mismatch_and_coat_source(matwire):
+    scan = _scan(matwire, "rock_BaseColor.1001.png", "rock_BaseColor.1002.png",
+                 "rock_Roughness.1001.png", "rock_Coat_color.png")
+    out = matwire.preview_payload(scan, [])
+    s = out["sets"][0]
+    rows = {r["channel"]: r for r in s["channels"]}
+    assert rows["basecolor"]["tiles"] == [1001, 1002]
+    assert rows["basecolor"]["tiles_label"] == "1001–1002"
+    assert "tiles" not in rows["coat_color"]
+    assert s["tile_mismatch"] == {"roughness": [1002]}
+    assert s["coat_weight_source"] == "constant"
+
+
+# --- Final-fix wave: a lone `_1024` is a resolution, not UDIM tile 1024 ----
+
+def test_resolution_suffix_1024_matches_v141_untiled(matwire):
+    """v1.41 parity (measured on f9fd5b2): no sets, every file no_channel."""
+    names = ["brick_albedo_1024.jpg", "brick_normal_1024.jpg"]
+    out = matwire.scan_texture_sets(names)
+    assert out["sets"] == []
+    assert out["ignored"] == [("brick_albedo_1024.jpg", "no_channel"),
+                              ("brick_normal_1024.jpg", "no_channel")]
+    assert out["leftover_hints"] == {
+        "brick_albedo_1024.jpg": "brick_albedo_1024",
+        "brick_normal_1024.jpg": "brick_normal_1024"}
+
+
+def test_resolution_suffix_1024_with_channel_names_stays_untiled(matwire):
+    out = matwire.scan_texture_sets(
+        ["rock_BaseColor_1024.png", "rock_Normal_1024.png"])
+    assert out["sets"] == []
+    assert all(reason == "no_channel" for _f, reason in out["ignored"])
+    assert not any("<UDIM>" in f for f, _r in out["ignored"])
+
+
+def test_real_family_with_1024_among_tiles_stays_tiled(matwire):
+    out = matwire.scan_texture_sets(
+        ["rock_BaseColor.1001.png", "rock_BaseColor.1024.png"])
+    assert len(out["sets"]) == 1
+    tex_set = out["sets"][0]
+    assert tex_set["channels"]["basecolor"] == "rock_BaseColor.<UDIM>.png"
+    assert tex_set["tiles"]["basecolor"] == [1001, 1024]
+
+
+class TestIgnoredTilePatterns:
+    """v1.42: an unrecognised tile family is skipped as ONE pattern name;
+    the preview carries its tiles so the fold can say "UDIM · N tiles"
+    (an image sequence swallowed as a pattern must stay visible)."""
+
+    def test_skipped_pattern_carries_its_tiles(self, matwire):
+        scan = matwire.scan_texture_sets(
+            ["r_BaseColor.1001.png", "r_Foo.1001.png", "r_Foo.1002.png",
+             "plain_Foo.png"])
+        payload = matwire.preview_payload(scan, [])
+        assert ["r_Foo.<UDIM>.png", "no_channel"] in payload["ignored"]
+        assert payload["ignored_tiles"] == {
+            "r_Foo.<UDIM>.png": {"tiles": [1001, 1002],
+                                 "tiles_label": "1001–1002"}}
+
+    def test_no_skipped_pattern_gives_empty_map(self, matwire):
+        scan = matwire.scan_texture_sets(["r_BaseColor.png", "r_Foo.png"])
+        assert matwire.preview_payload(scan, [])["ignored_tiles"] == {}

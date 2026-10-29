@@ -383,3 +383,13 @@ def test_pass_through_assets_are_the_matwire_interposed_utilities():
     for asset in PASS_THROUGH_ASSETS:
         assert asset == asset.lower()
         assert "." not in asset
+
+
+def test_infer_channel_reads_painter_udim_names():
+    # v1.42: a token + OCIO suffix used to lose the name signal entirely
+    # (measured: Roughness.<UDIM> fell back to the port).
+    assert infer_channel("LOK_body_Specular_roughness_Raw_<UDIM>.png", None) == ("roughness", "name")
+    assert infer_channel("/t/LOK_body_Base_color_sRGB Encoded Rec.709 (sRGB)_<UDIM>.png",
+                         None) == ("basecolor", "name")
+    assert infer_channel("rock<UVTILE>.png", None) == (None, None)
+    assert infer_channel("rock_Normal.<udim>.exr", None) == ("normal", "name")

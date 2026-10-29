@@ -6,9 +6,11 @@ ui/flows.py (same pattern as manifest.py / postrender.py).
 import os
 import posixpath
 import re
+import unicodedata
 import zipfile
 
 from . import imagemeta
+from . import udim
 
 # Extension → asset_type. Lowercase, no dot.
 _TYPE_BY_EXT = {
@@ -146,6 +148,33 @@ _OWNER_KIND_BY_SOURCE = {
 _STATUS_ORDER = {"missing": 0, "absolute": 1, "empty": 2, "asset_uri": 3, "ok": 4}
 
 
+def _fold_tile(key, patterns, by_key, owner):
+    """Fold a generic record that is ONE TILE of a UDIM texture row into
+    that row (v1.42): GetAllAssetsNew lists every tile on its own (measured
+    2026-10-29), which turned one map into a pattern row plus N tile rows.
+    True when folded. ``udim.tile_regex`` is NFC, so the key is too."""
+    nfc_key = unicodedata.normalize("NFC", key)
+    for rx, pattern_key in patterns:
+        match = rx.fullmatch(nfc_key)
+        if not match:
+            continue
+        row = by_key[pattern_key]
+        tile = udim.tile_number(match)
+        if tile is not None and tile not in row["udim"]["tiles"]:
+            row["udim"]["tiles"].append(tile)
+            row["udim"]["tiles"].sort()
+        if owner not in row["owners"]:
+            row["owners"].append(owner)
+        return True
+    return False
+
+
+def udim_records(records):
+    """Merged records that are UDIM patterns — the per-file Hub actions
+    (shrink, copy, switch resolution, collect) refuse them by name."""
+    return [rec for rec in records or [] if rec.get("udim")]
+
+
 def merge_inventories(texture_records, generic_records, base_dir=""):
     """Fuse the structured texture scan (repathable, rich owners) with the
     generic GetAllAssetsNew sweep (exhaustive, read-only). Dedupe by
@@ -163,9 +192,13 @@ def merge_inventories(texture_records, generic_records, base_dir=""):
     Multiple texture records can collapse into one row when they share a
     path (e.g. 3 materials referencing the same file) — "tex_idx" keeps the
     first index for owner_ref/browse compatibility, while "tex_idxs" collects
-    every colliding tex_idx so repathing can update all of them."""
+    every colliding tex_idx so repathing can update all of them.
+
+    UDIM texture rows (v1.42) absorb the per-tile generic records
+    (`_fold_tile`) and carry `udim: {"tiles": [...]}`."""
     by_key = {}
     order = []
+    patterns = []
 
     for rec in texture_records or []:
         key = canonical_asset_key(rec.get("resolved") or rec.get("path"), base_dir)
@@ -195,6 +228,9 @@ def merge_inventories(texture_records, generic_records, base_dir=""):
             "tex_idx": tex_idx,
             "tex_idxs": [tex_idx] if tex_idx is not None else [],
         }
+        if udim.has_token(key):
+            by_key[key]["udim"] = {"tiles": []}
+            patterns.append((udim.tile_regex(key), key))
         order.append(key)
 
     for i, rec in enumerate(generic_records or []):
@@ -207,6 +243,8 @@ def merge_inventories(texture_records, generic_records, base_dir=""):
             r = by_key[key]
             if owner not in r["owners"]:
                 r["owners"].append(owner)
+            continue
+        if patterns and _fold_tile(key, patterns, by_key, owner):
             continue
         by_key[key] = {
             "key": key,
@@ -324,6 +362,9 @@ def stat_sizes_batch(records, start, count, getsize=os.path.getsize,
         path = rec.get("resolved_path")
         if not path:
             continue
+        if rec.get("udim"):
+            _stat_udim_tiles(rec, path, getsize, getmtime)
+            continue
         try:
             rec["size_bytes"] = int(getsize(path))
         except Exception:
@@ -334,6 +375,27 @@ def stat_sizes_batch(records, start, count, getsize=os.path.getsize,
         except Exception:
             pass
     return end
+
+
+def _stat_udim_tiles(rec, pattern, getsize, getmtime):
+    """``stat_sizes_batch`` for a UDIM row (v1.42): the pattern is no file,
+    so its size is the sum of its tiles and its mtime the newest tile's.
+    No readable tile → ``-1`` (unsized), like a failed stat."""
+    total = None
+    mtimes = []
+    for tile in rec["udim"].get("tiles") or []:
+        tile_file = udim.tile_path(pattern, tile)
+        try:
+            total = (total or 0) + int(getsize(tile_file))
+        except Exception:
+            continue
+        try:
+            mtimes.append(getmtime(tile_file))
+        except Exception:
+            pass
+    rec["size_bytes"] = -1 if total is None else total
+    if mtimes:
+        rec["mtime"] = max(mtimes)
 
 
 def build_file_index(root, walk=os.walk, cap=50000):
@@ -354,6 +416,25 @@ def build_file_index(root, walk=os.walk, cap=50000):
     return index, truncated
 
 
+def _udim_candidates(path, index):
+    """Search Folder for a UDIM pattern (v1.42): the pattern never exists
+    as a file, so look for its TILES in the index and propose the pattern
+    (stored casing) in each folder that holds them, first-seen order."""
+    name = str(path).replace("\\", "/").rsplit("/", 1)[-1]
+    rx = udim.tile_regex(name)
+    if rx is None:
+        return []
+    out = []
+    for key, files in index.items():
+        if not rx.fullmatch(unicodedata.normalize("NFC", key)):
+            continue
+        for found in files:
+            candidate = os.path.join(os.path.dirname(found), name)
+            if candidate not in out:
+                out.append(candidate)
+    return out
+
+
 def match_missing_in_folder(records, index):
     """Match missing records against a folder index by basename
     (case-insensitive). 2+ candidates → ambiguous: the user picks, we never
@@ -368,7 +449,10 @@ def match_missing_in_folder(records, index):
         # os.path.basename recognizes, so it returns the whole string
         # instead of "wood.png".
         base = normalize_path_key(rec.get("path", "")).rsplit("/", 1)[-1]
-        candidates = index.get(base)
+        if udim.has_token(base):
+            candidates = _udim_candidates(rec.get("path", ""), index)
+        else:
+            candidates = index.get(base)
         if not candidates:
             continue
         if len(candidates) == 1:
@@ -424,7 +508,26 @@ def shrink_target_name(path, target_px):
     return f"{root}{suffix}{ext}"
 
 
-def shrink_plan(records, metas, target_px):
+def shrink_target_pattern(pattern, target_px):
+    """``shrink_target_name`` for a UDIM/UVTILE pattern (v1.43): the suffix
+    goes BEFORE the token and its separator (``rock_2K.<UDIM>.png``), so the
+    shrunk copy is still a tile family and ``find_res_variants`` pairs it
+    with its base. Splitting on the token, never ``splitext``: Painter names
+    carry dots (``Rec.709``). Idempotent like ``shrink_target_name``."""
+    suffix = _SHRINK_SUFFIX.get(target_px, f"_{target_px}px")
+    text = str(pattern)
+    m = udim.TOKEN_RE.search(text)
+    if not m:
+        return shrink_target_name(text, target_px)
+    head = text[:m.start()]
+    sep = head[-1:] if m.group(0).lower() == "<udim>" and head[-1:] in "._" else ""
+    base = head[:len(head) - len(sep)]
+    if base.endswith(suffix):
+        return text
+    return base + suffix + sep + text[m.start():]
+
+
+def shrink_plan(records, metas, target_px, tile_metas=None):
     """Plan a batch shrink to `target_px` on the larger dimension.
 
     `records` are AssetRecord dicts (key/path/resolved_path/status/
@@ -434,12 +537,20 @@ def shrink_plan(records, metas, target_px):
     Eligible: status "ok" AND a meta entry present AND
     max(width, height) > target_px AND asset_type in ("texture", "hdri").
     Skip reasons (checked in this order): "not_ok", "not_image", "no_meta",
-    "already_small".
+    "already_small", "same_name" (the name already ends in the target suffix,
+    so the shrunk copy would land on the original and destroy it).
 
     New dimensions scale by `target_px / max(w, h)`, rounded, floored at 1,
     aspect preserved. `vram_before`/`vram_after` sum
     `imagemeta.vram_bytes(...)` over the shrink list only — before at the
     original dims, after at the new dims (same channels/bit_depth).
+
+    UDIM rows (v1.43) plan per tile from `tile_metas` ({key: {tile: meta}})
+    over `rec["udim"]["tiles"]` (the caller re-derives them from disk):
+    eligible when ANY tile is larger than `target_px`. The item carries a
+    `tiles` list; a tile already at or under the target is `copy_only` — the
+    shrunk family must have every tile, or that area renders black. Any
+    tile without a meta (or no tile at all) → "no_meta".
     """
     shrink = []
     skipped = []
@@ -454,6 +565,16 @@ def shrink_plan(records, metas, target_px):
         if rec.get("asset_type") not in ("texture", "hdri"):
             skipped.append({"key": key, "reason": "not_image"})
             continue
+        if rec.get("udim"):
+            item, reason = _shrink_udim_item(rec, (tile_metas or {}).get(key) or {},
+                                             target_px)
+            if reason:
+                skipped.append({"key": key, "reason": reason})
+                continue
+            shrink.append(item)
+            vram_before += item.pop("vram_before")
+            vram_after += item.pop("vram_after")
+            continue
         meta = (metas or {}).get(key)
         if not meta:
             skipped.append({"key": key, "reason": "no_meta"})
@@ -465,6 +586,10 @@ def shrink_plan(records, metas, target_px):
             continue
         if max(width, height) <= target_px:
             skipped.append({"key": key, "reason": "already_small"})
+            continue
+        resolved = rec.get("resolved_path")
+        if resolved and shrink_target_name(resolved, target_px) == resolved:
+            skipped.append({"key": key, "reason": "same_name"})
             continue
 
         scale = target_px / max(width, height)
@@ -491,6 +616,63 @@ def shrink_plan(records, metas, target_px):
         "vram_before": vram_before,
         "vram_after": vram_after,
     }
+
+
+def _scaled_dims(width, height, target_px):
+    scale = target_px / max(width, height)
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
+def _shrink_udim_item(rec, metas_by_tile, target_px):
+    """`shrink_plan` item for one UDIM row → `(item, None)` or
+    `(None, skip_reason)`. Same eligibility as a single file, per tile."""
+    pattern = rec.get("resolved_path")
+    tiles = (rec.get("udim") or {}).get("tiles") or []
+    if not pattern or not tiles:
+        return None, "no_meta"
+    items = []
+    vram_before = vram_after = 0
+    for tile in tiles:
+        meta = metas_by_tile.get(tile)
+        width = (meta or {}).get("width")
+        height = (meta or {}).get("height")
+        if not width or not height:
+            return None, "no_meta"
+        copy_only = max(width, height) <= target_px
+        new_width, new_height = ((width, height) if copy_only
+                                 else _scaled_dims(width, height, target_px))
+        items.append({
+            "tile": tile,
+            "resolved_path": udim.tile_path(pattern, tile),
+            "width": width, "height": height,
+            "new_width": new_width, "new_height": new_height,
+            "copy_only": copy_only,
+        })
+        if not copy_only:
+            vram_before += imagemeta.vram_bytes(width, height, meta.get("channels"),
+                                                meta.get("bit_depth"))
+            vram_after += imagemeta.vram_bytes(new_width, new_height, meta.get("channels"),
+                                               meta.get("bit_depth"))
+    if all(t["copy_only"] for t in items):
+        return None, "already_small"
+    target_pattern = shrink_target_pattern(pattern, target_px)
+    if target_pattern == pattern:
+        return None, "same_name"
+    for t in items:
+        t["target_path"] = udim.tile_path(target_pattern, t["tile"])
+    return {
+        "key": rec.get("key"),
+        "path": rec.get("path"),
+        "resolved_path": pattern,
+        "target_path": target_pattern,
+        "tiles": items,
+        "width": max(t["width"] for t in items),
+        "height": max(t["height"] for t in items),
+        "new_width": max(t["new_width"] for t in items),
+        "new_height": max(t["new_height"] for t in items),
+        "vram_before": vram_before,
+        "vram_after": vram_after,
+    }, None
 
 
 def replace_basename_preserving_form(stored_path, new_basename):
@@ -538,6 +720,10 @@ def copy_plan(records, doc_dir):
 
     Skip reasons: "in_project" (already under doc_dir), "unresolved"
     (no resolved_path).
+
+    A UDIM row (v1.43) targets `tex/<pattern>` and carries `tiles`: one
+    `{tile, resolved_path, target_path}` per tile in `rec["udim"]["tiles"]`
+    (the caller re-derives them from disk); no tile → "unresolved".
     """
     copy = []
     skip = []
@@ -555,11 +741,21 @@ def copy_plan(records, doc_dir):
             continue
         basename = os.path.basename(str(resolved).replace("\\", "/"))
         target_path = os.path.join(doc_dir, "tex", basename)
-        copy.append({
+        item = {
             "key": key,
             "resolved_path": resolved,
             "target_path": target_path,
-        })
+        }
+        if rec.get("udim"):
+            tiles = rec["udim"].get("tiles") or []
+            if not tiles:
+                skip.append({"key": key, "reason": "unresolved"})
+                continue
+            item["tiles"] = [{"tile": tile,
+                              "resolved_path": udim.tile_path(resolved, tile),
+                              "target_path": udim.tile_path(target_path, tile)}
+                             for tile in tiles]
+        copy.append(item)
 
     return {"copy": copy, "skip": skip}
 
@@ -575,9 +771,10 @@ _RES_TOKEN_MAP = {"1k": 1024, "2k": 2048, "4k": 4096, "8k": 8192, "16k": 16384}
 # behavior today, but it's the defensive convention if the map ever grows).
 # Boundaries are zero-width lookaround assertions (never consumed) so the
 # delimiter itself lands in whichever side it borders when the basename is
-# sliced around the match.
+# sliced around the match. A tile token may follow directly: `<UVTILE>`
+# carries its own underscore, so Shrink writes `rock_2K<UVTILE>.png`.
 _RES_TOKEN_RE = re.compile(
-    r"(?:(?<=[_\-.])|^)(16k|8k|4k|2k|1k)(?:(?=[_\-.])|$)",
+    r"(?:(?<=[_\-.])|^)(16k|8k|4k|2k|1k)(?:(?=[_\-.<])|$)",
     re.IGNORECASE,
 )
 
@@ -639,6 +836,7 @@ def find_res_variants(records, list_dir=os.listdir):
     a `\\`, handing back a mixed-separator path (`/proj/tex\\a_4k.png`).
     """
     dir_listings = {}
+    dir_patterns = {}
     result = {}
 
     for rec in records or []:
@@ -658,6 +856,14 @@ def find_res_variants(records, list_dir=os.listdir):
         entries = dir_listings[dir_path]
         if entries is None:
             continue
+        tiles_by_entry = None
+        if udim.has_token(basename):
+            # A UDIM row (v1.43) has pattern siblings, not file siblings:
+            # the same matching runs over the folder folded into patterns.
+            if dir_path not in dir_patterns:
+                dir_patterns[dir_path] = _fold_listing_to_patterns(entries)
+            tiles_by_entry = dir_patterns[dir_path]
+            entries = list(tiles_by_entry)
 
         split = split_res_token(basename)
         group = []
@@ -691,7 +897,15 @@ def find_res_variants(records, list_dir=os.listdir):
                 if entry_split is None:
                     continue
                 e_prefix, e_px, e_suffix = entry_split
-                if e_prefix.lower() in candidate_prefixes and e_suffix.lower() == ext_key:
+                if tiles_by_entry is not None:
+                    # pattern base: the inverse of the bare-base rule above
+                    # (``rock_2K.<UDIM>.png`` → ``rock.<UDIM>.png``)
+                    sibling = ((e_prefix.rstrip("_-.") + e_suffix).lower()
+                               == basename.lower())
+                else:
+                    sibling = (e_prefix.lower() in candidate_prefixes
+                               and e_suffix.lower() == ext_key)
+                if sibling:
                     group.append({"path": posixpath.join(dir_path, entry), "px": e_px})
 
             if group:
@@ -699,7 +913,25 @@ def find_res_variants(records, list_dir=os.listdir):
 
         if len(group) < 2:
             continue
+        if tiles_by_entry is not None:
+            tiles_lower = {name.lower(): tiles for name, tiles in tiles_by_entry.items()}
+            for g in group:
+                g["tiles"] = tiles_lower.get(posixpath.basename(g["path"]).lower(), [])
         group.sort(key=lambda g: (g["px"] is None, -(g["px"] or 0)))
         result[key] = group
 
     return result
+
+
+def _fold_listing_to_patterns(entries):
+    """``{pattern name: sorted tiles}`` for the tile files in a folder
+    listing — what ``find_res_variants`` compares for a UDIM row."""
+    patterns = {}
+    for entry in entries:
+        stem, ext = os.path.splitext(unicodedata.normalize("NFC", entry))
+        split = udim.split_tile(stem)
+        if split is None:
+            continue
+        name = udim.pattern_name(split["base"], split["scheme"], split["sep"], ext)
+        patterns.setdefault(name, set()).add(split["tile"])
+    return {name: sorted(tiles) for name, tiles in patterns.items()}

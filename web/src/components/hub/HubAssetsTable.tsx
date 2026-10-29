@@ -21,6 +21,7 @@ import {
   DEFAULT_COL_WIDTHS,
   gridColumnsFor,
   thumbUrl,
+  udimBadge,
   type ResizableColumn,
   type SortCol,
   type SortSpec,
@@ -459,6 +460,11 @@ export function HubAssetsTable({
                     <div className="flex min-w-0 flex-col justify-center gap-0.5 px-2">
                       <span className="truncate" style={{ color: "var(--color-ink)" }}>
                         {basename}
+                        {udimBadge(a) && (
+                          <span className="text-caption" style={{ color: "var(--color-muted)" }}>
+                            {" · "}{udimBadge(a)}
+                          </span>
+                        )}
                       </span>
                       <span className="text-caption truncate" style={{ color: pathColor }}>
                         {displayPath} · {metaLine(meta)}

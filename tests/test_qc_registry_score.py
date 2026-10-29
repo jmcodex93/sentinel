@@ -47,10 +47,11 @@ def test_registry_extensibility_updates_legacy_views_and_score(sentinel_module):
         assert [entry.check_id for entry in CHECK_REGISTRY][-1] == "fake_registry_check"
 
         summary = compute_score(_empty_results(CHECK_REGISTRY))
-        # v1.38: check #13 (RS Colorspace) joins the registry — the real
-        # registry is 13 entries now, plus this test's temporary fake = 14.
-        assert summary["total"] == 14
-        assert summary["score"] == "14/14"
+        # v1.38: check #13 (RS Colorspace) joins the registry; v1.43: #14
+        # (UDIM Tiles) — the real registry is 14 entries now, plus this
+        # test's temporary fake = 15.
+        assert summary["total"] == 15
+        assert summary["score"] == "15/15"
     finally:
         CHECK_REGISTRY.remove(fake)
 
