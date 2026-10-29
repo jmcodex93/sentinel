@@ -157,6 +157,7 @@ QC results cached with a 0.5 s cooldown, invalidated by CoreMessage dirty flags.
 - A docked C4D panel doesn't shrink to its content (framework limitation).
 - The viewport tints rather than hides out-of-frame areas; the RenderView is the exact preview.
 - Windows + C4D 2026.3.4: expanding the Sentinel Frame tag in the Attribute Manager can crash C4D (see Current state); the studio runs 2026.4.0, where it doesn't.
+- UDIM (v1.42): the Hub per-file actions (Shrink, copy, Switch res, Collect) refuse UDIM maps with `udim_unsupported` until per-tile support lands, and a mesh using a tile that has no texture renders black with no QC warning yet.
 - Promise nothing that needs Redshift API access we don't have. Installation changes go through `install.py`/`sync.sh`, not new setup scripts.
 
 ## External references (C4D / Redshift SDK)

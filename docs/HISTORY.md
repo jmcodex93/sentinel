@@ -29,6 +29,7 @@ Narrativa por release movida desde `CLAUDE.md` el 2026-09-23 (prompt-audit; comp
   - Collect, Shrink y cambio de resolución por tesela.
   - El check de QC de teselas usadas por la malla sin textura.
   - Respetar el colorspace del sufijo OCIO.
+  - Una secuencia de imágenes numerada desde 1001 (cualquier `_1xxx`/`.1xxx` final, salvo un `_1024` solo, que se lee como resolución) se lee como UDIM; la vista previa muestra el número de teselas.
 - **Comprobado en vivo** en macOS + C4D 2026.304:
   - La carpeta LOK da 2 materiales (`LOK_cuerpo` con 9 teselas, `LOK_grip` con la 1005), los 9 samplers con `<UDIM>` y el Coat cableado.
   - El render a través del escritor colorea cada tesela donde toca.

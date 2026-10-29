@@ -96,7 +96,8 @@ export function HubDeliverSection({
       }
       const refusal = collectStartRefusal(res);
       if (refusal) {
-        // Back to the form (also from the gate step): the fix is the folder field.
+        // Back to the form (also from the gate step). Most refusals are fixed in the
+        // folder field; a UDIM refusal (udim_unsupported) has no fix here, the toast names the files.
         setPhase("idle");
         toast({ message: refusal.message, variant: "warn" });
         return;
