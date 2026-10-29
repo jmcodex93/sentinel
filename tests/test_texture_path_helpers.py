@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 
@@ -176,3 +177,28 @@ def test_compute_relative_texture_path_uses_forward_slashes(sentinel_module, tmp
         str(texture_path), str(doc_path)
     ) == "../tex/diffuse.exr"
     assert sentinel_module.compute_relative_texture_path(str(texture_path), "") is None
+
+
+def test_classify_udim_pattern_is_ok_when_a_tile_exists(sentinel_module, tmp_path):
+    """v1.42: os.path.isfile on '<UDIM>' is always False — every relative
+    UDIM map read as missing (QC Assets FAIL) though Redshift renders it."""
+    import importlib
+    textures = importlib.import_module("sentinel.textures")
+    tex = tmp_path / "tex"
+    tex.mkdir()
+    (tex / "rock_BaseColor.1001.png").write_bytes(b"x")
+    (tex / "rock_BaseColor.1002.png").write_bytes(b"x")
+    status, resolved = textures._classify_texture_path(
+        "rock_BaseColor.<UDIM>.png", str(tmp_path))
+    assert status == "ok"
+    assert resolved == os.path.normpath(str(tex / "rock_BaseColor.<UDIM>.png"))
+    assert textures._classify_texture_path(
+        "relative:///tex/rock_BaseColor.<udim>.png", str(tmp_path))[0] == "ok"
+
+
+def test_classify_udim_pattern_without_tiles_is_missing(sentinel_module, tmp_path):
+    import importlib
+    textures = importlib.import_module("sentinel.textures")
+    (tmp_path / "rock_BaseColor.png").write_bytes(b"x")  # untiled != a tile
+    assert textures._classify_texture_path(
+        "rock_BaseColor.<UDIM>.png", str(tmp_path))[0] == "missing"

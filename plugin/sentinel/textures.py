@@ -26,6 +26,7 @@ def get_last_scan_meta():
     return dict(_LAST_SCAN_META)
 
 from sentinel.common.helpers import _iter_objs, container_ids_of_type, safe_print
+from sentinel import udim
 
 try:
     import maxon
@@ -316,6 +317,16 @@ def _c4d_texture_search_dirs():
     return dirs
 
 
+def _texture_exists(path):
+    """A file on disk — or, for a UDIM/UVTILE pattern (v1.42), at least one
+    of its tiles: Redshift renders the tiles that are there (missing ones
+    come out black — measured), so a pattern with no tile at all is the
+    real "missing"."""
+    if udim.has_token(path):
+        return bool(udim.list_tiles(path))
+    return os.path.isfile(path)
+
+
 def _resolve_relative_texture(rel_path, doc_path, global_dirs=None):
     """Find a relative texture by searching standard texture subfolders.
 
@@ -341,14 +352,14 @@ def _resolve_relative_texture(rel_path, doc_path, global_dirs=None):
     if doc_path:
         # Direct resolution first (covers paths that already include subdir)
         direct = os.path.normpath(os.path.join(doc_path, rel))
-        if os.path.isfile(direct):
+        if _texture_exists(direct):
             return direct
         # Search common subdirs (matches RS texture search semantics)
         for subdir in _TEXTURE_SEARCH_SUBDIRS:
             if not subdir:
                 continue
             cand = os.path.normpath(os.path.join(doc_path, subdir, rel))
-            if os.path.isfile(cand):
+            if _texture_exists(cand):
                 return cand
 
     if global_dirs:
@@ -357,11 +368,11 @@ def _resolve_relative_texture(rel_path, doc_path, global_dirs=None):
             if not gdir:
                 continue
             cand = os.path.normpath(os.path.join(gdir, rel))
-            if os.path.isfile(cand):
+            if _texture_exists(cand):
                 return cand
             if basename:
                 cand = os.path.normpath(os.path.join(gdir, basename))
-                if os.path.isfile(cand):
+                if _texture_exists(cand):
                     return cand
 
     return None
