@@ -2,6 +2,41 @@
 
 Narrativa por release movida desde `CLAUDE.md` el 2026-09-23 (prompt-audit; completada con la v1.39.0 el 2026-10-01) para no cargarla en cada sesión de agente. Se conserva **tal cual** se escribió: los estados («pendiente de merge/live», recuentos de tests) reflejan el momento de cada entrada, no el presente. El estado vigente y las lecciones de API están en `CLAUDE.md`; el roadmap, en `ROADMAP.md`.
 
+## v1.42.0 — Matwire UDIM y export de Painter (2026-10-29, rama `feat/matwire-udim`)
+
+- **Disparador: el proyecto LOK.**
+  - Substance Painter entrega los materiales en UDIM con el preset OpenPBR, y Matwire no reconocía ningún set de esa carpeta: 0 de 100 ficheros.
+  - Mediciones: `docs/research/2026-10-29-redshift-udim.md`.
+- **Hechos medidos** (C4D 2026.304, render real por teselas):
+  - Redshift resuelve `<UDIM>` y `<UVTILE>` en `tex0/path`, en mayúscula o minúscula. El sampler no tiene puerto de modo de teselas.
+  - `<UVTILE>` absorbe el `_` previo.
+  - Una tesela que falta en disco se pinta de negro sin avisar.
+  - `GetAllAssetsNew` lista cada tesela existente por separado.
+  - La fila 1011 de UDIM es la v de C4D en [−1, 0].
+- **`udim.py`** (motor puro): separa tesela y nombre base, construye el patrón, lista las teselas en disco y las formatea («1001–1004, 1006–1010»).
+- **Nombres de Painter:**
+  - El sufijo de colorspace OCIO (`_sRGB Encoded Rec.709 (sRGB)`, `_Raw`…) se quita solo para emparejar. El colorspace escrito sigue la convención del estudio (SRGB/RAW).
+  - Matwire reconoce los nombres OpenPBR (`Base_metalness`, `Specular_roughness`, `Normal_OpenGL`) y los cuatro canales de Coat.
+- **Teselas agrupadas:**
+  - Las teselas de un canal se agrupan en un patrón (`…_<UDIM>.png`), que es lo que se escribe en el sampler.
+  - El panel muestra las teselas por fila y avisa cuando los canales de un set no cubren las mismas teselas.
+- **Coat cableado** en OpenPBR y Standard: color, peso, roughness y normal (`geometry_coat_normal` / `coat_bump_input`). Sin mapa de peso, Matwire escribe `coat_weight` = 1.0: los dos BRDF nacen con 0 y el coat sería invisible.
+- **Resolver:** una ruta UDIM existe si hay al menos una tesela, así que una ruta relativa `tex/…<UDIM>…` ya no da un falso `missing` en QC Assets ni en el Hub.
+- **Hub:**
+  - Las teselas se pliegan en una sola fila por mapa, con distintivo de teselas.
+  - Shrink, copia al proyecto, cambio de resolución y Collect se niegan con `udim_unsupported`, nombrando los ficheros, en vez de tratar solo una tesela.
+- **Queda fuera:**
+  - Collect, Shrink y cambio de resolución por tesela.
+  - El check de QC de teselas usadas por la malla sin textura.
+  - Respetar el colorspace del sufijo OCIO.
+- **Comprobado en vivo** en macOS + C4D 2026.304:
+  - La carpeta LOK da 2 materiales (`LOK_cuerpo` con 9 teselas, `LOK_grip` con la 1005), los 9 samplers con `<UDIM>` y el Coat cableado.
+  - El render a través del escritor colorea cada tesela donde toca.
+  - Una escena guardada con `tex/…<UDIM>…` resuelve `ok`, da una fila en el Hub y se niega en Collect; sin teselas, `missing`.
+- **Verificación:**
+  - Oráculo congelado y comprobaciones de producto: PASS.
+  - pytest 1962, vitest 272.
+
 ## Sin publicar (tras v1.40.0)
 
 - **QC #13: canal de datos con colorspace ajeno → FAIL con Fix a RAW (2026-10-23).** Un sampler cuyo canal espera Raw (AO, roughness, metalness, normal, height, opacity…) con un valor fuera de SRGB/RAW (p. ej. `ACEScg`, como lo escribe el plugin Redshift SMC) pasa de `foreign_cs` (Info) a `mismatch`: un mapa de datos no admite transformación de color (reglas de Maya, guía ACES Utility-Raw). Los canales de color con valor ajeno siguen como Info (un EXR en ACEScg puede ser legítimo); conflicto, auto, desconocido y string vacío no cambian. Medido en C4D 2026: escribir `ACEScg` en `tex0/colorspace` no crashea, el Fix escribe RAW y una sola Cmd+Z lo revierte.

@@ -1,7 +1,7 @@
 # Matwire UDIM + export de Painter (OpenPBR, Coat) (v1.42)
 
 **Fecha**: 2026-10-29
-**Estado**: diseño aprobado por el usuario, pendiente de plan.
+**Estado**: LIVE-VERIFIED (C4D 2026.304) — pytest 1962, vitest 272.
 **Contexto**: proyecto LOK. Painter exporta los materiales en UDIM con nombres OpenPBR y sufijo de colorspace OCIO, y Matwire no reconoce **ningún** set de esa carpeta (0 de 100 ficheros). Mediciones: `docs/research/2026-10-29-redshift-udim.md` (C4D 2026.304, render real por teselas).
 
 ## Criterio de éxito

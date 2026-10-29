@@ -58,6 +58,29 @@ the context node: quad E shows the blue 1011 tile and quad C (no tile) shows
 no tile colour. (Tiles A/B saturate to white in that run because the default
 base colour gets lit, so A vs B isn't discriminated there; E is the proof.)
 
+## Writer re-check (v1.42)
+
+Same mesh, camera and render settings, material from
+`create_material_for_set(…, {"emission": "rock_Emit.<UDIM>.png"}, material="standard")`
+(UV Context node present). Tiles are dim: 1001 = (64, 0, 0), 1002 = (0, 64, 0),
+1011 = (0, 0, 64). Pixels were sampled at each quad's centre and ±30 px. The
+table shows the left edge of A, the right edge of B, and the centres of C–E.
+
+| Sampler path | A (x 44) | B (x 192) | C | D | E |
+|---|---|---|---|---|---|
+| `nope_Emit.<UDIM>.png` (no tile on disk, base case) | 228,228,228 | 207,207,207 | 129,129,129 | 119,119,119 | 118,118,118 |
+| `rock_Emit.<UDIM>.png` | **236**,229,228 | 212,**219**,209 | 129,129,129 | 119,119,119 | 119,118,**130** |
+| `rock_Emit.1001.png` (plain path) | **236**,229,228 | **215**,208,208 | **137**,130,130 | **127**,120,120 | **126**,119,118 |
+
+The base case explains the white in the first writer run: the quad centres
+of A and B saturate to 255 **with no tile at all**. That is the default
+light's highlight on the reflective Standard (`refl_weight` 1), not emission.
+Against that base, the token path adds the tile colour exactly where it
+should:
+- A gains red, B gains green and E gains blue.
+- C and D are unchanged (no tile, and D is outside the tile rows).
+- The plain path adds red to every quad (wrap).
+
 ## Texture Sampler ports
 
 Input ports of `texturesampler` filtered for tile/uv/path words: `tex0_gamma`,
