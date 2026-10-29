@@ -293,6 +293,28 @@ class TestHubMetaTotalsFromCache:
         assert result["vram_bytes"] == 100
         assert result["disk_bytes"] == 10
 
+    def test_udim_pattern_counts_in_total_without_coverage(
+            self, sentinel_module, tmp_path):
+        """A UDIM pattern has no file to stat or parse: it must still raise
+        ``total`` so the SPA's partial ``~`` marker shows."""
+        from sentinel.ui import hub_ops
+
+        png_file = tmp_path / "tex.png"
+        png_file.write_bytes(make_png(4, 4, 8, 2))
+        png_path = str(png_file)
+        png_key, _ = hub_ops._stat_cache_key(png_path)
+        hub_ops._META_CACHE[png_key] = {"vram_bytes": 100, "disk_bytes": 10}
+        try:
+            result = hub_ops._totals_from_cache(
+                [png_path, str(tmp_path / "rock_<UDIM>.png")])
+        finally:
+            hub_ops._META_CACHE.pop(png_key, None)
+
+        assert result["total"] == 2
+        assert result["covered"] == 1
+        assert result["vram_bytes"] == 100
+        assert result["disk_bytes"] == 10
+
     def test_none_and_missing_paths_ignored(self, sentinel_module, tmp_path):
         from sentinel.ui import hub_ops
 

@@ -24,6 +24,7 @@ from sentinel.common.helpers import safe_print
 from sentinel import assets as assets_engine
 from sentinel import gate as quality_gate
 from sentinel import imagemeta
+from sentinel import udim
 from sentinel.common.settings import GlobalSettings
 from sentinel.qc.score import compute_score, run_all_checks
 from sentinel.rules_context import active_rules_for_doc
@@ -1166,6 +1167,12 @@ def _totals_from_cache(paths):
             continue
         ext = os.path.splitext(resolved)[1].lower()
         if ext not in webbridge._THUMB_EXTS:
+            continue
+        if udim.has_token(resolved):
+            # A UDIM map has no single file to stat or parse: count it in
+            # ``total`` without covering it, so the partial "~" marker
+            # shows instead of a figure that looks complete (v1.42).
+            total += 1
             continue
         key_size = _stat_cache_key(resolved)
         if key_size is None:
