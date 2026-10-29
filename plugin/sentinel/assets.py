@@ -9,6 +9,7 @@ import re
 import zipfile
 
 from . import imagemeta
+from . import udim
 
 # Extension → asset_type. Lowercase, no dot.
 _TYPE_BY_EXT = {
@@ -146,6 +147,32 @@ _OWNER_KIND_BY_SOURCE = {
 _STATUS_ORDER = {"missing": 0, "absolute": 1, "empty": 2, "asset_uri": 3, "ok": 4}
 
 
+def _fold_tile(key, patterns, by_key, owner):
+    """Fold a generic record that is ONE TILE of a UDIM texture row into
+    that row (v1.42): GetAllAssetsNew lists every tile on its own (measured
+    2026-10-29), which turned one map into a pattern row plus N tile rows.
+    True when folded."""
+    for rx, pattern_key in patterns:
+        match = rx.fullmatch(key)
+        if not match:
+            continue
+        row = by_key[pattern_key]
+        tile = udim.tile_number(match)
+        if tile is not None and tile not in row["udim"]["tiles"]:
+            row["udim"]["tiles"].append(tile)
+            row["udim"]["tiles"].sort()
+        if owner not in row["owners"]:
+            row["owners"].append(owner)
+        return True
+    return False
+
+
+def udim_records(records):
+    """Merged records that are UDIM patterns — the per-file Hub actions
+    (shrink, copy, switch resolution, collect) refuse them by name."""
+    return [rec for rec in records or [] if rec.get("udim")]
+
+
 def merge_inventories(texture_records, generic_records, base_dir=""):
     """Fuse the structured texture scan (repathable, rich owners) with the
     generic GetAllAssetsNew sweep (exhaustive, read-only). Dedupe by
@@ -163,9 +190,13 @@ def merge_inventories(texture_records, generic_records, base_dir=""):
     Multiple texture records can collapse into one row when they share a
     path (e.g. 3 materials referencing the same file) — "tex_idx" keeps the
     first index for owner_ref/browse compatibility, while "tex_idxs" collects
-    every colliding tex_idx so repathing can update all of them."""
+    every colliding tex_idx so repathing can update all of them.
+
+    UDIM texture rows (v1.42) absorb the per-tile generic records
+    (`_fold_tile`) and carry `udim: {"tiles": [...]}`."""
     by_key = {}
     order = []
+    patterns = []
 
     for rec in texture_records or []:
         key = canonical_asset_key(rec.get("resolved") or rec.get("path"), base_dir)
@@ -195,6 +226,9 @@ def merge_inventories(texture_records, generic_records, base_dir=""):
             "tex_idx": tex_idx,
             "tex_idxs": [tex_idx] if tex_idx is not None else [],
         }
+        if udim.has_token(key):
+            by_key[key]["udim"] = {"tiles": []}
+            patterns.append((udim.tile_regex(key), key))
         order.append(key)
 
     for i, rec in enumerate(generic_records or []):
@@ -203,6 +237,8 @@ def merge_inventories(texture_records, generic_records, base_dir=""):
         if not key:
             key = f"__empty__gen__{i}"
         owner = (rec.get("owner_name", ""), rec.get("owner_kind", "object"), "")
+        if patterns and _fold_tile(key, patterns, by_key, owner):
+            continue
         if key in by_key:
             r = by_key[key]
             if owner not in r["owners"]:

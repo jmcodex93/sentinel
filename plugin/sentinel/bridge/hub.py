@@ -19,8 +19,10 @@ def hub_inventory_payload(records, totals, scene_name="", skipped=0):
     for rec in records:
         resolved = rec.get("resolved_path")
         ext = os.path.splitext(resolved or "")[1].lower()
+        # A UDIM pattern names no file: no thumbnail (v1.42).
         has_thumb = (bool(resolved) and ext in _THUMB_EXTS
-                     and rec.get("status") != "missing")
+                     and rec.get("status") != "missing"
+                     and not rec.get("udim"))
         assets_out.append({
             "key": rec.get("key", ""),
             "path": rec.get("path", ""),
@@ -32,6 +34,8 @@ def hub_inventory_payload(records, totals, scene_name="", skipped=0):
             "owners": [{"name": n, "kind": k, "channel": c}
                        for (n, k, c) in rec.get("owners", [])],
             "repathable": bool(rec.get("repathable")),
+            "udim_tiles": (list((rec.get("udim") or {}).get("tiles") or [])
+                           if rec.get("udim") else None),
             "has_thumb": has_thumb,
             # Goes into the /thumb URL: the URL is otherwise stable per asset
             # and served with max-age, so a file replaced at the same path

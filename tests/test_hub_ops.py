@@ -671,3 +671,54 @@ def test_pick_path_opens_in_the_scene_folder(sentinel_module, monkeypatch):
     monkeypatch.setattr(c4d.documents, "GetActiveDocument", lambda: None)
     hub_ops.HUB_OPS["hub/pick_path"]({})
     assert calls[-1]["def_path"] == ""
+
+
+class TestHubUdimRefusals:
+    """v1.42: per-file Hub actions don't handle tiles yet — they refuse and
+    NAME the UDIM files instead of skipping them silently."""
+
+    _UDIM = {"key": "/p/tex/rock.<udim>.png", "path": "tex/rock.<UDIM>.png",
+             "resolved_path": "/p/tex/rock.<UDIM>.png", "status": "ok",
+             "asset_type": "texture", "repathable": True, "tex_idxs": [0],
+             "udim": {"tiles": [1001, 1002]}}
+
+    class _Doc:
+        def __init__(self, path):
+            self._path = path
+
+        def GetDocumentPath(self):
+            return self._path
+
+        def GetDocumentName(self):
+            return "a_v001.c4d"
+
+    def _patch(self, monkeypatch, tmp_path):
+        from sentinel.ui import flows, hub_ops
+        doc = self._Doc(str(tmp_path))
+        monkeypatch.setattr(hub_ops.documents, "GetActiveDocument", lambda: doc)
+        monkeypatch.setattr(flows, "scan_scene_assets",
+                            lambda d: ([dict(self._UDIM)], [], []))
+        return hub_ops
+
+    def test_shrink_copy_and_switch_refuse_udim_rows(self, sentinel_module, monkeypatch, tmp_path):
+        hub_ops = self._patch(monkeypatch, tmp_path)
+        key = self._UDIM["key"]
+        expected = {"ok": False, "error": "udim_unsupported", "udim_files": ["rock.<UDIM>.png"]}
+        assert hub_ops.HUB_OPS["hub/shrink_start"]({"keys": [key], "target_px": 2048}) == expected
+        assert hub_ops.HUB_OPS["hub/copy_into_project"]({"keys": [key]}) == expected
+        assert hub_ops.HUB_OPS["hub/switch_res"]({"keys": [key], "target": "highest"}) == expected
+
+    def test_collect_refuses_before_qc(self, sentinel_module, monkeypatch, tmp_path):
+        hub_ops = self._patch(monkeypatch, tmp_path)
+        monkeypatch.setattr(hub_ops, "run_all_checks",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("QC ran")))
+        response = hub_ops.HUB_OPS["hub/collect_start"]({"target_dir": str(tmp_path / "out")})
+        assert response == {"ok": False, "error": "udim_unsupported",
+                            "udim_files": ["rock.<UDIM>.png"]}
+
+    def test_hub_row_has_udim_tiles_and_no_thumb(self, sentinel_module):
+        from sentinel.bridge import hub
+        rec = dict(self._UDIM, owners=[], size_bytes=None)
+        row = hub.hub_inventory_payload([rec], {"count": 1, "total_bytes": 0})["assets"][0]
+        assert row["udim_tiles"] == [1001, 1002]
+        assert row["has_thumb"] is False

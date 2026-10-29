@@ -20,6 +20,7 @@ import c4d
 from c4d import documents
 
 from sentinel import webbridge
+from sentinel.common.helpers import safe_print
 from sentinel import assets as assets_engine
 from sentinel import gate as quality_gate
 from sentinel import imagemeta
@@ -489,6 +490,33 @@ def _settle_relink_results(planned, write_results):
     return succeeded, errors
 
 
+def _udim_refusal(records):
+    """The ``udim_unsupported`` refusal when any of ``records`` is a UDIM
+    pattern, else None. v1.42: shrink / copy / switch resolution / collect
+    work file by file and don't handle tiles yet; they refuse and NAME the
+    maps (the artist deselects them) instead of skipping them silently."""
+    blocked = assets_engine.udim_records(records)
+    if not blocked:
+        return None
+    names = sorted({os.path.basename(str(rec.get("path") or "").replace("\\", "/"))
+                    for rec in blocked})
+    return {"ok": False, "error": "udim_unsupported", "udim_files": names}
+
+
+def _udim_files_in_scene(doc):
+    """``_udim_refusal`` over the whole scene for Collect. A scan failure
+    here is logged and lets Collect continue to its own pipeline (which
+    scans again and reports its own failure) — the guard never makes a
+    delivery impossible on its own."""
+    from sentinel.ui.flows import scan_scene_assets
+    try:
+        records, _tex_records, _skipped = scan_scene_assets(doc)
+    except Exception as exc:
+        safe_print("Collect: UDIM pre-check skipped (%s)" % exc)
+        return None
+    return _udim_refusal(records)
+
+
 def _op_hub_shrink_start(payload):
     """``hub/shrink_start`` — plan + queue a batch texture shrink as a
     background job (``webbridge.JOBS``, same single-slot registry as
@@ -515,6 +543,9 @@ def _op_hub_shrink_start(payload):
     records, _tex_records, _skipped = scan_scene_assets(doc)
     _remember_thumb_paths(records)
     selected_records = [r for r in records if r.get("key") in keys_set]
+    refusal = _udim_refusal(selected_records)
+    if refusal:
+        return refusal
 
     metas = {}
     for key in keys:
@@ -650,6 +681,9 @@ def _op_hub_copy_into_project(payload):
 
     records, tex_records, _skipped = scan_scene_assets(doc)
     _remember_thumb_paths(records)
+    refusal = _udim_refusal([r for r in records if r.get("key") in keys_set])
+    if refusal:
+        return refusal
     plan = assets_engine.copy_plan(records, doc_dir)
     copy_items = [item for item in plan["copy"] if item["key"] in keys_set]
 
@@ -959,6 +993,11 @@ def _op_hub_collect_start(payload):
     # refused anyway.
     if _delivery_target_occupied(target_dir):
         return {"ok": False, "error": "target_not_empty", "target_dir": target_dir}
+    # Before the QC pre-flight, like the occupied-target refusal: a
+    # delivery that can't carry its UDIM tiles is refused up front.
+    refusal = _udim_files_in_scene(doc)
+    if refusal:
+        return refusal
 
     from sentinel.ui.flows import _baseline_path_for_doc, _current_module
 
@@ -1284,6 +1323,9 @@ def _op_hub_switch_res(payload):
     keys_set = set(keys)
     by_key = {r.get("key"): r for r in records}
     requested_records = [r for r in records if r.get("key") in keys_set]
+    refusal = _udim_refusal(requested_records)
+    if refusal:
+        return refusal
     variants = assets_engine.find_res_variants(requested_records)
 
     skipped = []

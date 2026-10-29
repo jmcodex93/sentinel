@@ -236,6 +236,30 @@ class TestMergeInventories:
         assert len(out) == 1
         assert out[0]["key"] == "/users/x/scene/tex/wood.png"
 
+    def test_udim_tiles_fold_into_the_pattern_row(self):
+        """GetAllAssetsNew lists every tile on its own (measured); the Hub
+        shows ONE row per UDIM map, counting its tiles."""
+        out = assets.merge_inventories(
+            [_tex("/p/tex/rock_BaseColor.<UDIM>.png")],
+            [_gen("/p/tex/rock_BaseColor.1001.png", owner_name="RS_Mat", owner_kind="material"),
+             _gen("/p/tex/rock_BaseColor.1002.png", owner_name="RS_Mat", owner_kind="material"),
+             _gen("/p/tex/rock_Roughness.1001.png")])
+        assert len(out) == 2
+        row = next(r for r in out if "<udim>" in r["key"])
+        assert row["udim"] == {"tiles": [1001, 1002]}
+        assert row["repathable"] is True
+        assert ("RS_Mat", "material", "") in row["owners"]
+        assert not [r for r in out if r["key"].endswith("basecolor.1001.png")]
+
+    def test_rows_without_token_carry_no_udim(self):
+        out = assets.merge_inventories([_tex("/p/tex/a.png")], [_gen("/p/tex/b.1001.png")])
+        assert all("udim" not in r for r in out)
+
+    def test_udim_records(self):
+        recs = [{"key": "a", "udim": {"tiles": [1001]}}, {"key": "b"}]
+        assert assets.udim_records(recs) == [recs[0]]
+        assert assets.udim_records(None) == []
+
 
 class TestCanonicalAssetKey:
     """canonical_asset_key — the dedupe key merge_inventories uses instead
