@@ -427,6 +427,25 @@ class TestTotalsAndSizes:
         assert recs[1].get("mtime") is None
 
 
+    def test_stat_sizes_batch_sums_udim_tiles(self, tmp_path):
+        """A UDIM row has no single file: its size is the sum of its tiles
+        on disk (v1.42), so the disk totals include it instead of treating
+        it as unsized; mtime is the newest tile's."""
+        (tmp_path / "r.1001.png").write_bytes(b"x" * 10)
+        (tmp_path / "r.1002.png").write_bytes(b"x" * 5)
+        os.utime(tmp_path / "r.1001.png", (1000, 1000))
+        os.utime(tmp_path / "r.1002.png", (1000, 2000))
+        pattern = str(tmp_path / "r.<UDIM>.png")
+        recs = [{"resolved_path": pattern, "size_bytes": None,
+                 "udim": {"tiles": [1001, 1002]}},
+                {"resolved_path": pattern, "size_bytes": None,
+                 "udim": {"tiles": []}}]
+        assets.stat_sizes_batch(recs, 0, 2)
+        assert recs[0]["size_bytes"] == 15
+        assert recs[0]["mtime"] == 2000
+        assert recs[1]["size_bytes"] == -1                       # no tile: unsized
+
+
 class TestSearchFolderForMissing:
     def test_build_index_and_cap(self, tmp_path):
         (tmp_path / "sub").mkdir()
@@ -471,6 +490,27 @@ class TestSearchFolderForMissing:
         idx = {"wood.png": ["/new/tex/wood.png"]}
         m = assets.match_missing_in_folder(recs, idx)
         assert m["k1"] == {"match": "/new/tex/wood.png"}
+
+
+    def test_match_missing_udim_pattern_by_its_tiles(self):
+        """A UDIM pattern never exists as a file: Search Folder matches it
+        through its tiles and proposes the pattern in that folder (v1.42).
+        Tiles in two folders are ambiguous, as for plain files."""
+        recs = [
+            {"key": "k1", "status": "missing", "path": "old/Rock_BaseColor.<UDIM>.png"},
+            {"key": "k2", "status": "missing", "path": "old/leaf<UVTILE>.png"},
+            {"key": "k3", "status": "missing", "path": "old/gone.<UDIM>.png"},
+        ]
+        idx = {"rock_basecolor.1001.png": [os.path.join("/new", "tex", "rock_BaseColor.1001.png")],
+               "rock_basecolor.1002.png": [os.path.join("/new", "tex", "rock_BaseColor.1002.png")],
+               "leaf_u1_v1.png": [os.path.join("/a", "leaf_u1_v1.png")],
+               "leaf_u2_v1.png": [os.path.join("/b", "leaf_u2_v1.png")],
+               "gone.png": ["/x/gone.png"]}
+        m = assets.match_missing_in_folder(recs, idx)
+        assert m["k1"] == {"match": os.path.join("/new", "tex", "Rock_BaseColor.<UDIM>.png")}
+        assert m["k2"] == {"ambiguous": [os.path.join("/a", "leaf<UVTILE>.png"),
+                                         os.path.join("/b", "leaf<UVTILE>.png")]}
+        assert "k3" not in m
 
 
 class TestCreateZip:

@@ -362,6 +362,9 @@ def stat_sizes_batch(records, start, count, getsize=os.path.getsize,
         path = rec.get("resolved_path")
         if not path:
             continue
+        if rec.get("udim"):
+            _stat_udim_tiles(rec, path, getsize, getmtime)
+            continue
         try:
             rec["size_bytes"] = int(getsize(path))
         except Exception:
@@ -372,6 +375,27 @@ def stat_sizes_batch(records, start, count, getsize=os.path.getsize,
         except Exception:
             pass
     return end
+
+
+def _stat_udim_tiles(rec, pattern, getsize, getmtime):
+    """``stat_sizes_batch`` for a UDIM row (v1.42): the pattern is no file,
+    so its size is the sum of its tiles and its mtime the newest tile's.
+    No readable tile → ``-1`` (unsized), like a failed stat."""
+    total = None
+    mtimes = []
+    for tile in rec["udim"].get("tiles") or []:
+        tile_file = udim.tile_path(pattern, tile)
+        try:
+            total = (total or 0) + int(getsize(tile_file))
+        except Exception:
+            continue
+        try:
+            mtimes.append(getmtime(tile_file))
+        except Exception:
+            pass
+    rec["size_bytes"] = -1 if total is None else total
+    if mtimes:
+        rec["mtime"] = max(mtimes)
 
 
 def build_file_index(root, walk=os.walk, cap=50000):
@@ -392,6 +416,25 @@ def build_file_index(root, walk=os.walk, cap=50000):
     return index, truncated
 
 
+def _udim_candidates(path, index):
+    """Search Folder for a UDIM pattern (v1.42): the pattern never exists
+    as a file, so look for its TILES in the index and propose the pattern
+    (stored casing) in each folder that holds them, first-seen order."""
+    name = str(path).replace("\\", "/").rsplit("/", 1)[-1]
+    rx = udim.tile_regex(name)
+    if rx is None:
+        return []
+    out = []
+    for key, files in index.items():
+        if not rx.fullmatch(unicodedata.normalize("NFC", key)):
+            continue
+        for found in files:
+            candidate = os.path.join(os.path.dirname(found), name)
+            if candidate not in out:
+                out.append(candidate)
+    return out
+
+
 def match_missing_in_folder(records, index):
     """Match missing records against a folder index by basename
     (case-insensitive). 2+ candidates → ambiguous: the user picks, we never
@@ -406,7 +449,10 @@ def match_missing_in_folder(records, index):
         # os.path.basename recognizes, so it returns the whole string
         # instead of "wood.png".
         base = normalize_path_key(rec.get("path", "")).rsplit("/", 1)[-1]
-        candidates = index.get(base)
+        if udim.has_token(base):
+            candidates = _udim_candidates(rec.get("path", ""), index)
+        else:
+            candidates = index.get(base)
         if not candidates:
             continue
         if len(candidates) == 1:
