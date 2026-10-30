@@ -2587,3 +2587,27 @@ class TestIgnoredTilePatterns:
     def test_no_skipped_pattern_gives_empty_map(self, matwire):
         scan = matwire.scan_texture_sets(["r_BaseColor.png", "r_Foo.png"])
         assert matwire.preview_payload(scan, [])["ignored_tiles"] == {}
+
+
+def test_preview_names_tiled_maps_redshift_cannot_resolve(matwire):
+    """W5 (Windows round 7): the LOK grip set only has tile 1005 — Redshift
+    reports every map Not Found. The preview says so per set, from the same
+    ``udim.redshift_unresolved`` QC #14 uses."""
+    scan = _scan(matwire, "grip_Base_1005.png", "grip_Rough_1005.png",
+                 "body_Base_1001.png", "body_Base_1002.png", "plain_BaseColor.png")
+    payload = matwire.preview_payload(scan, [], folder="/proj/EXPORT")
+    by_name = {s["name"]: s for s in payload["sets"]}
+    assert by_name["grip"]["redshift_unresolved"] == {
+        "basecolor": "no_1001", "roughness": "no_1001"}
+    assert by_name["body"]["redshift_unresolved"] == {}
+    assert by_name["plain"]["redshift_unresolved"] == {}
+
+
+def test_preview_flags_1001_in_the_folder_path(matwire):
+    scan = _scan(matwire, "body_Base_1001.png", "tex/rock_diffuse.1001.exr")
+    payload = matwire.preview_payload(scan, [], folder="/shots/sh_1001/textures")
+    by_name = {s["name"]: s for s in payload["sets"]}
+    assert by_name["body"]["redshift_unresolved"] == {"basecolor": "1001_in_path"}
+    assert by_name["rock"]["redshift_unresolved"] == {"basecolor": "1001_in_path"}
+    clean = matwire.preview_payload(scan, [], folder="/shots/sh_2001/textures")
+    assert all(s["redshift_unresolved"] == {} for s in clean["sets"])

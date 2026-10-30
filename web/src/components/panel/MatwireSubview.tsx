@@ -28,6 +28,7 @@ import {
   suffixWarningsNote,
   tilesNote,
   tileMismatchNote,
+  redshiftUnresolvedNote,
   coatWeightNote,
 } from "../../lib/panelMatwire";
 import { useToast } from "../../lib/toast";
@@ -431,6 +432,11 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
                     {tileMismatchNote(texSet.tile_mismatch) && (
                       <p className="text-caption" style={{ color: "var(--color-status-warn)" }}>
                         {tileMismatchNote(texSet.tile_mismatch)}
+                      </p>
+                    )}
+                    {redshiftUnresolvedNote(texSet.redshift_unresolved) && (
+                      <p className="text-caption" style={{ color: "var(--color-status-warn)" }}>
+                        {redshiftUnresolvedNote(texSet.redshift_unresolved)}
                       </p>
                     )}
                     {coatWeightNote(texSet.coat_weight_source) && (

@@ -277,12 +277,13 @@ class _Named:
         return None
 
 
-def _run_check(monkeypatch, materials, used):
+def _run_check(monkeypatch, materials, used, unresolved=()):
     from sentinel.checks import udim as udim_check
     from sentinel.common.cache import check_cache
     check_cache.clear()
     monkeypatch.setattr(udim_check, "scan_all_texture_paths", lambda doc: [])
     monkeypatch.setattr(udim_check, "udim_materials", lambda recs: materials)
+    monkeypatch.setattr(udim_check, "unresolved_maps", lambda recs: list(unresolved))
     monkeypatch.setattr(udim_check, "used_tiles",
                         used if callable(used) else (lambda doc, mats: used))
     try:
@@ -320,3 +321,64 @@ def test_violation_message_out_of_range_and_several_tiles(sentinel_module):
     gaps = [{"material": "m", "missing": [1003, 1004], "maps": ["a"], "out_of_range": True}]
     assert violation_message("Plane", gaps) == \
         "Plane: tiles 1003–1004 have no texture (m: 1 map); UVs outside the UDIM range — renders black"
+
+
+def test_unresolved_maps_names_patterns_redshift_cannot_resolve(env, tmp_path):
+    _c4d, udim_c4d, _Poly, _texture = env
+    (tmp_path / "grip_Base_1005.png").write_bytes(b"x")
+    (tmp_path / "body_Base_1001.png").write_bytes(b"x")
+    shot = tmp_path / "shot_1001"
+    shot.mkdir()
+    (shot / "rock.1001.png").write_bytes(b"x")
+    grip, body, rock = object(), object(), object()
+    recs = [
+        {"host": grip, "current_path": "grip_Base_<UDIM>.png",
+         "resolved": str(tmp_path / "grip_Base_<UDIM>.png")},
+        {"host": grip, "current_path": "grip_Base_<UDIM>.png",  # second sampler, same map
+         "resolved": str(tmp_path / "grip_Base_<UDIM>.png")},
+        {"host": body, "current_path": "body_Base_<UDIM>.png",
+         "resolved": str(tmp_path / "body_Base_<UDIM>.png")},
+        {"host": rock, "current_path": "shot_1001/rock.<UDIM>.png",
+         "resolved": str(shot / "rock.<UDIM>.png")},
+        {"host": rock, "current_path": "gone.<UDIM>.png",  # no tile at all: QC Assets
+         "resolved": str(tmp_path / "gone.<UDIM>.png")},
+    ]
+    assert udim_c4d.unresolved_maps(recs) == [
+        (grip, "grip_Base_<UDIM>.png", "no_1001"),
+        (rock, "rock.<UDIM>.png", "1001_in_path")]
+
+
+def test_check_flags_a_material_redshift_cannot_resolve(sentinel_module, monkeypatch):
+    # the LOK grip: UVs on 1005, its tile is there, but no 1001
+    grip_obj = _Named("Empunadura_UV")
+    grip = _Named("LOK_grip_02")
+    maps = [("grip_%d.<UDIM>.png" % i, [1005]) for i in range(9)]
+    unresolved = [(grip, name, "no_1001") for name, _tiles in maps]
+    result = _run_check(monkeypatch, [(grip, maps)], [(grip_obj, {0: {1005}})], unresolved)
+    (violation,) = result.violations
+    assert violation.message == (
+        "Empunadura_UV: LOK_grip_02: 9 maps without tile 1001, which Redshift needs to "
+        "resolve <UDIM> — renders untextured")
+    assert violation.extras["materials"][0]["unresolved"] == {
+        "no_1001": [name for name, _tiles in maps]}
+
+
+def test_check_names_1001_in_the_path_and_keeps_tile_gaps(sentinel_module, monkeypatch):
+    body = _Named("Body")
+    rock = _Named("Rock")
+    maps = [("rock.<UDIM>.png", [1001]), ("moss.<UDIM>.png", [1001, 1002])]
+    result = _run_check(monkeypatch, [(rock, maps)], [(body, {0: {1001, 1002}})],
+                        [(rock, "rock.<UDIM>.png", "1001_in_path")])
+    (violation,) = result.violations
+    assert violation.message == (
+        "Body: tile 1002 has no texture (Rock: 1 map); Rock: 1 map with 1001 elsewhere "
+        "in its path, which breaks Redshift's <UDIM> — renders black")
+
+
+def test_check_ignores_unresolved_maps_of_materials_the_object_does_not_use(
+        sentinel_module, monkeypatch):
+    other = _Named("Other")
+    mats = [(_Named("m"), [("a.<UDIM>.png", [1001, 1002])])]
+    result = _run_check(monkeypatch, mats, [(_Named("Body"), {0: {1001}})],
+                        [(other, "b.<UDIM>.png", "no_1001")])
+    assert result.violations == []

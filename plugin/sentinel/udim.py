@@ -143,6 +143,29 @@ def list_tiles(pattern_path, listdir=os.listdir):
     return sorted(tiles)
 
 
+def redshift_unresolved(path, tiles):
+    """Why Redshift reports a ``<UDIM>`` pattern ``Not Found`` although tiles
+    exist (measured 2026-10-30, docs/research/2026-10-30-redshift-udim-needs-
+    tile-1001.md), or ``None`` when it resolves:
+
+    - ``"1001_in_path"``: ``1001`` also appears outside the token (a
+      ``shot_1001`` folder) — Redshift re-patterns every ``1001`` of the
+      1001 tile's path, so the lookup fails whatever is on disk;
+    - ``"no_1001"``: tile 1001 isn't among ``tiles`` — Redshift looks the
+      pattern up through it, and the whole texture goes missing.
+
+    ``<UVTILE>`` returns ``None``: not measured."""
+    text = str(path or "")
+    m = _TOKEN.search(text)
+    if not m or m.group(0).lower() != "<udim>":
+        return None
+    if "1001" in text[:m.start()] + text[m.end():]:
+        return "1001_in_path"
+    if 1001 not in {int(t) for t in tiles or ()}:
+        return "no_1001"
+    return None
+
+
 def format_tiles(tiles):
     """``"1001–1004, 1006–1010"`` — consecutive numbers collapse to a run."""
     nums = sorted({int(t) for t in tiles or ()})

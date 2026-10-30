@@ -7,7 +7,8 @@ in ``finally``); never touches a running GUI session or an artist's scene.
 Proves, with real Redshift renders where placement matters:
 - the material rules QC #14 relies on (last tag wins, a restriction to a
   missing selection covers nothing, a child's tag beats its parent's);
-- QC #14 flags a tile without texture and stays quiet on the LOK layout;
+- QC #14 flags a tile without texture, and a set Redshift can't resolve
+  (no tile 1001, or 1001 elsewhere in the path), matching the render;
 - Shrink / Copy into project / Switch resolution per tile: files, relink,
   tiles still in place in the render, and one Cmd+Z back;
 - a relink of several maps per material: Redo restores every map (W8);
@@ -209,8 +210,14 @@ def qc14(root):
                    selections={"grip": [2]})
         assign(obj, body)
         grip_tag = assign(obj, grip, "grip")
-        assert qc_check(doc).violations == []
-        print("PASS QC14 LOK layout (grip restricted to 1005): no violation")
+        # No tile gap (the grip's polygons are on 1005, which exists), but
+        # the grip set has no 1001: Redshift reports it Not Found (W5,
+        # Windows round 7). Until 2026-10-30 this case expected no violation.
+        result = qc_check(doc)
+        assert [v.message for v in result.violations] == [
+            "LOK: LOK_grip: 1 map without tile 1001, which Redshift needs to resolve <UDIM> "
+            "— renders untextured"], result.to_dict()
+        print("PASS QC14 LOK layout (grip restricted to 1005): no tile gap, grip lacks 1001")
         grip_tag.Remove()
         result = qc_check(doc)
         assert [v.message for v in result.violations] == [
@@ -227,7 +234,8 @@ def qc14(root):
         doc.ExecutePasses(None, False, False, True, c4d.BUILDFLAGS_NONE)
         result = qc_check(doc)
         assert [v.message for v in result.violations] == [
-            "Primitive: tile 1001 has no texture (Only1002: 1 map) — renders black"], result.to_dict()
+            "Primitive: tile 1001 has no texture (Only1002: 1 map); Only1002: 1 map without tile "
+            "1001, which Redshift needs to resolve <UDIM> — renders black"], result.to_dict()
         print("PASS QC14 primitive read from its cache:", result.violations[0].message)
     with document() as doc:  # cost: a 500k-polygon mesh, then the cached pass
         body = material(doc, folder, "body.<UDIM>.png", "Body")
@@ -249,6 +257,45 @@ def qc14(root):
 
 
 # ── Hub actions per tile ───────────────────────────────────────────────
+
+def qc14_redshift_resolution(root):
+    """W5 (Windows round 7): QC #14's Redshift verdict matches the render.
+    A set without tile 1001, or with 1001 elsewhere in its path, renders
+    untextured although its tile exists; with 1001 it renders."""
+    folder = root / "rs_resolution"
+    tiles(folder, "grip.<UDIM>.png", {1005: 16})
+    with document(folder) as doc:
+        camera(doc)
+        grip = material(doc, folder, "grip.<UDIM>.png", "Grip")
+        obj = mesh(doc, [(4, 0, 5, 1)], name="Handle")
+        assign(obj, grip)
+        result = qc_check(doc)
+        assert [v.message for v in result.violations] == [
+            "Handle: Grip: 1 map without tile 1001, which Redshift needs to resolve <UDIM> "
+            "— renders untextured"], result.to_dict()
+        assert rendered_colour(doc) is None
+        print("PASS QC14 grip without 1001 flagged, and it renders untextured")
+    tiles(folder, "grip.<UDIM>.png", {1001: 16})
+    with document(folder) as doc:
+        camera(doc)
+        grip = material(doc, folder, "grip.<UDIM>.png", "Grip")
+        assign(mesh(doc, [(4, 0, 5, 1)], name="Handle"), grip)
+        assert qc_check(doc).violations == []
+        assert rendered_colour(doc) == "yellow"
+        print("PASS QC14 with tile 1001 added: no violation, 1005 renders yellow")
+    shot = root / "shot_1001"
+    tiles(shot, "rock.<UDIM>.png", {1001: 16, 1002: 16})
+    with document(shot) as doc:
+        camera(doc)
+        rock = material(doc, shot, "rock.<UDIM>.png", "Rock")
+        assign(mesh(doc, [(1, 0, 2, 1)], name="Wall"), rock)
+        result = qc_check(doc)
+        assert [v.message for v in result.violations] == [
+            "Wall: Rock: 1 map with 1001 elsewhere in its path, which breaks Redshift's <UDIM> "
+            "— renders untextured"], result.to_dict()
+        assert rendered_colour(doc) is None
+        print("PASS QC14 1001 in the folder path flagged, and it renders untextured")
+
 
 def _hub():
     from sentinel import webbridge
@@ -451,6 +498,7 @@ def main():
         root = Path(tmp)
         material_rules(root)
         qc14(root)
+        qc14_redshift_resolution(root)
         shrink(root)
         copy_into_project(root)
         copy_redo_many_maps(root)

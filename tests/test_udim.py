@@ -161,3 +161,32 @@ def test_tile_gaps_none_when_every_used_tile_has_a_texture():
 def test_tile_gaps_flags_uvs_no_tile_can_address():
     assert udim.tile_gaps({1001, None}, [("a.<UDIM>.png", [1001])]) == {
         "missing": [], "maps": [], "out_of_range": True}
+
+
+# ── Redshift resolution (measured 2026-10-30,
+#    docs/research/2026-10-30-redshift-udim-needs-tile-1001.md) ──────────
+
+def test_redshift_unresolved_without_tile_1001():
+    # the LOK grip: its only tile is 1005 — Redshift reports Not Found
+    assert udim.redshift_unresolved("/p/tex/grip_Base.<UDIM>.png", [1005]) == "no_1001"
+    assert udim.redshift_unresolved("/p/tex/a.<UDIM>.png", [1002]) == "no_1001"
+
+
+def test_redshift_resolves_a_pattern_with_tile_1001():
+    assert udim.redshift_unresolved("/p/tex/a.<UDIM>.png", [1001, 1005]) is None
+    assert udim.redshift_unresolved("/p/shot_2001/a.<UDIM>.png", [1001]) is None
+    assert udim.redshift_unresolved("/p/shot_1002/a.<UDIM>.png", [1001]) is None
+
+
+def test_redshift_unresolved_with_1001_elsewhere_in_the_path():
+    # Redshift re-patterns EVERY 1001 of the 1001 tile's path
+    assert udim.redshift_unresolved("/p/shot_1001/a.<UDIM>.png", [1001]) == "1001_in_path"
+    assert udim.redshift_unresolved(r"D:\shots\sh1001x\a_<udim>.png", [1001, 1002]) == "1001_in_path"
+    assert udim.redshift_unresolved("/p/tex/rock_1001_<UDIM>.png", [1001]) == "1001_in_path"
+    # checked before the tile: the path breaks it whatever is on disk
+    assert udim.redshift_unresolved("/p/shot_1001/a.<UDIM>.png", [1005]) == "1001_in_path"
+
+
+def test_redshift_unresolved_says_nothing_it_has_not_measured():
+    assert udim.redshift_unresolved("/p/tex/a<UVTILE>.png", [1005]) is None  # UVTILE: unmeasured
+    assert udim.redshift_unresolved("/p/tex/plain.png", []) is None

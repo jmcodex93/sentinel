@@ -47,6 +47,29 @@ def udim_materials(texture_records):
     return out
 
 
+def unresolved_maps(texture_records):
+    """``[(material, map name, reason)]`` for the tiled maps Redshift reports
+    ``Not Found`` although tiles exist (``udim.redshift_unresolved`` on the
+    resolved path). Patterns with no tile at all are left to QC Assets, as in
+    ``udim_materials``; a map read by several samplers is listed once."""
+    out = []
+    for rec in texture_records or []:
+        path = rec.get("current_path") or ""
+        if not udim.has_token(path):
+            continue
+        resolved = rec.get("resolved") or path
+        tiles = udim.list_tiles(resolved)
+        if not tiles:
+            continue
+        reason = udim.redshift_unresolved(resolved, tiles)
+        if not reason:
+            continue
+        name = path.replace("\\", "/").rsplit("/", 1)[-1]
+        if not any(m == rec.get("host") and n == name for m, n, _r in out):
+            out.append((rec.get("host"), name, reason))
+    return out
+
+
 def _texture_tags(obj):
     return [tag for tag in obj.GetTags() if tag.GetType() == c4d.Ttexture]
 
