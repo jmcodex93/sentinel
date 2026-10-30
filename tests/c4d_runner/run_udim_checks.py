@@ -10,6 +10,7 @@ Proves, with real Redshift renders where placement matters:
 - QC #14 flags a tile without texture and stays quiet on the LOK layout;
 - Shrink / Copy into project / Switch resolution per tile: files, relink,
   tiles still in place in the render, and one Cmd+Z back;
+- a relink of several maps per material: Redo restores every map (W8);
 - Collect: SaveProject carries the tiles, the manifest records them and
   ``verify_package`` reports a tile lost afterwards.
 """
@@ -340,6 +341,44 @@ def copy_into_project(root):
         print("PASS copy undone in one Cmd+Z")
 
 
+def copy_redo_many_maps(root):
+    """W8 (Windows round 7): one gesture relinks several maps of the same
+    materials. Undo restored them all, but Redo replayed only the first
+    port write (``UNDO_MODE.ADD`` transactions); every map must come back."""
+    from sentinel import matwire_c4d
+    hub_ops, _webbridge = _hub()
+    lib = root / "redo_library"
+    channels = {"basecolor": "BaseColor", "roughness": "Roughness", "normal": "Normal"}
+    for name in ("Rock", "Moss"):
+        for suffix in channels.values():
+            tiles(lib, "%s_%s.<UDIM>.png" % (name, suffix), {1001: 16, 1002: 16})
+    project = root / "redo"
+    with document(project) as doc:
+        for name in ("Rock", "Moss"):
+            made = matwire_c4d.create_material_for_set(
+                doc, str(lib), {"channels": {ch: "%s_%s.<UDIM>.png" % (name, sfx)
+                                             for ch, sfx in channels.items()}},
+                name, material="openpbr")
+            assert made["ok"], made
+        _saved_scene(doc, project)
+        from sentinel.ui.flows import scan_scene_assets
+        keys = [r["key"] for r in scan_scene_assets(doc)[0] if "<UDIM>" in r["path"]]
+        assert len(keys) == 6, keys
+        before = sampler_paths(doc)
+        res = hub_ops.HUB_OPS["hub/copy_into_project"]({"keys": keys})
+        assert (res["ok"], res["copied"], res["errors"]) == (True, 6, []), res
+        after = sampler_paths(c4d.documents.GetActiveDocument())
+        assert all(p.startswith("tex/") for p in after), after
+        doc = undo_one_step(doc)
+        assert sampler_paths(doc) == before, sampler_paths(doc)
+        c4d.CallCommand(12297)  # Redo
+        doc = c4d.documents.GetActiveDocument()
+        assert sampler_paths(doc) == after, sampler_paths(doc)
+        doc = undo_one_step(doc)
+        assert sampler_paths(doc) == before, sampler_paths(doc)
+        print("PASS copy of 6 maps in 2 materials: one Cmd+Z, Redo restores all 6, Cmd+Z again")
+
+
 def switch_res(root):
     hub_ops, _webbridge = _hub()
     folder = root / "switch" / "tex"
@@ -414,6 +453,7 @@ def main():
         qc14(root)
         shrink(root)
         copy_into_project(root)
+        copy_redo_many_maps(root)
         switch_res(root)
         collect(root)
     print("PASS Sentinel UDIM acceptance")

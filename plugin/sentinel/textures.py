@@ -900,9 +900,9 @@ def apply_texture_path_change(record, new_path, doc=None):
             #                                   back if Commit isn't
             #                                   called explicitly.
             #
-            # We pass `UndoMode.ADD` in user_data so the transaction
-            # joins the doc's outer StartUndo / EndUndo (the dialog's
-            # Apply All wraps the whole batch for one-Cmd+Z reversal).
+            # The transaction runs with `UndoMode.NONE`: undo and redo come
+            # from the material snapshot below, inside the caller's one
+            # StartUndo / EndUndo (one Cmd+Z per batch).
             if not MAXON_AVAILABLE:
                 safe_print("apply_texture_path_change: maxon module "
                            "unavailable — skipping node-graph write.")
@@ -918,14 +918,8 @@ def apply_texture_path_change(record, new_path, doc=None):
                 url = _maxon.Url(str(new_path))
                 # Register a classic undo on the host material BEFORE the
                 # transaction. UNDOTYPE_CHANGE snapshots the whole material
-                # (its embedded node graph included), so Cmd+Z reverts the
-                # port edit. It ALSO gives the maxon transaction's
-                # UndoMode.ADD a classic undo item inside the caller's open
-                # StartUndo / EndUndo bracket to attach to — without this
-                # anchor the bracket is empty and the node-graph change does
-                # NOT join the document undo stack (mirrors the official
-                # Maxon example create_redshift_nodematerial_2024.py, which
-                # always calls doc.AddUndo before the ADD-mode transaction).
+                # (its embedded node graph included): it carries both the
+                # undo and the redo of the port edit.
                 if doc is not None and host is not None:
                     try:
                         doc.AddUndo(c4d.UNDOTYPE_CHANGE, host)
@@ -933,9 +927,13 @@ def apply_texture_path_change(record, new_path, doc=None):
                         pass
                 user_data = _maxon.DataDictionary()
                 try:
-                    # Join the surrounding undo (StartUndo wrap from caller)
+                    # NONE, not ADD (measured 2026-10-30, W8 of Windows
+                    # round 7): with ADD each transaction adds its own entry
+                    # to the step, and Redo replays only the first one — a
+                    # batch of N ports came back with 1. With NONE the
+                    # snapshot above replays every port, still one step.
                     user_data.Set(_maxon.nodes.UndoMode,
-                                  _maxon.nodes.UNDO_MODE.ADD)
+                                  _maxon.nodes.UNDO_MODE.NONE)
                 except Exception:
                     pass
                 with graph.BeginTransaction(user_data) as transaction:

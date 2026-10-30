@@ -15,7 +15,8 @@ Solo lo pendiente. Lo entregado, con su porqué, está en [`docs/HISTORY.md`](do
 - [ ] Usabilidad: la ventana de Settings ya abierta puede quedar detrás del panel al pedirla otra vez (`open_form` reutiliza sin traer al frente; no romper la protección contra cerrar/abrir un HTML viewer vivo). El nombre de artista del Overview no se refresca hasta reabrir el panel.
 
 **Ronda Windows 7 (v1.43.2, 2026-10-30): 10 OK, 2 FAIL.** Los dos se reproducen también en macOS. Detalle en [`docs/audit/2026-09-24-windows-acceptance.md`](docs/audit/2026-09-24-windows-acceptance.md#round-7--2026-10-30-candidate-5128c00-v1432-c4d-202640--udim).
-- [ ] **Redo de un relink con varios mapas en un material.** Copy into project con 3 mapas: Undo repone los 3, Redo solo 1. Probablemente afecta a todo relink del Hub que pase por `apply_texture_path_change`.
+- [x] **Redo de un relink con varios mapas en un material.** Copy into project con 3 mapas: Undo repone los 3, Redo solo 1. Causa: la transacción del grafo con `UNDO_MODE.ADD`. Corregido con `NONE` + la instantánea del material, en la rama `fix/hub-relink-redo` (afecta a todo relink del Hub).
+- [ ] **Material Graph: posible pérdida en Redo.** `matgraph_c4d` usa el mismo `UNDO_MODE.ADD` con varias transacciones por lote. Sin medir.
 - [ ] **UDIM sin tesela 1001.** Redshift resuelve el patrón solo a través de la 1001: sin ella, toda la textura sale `Not Found`. Un `1001` en otra parte de la ruta (carpeta `shot_1001`) también la rompe. QC #14, la preview de Matwire y el Hub lo dan por bueno. Medición en `docs/research/2026-10-30-redshift-udim-needs-tile-1001.md`.
 - [ ] Toasts en crudo `scene_changed` tras Undo/Redo en el Hub; en ese estado Shift/Ctrl dejaron de ampliar la selección.
 - [ ] "Cmd+Z" en los diálogos Shrink y Switch res en Windows.
