@@ -19,6 +19,12 @@ def safe_print(msg):
     _log_info("legacy.message", "legacy", message=message)
 
 
+def undo_shortcut():
+    """The host's undo key for text the artist reads: ``Cmd+Z`` on macOS,
+    ``Ctrl+Z`` elsewhere (Windows round 7 showed "Cmd+Z")."""
+    return "Cmd+Z" if sys.platform == "darwin" else "Ctrl+Z"
+
+
 def open_in_explorer(path):
     """Open a file or folder in the system file manager (cross-platform)"""
     try:

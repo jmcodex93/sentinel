@@ -19,7 +19,7 @@ Solo lo pendiente. Lo entregado, con su porqué, está en [`docs/HISTORY.md`](do
 - [ ] **Material Graph: posible pérdida en Redo.** `matgraph_c4d` usa el mismo `UNDO_MODE.ADD` con varias transacciones por lote. Sin medir.
 - [x] **UDIM sin tesela 1001.** Redshift resuelve el patrón solo a través de la 1001: sin ella, toda la textura sale `Not Found`. Un `1001` en otra parte de la ruta (carpeta `shot_1001`) también la rompe. QC #14 y la preview de Matwire avisan desde la rama `feat/udim-tile-1001-warning` (`udim.redshift_unresolved`); el Hub todavía no. Medición en `docs/research/2026-10-30-redshift-udim-needs-tile-1001.md`.
 - [ ] Toasts en crudo `scene_changed` tras Undo/Redo en el Hub; en ese estado Shift/Ctrl dejaron de ampliar la selección.
-- [ ] "Cmd+Z" en los diálogos Shrink y Switch res en Windows.
+- [x] "Cmd+Z" en los diálogos Shrink y Switch res en Windows (y en la confirmación de Reset All): "Ctrl+Z" fuera de macOS, rama `fix/undo-shortcut-label`.
 - [ ] Manifiesto de Collect: `original_path` es `relative:///<nombre>` y no la ubicación real; `hash` es `null` y no hay sello; `assets_collected: 91` frente a `collected: 18`.
 - [ ] Switch res: con la fila enlazada a una familia incompleta, el diálogo lista "1K 1/1 available" sin aviso. Collect no restaura un Hub minimizado.
 

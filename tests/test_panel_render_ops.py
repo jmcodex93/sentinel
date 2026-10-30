@@ -1608,6 +1608,15 @@ class TestResetAllConfirmNamesWhatIsLost:
         assert "1 preset " in label
         assert "1 presets" not in label
 
+    def test_label_names_this_platforms_undo_key(self, sentinel_module, monkeypatch):
+        """Round 7: Windows showed "Cmd+Z" — the key must be the host's."""
+        import sys
+        from sentinel.ui import panel_render_ops
+        monkeypatch.setattr(sys, "platform", "win32")
+        assert panel_render_ops.reset_all_confirm_label(["x"]).endswith("Ctrl+Z restores them.")
+        monkeypatch.setattr(sys, "platform", "darwin")
+        assert panel_render_ops.reset_all_confirm_label(["x"]).endswith("Cmd+Z restores them.")
+
     def test_label_does_not_alarm_when_nothing_is_lost(self, sentinel_module):
         from sentinel.ui import panel_render_ops
         label = panel_render_ops.reset_all_confirm_label([])

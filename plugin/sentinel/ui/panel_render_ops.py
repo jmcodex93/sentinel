@@ -68,7 +68,7 @@ from sentinel.aovs import (
     set_scene_multipart,
 )
 from sentinel.checks.render import normalize_preset_name
-from sentinel.common.helpers import safe_print
+from sentinel.common.helpers import safe_print, undo_shortcut
 from sentinel.common.settings import GlobalSettings
 from sentinel.ui.frame_tag import _enabled_format_ids_from_params
 from sentinel.ui.panel_ops import _guarded_block, _panel_render_block, _stamp_for
@@ -419,7 +419,7 @@ def reset_all_confirm_label(names):
         subject = "%d presets that are not" % len(names)
     return ("Reset ALL render presets from template? "
             "This deletes %s in the standard set: %s. "
-            "Cmd+Z restores them." % (subject, listed))
+            "%s restores them." % (subject, listed, undo_shortcut()))
 
 
 def reset_all_confirm_verb(names):
