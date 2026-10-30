@@ -231,3 +231,22 @@ With it, the 2026 snapshots convert in 2027 byte-identical to 2026, and the M1/M
 
 PyOpenColorIO 2.6 with the v1.1 config does not reproduce C4D 2027's own ACES 2.0 output exactly (up to 0.22 per channel at a few sample points). That has not been chased: Sentinel always uses C4D's converter.
 
+### A real 2027 ACES 2.0 snapshot against its RenderView export (2026-10-30)
+
+Setup:
+- C4D 2027.0 on macOS, a default document (view ACES 2.0 SDR-video, display sRGB, ACEScg rendering space).
+- Redshift scene with saturated red, green and blue objects, 1280×720, rendered with "Render to RenderView".
+- RenderView "Save snapshots as EXR" on, RV post off. The EXR header records `ocioView = ACES 2.0 SDR-video`, `ocioDisplay = sRGB`, `ocioConfig = …/maxon-cg-v1.1_ocio-v2.4.ocio` and `Lut Enabled = 0`.
+- The reference is RenderView's *Save Image As* PNG of the same snapshot.
+
+Results on opaque pixels:
+
+| Conversion | Mean (R/G/B levels) | Max | Pixels off by more than 2 |
+|---|---|---|---|
+| Sentinel, document on ACES 2.0 | 0.09 / 0.03 / 0.03 | 7 / 4 / 1 | 1.1 % |
+| Sentinel, document switched to ACES 1.0 | identical to the row above (the header's view wins) | | |
+| Control: converter forced to ACES 1.0 | 10.0 / 24.2 / 25.8 | 106 / 105 / 85 | 97 % |
+
+- **The answer is yes:** an ACES 2.0 snapshot converts with ACES 2.0, and it matches RenderView 2027 as closely as ACES 1.0 matched in 2026. The control shows the comparison separates the two views.
+- Alpha is within 1 level.
+- The saturated-colour gap seen on macOS 2026 with ACES 1.0 (16–23 levels) does not appear here: the maximum is 7.
