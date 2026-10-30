@@ -584,9 +584,57 @@ describe("per-tile Hub results (v1.43)", () => {
         { key: "c", reason: "no_variant" }],
     })).toEqual({
       message: "Switched 1. 2 skipped (that resolution is missing UDIM tiles 1002, 1011).",
-      variant: "success",
+      variant: "warn",
     });
     expect(switchDoneMessage({ ok: true, switched: [], skipped: [{ key: "c", reason: "already_there" }] }))
       .toEqual({ message: "Switched 0. 1 skipped.", variant: "success" });
+  });
+});
+
+describe("UDIM rows in the Shrink and Switch res dialogs", () => {
+  const tile = (n: number, px: number) => ({ tile: n, width: px, height: px, channels: 4, bit_depth: 8 });
+  const vram = (px: number) => Math.floor(px * px * 4 * (4 / 3));
+
+  it("a UDIM map shrinks when any tile is larger; small tiles are copied and not counted", () => {
+    const rock = asset({ key: "rock", status: "ok", asset_type: "texture" });
+    const metas = { rock: meta({ width: 2048, height: 2048, tiles: [tile(1001, 2048), tile(1002, 512)] }) };
+    const preview = shrinkPreview([rock], metas, new Set(["rock"]), 1024);
+    expect(preview.eligible).toEqual([{ key: "rock", width: 2048, height: 2048, newWidth: 1024, newHeight: 1024 }]);
+    expect(preview.vramBefore).toBe(vram(2048));
+    expect(preview.vramAfter).toBe(vram(1024));
+    expect(shrinkPreview([rock], metas, new Set(["rock"]), 2048).skipped)
+      .toEqual([{ key: "rock", reason: "already_small" }]);
+  });
+
+  it("a UDIM map with a tile of unknown size is no_meta, like the server plan", () => {
+    const rock = asset({ key: "rock", status: "ok", asset_type: "texture" });
+    const metas = { rock: meta({ width: 2048, height: 2048, tiles: [tile(1001, 2048), { ...tile(1002, 0) }] }) };
+    expect(shrinkPreview([rock], metas, new Set(["rock"]), 1024).skipped)
+      .toEqual([{ key: "rock", reason: "no_meta" }]);
+  });
+
+  it("a family missing a tile is not offered, and Highest doesn't count it when it is the top one", () => {
+    const variants: Record<string, HubVariant[]> = {
+      metal: [
+        { basename: "metal_4k.<UDIM>.png", px: 4096, missing: [] },
+        { basename: "metal_2k.<UDIM>.png", px: 2048, missing: [] },
+        { basename: "metal_1k.<UDIM>.png", px: 1024, missing: [1002] },
+      ],
+      wood: [
+        { basename: "wood_4k.<UDIM>.png", px: 4096, missing: [1011] },
+        { basename: "wood_2k.<UDIM>.png", px: 2048, missing: [] },
+      ],
+    };
+    const result = switchTargets(new Set(["metal", "wood"]), variants);
+    const byPx = Object.fromEntries(result.targets.map((t) => [String(t.px), t.available]));
+    expect(byPx).toEqual({ highest: 1, "4096": 1, "2048": 2 });
+    expect(switchTargets(new Set(["wood"]), variants).targets.map((t) => [t.px, t.available]))
+      .toEqual([["highest", 0], [2048, 1]]);
+  });
+
+  it("a switch refused for a missing tile warns even when nothing else happened", () => {
+    expect(switchDoneMessage({
+      ok: true, switched: [], errors: [], skipped: [{ key: "m", reason: "incomplete_tiles", missing: [1002] }],
+    })).toEqual({ message: "Switched 0. 1 skipped (that resolution is missing UDIM tile 1002).", variant: "warn" });
   });
 });
