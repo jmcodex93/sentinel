@@ -568,7 +568,7 @@ export function HubPage() {
             {data.scene_name}
           </h1>
           <p className="text-caption mt-0.5" style={{ color: "var(--color-ink-secondary)" }}>
-            {data.totals.count} assets · {data.totals.total_label} disco
+            {data.totals.count} assets · {data.totals.total_label} on disk
             {metaTotals && metaTotals.total > 0 && (
               <span>
                 {" "}

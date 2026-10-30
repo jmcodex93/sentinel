@@ -83,8 +83,8 @@ v1.43.1 code (`main` at `70db0e6`, synced with `sync.sh`, C4D restarted), C4D 20
 | QC #14 | **OK.** Clean scene: no violation. Without `LOK_cuerpo_Base_color…_1003.png`: "UDIM Tiles · 4", the four meshes on tile 1003, in the panel and from the check itself. File restored afterwards. |
 | Hub | **OK.** 18 assets · 24.4 MB · 3.54 GB VRAM. Rows read "UDIM · 9" / "UDIM · 1", 4K. A cuerpo map shows 576 MB (9 × 64 MB). Status "absolute". |
 
-**Observations (not fixed):**
-1. **Preview overflows sideways.** In the 420 px floating panel, the shrink-0 "UDIM · N tiles (…)" note plus the colorspace chip push past the right edge, and the file name column truncates to one letter. A horizontal scrollbar appears. Long Painter names make it worse. The notes need to wrap or move to their own line.
+**Observations:**
+1. **Preview overflows sideways.** In the 420 px floating panel, the shrink-0 "UDIM · N tiles (…)" note plus the colorspace chip push past the right edge, and the file name column truncates to one letter. A horizontal scrollbar appears. Long Painter names make it worse. **Fixed** on branch `fix/matwire-preview-overflow`: the notes moved to their own line under the file (in the folds too); re-checked in the same panel with the same export, no horizontal scrollbar.
 2. **Missing absolute textures aren't reported as missing.** `_classify_texture_path` labels any absolute path "absolute" without checking that the file exists. Base case: with every `LOK_grip` tile moved away, QC #14 skipped the pattern ("QC Assets reports it missing"), but QC Assets still said "absolute", so QC showed nothing about the missing files. This predates UDIM and applies to plain files too.
-3. **Mixed language in the Hub.** The header reads "… MB disco" (`HubPage.tsx`), a Spanish word in the English UI.
+3. **Mixed language in the Hub.** The header read "… MB disco" (`HubPage.tsx`), a Spanish word in the English UI. **Fixed** on the same branch: "… MB on disk", re-checked in the Hub.
 4. **Two QC counts.** The header's "QC 9/14" counts warnings as passing, while the QC tab title "QC 8/14" counts only OK checks.

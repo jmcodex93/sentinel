@@ -58,15 +58,16 @@ function ColorspaceChip({ colorspace }: { colorspace: string }) {
   );
 }
 
-/** "UDIM · N tiles (…)" beside a skipped tile-family pattern (v1.42), so an
- * image sequence read as one pattern stays visible in the folds. */
+/** "UDIM · N tiles (…)" under a skipped tile-family pattern (v1.42), so an
+ * image sequence read as one pattern stays visible in the folds. Its own
+ * line: beside the file and reason it overflowed a narrow panel. */
 function SkippedTilesNote({ entry }: { entry?: Pick<MatwireChannelRow, "tiles" | "tiles_label"> }) {
   const note = entry ? tilesNote(entry) : null;
   if (!note) return null;
   return (
-    <span className="shrink-0" style={{ color: "var(--color-muted)" }}>
+    <div className="text-caption" style={{ color: "var(--color-muted)" }}>
       {note}
-    </span>
+    </div>
   );
 }
 
@@ -96,13 +97,15 @@ function IgnoredFold({
       {open && (
         <div className="mt-1 flex flex-col gap-0.5 pl-4">
           {rows.map(([file, reason], index) => (
-            <div key={index} className="text-caption flex items-baseline gap-2">
-              <span className="min-w-0 truncate" style={{ color: "var(--color-ink-secondary)" }}>
-                {file}
-              </span>
-              <span className="shrink-0" style={{ color: "var(--color-muted)" }}>
-                {ignoredReasonLabel(reason)}
-              </span>
+            <div key={index}>
+              <div className="text-caption flex items-baseline gap-2">
+                <span className="min-w-0 truncate" style={{ color: "var(--color-ink-secondary)" }} title={file}>
+                  {file}
+                </span>
+                <span className="shrink-0" style={{ color: "var(--color-muted)" }}>
+                  {ignoredReasonLabel(reason)}
+                </span>
+              </div>
               <SkippedTilesNote entry={tiles?.[file]} />
             </div>
           ))}
@@ -143,13 +146,15 @@ function LeftoversFold({
       {open && (
         <div className="mt-1 flex flex-col gap-0.5 pl-4">
           {rows.map((row, index) => (
-            <div key={index} className="text-caption flex items-baseline gap-2">
-              <span className="min-w-0 truncate" style={{ color: "var(--color-ink-secondary)" }}>
-                {row.file}
-              </span>
-              <span className="shrink-0" style={{ color: "var(--color-muted)" }}>
-                {leftoverDestinationLabel(row, excluded)}
-              </span>
+            <div key={index}>
+              <div className="text-caption flex items-baseline gap-2">
+                <span className="min-w-0 truncate" style={{ color: "var(--color-ink-secondary)" }} title={row.file}>
+                  {row.file}
+                </span>
+                <span className="shrink-0" style={{ color: "var(--color-muted)" }}>
+                  {leftoverDestinationLabel(row, excluded)}
+                </span>
+              </div>
               <SkippedTilesNote entry={tiles?.[row.file]} />
             </div>
           ))}
@@ -394,28 +399,32 @@ export function MatwireSubview({ onBack }: { onBack: () => void }) {
                               wiredMaterial,
                             )
                           : null;
+                      // Notes get their own line under the file: beside it
+                      // they can't shrink, and a long Painter name plus
+                      // "UDIM · 9 tiles (…)" overflowed a narrow panel.
+                      const notes = [ormNote ?? aoNote ?? glossNote ?? heightNote, tilesNote(row)].filter(
+                        Boolean,
+                      );
                       return (
                         <div key={row.channel} className="text-caption flex items-baseline gap-2">
                           <span className="w-32 shrink-0" style={{ color: "var(--color-ink)" }}>
                             {channelLabel(row.channel)}
                           </span>
-                          <span
-                            className="min-w-0 flex-1 truncate"
-                            style={{ color: "var(--color-ink-secondary)" }}
-                          >
-                            {row.file}
-                          </span>
-                          {(ormNote || aoNote || glossNote || heightNote) && (
-                            <span className="shrink-0" style={{ color: "var(--color-muted)" }}>
-                              {ormNote ?? aoNote ?? glossNote ?? heightNote}
-                            </span>
-                          )}
-                          {tilesNote(row) && (
-                            <span className="shrink-0" style={{ color: "var(--color-muted)" }}>
-                              {tilesNote(row)}
-                            </span>
-                          )}
-                          <ColorspaceChip colorspace={row.colorspace} />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-baseline gap-2">
+                              <span
+                                className="min-w-0 flex-1 truncate"
+                                style={{ color: "var(--color-ink-secondary)" }}
+                                title={row.file}
+                              >
+                                {row.file}
+                              </span>
+                              <ColorspaceChip colorspace={row.colorspace} />
+                            </div>
+                            {notes.length > 0 && (
+                              <div style={{ color: "var(--color-muted)" }}>{notes.join(" · ")}</div>
+                            )}
+                          </div>
                         </div>
                       );
                     })}
