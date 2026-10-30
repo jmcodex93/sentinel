@@ -67,3 +67,24 @@ The maxima all come from one difference that exists **with post off too**. In ve
 1. When RenderView is maximized over the panel, the panel's web view stops polling: the source line and the non-EXR alert update as soon as the panel is visible again.
 2. On this host, RenderView's "Save snapshots as EXR" was already ticked when RenderView opened. The panel's alert text still says the box "resets every Cinema 4D session", which may no longer hold on macOS.
 3. Doctor's OS row shows the Darwin kernel version.
+
+## Matwire UDIM in the panel — 2026-10-30
+
+v1.43.1 code (`main` at `70db0e6`, synced with `sync.sh`, C4D restarted), C4D 2026.304, the regular profile.
+
+**Fixture.** The real LOK-003 Painter export (100 PNG, 4K) and its FBX were copied into the session scratchpad; the originals were not touched. The FBX was merged into a throwaway scene, `lok_v001.c4d`. Its two materials, `LOK_cuerpo` and `LOK_grip`, are standard materials with no textures. The panel was driven through the real web view.
+
+| Item | Result |
+|---|---|
+| Preview (Tools → Material from Folder, path pasted) | **OK.**<br>**Sets:** `LOK_cuerpo_02` and `LOK_grip_02`, deduped against the FBX materials.<br>**Rows:** 9 per set, Coat included. "UDIM · 9 tiles (1001–1004, 1006–1010)" and "UDIM · 1 tile (1005)". sRGB on base and coat colour, Raw on the rest.<br>**Skipped:** `Normal_Raw` with "GL normal preferred".<br>No tile-mismatch warning and no coat-weight note (the weight map exists). |
+| Create 2 materials | **OK.** Toast "Created 2 RS material(s)". 9 samplers each, every path absolute and ending in `_<UDIM>.png`. Base and coat colour are sRGB, the rest Raw. Coat colour, weight, roughness and normal are wired, height feeds Displacement and normal feeds Bump. |
+| Undo / Redo | **OK.** One Cmd+Z (12105) removed both materials and kept the FBX ones; Redo (12297) restored both. |
+| Render | **OK.** Texture tags repointed to the new materials, RS dome light, 640×900. Face, rim and grip (1005) all textured; no black area. |
+| QC #14 | **OK.** Clean scene: no violation. Without `LOK_cuerpo_Base_color…_1003.png`: "UDIM Tiles · 4", the four meshes on tile 1003, in the panel and from the check itself. File restored afterwards. |
+| Hub | **OK.** 18 assets · 24.4 MB · 3.54 GB VRAM. Rows read "UDIM · 9" / "UDIM · 1", 4K. A cuerpo map shows 576 MB (9 × 64 MB). Status "absolute". |
+
+**Observations (not fixed):**
+1. **Preview overflows sideways.** In the 420 px floating panel, the shrink-0 "UDIM · N tiles (…)" note plus the colorspace chip push past the right edge, and the file name column truncates to one letter. A horizontal scrollbar appears. Long Painter names make it worse. The notes need to wrap or move to their own line.
+2. **Missing absolute textures aren't reported as missing.** `_classify_texture_path` labels any absolute path "absolute" without checking that the file exists. Base case: with every `LOK_grip` tile moved away, QC #14 skipped the pattern ("QC Assets reports it missing"), but QC Assets still said "absolute", so QC showed nothing about the missing files. This predates UDIM and applies to plain files too.
+3. **Mixed language in the Hub.** The header reads "… MB disco" (`HubPage.tsx`), a Spanish word in the English UI.
+4. **Two QC counts.** The header's "QC 9/14" counts warnings as passing, while the QC tab title "QC 8/14" counts only OK checks.

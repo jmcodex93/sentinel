@@ -5,7 +5,7 @@ Solo lo pendiente. Lo entregado, con su porqué, está en [`docs/HISTORY.md`](do
 ## Estado (2026-10-30)
 - `main`: **v1.43.1** (etiqueta `v1.43.1`, PR #41: Shrink UDIM desde el panel). v1.42.0 y v1.43.0 entraron juntas en el PR #39. La última aceptada en los dos sistemas es **v1.41.0** (etiqueta `v1.41.0`). Matriz soportada: **Cinema 4D 2025–2027**, macOS y Windows. Objetivo del estudio: **C4D 2026.4.0**.
 - Aceptada en Windows 11 + C4D 2026.4.0 (ronda 6, con el código de v1.40.1) y en macOS + C4D 2026.304 (ronda Mac 1); C4D 2027.0 comprobado en vivo en macOS. Evidencia: [`docs/audit/2026-09-24-windows-acceptance.md`](docs/audit/2026-09-24-windows-acceptance.md) y [`docs/audit/2026-10-24-macos-acceptance.md`](docs/audit/2026-10-24-macos-acceptance.md).
-- v1.42.0 (Matwire UDIM + export de Painter), v1.43.0 (acciones del Hub por tesela y QC #14) y v1.43.1: comprobadas en vivo en macOS + C4D 2026.304. En el panel de la GUI (2026-10-30) pasaron las acciones del Hub por tesela, QC #14 y Collect; Matwire UDIM aún no se ha pasado por el panel. Sin ronda Windows (solo CI).
+- v1.42.0 (Matwire UDIM + export de Painter), v1.43.0 (acciones del Hub por tesela y QC #14) y v1.43.1: comprobadas en vivo en macOS + C4D 2026.304. En el panel de la GUI (2026-10-30) pasaron las acciones del Hub por tesela, QC #14, Collect y Matwire UDIM con el export real de Painter del LOK-003. Sin ronda Windows (solo CI): checklist en [`docs/audit/2026-10-30-windows-udim-checklist.md`](docs/audit/2026-10-30-windows-udim-checklist.md).
 - CI en cada PR y push a `main`: pytest en Linux, macOS y Windows + web.
 
 ## Para cerrar la beta
@@ -40,12 +40,15 @@ Detalle en la tabla *Before distributing a commercial product* del informe de pr
 ## Preguntas abiertas
 **¿Fusionar Pin y Variants?** No decidido. Para iterar lighting sirven los dos, y elegir cuál es trabajo que la herramienta le pasa al artista. Lo que impide una fusión limpia es físico: el Pin no toca la jerarquía y pisa el estado actual al restaurar; Variants reestructura la jerarquía y no pisa nada. Camino intermedio si hace falta: un solo "Guardar estado" que elija el mecanismo según la selección y diga cuál eligió. Disparador: retomarlo solo si en unas semanas de uso el artista duda de cuál usar.
 
+**¿Debe QC Assets comprobar que existe un archivo con ruta absoluta?** Hoy `_classify_texture_path` lo marca "absolute" sin mirar el disco, así que una textura absoluta que falta no aparece como "missing" en QC (el Hub sí lo comprueba). Afecta también a UDIM: un patrón sin ninguna tesela no lo avisa ni Assets ni el QC #14, que se lo deja a Assets. Decidir si "missing" debe ganar a "absolute" (cambia lo que cuenta QC). Visto en la pasada Matwire del 2026-10-30.
+
 ## Backlog
 - Sentinel Frame: catálogo de formatos cine (2.39 / 1.85 / 2:1) y print (A4 / A3 / Letter); check de "take override drift" tras guardar; presets de safe-area por plataforma versionados; cámaras stage/ortho; confirmar si la ponderación FAIL/WARN del score sigue siendo solo visual.
 - Keyboard shortcuts (Export QC, refresh, panel).
 - Denoise por AOV (GI, SSS); necesita sondear el param ID.
 - Webhook Slack/Teams al hacer Collect o pasar el QC.
 - Comp Tag Manager: ver y editar Object Buffer IDs en bloque, detectar duplicados.
+- Panel: la cabecera cuenta "QC 9/14" (los WARN pasan) y la pestaña QC "QC 8/14" (solo OK). Unificar el criterio o rotularlos distinto.
 - Higiene del repo público: rutas absolutas personales (`/Users/...`) en 10 documentos antiguos de `docs/`. Sustituirlas en el contenido actual; no reescribir la historia.
 
 **Retirado, no reponer:** Force 9:16 (v1.36.4). Lo supera Sentinel Frame y encajaba la resolución a escalones en vez de transponerla.
