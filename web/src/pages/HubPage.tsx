@@ -50,6 +50,7 @@ import { SnapshotChannel } from "../lib/snapshot";
 import { loadAssetDetails } from "../lib/hubSnapshot";
 import { computeBulkChanges } from "../lib/repath";
 import { useToast } from "../lib/toast";
+import { selectOwner } from "../lib/hubOwner";
 import type {
   HubInventory,
   HubInventoryResult,
@@ -345,11 +346,22 @@ export function HubPage() {
   const data: HubInventory = state.data;
 
   async function handleOwnerClick(key: string) {
-    const previous = inventoryChannel.current.currentStamp();
-    if (previous === null) return;
-    const res = await postHubSelectOwner(key, previous);
-    if (res.ok && res.stamp) inventoryChannel.current.acknowledge(res.stamp, previous);
-    if (!res.ok) toast({ message: res.error || "Couldn't select the owner.", variant: "warn" });
+    const channel = inventoryChannel.current;
+    const notice = await selectOwner(key, {
+      currentStamp: () => channel.currentStamp(),
+      select: postHubSelectOwner,
+      acknowledge: (stamp, previous) => channel.acknowledge(stamp, previous),
+      // Same rule as the stamp poll: staged repaths are never refreshed away.
+      refresh: async () => {
+        if (pendingRef.current.size > 0) {
+          setSceneChanged(true);
+          return false;
+        }
+        await refreshInventory(true);
+        return true;
+      },
+    });
+    if (notice) toast(notice);
   }
 
   function handleRowClick(key: string, modifiers: { meta: boolean; shift: boolean }) {
