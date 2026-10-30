@@ -1872,6 +1872,21 @@ class TestHubPayloadHelpers:
         assert version(mtime=1000.5, size_bytes=181) == base   # stable = cacheable
         assert version(resolved_path=None, status="missing") is None
 
+    def test_inventory_payload_slot_names_the_samplers_not_the_path(self):
+        """Windows round 8 (R4/R5): the key is the path, so Undo/Redo of a
+        relink renamed every row and the Hub lost its selection. ``slot``
+        names the row by its samplers' scan positions, which stayed the same
+        through Copy into project, Undo, Redo, Undo (measured 2026-10-30,
+        C4D 2026.304); generic rows have none."""
+        totals = {"count": 3, "missing": 0, "absolute": 0, "total_bytes": 0,
+                  "unsized": 0, "by_type": {}}
+        payload = webbridge.hub_inventory_payload(
+            [self._record(),
+             self._record(key="k2", path="lib/a.png", tex_idx=5, tex_idxs=[5]),
+             self._record(key="k3", repathable=False, tex_idx=None, tex_idxs=[])],
+            totals)
+        assert [a["slot"] for a in payload["assets"]] == ["tex:0,3", "tex:5", None]
+
     def test_resolve_repath_targets_maps_all_sharing_shaders(self):
         records = [self._record(), self._record(key="k2", repathable=False, tex_idxs=[])]
         targets, errors = webbridge.resolve_repath_targets(

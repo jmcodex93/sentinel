@@ -14,6 +14,11 @@ def hub_inventory_payload(records, totals, scene_name="", skipped=0):
 
     Strips live-scene fields (tex_idx/tex_idxs stay server-side; the apply
     op re-resolves keys against a fresh scan — HTTP is stateless).
+
+    ``slot`` names a texture row by its samplers' scan positions. The key is
+    the path, so Undo/Redo of a relink renames every row; the scan order
+    stays (measured 2026-10-30), so the SPA carries its selection across by
+    slot — only while the slots and owners of the whole list are unchanged.
     """
     assets_out = []
     for rec in records:
@@ -34,6 +39,8 @@ def hub_inventory_payload(records, totals, scene_name="", skipped=0):
             "owners": [{"name": n, "kind": k, "channel": c}
                        for (n, k, c) in rec.get("owners", [])],
             "repathable": bool(rec.get("repathable")),
+            "slot": ("tex:" + ",".join(str(i) for i in rec["tex_idxs"])
+                     if rec.get("tex_idxs") else None),
             "udim_tiles": (list((rec.get("udim") or {}).get("tiles") or [])
                            if rec.get("udim") else None),
             "has_thumb": has_thumb,

@@ -34,6 +34,9 @@ import {
 import {
   applyFacets,
   applySelection,
+  carryAliases,
+  carriedKeys,
+  carrySelection,
   copyDoneMessage,
   emptyFacetState,
   facetCounts,
@@ -50,8 +53,9 @@ import { SnapshotChannel } from "../lib/snapshot";
 import { loadAssetDetails } from "../lib/hubSnapshot";
 import { computeBulkChanges } from "../lib/repath";
 import { useToast } from "../lib/toast";
-import { selectOwner } from "../lib/hubOwner";
+import { noticeGate, selectOwner } from "../lib/hubOwner";
 import type {
+  HubAsset,
   HubInventory,
   HubInventoryResult,
   HubJobStatus,
@@ -97,6 +101,8 @@ const UI_STATE_SAVE_DEBOUNCE_MS = 500;
 type PageState = { kind: "loading" } | HubInventoryResult;
 
 const POLL_INTERVAL_MS = 2000;
+// Windows round 8: the scene kept settling ~5 s after an Undo/Redo.
+const OWNER_NOTICE_WINDOW_MS = 5000;
 
 function mergePending(prev: Map<string, string>, additions: Map<string, string>): Map<string, string> {
   if (additions.size === 0) return prev;
@@ -124,6 +130,11 @@ export function HubPage() {
   // second shift-click always ranges from the same anchor, not from
   // wherever the previous range happened to land.
   const anchorRef = useRef<string | null>(null);
+  // The last list shown, and the keys of earlier lists → their current key:
+  // Undo/Redo of a relink renames every row (the key is its path), so each
+  // refresh carries the selection, the anchor and late clicks across by slot.
+  const assetsRef = useRef<HubAsset[]>([]);
+  const keyAliases = useRef<Map<string, string>>(new Map());
   const [filter, setFilter] = useState<HubFilter>("all");
   const [search, setSearch] = useState("");
   const [find, setFind] = useState("");
@@ -157,6 +168,8 @@ export function HubPage() {
   const restoreFocus = useCallback(() => {
     restoreWebviewFocus(tableWrapperRef.current);
   }, []);
+  // One "still updating" toast per settle window, however many rows are clicked.
+  const ownerNotice = useRef(noticeGate(OWNER_NOTICE_WINDOW_MS));
   const pendingRef = useRef<Map<string, string>>(pending);
   useEffect(() => {
     pendingRef.current = pending;
@@ -206,7 +219,19 @@ export function HubPage() {
     if (!silent) setState({ kind: "loading" });
     await inventoryChannel.current.load(fetchHubInventorySnapshot, ({ result }) => {
       setState(result);
-      if (result.kind === "ok") setInventoryRevision((revision) => revision + 1);
+      if (result.kind === "ok") {
+        setInventoryRevision((revision) => revision + 1);
+        const next = result.data.assets;
+        const moved = carriedKeys(assetsRef.current, next);
+        const present = new Set(next.map((asset) => asset.key));
+        assetsRef.current = next;
+        keyAliases.current = carryAliases(keyAliases.current, moved, present);
+        setSelectedKeys((prev) => carrySelection(prev, moved, present));
+        if (anchorRef.current !== null) {
+          const anchor = moved?.get(anchorRef.current) ?? anchorRef.current;
+          anchorRef.current = present.has(anchor) ? anchor : null;
+        }
+      }
       setSceneChanged(false);
       setMetas({});
       setVariants({});
@@ -351,6 +376,7 @@ export function HubPage() {
       currentStamp: () => channel.currentStamp(),
       select: postHubSelectOwner,
       acknowledge: (stamp, previous) => channel.acknowledge(stamp, previous),
+      currentKey: (key) => keyAliases.current.get(key) ?? key,
       // Same rule as the stamp poll: staged repaths are never refreshed away.
       refresh: async () => {
         if (pendingRef.current.size > 0) {
@@ -361,7 +387,8 @@ export function HubPage() {
         return true;
       },
     });
-    if (notice) toast(notice);
+    const shown = ownerNotice.current(notice);
+    if (shown) toast(shown);
   }
 
   function handleRowClick(key: string, modifiers: { meta: boolean; shift: boolean }) {

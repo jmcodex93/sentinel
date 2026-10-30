@@ -9,6 +9,9 @@ export interface OwnerDeps {
   select: (key: string, expectedStamp: string) => Promise<{ ok: boolean; stamp?: string; error?: string }>;
   acknowledge: (stamp: string, previous: string) => void;
   refresh: () => Promise<boolean>;
+  /** The key a row has now: Undo/Redo of a relink renames rows (the key is
+   * the path), and a click may have left from the list the refresh replaced. */
+  currentKey?: (key: string) => string;
 }
 
 const OWNER_ERRORS: Record<string, string> = {
@@ -33,7 +36,7 @@ export async function selectOwner(key: string, deps: OwnerDeps): Promise<ToastOp
     const fresh = deps.currentStamp();
     if (fresh === null) return null;
     expected = fresh;
-    res = await deps.select(key, fresh);
+    res = await deps.select(deps.currentKey?.(key) ?? key, fresh);
     if (!res.ok && res.error === "scene_changed") {
       return { message: "The scene is still updating — click the row again in a moment.", variant: "info" };
     }
@@ -43,4 +46,19 @@ export async function selectOwner(key: string, deps: OwnerDeps): Promise<ToastOp
     return null;
   }
   return { message: OWNER_ERRORS[res.error ?? ""] ?? "Couldn't select the owner.", variant: "warn" };
+}
+
+/** Drops a repeat of the notice last shown within `windowMs`. After an
+ * Undo/Redo the scene settles for a few seconds (Windows round 8: ~5 s), and
+ * four quick clicks gave three identical "still updating" toasts — the
+ * artist needs to read it once per settle window. */
+export function noticeGate(windowMs: number, now: () => number = Date.now) {
+  let last: { message: string; at: number } | null = null;
+  return (notice: ToastOptions | null): ToastOptions | null => {
+    if (!notice) return null;
+    const at = now();
+    if (last && last.message === notice.message && at - last.at < windowMs) return null;
+    last = { message: notice.message, at };
+    return notice;
+  };
 }
