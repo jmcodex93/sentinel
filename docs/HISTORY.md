@@ -2,6 +2,32 @@
 
 Narrativa por release movida desde `CLAUDE.md` el 2026-09-23 (prompt-audit; completada con la v1.39.0 el 2026-10-01) para no cargarla en cada sesión de agente. Se conserva **tal cual** se escribió: los estados («pendiente de merge/live», recuentos de tests) reflejan el momento de cada entrada, no el presente. El estado vigente y las lecciones de API están en `CLAUDE.md`; el roadmap, en `ROADMAP.md`.
 
+## v1.43.3 — Arreglos de la ronda Windows 7 (2026-10-30, PRs #47–#51)
+
+- **Ronda Windows 7** (v1.43.2, Windows 11 + C4D 2026.4.0): 10 OK, 2 FAIL. Los dos FAIL se reproducen en macOS. Registro en `docs/audit/2026-09-24-windows-acceptance.md` (PR #47).
+- **W8: Redo de un relink del Hub solo reponía un mapa** (PR #48).
+  - Síntoma: Copy into project de 18 mapas; Undo los reponía todos y Redo solo 1.
+  - Causa medida: cada puerto se escribía en una transacción con `UNDO_MODE.ADD`; Undo revierte todas las entradas y Redo solo reproduce la primera.
+  - Corrección: `UNDO_MODE.NONE` más la instantánea `AddUndo(UNDOTYPE_CHANGE, material)` que ya había. Resultado: 6/6 mapas, un solo paso.
+  - Afecta a todos los relinks del Hub. Material Graph usa todavía `ADD`; queda pendiente de medir.
+  - Detalle en `docs/solutions/logic-errors/2026-10-30-node-graph-relink-redo-undo-mode.md`.
+- **W5: Redshift no resuelve un UDIM sin tesela 1001** (PR #49). Medido en las dos plataformas:
+  - sin la 1001, toda la textura sale `Not Found`;
+  - un `1001` en otra parte de la ruta (`shot_1001`) también la rompe.
+  - `udim.redshift_unresolved` lo detecta. QC #14 lo nombra («9 maps without tile 1001, which Redshift needs to resolve <UDIM> — renders untextured») y la preview de Matwire avisa en ámbar con el arreglo. El Hub todavía no.
+  - El runner liga cada veredicto a un render real. Su caso «LOK layout: no violation» pasó a esperar el aviso, porque asumía lo que W5 desmintió.
+  - Medición en `docs/research/2026-10-30-redshift-udim-needs-tile-1001.md`.
+- **«Ctrl+Z» fuera de macOS** (PR #50) en Shrink, Switch res y la confirmación de Reset All. El panel lo decide por el user agent (en macOS el HTML viewer dice `Macintosh`) y el servidor por `sys.platform`.
+- **Sin toasts `scene_changed` tras Undo/Redo** (PR #51).
+  - Causa medida: C4D sigue subiendo el dirty de los materiales ~2,5 s, así que el sello del Hub queda viejo y `hub/select_owner` lo rechaza (con razón).
+  - Corrección: el Hub refresca en silencio, reintenta una vez y solo entonces avisa legible.
+  - Sin reproducir: «Shift/Ctrl dejaron de ampliar la selección» en Windows.
+- **Verificación:**
+  - pytest 2046, vitest 289, lint y build OK;
+  - `run_udim_checks`, `run_product_checks`, `run_beta_checks` y `run_fixtures` en `c4dpy`;
+  - panel GUI en macOS con el export del LOK-003.
+- **Ronda Windows 8:** `docs/audit/2026-10-30-windows-round8-checklist.md`.
+
 ## v1.43.2 — Preview de Matwire sin desbordar el panel (2026-10-30, PR #44)
 
 - **Pasada GUI de Matwire UDIM** (macOS + C4D 2026.304) con el export real de Painter del LOK-003: 100 PNG 4K, 2 sets UDIM con Coat. Detalle en `docs/audit/2026-10-24-macos-acceptance.md` (PR #43).
