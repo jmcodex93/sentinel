@@ -218,3 +218,43 @@ Checklist: [`2026-10-30-windows-udim-checklist.md`](2026-10-30-windows-udim-chec
 4. "Cmd+Z" in the Shrink and Switch res dialogs on Windows.
 5. Manifest `original_path`, `hash` and counts.
 6. The Hub stays minimized when Collect re-opens it.
+
+
+## Round 8 — 2026-10-30 (candidate `0211ffe`, v1.43.3, C4D 2026.4.0)
+
+Checklist: [`2026-10-30-windows-round8-checklist.md`](2026-10-30-windows-round8-checklist.md). Evidence stays on the tester's host (`D:\Sentinel QA\round8_evidence\`, screenshots per check).
+
+**Environment.**
+- Windows 11 (AMD64), **C4D 2026.4.0** (`2026400`), Redshift.
+- Doctor: Sentinel 1.43.3, "This version is tested and supported", no known-issue item (7 of 8 ✓; "Settings file" not created yet).
+- Candidate `sentinel-beta-0211ffe495a4.zip`: SHA256 matched, 132 entries, `PLUGIN_VERSION = "1.43.3"`, `install.py --target` reported "payload verified".
+- Profile `c4d_prefs_r8` with **Sentinel only**: no MCP bridge, nothing drove Win32 windows from C4D's main thread. Two setup steps ran as a script in C4D's Python console: repointing the 10 Texture tags (plus a camera, an RS dome and the Redshift renderer), and the R7 rename.
+- Fresh LOK-003 copy in `D:\Sentinel QA\LOK\` (100 PNG, no `_1K` files); scene `…\LOK\c4d\lok_v001.c4d` with the FBX merged.
+
+**Result: 8 OK, 2 FAIL** (R4, R5: Hub clicks right after an Undo/Redo). The W5, W8 and "Ctrl+Z" fixes pass.
+
+| # | Result |
+|---|---|
+| R1 | OK. `LOK_grip_02` shows the amber "No tile 1001" note for its 9 maps; `LOK_cuerpo_02` none. |
+| R2 | OK. "⚠ UDIM Tiles · 4" (Empunadura, Cinta, Goma, Tapa), first row "…9 maps without tile 1001, which Redshift needs to resolve <UDIM> — renders untextured (+3 more)"; no cuerpo mesh. The header still lags the list (8/14 vs 7/14, known). |
+| R3 | OK. **W8 fixed:** "Copied 18 (90 UDIM tiles)"; Ctrl+Z → 18 absolute, Ctrl+Y → **18** `relative:///tex/…` ok, Ctrl+Z → 18 absolute, Ctrl+Y → 18 relative. Checked on both pages of the list. |
+| R4 | **FAIL (partial).** No raw `scene_changed` toast, and after waiting a single click selects with no toast. But 4 quick clicks right after Ctrl+Z gave 3 × "The scene is still updating — click the row again in a moment." (one per click) and 1 × "That asset is no longer in the scene." for an asset still in the scene. The anchor click after R5's Ctrl+Y gave that same message again. |
+| R5 | **FAIL right after Undo/Redo, recovers.** Right after Ctrl+Y: click, Shift+click 3 rows down, Ctrl+click → "1 selected". After ~6 s: Shift+click → "4 selected", Ctrl+click → "5 selected". |
+| R6 | OK. Shrink "…A single Ctrl+Z reverts the relink.", Switch res "…A single Ctrl+Z reverts the batch." (checked in R9), Reset All "…This deletes 1 preset that is not in the standard set: My Render Setting. Ctrl+Z restores them." (cancelled, unchanged). |
+| R7 | OK. **W5 fixed:** with the 9 `LOK_grip_*_1001.png` copies, QC has no UDIM Tiles row (9/14), the Picture Viewer render (27 s) has the grip textured, and the Redshift console has no `Not Found` line from the scene (round 7: 9). *Observation:* the spiral tape (Cinta) no longer stands out, presumably because the grip's height/displacement now load too. |
+| R8 | OK. `shot_1001\EXPORT_PAINTER` preview: both sets show '"1001" appears in the path outside <UDIM>…'. |
+| R9 | OK. **W9:** Shrink 1K on the project-relative row, 576 MB → 36.0 MB, 9 `…_1K_<tile>.png` at 1024 px, Ctrl+Z / Ctrl+Y. **W10:** Highest / 4K / 1K; without `_1K_1006` only Highest and 4K are offered. **W11:** "Delivery complete", 18 collected, 0 missing, `tex\` with 99 PNG (90 + the 9 grip 1001 copies); the manifest lists tiles per map with `/` (grip `[1001, 1005]`). |
+| R10 | OK. Python console: only Sentinel INFO lines; no traceback, `http.handler_failed` or `CRITICAL: Stop`. |
+
+**Still open (unchanged):**
+- Manifest `original_path` is `relative:///<file>`, `hash` is null, and the counts disagree (`assets_collected: 100` vs `asset_summary.collected: 18` / 99 tiles).
+- After R7 the Hub's Deliver bar showed "UDIM Tiles · 4 new" until Refresh, while the QC tab was already clean.
+
+**Why R4 and R5 fail (code reading, macOS live check pending).** A Hub row's `key` is its canonical path (`assets.merge_inventories`). Undo/Redo of a relink rewrites the path of every row, so every key changes. Until the stamp poll (2 s) refreshes the list, the table shows the old keys; C4D's material dirty counters keep moving for a few seconds after an Undo/Redo, so the list refreshes again within that window.
+- **R4:** each click refreshes and retries on its own, so each one that still meets a moving stamp shows its own toast. A click on a row of the old list sends a key that no longer exists, and the server answers `unknown key` → "That asset is no longer in the scene."
+- **R5:** the anchor and the selection keep the old keys. After the refresh, the anchor isn't in the visible list, so `applySelection` turns the Shift+click into a single selection.
+
+**For the next build:**
+1. Carry the Hub selection and the clicked row across a refresh in which keys change (a row identity that doesn't depend on the path), and show "The scene is still updating" once per settle window.
+2. Manifest `original_path`, `hash` and counts.
+3. The Deliver bar's QC count refreshes only with the inventory.
