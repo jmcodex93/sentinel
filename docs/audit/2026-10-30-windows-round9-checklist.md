@@ -4,7 +4,7 @@ Short round for the fix of [round 8](2026-09-24-windows-acceptance.md#round-8--2
 
 ## Setup
 
-- **Candidate:** `sentinel-beta-<sha>.zip` (tag `v1.43.4`), filled in after the tag.
+- **Candidate:** `sentinel-beta-7da9d7faa15f.zip` (tag `v1.43.4`), SHA256 `2996ab08d5ef07dba13a996982708965cae73d71d849d6f5868f85edc2439d0b`, 132 files.
   - Check the hash against the `.sha256`, then install with `install.py --target`.
 - **Host:** Windows 11 + **C4D 2026.4.0**, Redshift. A clean profile with **Sentinel only**, as in round 8.
 - **Fixture:** round 8's scene works: `D:\Sentinel QA\LOK\c4d\lok_v001.c4d`, with the 2 materials and the 10 repointed Texture tags.
