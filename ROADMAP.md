@@ -14,6 +14,14 @@ Solo lo pendiente. Lo entregado, con su porqué, está en [`docs/HISTORY.md`](do
 - [ ] `http.handler_failed` visto una vez en la consola de Windows: capturar el texto completo si reaparece (no reproducido en macOS ni en las rondas 4 y 5).
 - [ ] Usabilidad: la ventana de Settings ya abierta puede quedar detrás del panel al pedirla otra vez (`open_form` reutiliza sin traer al frente; no romper la protección contra cerrar/abrir un HTML viewer vivo). El nombre de artista del Overview no se refresca hasta reabrir el panel.
 
+**Ronda Windows 7 (v1.43.2, 2026-10-30): 10 OK, 2 FAIL.** Los dos se reproducen también en macOS. Detalle en [`docs/audit/2026-09-24-windows-acceptance.md`](docs/audit/2026-09-24-windows-acceptance.md#round-7--2026-10-30-candidate-5128c00-v1432-c4d-202640--udim).
+- [ ] **Redo de un relink con varios mapas en un material.** Copy into project con 3 mapas: Undo repone los 3, Redo solo 1. Probablemente afecta a todo relink del Hub que pase por `apply_texture_path_change`.
+- [ ] **UDIM sin tesela 1001.** Redshift resuelve el patrón solo a través de la 1001: sin ella, toda la textura sale `Not Found`. Un `1001` en otra parte de la ruta (carpeta `shot_1001`) también la rompe. QC #14, la preview de Matwire y el Hub lo dan por bueno. Medición en `docs/research/2026-10-30-redshift-udim-needs-tile-1001.md`.
+- [ ] Toasts en crudo `scene_changed` tras Undo/Redo en el Hub; en ese estado Shift/Ctrl dejaron de ampliar la selección.
+- [ ] "Cmd+Z" en los diálogos Shrink y Switch res en Windows.
+- [ ] Manifiesto de Collect: `original_path` es `relative:///<nombre>` y no la ubicación real; `hash` es `null` y no hay sello; `assets_collected: 91` frente a `collected: 18`.
+- [ ] Switch res: con la fila enlazada a una familia incompleta, el diálogo lista "1K 1/1 available" sin aviso. Collect no restaura un Hub minimizado.
+
 **Limitación conocida, no se persigue:** en Windows con C4D 2026.3.4, expandir el tag Sentinel Frame en el Attribute Manager puede cerrar C4D (llamada nativa a dirección nula en `gui.module`, sin Python en la pila, causa sin aislar). No ocurre en 2026.4.0 ni en macOS.
 
 ## Antes de distribuir comercialmente

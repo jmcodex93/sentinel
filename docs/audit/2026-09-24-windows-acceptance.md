@@ -161,3 +161,60 @@ Windows 11 Pro (build 26200), **C4D 2026.4.0**, clean profile `c4d_prefs_r5` wit
 - **Regression:** stills are numbered and RGBA with and without the slate. All tabs open, and the Frame tag on a camera was expanded ×5 with no crash.
 - **Operator note:** a Frame tag put on a cube by mistake showed "sync failed - see console". The tag needs a camera.
 
+
+## Round 7 — 2026-10-30 (candidate `5128c00`, v1.43.2, C4D 2026.4.0) — UDIM
+
+Checklist: [`2026-10-30-windows-udim-checklist.md`](2026-10-30-windows-udim-checklist.md). Evidence stays on the tester's host (`D:\Sentinel QA\round7_evidence\`: renders, A/B renders, screenshots per check).
+
+**Environment.**
+- Windows 11 Pro (10.0.26200), **C4D 2026.4.0** (`2026400`), Redshift.
+- Doctor: Sentinel 1.43.2, "This version is tested and supported", no known-issue item.
+- Candidate `sentinel-beta-5128c00d6727.zip`: SHA256 matched, 132 entries, `install.py --target` reported "payload verified".
+- Profile `c4d_prefs_r7` with Sentinel **plus `cinema4d_mcp_bridge`**, which drove and inspected C4D. That deviates from "Sentinel only". The default render data also carried the app-level Magic Bullet Looks video post.
+- Fixture copied to `D:\Sentinel QA\LOK\` (100 PNG); scene `…\LOK\c4d\lok_v001.c4d` with the FBX merged.
+
+**Result: 10 OK, 2 FAIL** (W5 grip, W8 Redo); the host runner was not run (no repository checkout).
+
+| # | Result |
+|---|---|
+| W1 | OK. Same as macOS. |
+| W2 | OK. "Created 2 RS material(s).", QC 11/14 → 9/14. |
+| W3 | OK. One Ctrl+Z removes both materials; Ctrl+Y restores both. |
+| W4 | OK. **Paths:** samplers store `file:///D:/Sentinel QA/LOK/EXPORT_PAINTER/…_<UDIM>.png`.<br>**Colorspaces and wiring:** as on macOS.<br>The grip node thumbnails are black: the preview samples tile 1001. |
+| W5 | **FAIL (grip).** Face, rim and neck are textured from the cuerpo tiles. **The grip is not textured from tile 1005.** The Redshift console logs `Param tex0: Texture 'LOK_grip_…_<UDIM>.png' Not Found` once for each of the 9 grip samplers. See below. |
+| W6 | OK. "⚠ UDIM Tiles · 4" without tile 1003; gone after restoring it. The header said "QC 8/14" while the list said "QC 7/14" (already in the backlog). |
+| W7 | OK. "18 assets · 24.4 MB on disk · 3.54 GB VRAM", the same values as macOS. |
+| W8 | **FAIL (Redo).** Copy into project: "Copied 18 (90 UDIM tiles)", samplers `relative:///tex/…`, still textured, and one Ctrl+Z restores all 18 absolute paths. **Redo restores only 1 of the 18 maps**, and a second Ctrl+Y does nothing. After Undo/Redo the Hub showed ~19–26 toasts with the raw code `scene_changed`. `tex\` holds 90 PNG, not 100: the 10 `Normal_Raw` tiles Matwire skipped aren't referenced, so they aren't copied (correct; the checklist's "100" was wrong). |
+| W9 | OK. "VRAM 576 MB → 36.0 MB (−540 MB)"; 9 `…_1K_<tile>.png` at 1024 px; Ctrl+Z → 4K pattern, Ctrl+Y → 1K. The dialog says "Cmd+Z" on Windows (also in Switch res). |
+| W10 | OK. Highest / 4K / 1K offered and relinked both ways. Without `_1K_1006`, 1K disappears from the targets. While a row is linked to the incomplete 1K family, the dialog still lists "1K (1024px) 1/1 available", with no warning. |
+| W11 | OK, with notes. `delivery_r7\` holds `lok.c4d`, `sentinel_manifest.json` and `tex\` with 90 PNG, byte-identical to the source. The manifest lists the tiles per map with `/` separators. The open document becomes the delivered copy (known). |
+| W12 | OK (partial). Session 2: no traceback, `http.handler_failed` or `CRITICAL: Stop`. Session 1's console was lost. One `http.handler_failed` (`TimeoutError`, `/api/panel/state_stamp`) appeared in session 1 while the tester's code held the main thread for ~2 min; it was not caused by a user action. |
+
+**W5: Redshift doesn't resolve a UDIM set without tile 1001** (tester's A/B renders of document clones, mean grip pixels):
+- **Original grip files:** the `<UDIM>` path renders identically to a path to a missing file. Specular roughness differs from the explicit `…_1005.png` path (1,090 px, max 58), and so does the normal (109 px, max 25).
+- **Probe tiles in the grip base-colour slot:**
+  - only 1005 renders as missing (mean 6.3), at both 4K and 64 px;
+  - 1001 + 1005 renders like the explicit path (72);
+  - 1001–1010 at 64 px renders the 1005 colour.
+- **Unexplained:** one roughness probe with 1001 + 1005 still rendered as missing.
+- **Impact on Sentinel:** QC #14 and the Hub count the grip as complete because its tile exists, but it renders as missing — the silent black case, through another cause.
+- **Not shown to be Windows-specific:** the macOS pass judged the grip by eye, and its base colour is ~6 % grey.
+
+**W11 manifest notes.**
+- `assets[].original_path` is `relative:///<file name>` for every map, not the real original location.
+- `hash` is `null` for every asset, and the manifest carries no seal or signature key.
+- `assets_collected: 91` disagrees with `asset_summary.collected: 18` and with 90 tiles.
+
+**Incident (harness, not Sentinel).** After W10, Collect Scene seemed to do nothing. It opens the Asset Hub, which was minimized, and re-opening it doesn't restore the window. Restoring it with `EnumWindows`/`ShowWindow` from C4D's main thread through the bridge deadlocked C4D. C4D was ended and relaunched with the saved scene, and W11–W12 ran in that second session.
+
+**macOS follow-up (2026-10-30, C4D 2026.304).** Neither FAIL is specific to Windows.
+- **W5 reproduced.** A UDIM set without tile 1001 renders `Not Found`, with absolute and relative paths alike; adding tile 1001 fixes it. A `1001` elsewhere in the path (a `shot_1001` folder) breaks the pattern too. See [the research note](../research/2026-10-30-redshift-udim-needs-tile-1001.md). The macOS GUI pass had judged the grip by eye; its record is corrected.
+- **W8 reproduced.** Copy into project on one material with 3 UDIM maps: Undo restores all 3 paths, but Redo restores only one (`tex/rock_BaseColor`; the other two stay on `library/`). Likely cause, still to measure: `apply_texture_path_change` adds one `AddUndo(UNDOTYPE_CHANGE, host)` per sampler, so one material gets several snapshots in the same undo step, plus an `UNDO_MODE.ADD` transaction for each.
+
+**For the next build:**
+1. W8 Redo of a multi-map Copy into project (reproduced on macOS).
+2. Raw `scene_changed` toasts after Undo/Redo; Shift/Ctrl clicks stopped extending the selection in that state.
+3. W5: QC #14 (and the Matwire preview) should warn about a UDIM set without tile 1001, or with `1001` elsewhere in its path. Both cases render untextured on both OSes.
+4. "Cmd+Z" in the Shrink and Switch res dialogs on Windows.
+5. Manifest `original_path`, `hash` and counts.
+6. The Hub stays minimized when Collect re-opens it.
