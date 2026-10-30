@@ -2,7 +2,7 @@
 
 Narrativa por release movida desde `CLAUDE.md` el 2026-09-23 (prompt-audit; completada con la v1.39.0 el 2026-10-01) para no cargarla en cada sesión de agente. Se conserva **tal cual** se escribió: los estados («pendiente de merge/live», recuentos de tests) reflejan el momento de cada entrada, no el presente. El estado vigente y las lecciones de API están en `CLAUDE.md`; el roadmap, en `ROADMAP.md`.
 
-## Sin publicar (tras v1.43.0): ronda en el panel de la GUI (2026-10-30, rama `fix/hub-udim-shrink-ui`)
+## v1.43.1 — UDIM en el panel: Shrink, Res/VRAM y Switch res (2026-10-30, PR #41)
 
 - **Ronda GUI de la v1.43.0** (macOS + C4D 2026.304, escena de prueba con tres mapas UDIM). Pasan:
   - QC #14 con «Select»;
