@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { selectOwner, type OwnerDeps } from "./hubOwner";
+import { noticeGate, selectOwner, type OwnerDeps } from "./hubOwner";
 
 /** Fake Hub channel: `stamps` is what the server answers per call. */
 function deps(answers: Array<{ ok: boolean; stamp?: string; error?: string }>, opts: { refreshed?: boolean } = {}) {
@@ -48,6 +48,13 @@ describe("selectOwner (W8 follow-up, Windows round 7)", () => {
     expect(calls).toEqual(["S1", "S2"]);
   });
 
+  it("retries with the row's current key when the refresh renamed it (R4, round 8)", async () => {
+    const { d } = deps([{ ok: false, error: "scene_changed" }, { ok: true, stamp: "S2b" }]);
+    d.currentKey = (key) => (key === "tex/a.png" ? "lib/a.png" : key);
+    expect(await selectOwner("tex/a.png", d)).toBeNull();
+    expect(vi.mocked(d.select).mock.calls.map(([key]) => key)).toEqual(["tex/a.png", "lib/a.png"]);
+  });
+
   it("does not retry when the refresh was held back (staged changes)", async () => {
     const { d, calls } = deps([{ ok: false, error: "scene_changed" }], { refreshed: false });
     expect(await selectOwner("k", d)).toBeNull();
@@ -69,5 +76,31 @@ describe("selectOwner (W8 follow-up, Windows round 7)", () => {
     d.currentStamp = () => null;
     expect(await selectOwner("k", d)).toBeNull();
     expect(d.select).not.toHaveBeenCalled();
+  });
+});
+
+describe("noticeGate (R4, Windows round 8)", () => {
+  const settling = { message: "The scene is still updating — click the row again in a moment.", variant: "info" as const };
+
+  it("shows a repeated notice once per window, not once per click", () => {
+    let now = 0;
+    const gate = noticeGate(5000, () => now);
+    expect(gate(settling)).toBe(settling);
+    now = 300;
+    expect(gate(settling)).toBeNull();
+    now = 4999;
+    expect(gate(settling)).toBeNull();
+    now = 5000;
+    expect(gate(settling)).toBe(settling);
+  });
+
+  it("lets a different notice through and passes null along", () => {
+    let now = 0;
+    const gate = noticeGate(5000, () => now);
+    const gone = { message: "That asset is no longer in the scene.", variant: "warn" as const };
+    expect(gate(settling)).toBe(settling);
+    now = 100;
+    expect(gate(gone)).toBe(gone);
+    expect(gate(null)).toBeNull();
   });
 });

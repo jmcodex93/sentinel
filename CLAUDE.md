@@ -109,6 +109,7 @@ QC results cached with a 0.5 s cooldown, invalidated by CoreMessage dirty flags.
 - Reparenting: `AddUndo(UNDOTYPE_CHANGE, obj)` before the move is enough. BaseLinks survive moving, parking and save+load. A null at identity preserves world transforms.
 - RenderData: `UNDOTYPE_DELETE` before each `Remove()` and `UNDOTYPE_NEW` after each insert, inside one bracket, restores the presets and their order but **not which one was active** (C4D leaves the last one active). Add `AddUndo(UNDOTYPE_BITS, previously_active)` before deleting — the active flag is `BIT_ACTIVERENDERDATA` on the node; `UNDOTYPE_ACTIVATE` and `CHANGE_SMALL` on the document don't restore it (measured 2026-10-01).
 - An empty `StartUndo`/`EndUndo` bracket creates no step.
+- `doc.SetActiveMaterial` with a **different** material between an Undo and a Redo empties the Redo stack (a Hub row click does it); re-selecting the active one, `SetActiveObject(None)`, scans and `EventAdd` don't (measured 2026-10-30).
 
 **Takes and cameras** (details: `docs/solutions/workflow-issues/2026-07-28-rs-camera-take-overrides.md`, `docs/solutions/logic-errors/2026-07-28-take-override-descid-and-viewport.md`)
 - The Redshift camera (`ORSCAMERA` 1057516) has its own parameters: render FOV = sensor `7002` ÷ focal `500` (`7003` is UI-only), shift `7012` is a fraction of the frame; `Ocamera` aperture and film offset are inert on it. Never write base camera parameters (it poisons coupled state) — use per-Take overrides.

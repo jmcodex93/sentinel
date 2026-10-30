@@ -519,6 +519,9 @@ export interface HubAsset {
   size_label: string;
   owners: HubOwner[];
   repathable: boolean;
+  /** Texture rows: the samplers' scan positions (`tex:0,3`), stable across
+   * Undo/Redo of a relink while the key (the path) changes; null otherwise. */
+  slot?: string | null;
   has_thumb: boolean;
   /** mtime+size of the file; goes into the /thumb URL so a replaced file is refetched. */
   thumb_version: string | null;

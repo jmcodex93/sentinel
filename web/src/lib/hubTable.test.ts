@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   applyFacets,
   applySelection,
+  carryAliases,
+  carriedKeys,
+  carrySelection,
   channelsLabel,
   collectStartRefusal,
   facetCounts,
@@ -636,5 +639,58 @@ describe("UDIM rows in the Shrink and Switch res dialogs", () => {
     expect(switchDoneMessage({
       ok: true, switched: [], errors: [], skipped: [{ key: "m", reason: "incomplete_tiles", missing: [1002] }],
     })).toEqual({ message: "Switched 0. 1 skipped (that resolution is missing UDIM tile 1002).", variant: "warn" });
+  });
+});
+
+describe("carrying the selection across a refresh (R4/R5, Windows round 8)", () => {
+  const owners = (name: string) => [{ name, kind: "material", channel: "path" }];
+  const row = (key: string, slot: string | null, name = "Moss"): HubAsset => ({
+    ...asset({ key }),
+    slot,
+    owners: owners(name),
+  });
+  // Undo of Copy into project: same samplers, every path (key) renamed.
+  const before = [row("tex/a.png", "tex:0"), row("tex/b.png", "tex:1"), row("hdr.exr", null, "Dome")];
+  const after = [row("lib/a.png", "tex:0"), row("lib/b.png", "tex:1"), row("hdr.exr", null, "Dome")];
+
+  it("maps each renamed row to its new key by slot", () => {
+    expect(carriedKeys(before, after)).toEqual(
+      new Map([
+        ["tex/a.png", "lib/a.png"],
+        ["tex/b.png", "lib/b.png"],
+      ]),
+    );
+  });
+
+  it("carries nothing when the samplers changed, so no row jumps to another", () => {
+    // A material added in front shifts every scan position.
+    const shifted = [row("lib/n.png", "tex:0", "New"), row("lib/a.png", "tex:1"), row("lib/b.png", "tex:2")];
+    expect(carriedKeys(before, shifted)).toBeNull();
+    // Same positions, but another material sits at one of them.
+    const swapped = [row("lib/a.png", "tex:0", "Rock"), row("lib/b.png", "tex:1")];
+    expect(carriedKeys(before, swapped)).toBeNull();
+    expect(carriedKeys([], after)).toBeNull();
+  });
+
+  it("follows the moved keys and drops the ones that are gone", () => {
+    const moved = carriedKeys(before, after);
+    const present = new Set(after.map((a) => a.key));
+    expect(carrySelection(new Set(["tex/a.png", "hdr.exr", "gone.png"]), moved, present)).toEqual(
+      new Set(["lib/a.png", "hdr.exr"]),
+    );
+    expect(carrySelection(new Set(["tex/a.png", "gone.png"]), null, present)).toEqual(new Set());
+  });
+
+  it("keeps old keys resolvable through several refreshes", () => {
+    const present1 = new Set(after.map((a) => a.key));
+    const aliases1 = carryAliases(new Map(), carriedKeys(before, after), present1);
+    expect(aliases1.get("tex/a.png")).toBe("lib/a.png");
+    // Redo: back to tex/ — a click on a row of the first list still lands.
+    const present2 = new Set(before.map((a) => a.key));
+    const aliases2 = carryAliases(aliases1, carriedKeys(after, before), present2);
+    expect(aliases2.get("lib/a.png")).toBe("tex/a.png");
+    expect(aliases2.has("tex/a.png")).toBe(false);
+    // A structural change keeps only the aliases whose target still exists.
+    expect(carryAliases(aliases2, null, new Set(["tex/b.png"]))).toEqual(new Map([["lib/b.png", "tex/b.png"]]));
   });
 });

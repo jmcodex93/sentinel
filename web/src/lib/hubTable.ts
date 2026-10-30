@@ -137,6 +137,56 @@ export function applySelection(
   return new Set(visibleKeys.slice(start, end + 1));
 }
 
+/** Old key → new key for the texture rows of a refreshed inventory, by
+ * `slot`. A row's key is its path, so Undo/Redo of a relink renames every
+ * row (Windows round 8: the selection and the Shift anchor were lost, and a
+ * click on the old list hit "unknown key"). Slots stay put through that
+ * (measured 2026-10-30), but they are scan positions: they are trusted only
+ * when every slot keeps its owners — a material added or removed returns
+ * `null`, so a selection never moves to another row. */
+export function carriedKeys(prev: HubAsset[], next: HubAsset[]): Map<string, string> | null {
+  const layout = (assets: HubAsset[]) =>
+    new Map(assets.filter((a) => a.slot).map((a) => [a.slot as string, a]));
+  const before = layout(prev);
+  const after = layout(next);
+  if (before.size === 0 || before.size !== after.size) return null;
+  const moved = new Map<string, string>();
+  for (const [slot, old] of before) {
+    const now = after.get(slot);
+    if (!now || JSON.stringify(now.owners) !== JSON.stringify(old.owners)) return null;
+    if (now.key !== old.key) moved.set(old.key, now.key);
+  }
+  return moved;
+}
+
+/** `keys` after a refresh: moved keys follow `moved`, keys no longer in
+ * `present` are dropped (they would count as selected but show nowhere). */
+export function carrySelection(keys: Set<string>, moved: Map<string, string> | null, present: Set<string>): Set<string> {
+  const out = new Set<string>();
+  for (const key of keys) {
+    const now = moved?.get(key) ?? key;
+    if (present.has(now)) out.add(now);
+  }
+  return out;
+}
+
+/** Keys of earlier lists → their current key, so a click that left from a
+ * list already replaced still reaches its row. Only aliases whose target is
+ * still `present` are kept. */
+export function carryAliases(
+  aliases: Map<string, string>,
+  moved: Map<string, string> | null,
+  present: Set<string>,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [old, current] of aliases) {
+    const now = moved?.get(current) ?? current;
+    if (now !== old && present.has(now)) out.set(old, now);
+  }
+  for (const [old, now] of moved ?? []) out.set(old, now);
+  return out;
+}
+
 /** Same VRAM formula as `imagemeta.vram_bytes` in plugin/sentinel/imagemeta.py
  * (mip-chain overhead factor 4/3), so the client Shrink-dialog preview and
  * the server's authoritative `shrink_plan` never disagree on a number shown
