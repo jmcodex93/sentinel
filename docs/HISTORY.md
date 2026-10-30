@@ -2,6 +2,22 @@
 
 Narrativa por release movida desde `CLAUDE.md` el 2026-09-23 (prompt-audit; completada con la v1.39.0 el 2026-10-01) para no cargarla en cada sesión de agente. Se conserva **tal cual** se escribió: los estados («pendiente de merge/live», recuentos de tests) reflejan el momento de cada entrada, no el presente. El estado vigente y las lecciones de API están en `CLAUDE.md`; el roadmap, en `ROADMAP.md`.
 
+## v1.43.2 — Preview de Matwire sin desbordar el panel (2026-10-30, PR #44)
+
+- **Pasada GUI de Matwire UDIM** (macOS + C4D 2026.304) con el export real de Painter del LOK-003: 100 PNG 4K, 2 sets UDIM con Coat. Detalle en `docs/audit/2026-10-24-macos-acceptance.md` (PR #43).
+  - Pasan la preview, Create 2 materials, un Cmd+Z y Redo, y el render sin zonas negras.
+  - QC #14 pasa con caso base: quitar la tesela 1003 marca 4 mallas.
+  - El Hub muestra 18 mapas UDIM con la VRAM sumada.
+- **La preview desbordaba el panel.** En el panel flotante de 420 px, las notas de canal (`UDIM · 9 tiles (…)`, la de altura) eran `shrink-0` al lado del archivo.
+  - Empujaban el chip de colorspace fuera del borde, aparecía scroll horizontal y el nombre quedaba en una letra. Los pliegues de omitidos y no reconocidos tenían lo mismo con la nota de teselas.
+  - Corrección: archivo y chip en la primera línea, notas en una línea propia que se parte; el nombre completo en el `title`.
+- **La cabecera del Hub decía «… MB disco»** en una UI en inglés. Ahora dice «on disk».
+- **Verificación:** vitest 280/280, lint y build. En vivo, misma escena, mismo export y mismo ancho: sin scroll horizontal, y el Hub dice «18 assets · 24.4 MB on disk · 3.54 GB VRAM».
+- **Quedan abiertas:**
+  - si QC Assets debe comprobar que existe un archivo con ruta absoluta (pregunta en el ROADMAP);
+  - el doble recuento de QC entre cabecera y pestaña (backlog).
+- **Checklist de la ronda Windows 7:** `docs/audit/2026-10-30-windows-udim-checklist.md`.
+
 ## v1.43.1 — UDIM en el panel: Shrink, Res/VRAM y Switch res (2026-10-30, PR #41)
 
 - **Ronda GUI de la v1.43.0** (macOS + C4D 2026.304, escena de prueba con tres mapas UDIM). Pasan:

@@ -1,6 +1,6 @@
-# Windows round 7 — UDIM checklist (v1.43.1)
+# Windows round 7 — UDIM checklist (v1.43.2)
 
-What a Windows round has to cover for the UDIM work: v1.42.0 (Matwire UDIM and the Painter OpenPBR export), v1.43.0 (Hub actions per tile, QC #14) and v1.43.1 (UDIM in the Hub dialogs). So far these releases have only run in Windows CI (pytest); every live check was on macOS. The macOS reference values below come from the GUI pass of 2026-10-30 ([macOS acceptance](2026-10-24-macos-acceptance.md#matwire-udim-in-the-panel--2026-10-30)) and the `c4dpy` runner `tests/c4d_runner/run_udim_checks.py`.
+What a Windows round has to cover for the UDIM work: v1.42.0 (Matwire UDIM and the Painter OpenPBR export), v1.43.0 (Hub actions per tile, QC #14), v1.43.1 (UDIM in the Hub dialogs) and v1.43.2 (Matwire preview layout). So far these releases have only run in Windows CI (pytest); every live check was on macOS. The macOS reference values below come from the GUI pass of 2026-10-30 ([macOS acceptance](2026-10-24-macos-acceptance.md#matwire-udim-in-the-panel--2026-10-30)) and the `c4dpy` runner `tests/c4d_runner/run_udim_checks.py`.
 
 The risks are specific to Windows:
 - `<UDIM>` inside an absolute Windows path with spaces and parentheses. Painter writes `…_sRGB Encoded Rec.709 (sRGB)_1001.png`.
@@ -10,7 +10,7 @@ The risks are specific to Windows:
 
 ## Setup
 
-- **Candidate:** `sentinel-beta-70db0e6b4572.zip` (tag `v1.43.1`), SHA256 `0f56fab7dbbbf5e1299bdd1d94e8b12952f4a9cc04351835752f68516c7ed39e`, 132 files.
+- **Candidate:** built from tag `v1.43.2` with `build_candidate.py` (file name and SHA256 added once the tag exists).
   - Check the hash against the `.sha256`, then install with `install.py`.
 - **Host:** Windows 11 + **C4D 2026.4.0**, Redshift, a clean profile with Sentinel only (as in round 6). 2026.3 counts the same, but don't expand the Frame tag on 2026.3.4.
 - **Fixture:** the LOK-003 Painter export.
@@ -19,7 +19,7 @@ The risks are specific to Windows:
   - Copy both into a folder whose path has a space, e.g. `D:\Sentinel QA\LOK\`.
   - Copy the folder's contents, not a link: steps 5 and 9 move and delete tiles.
 - **Scene:** a new scene saved as `D:\Sentinel QA\LOK\c4d\lok_v001.c4d`, with the FBX merged (File → Merge).
-- **Doctor:** must show Sentinel 1.43.1, the C4D build and "Windows 11", with no known-issue item.
+- **Doctor:** must show Sentinel 1.43.2, the C4D build and "Windows 11", with no known-issue item.
 
 ## Checks
 
@@ -56,9 +56,6 @@ Judge it by those lines: `c4dpy` exits 1 even on success.
 
 ## Known, not Windows findings
 
-- Fixed after v1.43.1 (branch `fix/matwire-preview-overflow`), still visible with the `70db0e6` candidate:
-  - the Matwire preview overflowed sideways in a narrow panel (the tile note and the colorspace chip went past the right edge);
-  - the Hub header read "… MB disco".
 - QC Assets reports a texture with an absolute path as "absolute" even when the file doesn't exist. A UDIM pattern with no tile on disk therefore shows as "absolute" in QC, and QC #14 leaves it to Assets. The Hub does check existence.
 
 ## Report

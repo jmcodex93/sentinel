@@ -3,9 +3,9 @@
 Solo lo pendiente. Lo entregado, con su porqué, está en [`docs/HISTORY.md`](docs/HISTORY.md).
 
 ## Estado (2026-10-30)
-- `main`: **v1.43.1** (etiqueta `v1.43.1`, PR #41: Shrink UDIM desde el panel). v1.42.0 y v1.43.0 entraron juntas en el PR #39. La última aceptada en los dos sistemas es **v1.41.0** (etiqueta `v1.41.0`). Matriz soportada: **Cinema 4D 2025–2027**, macOS y Windows. Objetivo del estudio: **C4D 2026.4.0**.
+- `main`: **v1.43.2** (etiqueta `v1.43.2`, PR #44: preview de Matwire sin desbordar el panel, "on disk" en el Hub). v1.43.1 (PR #41): Shrink UDIM desde el panel. v1.42.0 y v1.43.0 entraron juntas en el PR #39. La última aceptada en los dos sistemas es **v1.41.0** (etiqueta `v1.41.0`). Matriz soportada: **Cinema 4D 2025–2027**, macOS y Windows. Objetivo del estudio: **C4D 2026.4.0**.
 - Aceptada en Windows 11 + C4D 2026.4.0 (ronda 6, con el código de v1.40.1) y en macOS + C4D 2026.304 (ronda Mac 1); C4D 2027.0 comprobado en vivo en macOS. Evidencia: [`docs/audit/2026-09-24-windows-acceptance.md`](docs/audit/2026-09-24-windows-acceptance.md) y [`docs/audit/2026-10-24-macos-acceptance.md`](docs/audit/2026-10-24-macos-acceptance.md).
-- v1.42.0 (Matwire UDIM + export de Painter), v1.43.0 (acciones del Hub por tesela y QC #14) y v1.43.1: comprobadas en vivo en macOS + C4D 2026.304. En el panel de la GUI (2026-10-30) pasaron las acciones del Hub por tesela, QC #14, Collect y Matwire UDIM con el export real de Painter del LOK-003. Sin ronda Windows (solo CI): checklist en [`docs/audit/2026-10-30-windows-udim-checklist.md`](docs/audit/2026-10-30-windows-udim-checklist.md).
+- v1.42.0 (Matwire UDIM + export de Painter), v1.43.0 (acciones del Hub por tesela y QC #14), v1.43.1 y v1.43.2: comprobadas en vivo en macOS + C4D 2026.304. En el panel de la GUI (2026-10-30) pasaron las acciones del Hub por tesela, QC #14, Collect y Matwire UDIM con el export real de Painter del LOK-003. Sin ronda Windows (solo CI): checklist en [`docs/audit/2026-10-30-windows-udim-checklist.md`](docs/audit/2026-10-30-windows-udim-checklist.md).
 - CI en cada PR y push a `main`: pytest en Linux, macOS y Windows + web.
 
 ## Para cerrar la beta
