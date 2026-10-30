@@ -56,8 +56,9 @@ Judge it by those lines: `c4dpy` exits 1 even on success.
 
 ## Known, not Windows findings
 
-- The Matwire preview overflows sideways in a narrow panel. Long Painter names plus the "UDIM · N tiles (…)" note push the colorspace chip off the right edge and cut the file name to one letter. Seen on macOS 2026-10-30.
-- The Hub header reads "… MB disco" (`HubPage.tsx`, a Spanish word in the English UI).
+- Fixed after v1.43.1 (branch `fix/matwire-preview-overflow`), still visible with the `70db0e6` candidate:
+  - the Matwire preview overflowed sideways in a narrow panel (the tile note and the colorspace chip went past the right edge);
+  - the Hub header read "… MB disco".
 - QC Assets reports a texture with an absolute path as "absolute" even when the file doesn't exist. A UDIM pattern with no tile on disk therefore shows as "absolute" in QC, and QC #14 leaves it to Assets. The Hub does check existence.
 
 ## Report
