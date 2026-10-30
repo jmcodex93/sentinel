@@ -272,6 +272,25 @@ export function tileMismatchNote(mismatch: Record<string, number[]> | undefined)
   return `Tiles differ between maps — ${parts.join("; ")}. Those areas render black.`;
 }
 
+/** Set-level warning (W5, Windows round 7): tiled maps Redshift reports
+ * Not Found although tiles exist — server-derived from the same
+ * `udim.redshift_unresolved` rule QC #14 uses (measured: the pattern
+ * resolves only through tile 1001, and a `1001` elsewhere in the path
+ * breaks it). */
+export function redshiftUnresolvedNote(unresolved: Record<string, string> | undefined): string | null {
+  const entries = Object.entries(unresolved ?? {});
+  const parts: string[] = [];
+  const sentence = (reason: string, lead: string, fix: string) => {
+    const maps = entries.filter(([, r]) => r === reason).map(([channel]) => channelLabel(channel));
+    if (maps.length === 0) return;
+    const verb = maps.length === 1 ? "it renders" : "they render";
+    parts.push(`${lead}: Redshift won't load ${maps.join(", ")} and ${verb} untextured. ${fix}`);
+  };
+  sentence("1001_in_path", '"1001" appears in the path outside <UDIM>', "Rename the folder.");
+  sentence("no_1001", "No tile 1001", "Add a 1001 tile (any image) or move the UVs to 1001.");
+  return parts.length > 0 ? parts.join(" ") : null;
+}
+
 /** Note when the coat has maps but no weight map: the writer writes 1.0
  * (both BRDFs are born at 0 — an invisible coat otherwise). */
 export function coatWeightNote(source: string | null | undefined): string | null {

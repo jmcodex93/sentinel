@@ -42,7 +42,8 @@ The log shows why: Redshift turns the path back into a pattern by replacing **ev
 
 ## Consequences for Sentinel
 
-- **QC #14** checks used tiles against the tiles on disk. It is satisfied by the LOK grip (UVs on 1005, file 1005 present), yet the grip renders untextured.
-- **Matwire, the Hub and Collect** also treat these patterns as complete.
+- **QC #14** checked used tiles against the tiles on disk. It was satisfied by the LOK grip (UVs on 1005, file 1005 present), yet the grip renders untextured.
+- **Matwire, the Hub and Collect** also treated these patterns as complete.
+- **Now:** `udim.redshift_unresolved` encodes both rules. QC #14 adds them to its message ("N maps without tile 1001, which Redshift needs to resolve <UDIM> — renders untextured"), and the Matwire preview warns per set. `run_udim_checks.qc14_redshift_resolution` ties each verdict to a real render. The Hub doesn't use the rule yet.
 - What renders correctly: a UDIM pattern with tile 1001 on disk and no other `1001` in its path.
 - Not covered here: `<UVTILE>` (whether `_u1_v1` plays the same role) and other renderers.

@@ -1347,6 +1347,9 @@ export interface MatwireChannelRow {
 export interface MatwireSet {
   /** v1.42: channel -> tiles other maps of the set have and it lacks. */
   tile_mismatch?: Record<string, number[]>;
+  /** W5: channel -> why Redshift won't resolve that tiled map
+   * (`udim.redshift_unresolved`: "no_1001" | "1001_in_path"). */
+  redshift_unresolved?: Record<string, string>;
   /** v1.42: `matwire.coat_weight_source` — "constant" means 1.0 is written. */
   coat_weight_source?: "map" | "constant" | null;
   name: string;

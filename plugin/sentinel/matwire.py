@@ -603,7 +603,7 @@ def assign_leftovers(hints, set_names):
     return out
 
 
-def preview_payload(scan_result, existing_names, multiply_ao=False):
+def preview_payload(scan_result, existing_names, multiply_ao=False, folder=""):
     """Shape a ``scan_texture_sets`` result for the SPA preview: channel
     rows annotated with their colorspace (single source:
     ``channel_colorspace``), tuples flattened to JSON-friendly lists, and
@@ -627,7 +627,12 @@ def preview_payload(scan_result, existing_names, multiply_ao=False):
     whether mid-grey or zero is the flat level, or that a float map's
     convention is unverified. The header probe (``height_float``) and the
     pixel sample (``height_stats``) ride on the set, set by the ops layer,
-    which owns I/O."""
+    which owns I/O.
+
+    Each set also carries ``redshift_unresolved`` (W5, Windows round 7):
+    ``{channel: reason}`` for the tiled maps Redshift will report Not Found
+    — ``udim.redshift_unresolved`` on ``folder`` + the map's pattern, the
+    same rule QC #14 applies to the created sampler."""
     sets = []
     for tex_set in scan_result.get("sets") or []:
         channels = []
@@ -655,6 +660,7 @@ def preview_payload(scan_result, existing_names, multiply_ao=False):
             "ignored": [list(row) for row in tex_set["ignored"]],
             "tile_mismatch": tile_mismatch(tex_set),
             "coat_weight_source": coat_weight_source(tex_set["channels"]),
+            "redshift_unresolved": _redshift_unresolved(tex_set, folder),
         })
     names = dedupe_names([s["name"] for s in sets], existing_names)
     # A skipped tile family is ONE pattern name (v1.42): carry its tiles so
@@ -673,6 +679,17 @@ def preview_payload(scan_result, existing_names, multiply_ao=False):
         "names": names,
         "ignored_tiles": ignored_tiles,
     }
+
+
+def _redshift_unresolved(tex_set, folder):
+    out = {}
+    for channel, tiles in ((tex_set or {}).get("tiles") or {}).items():
+        filename = tex_set["channels"].get(channel) or ""
+        path = os.path.join(folder, *filename.split("/")) if folder else filename
+        reason = udim.redshift_unresolved(path, tiles)
+        if reason:
+            out[channel] = reason
+    return out
 
 
 def dedupe_names(names, existing):

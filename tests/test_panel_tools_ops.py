@@ -1294,6 +1294,18 @@ class TestMatwireOps:
         assert rows["height"]["file"] == "rock_Height.<UDIM>.exr"
         assert rows["height"]["tiles"] == [1001, 1002]
 
+    def test_preview_checks_redshift_resolution_against_the_real_folder(
+            self, sentinel_module, monkeypatch, tmp_path):
+        """W5: the op hands the scanned folder to the preview, so a ``1001``
+        in the folder path (Redshift re-patterns it) reaches the panel."""
+        ops = self._setup(monkeypatch, _FakeMatwireDoc())
+        shot = tmp_path / "sh_1001"
+        shot.mkdir()
+        folder = self._folder(shot, "rock_BaseColor.1001.png", "rock_BaseColor.1002.png")
+        preview = ops._op_matwire_preview({"folder": folder})
+        assert preview["ok"] is True
+        assert preview["sets"][0]["redshift_unresolved"] == {"basecolor": "1001_in_path"}
+
     def test_preview_bad_folder(self, sentinel_module, monkeypatch, tmp_path):
         ops = self._setup(monkeypatch, _FakeMatwireDoc())
         missing = str(tmp_path / "nope")

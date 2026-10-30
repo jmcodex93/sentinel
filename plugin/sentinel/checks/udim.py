@@ -7,6 +7,9 @@ line (measured, docs/research/2026-10-29-redshift-udim.md). This check
 reads which tiles each object's polygons use (``udim_c4d.used_tiles``) and
 compares them with the tiles of every tiled map of the material
 (``udim.tile_gaps``). One violation per object, naming its materials.
+It also names the maps Redshift reports ``Not Found`` although tiles exist
+— no tile 1001, or ``1001`` elsewhere in the path (``udim.redshift_unresolved``,
+measured 2026-10-30): the whole texture renders untextured.
 
 Scenes without a tiled path return ``ok`` before reading any UV.
 """
@@ -21,7 +24,7 @@ from sentinel.qc.results import (
 )
 from sentinel.rules_context import active_rules_for_doc
 from sentinel.textures import scan_all_texture_paths
-from sentinel.udim_c4d import udim_materials, used_tiles
+from sentinel.udim_c4d import udim_materials, unresolved_maps, used_tiles
 
 
 def _name(item, fallback):
@@ -45,7 +48,18 @@ def violation_message(object_name, gaps):
                       for gap in gaps if gap["missing"])))
     if any(gap["out_of_range"] for gap in gaps):
         parts.append("UVs outside the UDIM range")
-    return "%s: %s — renders black" % (object_name, "; ".join(parts))
+    black = bool(parts)
+    for gap in gaps:
+        unresolved = gap.get("unresolved") or {}
+        for reason, text in (("no_1001", "without tile 1001, which Redshift needs to resolve <UDIM>"),
+                             ("1001_in_path", "with 1001 elsewhere in its path, which breaks "
+                                              "Redshift's <UDIM>")):
+            names = unresolved.get(reason) or []
+            if names:
+                parts.append("%s: %d map%s %s" % (gap["material"], len(names),
+                                                  "" if len(names) == 1 else "s", text))
+    return "%s: %s — renders %s" % (object_name, "; ".join(parts),
+                                    "black" if black else "untextured")
 
 
 def _udim_tiles_result(objects, details=None):
@@ -79,15 +93,25 @@ def check_udim_tiles(doc, rules_context=None):
     objects = []
     details = []
     try:
-        materials = udim_materials(scan_all_texture_paths(doc))
+        records = scan_all_texture_paths(doc)
+        materials = udim_materials(records)
         if materials:
+            unresolved = unresolved_maps(records)
             for obj, per_material in used_tiles(doc, materials):
                 gaps = []
                 for index, tiles in per_material.items():
                     material, maps = materials[index]
                     gap = udim.tile_gaps(tiles, maps)
-                    if gap:
-                        gaps.append(dict(gap, material=_name(material, "material")))
+                    bad = {}
+                    for owner, map_name, reason in unresolved:
+                        if owner == material:
+                            bad.setdefault(reason, []).append(map_name)
+                    if gap or bad:
+                        gap = dict(gap or {"missing": [], "maps": [], "out_of_range": False},
+                                   material=_name(material, "material"))
+                        if bad:
+                            gap["unresolved"] = bad
+                        gaps.append(gap)
                 if gaps:
                     objects.append(obj)
                     details.append({"message": violation_message(_name(obj, "object"), gaps),

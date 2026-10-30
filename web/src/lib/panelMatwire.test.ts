@@ -10,6 +10,7 @@ import {
   channelLabel,
   tilesNote,
   tileMismatchNote,
+  redshiftUnresolvedNote,
   coatWeightNote,
   createMaterialCount,
   ignoredReasonLabel,
@@ -400,6 +401,19 @@ describe("UDIM notes (v1.42)", () => {
       .toBe("Tiles differ between maps — roughness lacks 1002, 1003. Those areas render black.");
     expect(tileMismatchNote({})).toBeNull();
     expect(tileMismatchNote(undefined)).toBeNull();
+  });
+
+  it("warns when Redshift won't resolve tiled maps (W5)", () => {
+    expect(redshiftUnresolvedNote({ basecolor: "no_1001", roughness: "no_1001" })).toBe(
+      "No tile 1001: Redshift won't load basecolor, roughness and they render untextured. " +
+        "Add a 1001 tile (any image) or move the UVs to 1001.",
+    );
+    expect(redshiftUnresolvedNote({ basecolor: "1001_in_path" })).toBe(
+      '"1001" appears in the path outside <UDIM>: Redshift won\'t load basecolor and it renders ' +
+        "untextured. Rename the folder.",
+    );
+    expect(redshiftUnresolvedNote({})).toBeNull();
+    expect(redshiftUnresolvedNote(undefined)).toBeNull();
   });
 
   it("says when the coat weight is a constant", () => {

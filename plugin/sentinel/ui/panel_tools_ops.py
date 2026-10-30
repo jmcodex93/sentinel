@@ -465,7 +465,8 @@ def _op_matwire_preview(payload):
     # CURRENT checkbox (matwire.ao_destination is the single source shared
     # with the writer).
     out = matwire.preview_payload(result["scan"], existing,
-                                  multiply_ao=bool((payload or {}).get("multiply_ao")))
+                                  multiply_ao=bool((payload or {}).get("multiply_ao")),
+                                  folder=result["folder"])
     out["ok"] = True
     # Honest degradation (spec): with no shared UV context node in this build
     # the Projection selector has nothing to drive, and the sub-view says so
