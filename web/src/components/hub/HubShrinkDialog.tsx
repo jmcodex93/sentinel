@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { formatBytes } from "../../lib/format";
 import { shrinkPreview } from "../../lib/hubTable";
+import { undoShortcut } from "../../lib/platform";
 import { Button } from "../form/Button";
 import type { HubAsset, HubMeta } from "../../types";
 
@@ -117,7 +118,7 @@ export function HubShrinkDialog({
 
         <p className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
           Writes new sibling files next to the originals and relinks to them — originals are never overwritten. A
-          single Cmd+Z reverts the relink.
+          single {undoShortcut()} reverts the relink.
         </p>
 
         <div className="flex justify-end gap-2">

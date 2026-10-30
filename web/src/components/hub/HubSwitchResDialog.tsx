@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { switchTargets } from "../../lib/hubTable";
+import { undoShortcut } from "../../lib/platform";
 import { Button } from "../form/Button";
 import type { HubVariant } from "../../types";
 
@@ -106,7 +107,7 @@ export function HubSwitchResDialog({
 
         <p className="text-caption" style={{ color: "var(--color-ink-secondary)" }}>
           Relinks each texture to an existing sibling file next to it — never writes or generates new files. A
-          single Cmd+Z reverts the batch.
+          single {undoShortcut()} reverts the batch.
         </p>
 
         <div className="flex justify-end gap-2">
