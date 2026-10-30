@@ -747,6 +747,17 @@ export interface HubMeta {
   vram_label: string;
   res_label: string;
   res_tier: HubResTier;
+  /** UDIM map: one entry per tile on disk. `width`/`height`/`res_label` above
+   * are the largest tile's and `vram_bytes` the sum (see `_udim_meta`). */
+  tiles?: HubMetaTile[];
+}
+
+export interface HubMetaTile {
+  tile: number;
+  width: number;
+  height: number;
+  channels: number;
+  bit_depth: number;
 }
 
 /**
@@ -781,6 +792,9 @@ export interface HubMetaTotals {
 export interface HubVariant {
   basename: string;
   px: number | null;
+  /** UDIM map only: tiles the map uses today that this family lacks —
+   * `hub/switch_res` refuses it (`incomplete_tiles`) unless empty. */
+  missing?: number[];
 }
 
 /** `POST /api/hub/switch_res` — see `_op_hub_switch_res` in hub_ops.py.

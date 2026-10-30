@@ -961,5 +961,72 @@ class TestHubUdimTileActions:
         hub_ops._THUMB_PATHS.clear()
         res = hub_ops.HUB_OPS["hub/variants"]({"keys": [rec["key"]]})
         assert res["variants"][rec["key"]] == [
-            {"basename": "rock_2K.<UDIM>.png", "px": 2048},
-            {"basename": "rock.<UDIM>.png", "px": 4096}]
+            {"basename": "rock_2K.<UDIM>.png", "px": 2048, "missing": []},
+            {"basename": "rock.<UDIM>.png", "px": 4096, "missing": []}]
+
+    def test_variants_name_the_tiles_a_family_lacks(self, sentinel_module, monkeypatch, tmp_path):
+        """The Switch res dialog must not offer a family the server refuses
+        (``incomplete_tiles``): each UDIM entry lists the map's tiles it lacks."""
+        tex = tmp_path / "tex"
+        self._tiles(str(tex), "metal_2k.<UDIM>.png", {1001: 32, 1002: 32})
+        self._tiles(str(tex), "metal_1k.<UDIM>.png", {1001: 16})
+        self._tiles(str(tex), "metal_4k.<UDIM>.png", {1001: 64, 1002: 64})
+        rec = self._rec(str(tex / "metal_2k.<UDIM>.png"), "tex/metal_2k.<UDIM>.png", [1001, 1002])
+        hub_ops, _doc, _writes = self._setup(monkeypatch, tmp_path, rec)
+        hub_ops._THUMB_PATHS.clear()
+        entries = hub_ops.HUB_OPS["hub/variants"]({"keys": [rec["key"]]})["variants"][rec["key"]]
+        assert {e["basename"]: e["missing"] for e in entries} == {
+            "metal_4k.<UDIM>.png": [], "metal_2k.<UDIM>.png": [], "metal_1k.<UDIM>.png": [1002]}
+
+    def test_meta_of_a_udim_map_comes_from_its_tiles(self, sentinel_module, monkeypatch, tmp_path):
+        """``hub/meta`` used to return nothing for a pattern (no file of its
+        own), so the Shrink dialog skipped every UDIM row as ``no_meta``."""
+        tex = tmp_path / "tex"
+        self._tiles(str(tex), "rock.<UDIM>.png", {1001: 2048, 1002: 512})
+        rec = self._rec(str(tex / "rock.<UDIM>.png"), "tex/rock.<UDIM>.png", [1001, 1002])
+        hub_ops, _doc, _writes = self._setup(monkeypatch, tmp_path, rec)
+        hub_ops._THUMB_PATHS.clear()
+        meta = hub_ops.HUB_OPS["hub/meta"]({"keys": [rec["key"]]})["metas"][rec["key"]]
+        big = hub_ops._meta_for(str(tex / "rock.1001.png"))
+        small = hub_ops._meta_for(str(tex / "rock.1002.png"))
+        assert (meta["width"], meta["height"], meta["res_label"]) == (2048, 2048, "2K")
+        assert meta["vram_bytes"] == big["vram_bytes"] + small["vram_bytes"]
+        assert meta["disk_bytes"] == big["disk_bytes"] + small["disk_bytes"]
+        assert meta["tiles"] == [
+            {"tile": 1001, "width": 2048, "height": 2048, "channels": 4, "bit_depth": 8},
+            {"tile": 1002, "width": 512, "height": 512, "channels": 4, "bit_depth": 8}]
+
+    def test_meta_of_a_udim_map_is_absent_when_a_tile_is_unreadable(
+            self, sentinel_module, monkeypatch, tmp_path):
+        tex = tmp_path / "tex"
+        self._tiles(str(tex), "rock.<UDIM>.png", {1001: 2048})
+        (tex / "rock.1002.png").write_bytes(b"not a png")
+        rec = self._rec(str(tex / "rock.<UDIM>.png"), "tex/rock.<UDIM>.png", [1001, 1002])
+        hub_ops, _doc, _writes = self._setup(monkeypatch, tmp_path, rec)
+        hub_ops._THUMB_PATHS.clear()
+        assert hub_ops.HUB_OPS["hub/meta"]({"keys": [rec["key"]]})["metas"] == {}
+
+    def test_totals_cover_a_udim_map_once_its_tiles_are_read(self, sentinel_module, tmp_path):
+        from sentinel.ui import hub_ops
+        tex = tmp_path / "tex"
+        self._tiles(str(tex), "rock.<UDIM>.png", {1001: 64, 1002: 32})
+        pattern = str(tex / "rock.<UDIM>.png")
+        before = hub_ops._totals_from_cache([pattern])
+        assert (before["total"], before["covered"], before["vram_bytes"]) == (1, 0, 0)
+        tiles = [hub_ops._meta_for(str(tex / name)) for name in ("rock.1001.png", "rock.1002.png")]
+        after = hub_ops._totals_from_cache([pattern])
+        assert (after["total"], after["covered"]) == (1, 1)
+        assert after["vram_bytes"] == sum(t["vram_bytes"] for t in tiles)
+        assert after["disk_bytes"] == sum(t["disk_bytes"] for t in tiles)
+
+    def test_inventory_vram_rollup_includes_a_read_udim_map(self, sentinel_module, tmp_path):
+        from sentinel.ui import hub_ops
+        tex = tmp_path / "tex"
+        self._tiles(str(tex), "rock.<UDIM>.png", {1001: 64, 1002: 32})
+        tiles = [hub_ops._meta_for(str(tex / name)) for name in ("rock.1001.png", "rock.1002.png")]
+        hub_ops._THUMB_PATHS.clear()
+        hub_ops._THUMB_PATHS["rock"] = str(tex / "rock.<UDIM>.png")
+        try:
+            assert hub_ops._cached_vram_total() == sum(t["vram_bytes"] for t in tiles)
+        finally:
+            hub_ops._THUMB_PATHS.clear()

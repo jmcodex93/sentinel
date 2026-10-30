@@ -2,6 +2,29 @@
 
 Narrativa por release movida desde `CLAUDE.md` el 2026-09-23 (prompt-audit; completada con la v1.39.0 el 2026-10-01) para no cargarla en cada sesión de agente. Se conserva **tal cual** se escribió: los estados («pendiente de merge/live», recuentos de tests) reflejan el momento de cada entrada, no el presente. El estado vigente y las lecciones de API están en `CLAUDE.md`; el roadmap, en `ROADMAP.md`.
 
+## Sin publicar (tras v1.43.0): ronda en el panel de la GUI (2026-10-30, rama `fix/hub-udim-shrink-ui`)
+
+- **Ronda GUI de la v1.43.0** (macOS + C4D 2026.304, escena de prueba con tres mapas UDIM). Pasan:
+  - QC #14 con «Select»;
+  - Copy into project («Copied 1 (3 UDIM tiles)»);
+  - Switch res, incluida la negativa por tesela;
+  - un Cmd+Z por gesto;
+  - Collect con `udim.tiles` en el manifiesto.
+- **Shrink no se podía usar desde el panel en un mapa UDIM.** El diálogo decía «0 to shrink» y no dejaba pulsar.
+  - Causa: `hub/meta` leía la cabecera de la ruta resuelta, que en un mapa UDIM es el patrón (`…<UDIM>.png`, no es un fichero). La fila llegaba sin meta y `shrinkPreview` la saltaba como `no_meta`.
+  - El servidor ya planificaba por tesela; c4dpy pasaba porque llamaba a la op directamente.
+  - Corrección: `_udim_meta` arma la meta con las teselas del disco (dimensiones de la mayor, VRAM y disco sumados, lista `tiles`). `shrinkPreview` planifica por tesela como `_shrink_udim_item`.
+  - Con eso, las columnas Res y VRAM, las facetas y la VRAM de la cabecera y del Overview también cuentan los mapas UDIM (antes «—» y «~»).
+- **Switch res ofrecía resoluciones que el servidor rechaza.** Una familia a la que le falta una tesela salía como «1/1 available».
+  - `hub/variants` devuelve ahora `missing` por entrada, y `switchTargets` no ofrece esa resolución.
+  - «Highest» no cuenta un mapa cuya familia más alta está incompleta.
+- **El toast de un cambio rechazado por teselas** es ahora de aviso, no de éxito. «Already there» sigue siendo éxito.
+- **Tests:**
+  - Cambian dos aserciones de comportamiento, con aprobación del usuario: `test_variants_reports_udim_families_with_px` añade `missing: []` y el caso de `switchDoneMessage` con `incomplete_tiles` pasa a `warn`.
+  - 5 tests de pytest y 4 de vitest nuevos; 9 mutaciones, todas detectadas.
+- **Repetido en el panel:** Shrink a 1K («1 to shrink · VRAM 16.0 MB → 4.0 MB»), `rock_1K.1001` a 1024 px, la 1002 copiada idéntica, un Cmd+Z y Redo. Switch res ya no ofrece 1K.
+- **Queda igual, ya existía:** tras Collect el documento activo es la copia entregada (`SaveProject` cambia la ruta del documento).
+
 ## v1.43.0 — UDIM, segunda entrega: Hub por tesela y QC #14 (2026-10-29, rama `feat/matwire-udim`)
 
 - **Spec:** `docs/superpowers/specs/2026-10-29-udim-hub-actions-qc-design.md`. Cierra el «Fuera de alcance» de la v1.42.

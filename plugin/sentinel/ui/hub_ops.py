@@ -109,6 +109,37 @@ def _meta_for(path):
     return meta
 
 
+def _udim_meta(pattern, read=None):
+    """Meta of a UDIM map: the pattern is no file, so it is built from its
+    tiles on disk. Width/height/channels/bit depth (and the Res label) are
+    the largest tile's; ``vram_bytes``/``disk_bytes`` are the sums; and
+    ``tiles`` lists each tile's dimensions so the Shrink dialog plans per
+    tile like ``assets.shrink_plan``. ``None`` when there is no tile or any
+    tile can't be read — the plan's ``no_meta`` rule. ``read`` replaces
+    ``_meta_for`` (pass ``_cached_meta`` to never parse)."""
+    read = read or _meta_for
+    tiles = udim.list_tiles(pattern)
+    metas = [(tile, read(udim.tile_path(pattern, tile))) for tile in tiles]
+    if not metas or any(meta is None for _tile, meta in metas):
+        return None
+    _tile, largest = max(metas, key=lambda item: max(item[1]["width"], item[1]["height"]))
+    meta = dict(largest)
+    meta["vram_bytes"] = sum(m["vram_bytes"] for _t, m in metas)
+    meta["vram_label"] = assets_engine.format_size(meta["vram_bytes"])
+    meta["disk_bytes"] = sum(m.get("disk_bytes", 0) for _t, m in metas)
+    meta["tiles"] = [{"tile": tile, "width": m["width"], "height": m["height"],
+                      "channels": m["channels"], "bit_depth": m["bit_depth"]}
+                     for tile, m in metas]
+    return meta
+
+
+def _cached_meta(path):
+    """The ``_META_CACHE`` entry of ``path`` without parsing it (``None``
+    when absent, unparseable or the file is gone)."""
+    key_size = _stat_cache_key(path)
+    return _META_CACHE.get(key_size[0]) if key_size else None
+
+
 def _op_hub_inventory(payload):
     """``hub/inventory`` — full asset scan the same way
     ``AssetHubDialog`` builds its table: ``ui.flows.scan_scene_assets``
@@ -145,6 +176,10 @@ def _cached_vram_total():
     total = 0
     for resolved in set(_THUMB_PATHS.values()):
         if not resolved:
+            continue
+        if udim.has_token(resolved):
+            meta = _udim_meta(resolved, read=_cached_meta)
+            total += meta["vram_bytes"] if meta else 0
             continue
         key_size = _stat_cache_key(resolved)
         if key_size is None:
@@ -1183,7 +1218,7 @@ def _op_hub_meta(payload):
         resolved = _THUMB_PATHS.get(key)
         if not resolved:
             continue
-        meta = _meta_for(resolved)
+        meta = _udim_meta(resolved) if udim.has_token(resolved) else _meta_for(resolved)
         if meta is not None:
             metas[key] = meta
     return {"metas": metas}
@@ -1209,10 +1244,14 @@ def _totals_from_cache(paths):
         if ext not in webbridge._THUMB_EXTS:
             continue
         if udim.has_token(resolved):
-            # A UDIM map has no single file to stat or parse: count it in
-            # ``total`` without covering it, so the partial "~" marker
-            # shows instead of a figure that looks complete (v1.42).
+            # A UDIM map is covered once every tile has a cache entry
+            # (``hub/meta`` reads them); until then the "~" marker shows.
             total += 1
+            meta = _udim_meta(resolved, read=_cached_meta)
+            if meta:
+                covered += 1
+                vram_total += meta["vram_bytes"]
+                disk_total += meta["disk_bytes"]
             continue
         key_size = _stat_cache_key(resolved)
         if key_size is None:
@@ -1296,6 +1335,8 @@ def _op_hub_variants(payload):
     raw_variants = assets_engine.find_res_variants(minimal_records)
     variants = {}
     for key, group in raw_variants.items():
+        resolved = _THUMB_PATHS.get(key) or ""
+        current_tiles = set(udim.list_tiles(resolved)) if udim.has_token(resolved) else None
         entries = []
         for v in group:
             px = v["px"]
@@ -1303,7 +1344,12 @@ def _op_hub_variants(payload):
                 meta = _variant_meta(v)
                 if meta:
                     px = max(meta.get("width") or 0, meta.get("height") or 0) or None
-            entries.append({"basename": os.path.basename(v["path"]), "px": px})
+            entry = {"basename": os.path.basename(v["path"]), "px": px}
+            if current_tiles is not None:
+                # Same rule as ``hub/switch_res``: a family missing a tile
+                # the map uses today is refused, so the dialog says so.
+                entry["missing"] = sorted(current_tiles - set(v.get("tiles") or ()))
+            entries.append(entry)
         variants[key] = entries
     return {"variants": variants}
 

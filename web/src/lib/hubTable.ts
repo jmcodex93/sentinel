@@ -150,7 +150,12 @@ function vramBytes(width: number, height: number, channels: number, bitDepth: nu
   return Math.floor(raw * MIP_FACTOR);
 }
 
-export type ShrinkSkipReason = "not_ok" | "not_image" | "no_meta" | "already_small";
+function scaledDims(width: number, height: number, targetPx: number): [number, number] {
+  const scale = targetPx / Math.max(width, height);
+  return [Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale))];
+}
+
+export type ShrinkSkipReason ="not_ok" | "not_image" | "no_meta" | "already_small";
 
 export interface ShrinkPreviewItem {
   key: string;
@@ -203,20 +208,27 @@ export function shrinkPreview(
       continue;
     }
     const meta = metas[asset.key];
-    if (!meta || !meta.width || !meta.height) {
+    // A UDIM map plans per tile, like `_shrink_udim_item`: eligible when any
+    // tile is larger than the target; the others are copied as they are and
+    // don't count in the VRAM figures. A single file is its own one tile.
+    const tiles = meta?.tiles ?? (meta ? [meta] : []);
+    if (!meta || !meta.width || !meta.height || tiles.length === 0
+        || tiles.some((tile) => !tile.width || !tile.height)) {
       skipped.push({ key: asset.key, reason: "no_meta" });
       continue;
     }
-    if (Math.max(meta.width, meta.height) <= targetPx) {
+    const larger = tiles.filter((tile) => Math.max(tile.width, tile.height) > targetPx);
+    if (larger.length === 0) {
       skipped.push({ key: asset.key, reason: "already_small" });
       continue;
     }
-    const scale = targetPx / Math.max(meta.width, meta.height);
-    const newWidth = Math.max(1, Math.round(meta.width * scale));
-    const newHeight = Math.max(1, Math.round(meta.height * scale));
+    for (const tile of larger) {
+      const [w, h] = scaledDims(tile.width, tile.height, targetPx);
+      vramBefore += vramBytes(tile.width, tile.height, tile.channels, tile.bit_depth);
+      vramAfter += vramBytes(w, h, tile.channels, tile.bit_depth);
+    }
+    const [newWidth, newHeight] = scaledDims(meta.width, meta.height, targetPx);
     eligible.push({ key: asset.key, width: meta.width, height: meta.height, newWidth, newHeight });
-    vramBefore += vramBytes(meta.width, meta.height, meta.channels, meta.bit_depth);
-    vramAfter += vramBytes(newWidth, newHeight, meta.channels, meta.bit_depth);
   }
 
   return { eligible, skipped, vramBefore, vramAfter };
@@ -269,7 +281,10 @@ export interface SwitchTargetsResult {
  * still counts toward `highestAvailable` — the family exists, and picking
  * "Highest" resolves server-side by real pixel size, never by this label —
  * but it never contributes an exact-px target, since there is no concrete
- * value a null entry could ever match.
+ * value a null entry could ever match. A UDIM family with `missing` tiles
+ * is never a target: its px doesn't count, and "Highest" doesn't count a key
+ * whose top family is the incomplete one (the server refuses both with
+ * `incomplete_tiles`); "Highest" is still listed, at 0 available if need be.
  *
  * `repathableKeys`, when provided, gates which selected keys may become a
  * target at all — a non-repathable asset (`HubAsset.repathable === false`)
@@ -288,20 +303,27 @@ export function switchTargets(
 ): SwitchTargetsResult {
   const total = selectedKeys.size;
   let highestAvailable = 0;
+  let withFamily = 0;
   const pxCounts = new Map<number, number>();
 
   for (const key of selectedKeys) {
     if (repathableKeys && !repathableKeys.has(key)) continue;
     const group = variants[key];
     if (!group || group.length === 0) continue;
-    highestAvailable += 1;
-    const pxSet = new Set(group.map((v) => v.px).filter((px): px is number => px !== null));
+    // A UDIM family missing a tile the map uses is refused server-side
+    // (`incomplete_tiles`), so it is no target here either — including
+    // when it is the one "Highest" would pick.
+    withFamily += 1;
+    const complete = (v: HubVariant) => (v.missing?.length ?? 0) === 0;
+    const highest = group.reduce((best, v) => ((v.px ?? -1) > (best.px ?? -1) ? v : best));
+    if (complete(highest)) highestAvailable += 1;
+    const pxSet = new Set(group.filter(complete).map((v) => v.px).filter((px): px is number => px !== null));
     for (const px of pxSet) {
       pxCounts.set(px, (pxCounts.get(px) ?? 0) + 1);
     }
   }
 
-  if (highestAvailable === 0) {
+  if (withFamily === 0) {
     return { targets: [], total };
   }
 
@@ -528,5 +550,8 @@ export function switchDoneMessage(res: HubSwitchResponse): { message: string; va
       : ""}.`;
   }
   message += errorsNote(res.errors);
-  return { message, variant: (res.errors?.length ?? 0) > 0 ? "warn" : "success" };
+  // A map refused for a missing tile is a request that didn't happen, not
+  // a success; "already there" (nothing higher) still is one.
+  const refused = skipped.some((s) => (s.missing?.length ?? 0) > 0);
+  return { message, variant: (res.errors?.length ?? 0) > 0 || refused ? "warn" : "success" };
 }
