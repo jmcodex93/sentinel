@@ -10,7 +10,7 @@ The risks are specific to Windows:
 
 ## Setup
 
-- **Candidate:** built from tag `v1.43.2` with `build_candidate.py` (file name and SHA256 added once the tag exists).
+- **Candidate:** `sentinel-beta-5128c00d6727.zip` (tag `v1.43.2`), SHA256 `1408874b3d3e8f7a87ffe6e545dfabb934830d84f3e5cd1c60ea3bfee8a19f79`, 132 files.
   - Check the hash against the `.sha256`, then install with `install.py`.
 - **Host:** Windows 11 + **C4D 2026.4.0**, Redshift, a clean profile with Sentinel only (as in round 6). 2026.3 counts the same, but don't expand the Frame tag on 2026.3.4.
 - **Fixture:** the LOK-003 Painter export.
