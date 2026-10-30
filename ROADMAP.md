@@ -3,9 +3,9 @@
 Solo lo pendiente. Lo entregado, con su porqué, está en [`docs/HISTORY.md`](docs/HISTORY.md).
 
 ## Estado (2026-10-30)
-- `main`: **v1.43.3** (etiqueta `v1.43.3`, PRs #47–#51: arreglos de la ronda Windows 7). v1.43.2 (PR #44): preview de Matwire sin desbordar el panel, "on disk" en el Hub. v1.43.1 (PR #41): Shrink UDIM desde el panel. v1.42.0 y v1.43.0 entraron juntas en el PR #39. La última aceptada en los dos sistemas es **v1.41.0** (etiqueta `v1.41.0`). Matriz soportada: **Cinema 4D 2025–2027**, macOS y Windows. Objetivo del estudio: **C4D 2026.4.0**.
+- `main`: **v1.43.4** (etiqueta `v1.43.4`, PR #55: R4/R5 de la ronda Windows 8). v1.43.3 (PRs #47–#51): arreglos de la ronda Windows 7. v1.43.2 (PR #44): preview de Matwire sin desbordar el panel, "on disk" en el Hub. v1.43.1 (PR #41): Shrink UDIM desde el panel. v1.42.0 y v1.43.0 entraron juntas en el PR #39. La última aceptada en los dos sistemas es **v1.41.0** (etiqueta `v1.41.0`). Matriz soportada: **Cinema 4D 2025–2027**, macOS y Windows. Objetivo del estudio: **C4D 2026.4.0**.
 - Aceptada en Windows 11 + C4D 2026.4.0 (ronda 6, con el código de v1.40.1) y en macOS + C4D 2026.304 (ronda Mac 1); C4D 2027.0 comprobado en vivo en macOS. Evidencia: [`docs/audit/2026-09-24-windows-acceptance.md`](docs/audit/2026-09-24-windows-acceptance.md) y [`docs/audit/2026-10-24-macos-acceptance.md`](docs/audit/2026-10-24-macos-acceptance.md).
-- v1.42.0 (Matwire UDIM + export de Painter), v1.43.0 (acciones del Hub por tesela y QC #14), v1.43.1, v1.43.2 y v1.43.3: comprobadas en vivo en macOS + C4D 2026.304. Ronda Windows 7 (v1.43.2): 10 OK, 2 FAIL (W5, W8), ambos reproducidos en macOS y corregidos en v1.43.3. Ronda Windows 8 (v1.43.3): 8 OK, 2 FAIL (R4, R5: clics en el Hub justo después de Undo/Redo); W5, W8 y "Ctrl+Z" pasan.
+- v1.42.0 (Matwire UDIM + export de Painter), v1.43.0 (acciones del Hub por tesela y QC #14), v1.43.1, v1.43.2, v1.43.3 y v1.43.4: comprobadas en vivo en macOS + C4D 2026.304. Ronda Windows 7 (v1.43.2): 10 OK, 2 FAIL (W5, W8), ambos reproducidos en macOS y corregidos en v1.43.3. Ronda Windows 8 (v1.43.3): 8 OK, 2 FAIL (R4, R5: clics en el Hub justo después de Undo/Redo); W5, W8 y "Ctrl+Z" pasan. R4/R5 corregidos en v1.43.4. Pendiente la ronda Windows 9: [`docs/audit/2026-10-30-windows-round9-checklist.md`](docs/audit/2026-10-30-windows-round9-checklist.md).
 - CI en cada PR y push a `main`: pytest en Linux, macOS y Windows + web.
 
 ## Para cerrar la beta
@@ -25,7 +25,7 @@ Solo lo pendiente. Lo entregado, con su porqué, está en [`docs/HISTORY.md`](do
 - [ ] Switch res: con la fila enlazada a una familia incompleta, el diálogo lista "1K 1/1 available" sin aviso. Collect no restaura un Hub minimizado.
 
 **Ronda Windows 8 (v1.43.3, 2026-10-30): 8 OK, 2 FAIL.** Detalle en [`docs/audit/2026-09-24-windows-acceptance.md`](docs/audit/2026-09-24-windows-acceptance.md#round-8--2026-10-30-candidate-0211ffe-v1433-c4d-202640).
-- [x] **Clics en el Hub justo después de Undo/Redo (R4, R5).** Causa medida: la `key` de cada fila es su ruta y Undo/Redo de un relink cambia todas; el orden del escaneo de texturas no cambia. El Hub lleva selección, ancla y clics a la key nueva por `slot` (solo si todos los slots conservan sus owners) y avisa "still updating" una vez cada 5 s. Verificado en vivo en macOS, rama `fix/hub-clicks-after-undo`; falta confirmarlo en Windows.
+- [x] **Clics en el Hub justo después de Undo/Redo (R4, R5).** Causa medida: la `key` de cada fila es su ruta y Undo/Redo de un relink cambia todas; el orden del escaneo de texturas no cambia. El Hub lleva selección, ancla y clics a la key nueva por `slot` (solo si todos los slots conservan sus owners) y avisa "still updating" una vez cada 5 s. Verificado en vivo en macOS; en v1.43.4 (PR #55), falta confirmarlo en Windows (ronda 9).
 - [ ] Un clic de fila del Hub entre Undo y Redo vacía el Redo: `SetActiveMaterial` con otro material lo hace (medido). Probablemente igual que clicar un material en el Material Manager; sin decidir si se evita.
 - [ ] Tras arreglar el W5, la barra Deliver del Hub siguió diciendo "UDIM Tiles · 4 new" hasta pulsar Refresh, con la pestaña QC ya limpia.
 
