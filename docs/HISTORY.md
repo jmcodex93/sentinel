@@ -2,6 +2,19 @@
 
 Narrativa por release movida desde `CLAUDE.md` el 2026-09-23 (prompt-audit; completada con la v1.39.0 el 2026-10-01) para no cargarla en cada sesión de agente. Se conserva **tal cual** se escribió: los estados («pendiente de merge/live», recuentos de tests) reflejan el momento de cada entrada, no el presente. El estado vigente y las lecciones de API están en `CLAUDE.md`; el roadmap, en `ROADMAP.md`.
 
+## v1.43.4 — Clics del Hub tras Undo/Redo (2026-10-30, PR #55)
+
+- **Ronda Windows 8** (v1.43.3, Windows 11 + C4D 2026.4.0): 8 OK, 2 FAIL. W5, W8 y «Ctrl+Z» pasan. Registro en `docs/audit/2026-09-24-windows-acceptance.md` (PR #54).
+- **R4/R5: clics en el Hub justo después de Undo/Redo** (PR #55).
+  - Síntoma: clics rápidos daban «That asset is no longer in the scene.» para un asset presente, un «still updating» por clic, y Shift/Ctrl se ignoraban ~5 s.
+  - Causa medida: la `key` de una fila es su ruta y Undo/Redo de un relink cambia todas. Los clics sobre la lista vieja reintentaban con la key vieja (`unknown key`), y el ancla y la selección se quedaban con keys que ya no existían. Reproducido en macOS con 1.43.3 (Hub en el navegador para tener Shift/Cmd).
+  - Lo que no cambia: el orden del escaneo de texturas (idéntico en Copy → Undo → Redo → Undo). Los owners no sirven: todos los samplers de un material dicen `path`.
+  - Corrección: cada fila lleva `slot`; en cada refresco la SPA lleva selección, ancla y clics tardíos a la key nueva por slot, solo si todos los slots conservan sus owners (si se añade o quita un material, no se lleva nada). «The scene is still updating» sale una vez cada 5 s.
+  - Detalle en `docs/solutions/logic-errors/2026-10-30-hub-row-key-is-the-path.md`.
+- **Hallazgo, sin arreglar:** `SetActiveMaterial` con otro material entre Undo y Redo vacía el Redo; un clic de fila del Hub lo hace.
+- **Verificación:** pytest 2047, vitest 296, lint y build OK; `run_udim_checks`, `run_fixtures`, `run_product_checks` y `run_beta_checks` en `c4dpy`; en vivo en macOS + C4D 2026.304, Shift+click tras Undo da 4 (antes 1) y el clic sobre la lista vieja selecciona el material sin toast.
+- **Ronda Windows 9:** `docs/audit/2026-10-30-windows-round9-checklist.md`.
+
 ## v1.43.3 — Arreglos de la ronda Windows 7 (2026-10-30, PRs #47–#51)
 
 - **Ronda Windows 7** (v1.43.2, Windows 11 + C4D 2026.4.0): 10 OK, 2 FAIL. Los dos FAIL se reproducen en macOS. Registro en `docs/audit/2026-09-24-windows-acceptance.md` (PR #47).
