@@ -5,7 +5,7 @@ Solo lo pendiente. Lo entregado, con su porqué, está en [`docs/HISTORY.md`](do
 ## Estado (2026-10-30)
 - `main`: **v1.43.3** (etiqueta `v1.43.3`, PRs #47–#51: arreglos de la ronda Windows 7). v1.43.2 (PR #44): preview de Matwire sin desbordar el panel, "on disk" en el Hub. v1.43.1 (PR #41): Shrink UDIM desde el panel. v1.42.0 y v1.43.0 entraron juntas en el PR #39. La última aceptada en los dos sistemas es **v1.41.0** (etiqueta `v1.41.0`). Matriz soportada: **Cinema 4D 2025–2027**, macOS y Windows. Objetivo del estudio: **C4D 2026.4.0**.
 - Aceptada en Windows 11 + C4D 2026.4.0 (ronda 6, con el código de v1.40.1) y en macOS + C4D 2026.304 (ronda Mac 1); C4D 2027.0 comprobado en vivo en macOS. Evidencia: [`docs/audit/2026-09-24-windows-acceptance.md`](docs/audit/2026-09-24-windows-acceptance.md) y [`docs/audit/2026-10-24-macos-acceptance.md`](docs/audit/2026-10-24-macos-acceptance.md).
-- v1.42.0 (Matwire UDIM + export de Painter), v1.43.0 (acciones del Hub por tesela y QC #14), v1.43.1, v1.43.2 y v1.43.3: comprobadas en vivo en macOS + C4D 2026.304. Ronda Windows 7 (v1.43.2): 10 OK, 2 FAIL (W5, W8), ambos reproducidos en macOS y corregidos en v1.43.3. Pendiente la ronda Windows 8: [`docs/audit/2026-10-30-windows-round8-checklist.md`](docs/audit/2026-10-30-windows-round8-checklist.md).
+- v1.42.0 (Matwire UDIM + export de Painter), v1.43.0 (acciones del Hub por tesela y QC #14), v1.43.1, v1.43.2 y v1.43.3: comprobadas en vivo en macOS + C4D 2026.304. Ronda Windows 7 (v1.43.2): 10 OK, 2 FAIL (W5, W8), ambos reproducidos en macOS y corregidos en v1.43.3. Ronda Windows 8 (v1.43.3): 8 OK, 2 FAIL (R4, R5: clics en el Hub justo después de Undo/Redo); W5, W8 y "Ctrl+Z" pasan.
 - CI en cada PR y push a `main`: pytest en Linux, macOS y Windows + web.
 
 ## Para cerrar la beta
@@ -19,10 +19,14 @@ Solo lo pendiente. Lo entregado, con su porqué, está en [`docs/HISTORY.md`](do
 - [ ] **Material Graph: posible pérdida en Redo.** `matgraph_c4d` usa el mismo `UNDO_MODE.ADD` con varias transacciones por lote. Sin medir.
 - [x] **UDIM sin tesela 1001.** Redshift resuelve el patrón solo a través de la 1001: sin ella, toda la textura sale `Not Found`. Un `1001` en otra parte de la ruta (carpeta `shot_1001`) también la rompe. QC #14 y la preview de Matwire avisan desde la rama `feat/udim-tile-1001-warning` (`udim.redshift_unresolved`); el Hub todavía no. Medición en `docs/research/2026-10-30-redshift-udim-needs-tile-1001.md`.
 - [x] Toasts en crudo `scene_changed` tras Undo/Redo en el Hub. Causa medida: tras Undo/Redo, C4D sigue subiendo el dirty de los materiales unos segundos (+4 en ~2,5 s), el sello del Hub queda viejo y cada clic de fila lo rechaza. El Hub ahora refresca en silencio y reintenta una vez; si sigue cambiando, avisa legible. Rama `fix/hub-scene-changed-toasts`.
-- [ ] En ese estado, Shift/Ctrl dejaron de ampliar la selección (Windows). Sin reproducir en macOS: los clics en segundo plano no llevan modificadores.
+- [ ] En ese estado, Shift/Ctrl dejaron de ampliar la selección (Windows). Pasa a la ronda 8 (R5).
 - [x] "Cmd+Z" en los diálogos Shrink y Switch res en Windows (y en la confirmación de Reset All): "Ctrl+Z" fuera de macOS, rama `fix/undo-shortcut-label`.
 - [ ] Manifiesto de Collect: `original_path` es `relative:///<nombre>` y no la ubicación real; `hash` es `null` y no hay sello; `assets_collected: 91` frente a `collected: 18`.
 - [ ] Switch res: con la fila enlazada a una familia incompleta, el diálogo lista "1K 1/1 available" sin aviso. Collect no restaura un Hub minimizado.
+
+**Ronda Windows 8 (v1.43.3, 2026-10-30): 8 OK, 2 FAIL.** Detalle en [`docs/audit/2026-09-24-windows-acceptance.md`](docs/audit/2026-09-24-windows-acceptance.md#round-8--2026-10-30-candidate-0211ffe-v1433-c4d-202640).
+- [ ] **Clics en el Hub justo después de Undo/Redo (R4, R5).** 4 clics rápidos dieron 3 avisos "The scene is still updating" (uno por clic) y un "That asset is no longer in the scene" para un asset que sigue ahí. Shift/Ctrl se ignoran unos 5 s. Causa probable (lectura del código, falta medirla en macOS): la `key` de cada fila es su ruta, Undo/Redo de un relink cambia todas las rutas, y la tabla vieja, el ancla y la selección se quedan con claves que ya no existen. Arreglo: una identidad de fila que no dependa de la ruta, y un solo aviso por ventana de asentamiento.
+- [ ] Tras arreglar el W5, la barra Deliver del Hub siguió diciendo "UDIM Tiles · 4 new" hasta pulsar Refresh, con la pestaña QC ya limpia.
 
 **Limitación conocida, no se persigue:** en Windows con C4D 2026.3.4, expandir el tag Sentinel Frame en el Attribute Manager puede cerrar C4D (llamada nativa a dirección nula en `gui.module`, sin Python en la pila, causa sin aislar). No ocurre en 2026.4.0 ni en macOS.
 
