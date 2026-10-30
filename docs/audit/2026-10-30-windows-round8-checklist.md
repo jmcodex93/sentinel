@@ -4,7 +4,7 @@ Short round for the fixes made after [round 7](2026-09-24-windows-acceptance.md#
 
 ## Setup
 
-- **Candidate:** built from tag `v1.43.3` with `build_candidate.py` (file name and SHA256 added once the tag exists).
+- **Candidate:** `sentinel-beta-0211ffe495a4.zip` (tag `v1.43.3`), SHA256 `e497f804978e89d42c1f516ae82f28a05a149eeddc12ec99c0798e0c9f1217e9`, 132 files.
   - Check the hash against the `.sha256`, then install with `install.py --target`.
 - **Host:** Windows 11 + **C4D 2026.4.0**, Redshift.
   - Use a clean profile with **Sentinel only** if you can. If the MCP bridge is needed, say so in the report, and don't drive Win32 windows from C4D's main thread: round 7 hung C4D that way.
